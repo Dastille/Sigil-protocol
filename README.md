@@ -34,6 +34,8 @@ cargo build --release
 ./target/release/sigil decompress <compressed_file> <output_file>
 ```
 
+Not tested yet. All rough draft.
+
 ## License
 
 Sigil is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0).
