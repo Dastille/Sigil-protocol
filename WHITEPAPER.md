@@ -1,70 +1,103 @@
-# The Sigil Protocol: Regenerative Data Representation via Chaotic Compression
+**Sigil Protocol: A Post-Cloud, Self-Verifying Regenerative Compression Standard**
 
-## Abstract
+---
 
-Sigil is a regenerative protocol for secure data representation, combining deterministic chaotic transformation, cryptographic seeding, and embedded verification. It targets scenarios where centralized storage, fragile infrastructure, or bandwidth limitations make traditional methods impractical.
+**Abstract**
+Sigil is a regenerative data representation protocol that merges chaotic mathematics, cryptographic seeding, and deterministic reconstruction into a resilient, offline-compatible format. It is designed to overcome key limitations in current systems such as reliance on cloud infrastructure, difficulty in verifying data integrity offline, and lack of robust regeneration in corrupted or partial data scenarios. Unlike traditional compression algorithms focused solely on reducing file size, Sigil emphasizes holistic efficiency: combining storage savings, security, and post-cloud usability into a single pipeline. By leveraging entropy-rich transforms and mathematically grounded redundancy, it offers robust reconstruction capabilities and content verification without reliance on centralized services.
 
-Sigil enables **post-cloud data workflows**, with **offline resilience** and **deterministic regeneration** of original content from tightly packed, secure files.
+---
 
-## Core Concepts
+**1. Introduction**
+Modern data storage and transmission systems are increasingly reliant on cloud services, introducing single points of failure, privacy risks, high operational costs, and reliance on proprietary infrastructure. These systems often lock users into specific vendors, making data portability and independence difficult. High-bandwidth requirements can lead to inefficiencies in environments with limited connectivity, and many formats lack native mechanisms for content auditability or deterministic verification.
 
-### 1. Chaotic Transformation
+Sigil addresses these gaps by introducing a mathematically deterministic and cryptographically verifiable method of encoding data that works seamlessly in offline, degraded, or adversarial environments. It ensures that data remains portable, auditable, and recoverable, with minimal reliance on external infrastructure.
 
-Sigil applies transformations inspired by chaotic systems. It uses seeded pseudo-random masks to permute, scramble, and reduce entropy in encrypted or randomized input.
+Sigil is built on:
 
-### 2. Cryptographic Seeding
+* **ChaosRegen**: A hybrid chaotic mapping transformation inspired by the logistic map and stretching equations from material science.
+* **Cryptographic Seeding**: Uses a Curve25519-based elliptic curve digest as the primary entropy source, offering high entropy, forward secrecy, and resistance to post-quantum threats. SHA-256 is deprecated unless required by constrained environments.
+* **Zstd Compression**: Efficient lossless entropy encoding suitable for high-entropy sources.
+* **Residual Metadata**: Provides a redundancy layer with auxiliary hashes, reconstruction logic, and parity blocks, allowing partial data reconstitution and improved fault tolerance.
 
-Seed masks are derived from universal constants (π, φ, e) and cryptographic seeds, ensuring repeatability and resistance to brute force regeneration without access to the protocol or seeds.
+---
 
-### 3. Self-Verifying Structure
+**2. Protocol Architecture**
 
-Sigil embeds:
-- A magic identifier (`CRGN`)
-- Original file length
-- A CRC32 checksum
-
-This allows validation of data before reconstitution. No trusted 3rd party or server-side logic is needed.
-
-## Format
+**2.1 Data Flow**
 
 ```
-[ Magic Header | Original Length | Checksum | Transformed Data ]
+Original File → Curve25519 Digest → Seeded RNG → ChaosRegen → Zstd Compression → Sigil Archive [+ Residuals]
 ```
 
-## Features
+**2.2 Component Details**
 
-- **Lossless**: No information is discarded. All transforms are reversible.
-- **Deterministic**: Same input + same seed = same compressed output.
-- **Resilient**: Can operate on air-gapped systems, embedded devices, and unstable networks.
-- **Cryptographically Anchored**: Seeds are derived from known constants but unpredictable without source.
+* **Seed Generator**: The original file is processed using Curve25519-based elliptic curve cryptography to derive a unique, high-entropy digest. This digest initializes a ChaCha-based pseudorandom number generator, enabling reproducible and secure entropy for transformation while maintaining cryptographic integrity and avoiding predictability.
 
-## Compression Process
+**ChaosRegen Transform**: Data is passed through a nonlinear chaotic function using variations of the logistic map:
 
-1. Input is transformed via:
-   - XOR with seeded masks
-   - Modular reduction (prime mod 257)
-   - Matrix pairwise permutations
-2. Output is checksumed and headered.
-3. Result is compact, reproducible, and portable.
+\$x\_{n+1} = r \cdot x\_n (1 - x\_n)\$
 
-## Decompression Process
+where \$r \in (3.57, 4)\$ governs chaotic behavior, and \$x\_n\$ evolves under dynamic perturbations informed by the seeded RNG. A secondary "material-stretching" layer modulates data density based on harmonic distortion and simulated stress tensors, inspired by elasticity in material physics.
 
-1. Header is parsed and validated.
-2. Reverse transformations are applied.
-3. If checksum matches and transforms succeed, original file is fully recovered.
+* **Compressor**: After transformation, the output undergoes entropy coding with Zstandard, which benefits from the increased apparent randomness while preserving reversibility.
 
-## Applications
+* **Residual Layer**: Stores auxiliary hashes, reconstruction instructions, and optional parity blocks, enabling restoration even under partial data corruption.
 
-- Encrypted data storage over slow channels
-- Air-gapped secure file reconstitution
-- Off-grid archival systems
-- Self-healing software deployment mediums
+---
 
-## License
+**3. Key Properties**
 
-This protocol and codebase are licensed under AGPL-3.0.
+* **Offline-First**: Operates entirely without dependency on internet-based APIs or timestamping authorities.
+* **Self-Verifying**: Contains embedded integrity checkpoints and structural fields for cryptographic validation. Sigil integrates zero-knowledge proofs for data authenticity, transformation history, and content lineage verification without revealing actual data. It uses zk-SNARKs or Halo2 circuits to enable secure validation in regulated, adversarial, or privacy-sensitive contexts.
+  **Regenerative**: Designed for rehydration from partial inputs through deterministic logic and optional residuals.
+* **Format-Agnostic**: Requires no assumptions about file type, structure, or extension.
 
-## Author
+---
 
-Ashlynn  
-dastille@protonmail.com
+**4. Use Cases**
+
+* **Air-Gapped Systems**: Secure data backup and access where no network is permitted.
+* **Disaster Recovery**: Reconstruct documents or archives even with incomplete datasets.
+* **Decentralized Archives**: Enable cross-verifiable storage across distributed mediums without loss of fidelity.
+* **Web3 & Blockchains**: Embed verifiable, deterministic archives into blockchain ecosystems or IPFS-style protocols for immutable, provable data encoding.
+* **Self-Sovereign Data Exchange**: Facilitate the exchange of compressed and self-verifying data objects between users without revealing content or requiring third-party trust.
+* **Peer-to-Peer Protocols (e.g., BitTorrent)**: Distribute Sigil archives over torrent networks to enable bandwidth-efficient transfer, redundant chunking, and enhanced resilience.
+* **High-Entropy Sources**: Encode random or encrypted content efficiently without degradation in compression effectiveness.
+
+---
+
+**5. Performance & Theoretical Advantage**
+
+Sigil balances compression efficiency with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. This allows for fault-tolerant encoding in offline or distributed workflows. Sigil introduces:
+
+* **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure.
+* **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
+* **Compression+Reconstruction Efficiency**: Even with residuals, overall size competes with ZIP and Zstd.
+
+---
+
+**6. Roadmap**
+
+* **v0.1**: Functional CLI with seed-based deterministic transforms (completed).
+* **v0.2**: Residual format and verification matrix testing.
+* **v0.3**: Optional timestamping using Bitcoin block headers.
+* **v1.0**: WASM module, GUI, and integration with decentralized protocols.
+* **v1.1**: Integration of optional zero-knowledge proof layer (e.g., Groth16 or Halo2) for provable transformation lineage and data authenticity checks.
+
+---
+
+**7. License**
+Sigil is released under the GNU Affero General Public License (AGPL). This ensures users are free to run, study, share, and modify the software, while requiring that any use over a network must also make the source code available. This strengthens user freedoms and supports ethical software development in distributed and post-cloud contexts. Contributions, forks, and modular uses are welcomed.
+
+---
+
+**8. Conclusion**
+Sigil proposes a paradigm shift in how data can be stored, verified, and regenerated—independent of centralized infrastructure. By harnessing chaotic transformations, material theory analogs, and cryptographic seeding, Sigil creates a system that is not only compact but defensible, verifiable, and robust. In an era where data integrity and sovereignty are under threat, Sigil is engineered to thrive.
+
+---
+
+**Contact & Contributions**
+Project Repository: GitHub https://github.com/Dastille/Sigil-protocol
+Maintainer: Ashlynn
+
+License: AGPL
