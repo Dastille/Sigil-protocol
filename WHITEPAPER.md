@@ -1,13 +1,15 @@
-**Sigil Protocol: A Post-Cloud, Self-Verifying Regenerative Compression Standard**
+# Sigil Protocol: A Post-Cloud, Self-Verifying Regenerative Compression Standard
 
 ---
 
-**Abstract**
+### Abstract
+
 Sigil is a regenerative data representation protocol that merges chaotic mathematics, cryptographic seeding, and deterministic reconstruction into a resilient, offline-compatible format. It is designed to overcome key limitations in current systems such as reliance on cloud infrastructure, difficulty in verifying data integrity offline, and lack of robust regeneration in corrupted or partial data scenarios. Unlike traditional compression algorithms focused solely on reducing file size, Sigil emphasizes holistic efficiency: combining storage savings, security, and post-cloud usability into a single pipeline. By leveraging entropy-rich transforms and mathematically grounded redundancy, it offers robust reconstruction capabilities and content verification without reliance on centralized services.
 
 ---
 
-**1. Introduction**
+## 1. Introduction
+
 Modern data storage and transmission systems are increasingly reliant on cloud services, introducing single points of failure, privacy risks, high operational costs, and reliance on proprietary infrastructure. These systems often lock users into specific vendors, making data portability and independence difficult. High-bandwidth requirements can lead to inefficiencies in environments with limited connectivity, and many formats lack native mechanisms for content auditability or deterministic verification.
 
 Sigil addresses these gaps by introducing a mathematically deterministic and cryptographically verifiable method of encoding data that works seamlessly in offline, degraded, or adversarial environments. It ensures that data remains portable, auditable, and recoverable, with minimal reliance on external infrastructure.
@@ -21,15 +23,15 @@ Sigil is built on:
 
 ---
 
-**2. Protocol Architecture**
+## 2. Protocol Architecture
 
-**2.1 Data Flow**
+### 2.1 Data Flow
 
 ```
 Original File → Curve25519 Digest → Seeded RNG → ChaosRegen → Zstd Compression → Sigil Archive [+ Residuals]
 ```
 
-**2.2 Component Details**
+### 2.2 Component Details
 
 * **Seed Generator**: The original file is processed using Curve25519-based elliptic curve cryptography to derive a unique, high-entropy digest. This digest initializes a ChaCha-based pseudorandom number generator, enabling reproducible and secure entropy for transformation while maintaining cryptographic integrity and avoiding predictability.
 
@@ -45,16 +47,16 @@ where \$r \in (3.57, 4)\$ governs chaotic behavior, and \$x\_n\$ evolves under d
 
 ---
 
-**3. Key Properties**
+## 3. Key Properties
 
 * **Offline-First**: Operates entirely without dependency on internet-based APIs or timestamping authorities.
 * **Self-Verifying**: Contains embedded integrity checkpoints and structural fields for cryptographic validation. Sigil integrates zero-knowledge proofs for data authenticity, transformation history, and content lineage verification without revealing actual data. It uses zk-SNARKs or Halo2 circuits to enable secure validation in regulated, adversarial, or privacy-sensitive contexts.
-  **Regenerative**: Designed for rehydration from partial inputs through deterministic logic and optional residuals.
+* **Regenerative**: Designed for rehydration from partial inputs through deterministic logic and optional residuals.
 * **Format-Agnostic**: Requires no assumptions about file type, structure, or extension.
 
 ---
 
-**4. Use Cases**
+## 4. Use Cases
 
 * **Air-Gapped Systems**: Secure data backup and access where no network is permitted.
 * **Disaster Recovery**: Reconstruct documents or archives even with incomplete datasets.
@@ -66,9 +68,11 @@ where \$r \in (3.57, 4)\$ governs chaotic behavior, and \$x\_n\$ evolves under d
 
 ---
 
-* **Cross-Protocol Embedding**: Sigil can be layered onto any file format—including MP4, PDF, DOCX, executables, and others—by embedding a deterministic transformation layer or by appending auxiliary metadata in a compliant manner. This enables hybrid payloads where Sigil-protected data can coexist with and enhance conventional formats without interfering with their primary function. Embedding maintains compatibility while granting self-verifying and regenerative capabilities. A toggle-based implementation allows selective embedding or external sidecar use depending on format requirements. Sigil can be layered onto existing file formats (e.g., MP4, PDF, DOCX) by embedding a deterministic transformation layer or auxiliary metadata. This enables hybrid payloads where Sigil-protected data can coexist with conventional multimedia, documents, or archive formats. Such embedding can preserve backward compatibility while granting self-verifying and regenerative properties to legacy formats.
+* ### 5. Cross-Protocol Embedding
 
-**5. Performance & Theoretical Advantage**
+Sigil can be layered onto any file format—including MP4, PDF, DOCX, executables, and others—by embedding a deterministic transformation layer or appending auxiliary metadata in a compliant manner. Sigil can be layered onto any file format—including MP4, PDF, DOCX, executables, and others—by embedding a deterministic transformation layer or appending auxiliary metadata in a compliant manner. This enables hybrid payloads where Sigil-protected data can coexist with and enhance conventional formats without interfering with their primary function. Embedding maintains compatibility while granting self-verifying and regenerative capabilities. A toggle-based implementation allows selective embedding or external sidecar use depending on format requirements.
+
+## 6. Performance & Theoretical Advantage
 
 Sigil balances compression efficiency with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. This allows for fault-tolerant encoding in offline or distributed workflows. Sigil introduces:
 
@@ -78,7 +82,7 @@ Sigil balances compression efficiency with robust reconstructive fidelity. Its s
 
 ---
 
-**6. Roadmap**
+## 7. Roadmap
 
 * **v0.1**: Functional CLI with seed-based deterministic transforms (completed).
 * **v0.2**: Residual format and verification matrix testing.
@@ -88,18 +92,21 @@ Sigil balances compression efficiency with robust reconstructive fidelity. Its s
 
 ---
 
-**7. License**
+## 8. License
+
 Sigil is released under the GNU Affero General Public License (AGPL). This ensures users are free to run, study, share, and modify the software, while requiring that any use over a network must also make the source code available. This strengthens user freedoms and supports ethical software development in distributed and post-cloud contexts. Contributions, forks, and modular uses are welcomed.
 
 ---
 
-**8. Conclusion**
+## 9. Conclusion
+
 Sigil proposes a paradigm shift in how data can be stored, verified, and regenerated—independent of centralized infrastructure. By harnessing chaotic transformations, material theory analogs, and cryptographic seeding, Sigil creates a system that is not only compact but defensible, verifiable, and robust. In an era where data integrity and sovereignty are under threat, Sigil is engineered to thrive.
 
 ---
 
-**Contact & Contributions**
-Project Repository: <GitHub https://github.com/Dastille/Sigil-protocol>
+## 10. Contact & Contributions
+
+Project Repository: <GitHub link to be added>
 Maintainer: Ashlynn
 
 License: AGPL
