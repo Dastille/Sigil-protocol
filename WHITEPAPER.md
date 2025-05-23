@@ -150,7 +150,7 @@ Sigil proposes a paradigm shift in how data can be stored, verified, and regener
 
 ## 10. Contact & Contributions
 
-Project Repository: <GitHub https://github.com/Dastille/Sigil-protocol>
+Project Repository: GitHub https://github.com/Dastille/Sigil-protocol
 Maintainer: Ashlynn
 
 License: AGPL
