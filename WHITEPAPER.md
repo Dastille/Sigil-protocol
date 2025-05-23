@@ -66,6 +66,8 @@ where \$r \in (3.57, 4)\$ governs chaotic behavior, and \$x\_n\$ evolves under d
 
 ---
 
+* **Cross-Protocol Embedding**: Sigil can be layered onto any file format—including MP4, PDF, DOCX, executables, and others—by embedding a deterministic transformation layer or by appending auxiliary metadata in a compliant manner. This enables hybrid payloads where Sigil-protected data can coexist with and enhance conventional formats without interfering with their primary function. Embedding maintains compatibility while granting self-verifying and regenerative capabilities. A toggle-based implementation allows selective embedding or external sidecar use depending on format requirements. Sigil can be layered onto existing file formats (e.g., MP4, PDF, DOCX) by embedding a deterministic transformation layer or auxiliary metadata. This enables hybrid payloads where Sigil-protected data can coexist with conventional multimedia, documents, or archive formats. Such embedding can preserve backward compatibility while granting self-verifying and regenerative properties to legacy formats.
+
 **5. Performance & Theoretical Advantage**
 
 Sigil balances compression efficiency with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. This allows for fault-tolerant encoding in offline or distributed workflows. Sigil introduces:
@@ -97,7 +99,7 @@ Sigil proposes a paradigm shift in how data can be stored, verified, and regener
 ---
 
 **Contact & Contributions**
-Project Repository: GitHub https://github.com/Dastille/Sigil-protocol
+Project Repository: <GitHub https://github.com/Dastille/Sigil-protocol>
 Maintainer: Ashlynn
 
 License: AGPL
