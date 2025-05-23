@@ -19,11 +19,36 @@ Sigil is built on:
 * **ChaosRegen**: A hybrid chaotic mapping transformation inspired by the logistic map and stretching equations from material science.
 * **Cryptographic Seeding**: Uses a Curve25519-based elliptic curve digest as the primary entropy source, offering high entropy, forward secrecy, and resistance to post-quantum threats. SHA-256 is deprecated unless required by constrained environments.
 * **Zstd Compression**: Efficient lossless entropy encoding suitable for high-entropy sources.
-* **Residual Metadata**: Provides a redundancy layer with auxiliary hashes, reconstruction logic, and parity blocks, allowing partial data reconstitution and improved fault tolerance.
+* **Residual Metadata**: Provides a redundancy layer that operates in one of three cryptographically tiered resilience modes:
+
+  * **Glyph**: Lightweight validation and checksum only.
+  * **Reflection**: Includes structural parity and localized chunk validation for moderate fault tolerance.
+  * **Seal**: Full redundancy encoding, per-block hashing, and parity support for regeneration from up to 50% data loss.
+
+These modes can be promoted post-encoding, allowing data hardened at rest to adapt to more hostile conditions without re-encoding.
 
 ---
 
 ## 2. Protocol Architecture
+
+### 2.3 Access Control and Audit Trail
+
+Sigil supports cryptographic access control through embedded public keys and signature verification. Data can be designated as read-only or editable, with editing permitted only by holders of approved private keys. Edit actions are signed and logged in a versioned manifest that resides within the residual metadata.
+
+* **Read Access**: Publicly available content can be verified and inspected by anyone.
+* **Edit Access**: Only authorized keyholders may mutate the archive, re-sign, or append residuals.
+* **Versioning**: Each edit produces a new signature, and the metadata tracks prior hashes, public keys, and access control state.
+* **Tamper Detection**: Unauthorized modifications are detectable through failed signature validation and corrupted chain-of-trust.
+* **Dynamic Access Management**: The set of authorized readers or editors may be updated by an existing authorized signer. Role modifications are recorded in the version chain, allowing cryptographic auditability of changes to access policies.
+
+This design enables self-sovereign access management and non-repudiable audit trails without relying on external infrastructure.. Data can be designated as read-only or editable, with editing permitted only by holders of approved private keys. Edit actions are signed and logged in a versioned manifest that resides within the residual metadata.
+
+* **Read Access**: Publicly available content can be verified and inspected by anyone.
+* **Edit Access**: Only authorized keyholders may mutate the archive, re-sign, or append residuals.
+* **Versioning**: Each edit produces a new signature, and the metadata tracks prior hashes and public keys.
+* **Tamper Detection**: Unauthorized modifications are detectable through failed signature validation and corrupted chain-of-trust.
+
+This design enables self-sovereign access management and non-repudiable audit trails without relying on external infrastructure.
 
 ### 2.1 Data Flow
 
@@ -74,10 +99,29 @@ Sigil can be layered onto any file format—including MP4, PDF, DOCX, executable
 
 ## 6. Performance & Theoretical Advantage
 
-Sigil balances compression efficiency with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. This allows for fault-tolerant encoding in offline or distributed workflows. Sigil introduces:
+Sigil balances compression efficiency with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. While recovery records in formats like RAR provide fixed block parity, Sigil diverges by leveraging deterministic chaotic transforms and entropy-driven self-validation. Unlike fixed block parity in RAR or ZIP recovery records, Sigil constructs a transformation topology based on the file’s unique entropy profile, allowing adaptive, file-specific redundancy rather than static error correction blocks.
+
+Sigil introduces:
+
+* **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure that is content-dependent and dynamically generated.
+* **Delta-Based Versioning (Optional)**: When versioning is enabled, Sigil may store only the specific byte-level changes (deltas) between versions, rather than duplicating entire files. These deltas are derived from deterministic transformation comparisons and compressed independently. Full prior versions are not retained unless explicitly configured, minimizing storage overhead. Delta payloads can be pruned later if they are marked as non-critical or expired, allowing for controlled archival bloat and lifecycle-based retention strategies. Users may choose to preserve only version history metadata without the full version data, enabling future verification and rollback tracking while reclaiming space.
+* **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
+* **Compression+Reconstruction Efficiency**: Even with residuals and versioning metadata, overall size competes with ZIP and Zstd while offering greater integrity guarantees and transform awareness. with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. While recovery records in formats like RAR provide fixed block parity, Sigil diverges by leveraging deterministic chaotic transforms and entropy-driven self-validation. Unlike fixed block parity in RAR or ZIP recovery records, Sigil constructs a transformation topology based on the file’s unique entropy profile, allowing adaptive, file-specific redundancy rather than static error correction blocks.. Instead of relying on fixed-location block redundancy, Sigil constructs a transformation topology that makes the data itself resilient, self-recoverable, and cryptographically anchored.
+
+Sigil introduces:
+
+* **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure that is content-dependent and dynamically generated.
+
+* **Delta-Based Versioning (Optional)**: When versioning is enabled, Sigil may store only the specific byte-level changes (deltas) between versions, rather than duplicating entire files. These deltas are derived from deterministic transformation comparisons and compressed independently. Full prior versions are not retained unless explicitly configured, minimizing storage overhead. Delta payloads can be pruned later if they are marked as non-critical or expired, allowing for controlled archival bloat and lifecycle-based retention strategies. This enables full content lineage with minimal bloat, and delta payloads can be pruned later if needed.
+
+* **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
+
+* **Compression+Reconstruction Efficiency**: Even with residuals and versioning metadata, overall size competes with ZIP and Zstd while offering greater integrity guarantees and transform awareness. with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. This allows for fault-tolerant encoding in offline or distributed workflows. Sigil introduces:
 
 * **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure.
+
 * **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
+
 * **Compression+Reconstruction Efficiency**: Even with residuals, overall size competes with ZIP and Zstd.
 
 ---
