@@ -1,156 +1,249 @@
-# Sigil Protocol: A Post-Cloud, Self-Verifying Regenerative Compression Standard
+Title: Sigil Protocol and Regent Framework
+A Distributed Entropy-Aware Memory System for Portable, Verifiable, and Self-Healing Digital Objects
+
 
 ---
 
-### Abstract
+Abstract
+The Sigil Protocol defines a cryptographically verifiable file format (.sg1) that captures entropy, structure, and identity across files, folders, and entire drives. Paired with the Regent framework, it enables chunk-level verification, redundancy-aware recovery, drift detection, and granular access control. Recent enhancements extend Sigil into a distributed, recursive object graph where files, folders, and systems become cryptographically linked and mutually regenerable. This redefines how data is stored, backed up, verified, and restored—without relying on OS-level access control, central servers, or fragile trust anchors.
 
-Sigil is a regenerative data representation protocol that merges chaotic mathematics, cryptographic seeding, and deterministic reconstruction into a resilient, offline-compatible format. It is designed to overcome key limitations in current systems such as reliance on cloud infrastructure, difficulty in verifying data integrity offline, and lack of robust regeneration in corrupted or partial data scenarios. Unlike traditional compression algorithms focused solely on reducing file size, Sigil emphasizes holistic efficiency: combining storage savings, security, and post-cloud usability into a single pipeline. By leveraging entropy-rich transforms and mathematically grounded redundancy, it offers robust reconstruction capabilities and content verification without reliance on centralized services.
-
----
-
-## 1. Introduction
-
-Modern data storage and transmission systems are increasingly reliant on cloud services, introducing single points of failure, privacy risks, high operational costs, and reliance on proprietary infrastructure. These systems often lock users into specific vendors, making data portability and independence difficult. High-bandwidth requirements can lead to inefficiencies in environments with limited connectivity, and many formats lack native mechanisms for content auditability or deterministic verification.
-
-Sigil addresses these gaps by introducing a mathematically deterministic and cryptographically verifiable method of encoding data that works seamlessly in offline, degraded, or adversarial environments. It ensures that data remains portable, auditable, and recoverable, with minimal reliance on external infrastructure.
-
-Sigil is built on:
-
-* **ChaosRegen**: A hybrid chaotic mapping transformation inspired by the logistic map and stretching equations from material science.
-* **Cryptographic Seeding**: Uses a Curve25519-based elliptic curve digest as the primary entropy source, offering high entropy, forward secrecy, and resistance to post-quantum threats. SHA-256 is deprecated unless required by constrained environments.
-* **Zstd Compression**: Efficient lossless entropy encoding suitable for high-entropy sources.
-* **Residual Metadata**: Provides a redundancy layer that operates in one of three cryptographically tiered resilience modes:
-
-  * **Glyph**: Lightweight validation and checksum only.
-  * **Reflection**: Includes structural parity and localized chunk validation for moderate fault tolerance.
-  * **Seal**: Full redundancy encoding, per-block hashing, and parity support for regeneration from up to 50% data loss.
-
-These modes can be promoted post-encoding, allowing data hardened at rest to adapt to more hostile conditions without re-encoding.
 
 ---
 
-## 2. Protocol Architecture
+1. Introduction
 
-### 2.3 Access Control and Audit Trail
+Traditional data validation methods rely on simple hashes, opaque ACLs, and monolithic backups. Sigil replaces this with a system where:
 
-Sigil supports cryptographic access control through embedded public keys and signature verification. Data can be designated as read-only or editable, with editing permitted only by holders of approved private keys. Edit actions are signed and logged in a versioned manifest that resides within the residual metadata.
+Every file has a unique entropy identity
 
-* **Read Access**: Publicly available content can be verified and inspected by anyone.
-* **Edit Access**: Only authorized keyholders may mutate the archive, re-sign, or append residuals.
-* **Versioning**: Each edit produces a new signature, and the metadata tracks prior hashes, public keys, and access control state.
-* **Tamper Detection**: Unauthorized modifications are detectable through failed signature validation and corrupted chain-of-trust.
-* **Dynamic Access Management**: The set of authorized readers or editors may be updated by an existing authorized signer. Role modifications are recorded in the version chain, allowing cryptographic auditability of changes to access policies.
+Every folder and drive forms a verifiable graph of those identities
 
-This design enables self-sovereign access management and non-repudiable audit trails without relying on external infrastructure.. Data can be designated as read-only or editable, with editing permitted only by holders of approved private keys. Edit actions are signed and logged in a versioned manifest that resides within the residual metadata.
+Missing files can be reconstructed probabilistically from the structure and data of related objects
 
-* **Read Access**: Publicly available content can be verified and inspected by anyone.
-* **Edit Access**: Only authorized keyholders may mutate the archive, re-sign, or append residuals.
-* **Versioning**: Each edit produces a new signature, and the metadata tracks prior hashes and public keys.
-* **Tamper Detection**: Unauthorized modifications are detectable through failed signature validation and corrupted chain-of-trust.
+Access is cryptographically enforced, without relying on the OS
 
-This design enables self-sovereign access management and non-repudiable audit trails without relying on external infrastructure.
 
-### 2.1 Data Flow
+This architecture is designed for durability, auditability, zero-trust, and forensic-grade restoration.
 
-```
-Original File → Curve25519 Digest → Seeded RNG → ChaosRegen → Zstd Compression → Sigil Archive [+ Residuals]
-```
-
-### 2.2 Component Details
-
-* **Seed Generator**: The original file is processed using Curve25519-based elliptic curve cryptography to derive a unique, high-entropy digest. This digest initializes a ChaCha-based pseudorandom number generator, enabling reproducible and secure entropy for transformation while maintaining cryptographic integrity and avoiding predictability.
-
-**ChaosRegen Transform**: Data is passed through a nonlinear chaotic function using variations of the logistic map:
-
-\$x\_{n+1} = r \cdot x\_n (1 - x\_n)\$
-
-where \$r \in (3.57, 4)\$ governs chaotic behavior, and \$x\_n\$ evolves under dynamic perturbations informed by the seeded RNG. A secondary "material-stretching" layer modulates data density based on harmonic distortion and simulated stress tensors, inspired by elasticity in material physics.
-
-* **Compressor**: After transformation, the output undergoes entropy coding with Zstandard, which benefits from the increased apparent randomness while preserving reversibility.
-
-* **Residual Layer**: Stores auxiliary hashes, reconstruction instructions, and optional parity blocks, enabling restoration even under partial data corruption.
 
 ---
 
-## 3. Key Properties
+2. Core Concepts
 
-* **Offline-First**: Operates entirely without dependency on internet-based APIs or timestamping authorities.
-* **Self-Verifying**: Contains embedded integrity checkpoints and structural fields for cryptographic validation. Sigil integrates zero-knowledge proofs for data authenticity, transformation history, and content lineage verification without revealing actual data. It uses zk-SNARKs or Halo2 circuits to enable secure validation in regulated, adversarial, or privacy-sensitive contexts.
-* **Regenerative**: Designed for rehydration from partial inputs through deterministic logic and optional residuals.
-* **Format-Agnostic**: Requires no assumptions about file type, structure, or extension.
+2.1 Sigil File (.sg1)
+A .sg1 file includes:
 
----
+Magic header and version
 
-## 4. Use Cases
+Entropy fingerprint and compression residual
 
-* **Air-Gapped Systems**: Secure data backup and access where no network is permitted.
-* **Disaster Recovery**: Reconstruct documents or archives even with incomplete datasets.
-* **Decentralized Archives**: Enable cross-verifiable storage across distributed mediums without loss of fidelity.
-* **Web3 & Blockchains**: Embed verifiable, deterministic archives into blockchain ecosystems or IPFS-style protocols for immutable, provable data encoding.
-* **Self-Sovereign Data Exchange**: Facilitate the exchange of compressed and self-verifying data objects between users without revealing content or requiring third-party trust.
-* **Peer-to-Peer Protocols (e.g., BitTorrent)**: Distribute Sigil archives over torrent networks to enable bandwidth-efficient transfer, redundant chunking, and enhanced resilience.
-* **High-Entropy Sources**: Encode random or encrypted content efficiently without degradation in compression effectiveness.
+ChaosRegen compression only (exclusive)
 
----
+Regent chunk map for rapid verification and patching
 
-* ### 5. Cross-Protocol Embedding
+Access control manifest
 
-Sigil can be layered onto any file format—including MP4, PDF, DOCX, executables, and others—by embedding a deterministic transformation layer or appending auxiliary metadata in a compliant manner. Sigil can be layered onto any file format—including MP4, PDF, DOCX, executables, and others—by embedding a deterministic transformation layer or appending auxiliary metadata in a compliant manner. This enables hybrid payloads where Sigil-protected data can coexist with and enhance conventional formats without interfering with their primary function. Embedding maintains compatibility while granting self-verifying and regenerative capabilities. A toggle-based implementation allows selective embedding or external sidecar use depending on format requirements.
+ECC signature blocks for identity and verification
 
-## 6. Performance & Theoretical Advantage
+Optional encryption per file, folder, or segment
 
-Sigil balances compression efficiency with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. While recovery records in formats like RAR provide fixed block parity, Sigil diverges by leveraging deterministic chaotic transforms and entropy-driven self-validation. Unlike fixed block parity in RAR or ZIP recovery records, Sigil constructs a transformation topology based on the file’s unique entropy profile, allowing adaptive, file-specific redundancy rather than static error correction blocks.
 
-Sigil introduces:
+2.2 Regent
+Regent divides any object into verifiable, independent chunks. Each chunk:
 
-* **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure that is content-dependent and dynamically generated.
-* **Delta-Based Versioning (Optional)**: When versioning is enabled, Sigil may store only the specific byte-level changes (deltas) between versions, rather than duplicating entire files. These deltas are derived from deterministic transformation comparisons and compressed independently. Full prior versions are not retained unless explicitly configured, minimizing storage overhead. Delta payloads can be pruned later if they are marked as non-critical or expired, allowing for controlled archival bloat and lifecycle-based retention strategies. Users may choose to preserve only version history metadata without the full version data, enabling future verification and rollback tracking while reclaiming space.
-* **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
-* **Compression+Reconstruction Efficiency**: Even with residuals and versioning metadata, overall size competes with ZIP and Zstd while offering greater integrity guarantees and transform awareness. with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. While recovery records in formats like RAR provide fixed block parity, Sigil diverges by leveraging deterministic chaotic transforms and entropy-driven self-validation. Unlike fixed block parity in RAR or ZIP recovery records, Sigil constructs a transformation topology based on the file’s unique entropy profile, allowing adaptive, file-specific redundancy rather than static error correction blocks.. Instead of relying on fixed-location block redundancy, Sigil constructs a transformation topology that makes the data itself resilient, self-recoverable, and cryptographically anchored.
+Has its own entropy score and hash
 
-Sigil introduces:
+Can be validated independently
 
-* **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure that is content-dependent and dynamically generated.
+Can be encrypted or unlocked individually
 
-* **Delta-Based Versioning (Optional)**: When versioning is enabled, Sigil may store only the specific byte-level changes (deltas) between versions, rather than duplicating entire files. These deltas are derived from deterministic transformation comparisons and compressed independently. Full prior versions are not retained unless explicitly configured, minimizing storage overhead. Delta payloads can be pruned later if they are marked as non-critical or expired, allowing for controlled archival bloat and lifecycle-based retention strategies. This enables full content lineage with minimal bloat, and delta payloads can be pruned later if needed.
+Participates in a Merkle tree for fast verification
 
-* **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
 
-* **Compression+Reconstruction Efficiency**: Even with residuals and versioning metadata, overall size competes with ZIP and Zstd while offering greater integrity guarantees and transform awareness. with robust reconstructive fidelity. Its structure-aware transforms and optional residual metadata enable fragmented recovery without the need for fixed parity block layouts like Reed-Solomon or Par2. This allows for fault-tolerant encoding in offline or distributed workflows. Sigil introduces:
+2.3 Recursive Object Graphing
+Files are treated as chunks of folders, folders as chunks of drives, and drives as forests of object memory. Each layer:
 
-* **Redundant Topology Mapping**: Via ChaosRegen's self-similar encoding structure.
+Inherits from or references its child .sg1 files
 
-* **Time-Independent Verification**: Uses Bitcoin block hashes or other cryptographic anchors as optional timestamp substitutes.
+Can be used to validate, reconstruct, or compare any other known .sg1
 
-* **Compression+Reconstruction Efficiency**: Even with residuals, overall size competes with ZIP and Zstd.
+Enables structure-based deduplication and cross-entropy recovery
 
----
 
-## 7. Roadmap
+2.4 Regeneration & Deduplication
+Given overlapping .sg1 files:
 
-* **v0.1**: Functional CLI with seed-based deterministic transforms (completed).
-* **v0.2**: Residual format and verification matrix testing.
-* **v0.3**: Optional timestamping using Bitcoin block headers.
-* **v1.0**: WASM module, GUI, and integration with decentralized protocols.
-* **v1.1**: Integration of optional zero-knowledge proof layer (e.g., Groth16 or Halo2) for provable transformation lineage and data authenticity checks.
+Sigil can detect shared entropy blocks
 
----
+Rebuild missing or corrupted segments
 
-## 8. License
+Reconstruct files from partial graphs or sibling containers
 
-Sigil is released under the GNU Affero General Public License (AGPL). This ensures users are free to run, study, share, and modify the software, while requiring that any use over a network must also make the source code available. This strengthens user freedoms and supports ethical software development in distributed and post-cloud contexts. Contributions, forks, and modular uses are welcomed.
+
+2.5 Resilience Modes
+
+Glyph Mode: Lightweight—Entropy + ChaosRegen + Signature (default)
+
+Reflection Mode: Adds parity and deterministic recovery codes for partial regen
+
+Seal Mode: Full redundancy—designed for high-risk/high-integrity storage (e.g., cold storage, forensics)
+
+
 
 ---
 
-## 9. Conclusion
+3. Access Control & Identity
 
-Sigil proposes a paradigm shift in how data can be stored, verified, and regenerated—independent of centralized infrastructure. By harnessing chaotic transformations, material theory analogs, and cryptographic seeding, Sigil creates a system that is not only compact but defensible, verifiable, and robust. In an era where data integrity and sovereignty are under threat, Sigil is engineered to thrive.
+Owner-only or multi-signature unlock
+
+Per-file or per-folder access lists
+
+Expiry flags (TTL)
+
+Role-based or time-gated reads
+
+ECC-based identity enforcement (e.g. curve25519)
+
+Optional audit trail of access or edit changes
+
+
 
 ---
 
-## 10. Contact & Contributions
+4. Use Cases
 
-Project Repository: GitHub https://github.com/Dastille/Sigil-protocol
-Maintainer: Ashlynn
+Sector	Use Case
 
-License: AGPL
+Forensics	Self-healing forensic disk graphs
+Gaming	Secure P2P patching with regen validation
+Cybersecurity	File drift detection with entropy deltas
+Legal	Time-locked, multi-signed document graphs
+Storage	Composable, verifiable, encrypted folders
+Disaster Recovery	Redundant entropy-aware backup maps
+
+
+
+---
+
+5. Why It’s Different
+
+Traditional	Sigil + Regent
+
+SHA256	Residual + entropy signature
+Full-file encryption	Chunk + role + time gated unlocks
+Rsync-style diff	Entropy-aware chunk deduplication
+Filesystem ACLs	Portable cryptographic access manifests
+Backups	Cross-file self-healing graph structure
+Zip/rar archive	ZK-enabled access + audit trace
+
+
+
+---
+
+6. Roadmap
+
+v0.1: Core .sg1 generator with entropy fingerprint
+
+v0.2: Regent chunk verification + Merkle structure
+
+v0.3: Access control manifest + ECC locking
+
+v0.4: Regen system: chunk-level recovery from .sg1 siblings
+
+v0.5: Meta-manifest for folder and drive-level graphs
+
+v1.0: Full distributed .sg1 recovery engine + UI tools
+
+v1.x: Delta versioning and rollback + audit chain + ZK proof integration (Halo2/Zexe)
+
+
+
+---
+
+7. Conclusion
+
+Sigil isn’t just a file format—it’s a substrate for decentralized object memory.
+It captures not just what a file is, but how it relates to other files, how it can be recovered, and how it can be trusted—across time, systems, and failures.
+
+With ChaosRegen as its engine, Regent as its structure, and cryptographic control as its foundation, Sigil enables data systems that aren’t just secure—they’re alive.
+
+
+---
+
+Appendix A: Algorithms & Math
+
+Entropy Score: Calculated using Shannon entropy per chunk:
+H = -Σ (p_i * log2(p_i)) over all byte values in the chunk
+
+Residual Signature: Difference between original and ChaosRegen-compressed version:
+R = H_raw - H_compressed
+
+Chunk Matching:
+Compare chunk hashes or calculate similarity score:
+similarity = shared_bytes / total_bytes
+
+Regeneration Confidence:
+confidence = matching_chunks / total_chunks
+
+Merkle Tree Hashing:
+Binary tree built over chunk hashes:
+parent_hash = H(left_child + right_child)
+
+ECC Signature Scope:
+Entire .sg1 body excluding the signature block is signed with curve25519
+
+Seeding: Initial signature hash → seed for ChaCha-based PRNG → deterministic regen
+
+
+
+---
+
+Appendix B: Workflows
+
+sigil create <file>: Generate entropy profile, compress with ChaosRegen, output .sg1
+
+sigil verify <file> <file.sg1>: Compare current file's entropy + hash to .sg1
+
+sigil regen <partial.sg1> <other.sg1>: Attempt to reconstruct partial file from related .sg1
+
+sigil compare <a.sg1> <b.sg1>: Show entropy + chunk structure diff
+
+sigil sign <file.sg1>: Sign file with owner’s ECC key
+
+sigil audit <file.sg1>: View signature, edit, and role history if enabled
+
+
+
+---
+
+Appendix C: .sg1 Format Specification
+
+Header: 4-byte magic SIG1, 1-byte version
+
+Metadata Block: JSON (optional TTL, tags, timestamps)
+
+Entropy Block: Per-chunk entropy profile, residual
+
+Chunk Map: Fixed-size chunk offsets + hashes + Merkle root
+
+Compression Block: ChaosRegen output
+
+Access Control: ECC pubkeys, roles, expiration
+
+Signature Block: ECC signature, signer pubkey
+
+Optional Delta/Version Log: For enabled version control
+
+
+
+---
+
+License & Ethics
+Sigil Protocol is licensed under AGPL. All enhancements and integrations must preserve the user’s rights to view, verify, and modify the protocol code. Its goal is to ensure user autonomy, prevent vendor lock-in, and promote data integrity beyond corporate boundaries.
+
+
+---
+
+Contact
+To contribute, integrate, or build tooling: contact the protocol designer.
+
