@@ -11,4 +11,6 @@ reed-solomon = "0.2"
 pqcrypto-kyber = "0.7"
 rayon = "1.5"
 parquet = "0.21"
-arrow = "0.21"  # For Parquet compatibility
+arrow = "0.21"  # For Parquet
+merkle-tree = "0.4"  # For Merkle
+num-bigint = "0.4"  # For Fib bigints
