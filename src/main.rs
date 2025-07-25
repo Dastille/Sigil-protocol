@@ -8,26 +8,24 @@ use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::types::Type as ParquetType;
 use parquet::basic::{Compression, Encoding};
 use arrow::array::ArrayBuilder;
+use num_bigint::BigUint;
 use std::error::Error;
-use std::env;
 use std::fs::File;
 use std::path::Path;
+use std::env;
 
 fn logistic_chaos(seed: f64, length: usize, r: f64) -> Vec<u8> {
     let mut x = seed;
-    let mut sequence = Vec::with_capacity(length);
-    let mut rng = rand::thread_rng();
-    for _ in 0..length {
+    (0..length).map(|_| {
         x = r * x * (1.0 - x);
-        sequence.push((x * 256.0) as u8 ^ rng.gen::<u8>());
-    }
-    sequence
+        (x * 256.0) as u8 ^ rand::thread_rng().gen::<u8>()
+    }).collect()
 }
 
 fn ratchet_key(old_key: &str, data_hash: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(old_key.as_bytes());
-    hasher.update(data_hash.as_bytes());
+    hasher.update(old_key);
+    hasher.update(data_hash);
     format!("{:x}", hasher.finalize())
 }
 
@@ -80,21 +78,17 @@ fn zeckendorf(num: u64) -> String {
 
 fn decode_zeckendorf(code: &str) -> u64 {
     let fibs = fib_sequence(u64::MAX);
-    let mut num = 0;
-    for (i, bit) in code.chars().rev().enumerate() {
-        if bit == '1' {
-            num += fibs[i + 2];
-        }
-    }
-    num
+    code.chars().rev().enumerate().fold(0u64, |num, (i, bit)| {
+        if bit == '1' { num + fibs[i + 2] } else { num }
+    })
 }
 
 fn add_rs_parity(data_chunks: &[Vec<u8>], parity_count: usize) -> Vec<Vec<u8>> {
     let symbol_size = data_chunks[0].len();
     let enc = Encoder::new(symbol_size);
+    let buffers = data_chunks.iter().map(|c| Buffer::from_slice(c.as_slice(), symbol_size)).collect::<Vec<_>>();
+    let parity_buffers = enc.encode(&buffers, parity_count).unwrap();
     let mut chunks_with_parity = data_chunks.to_vec();
-    let mut buffers = data_chunks.iter().map(|c| Buffer::from_slice(c.as_slice(), symbol_size)).collect::<Vec<_>>();
-    let parity_buffers = enc.encode(&mut buffers, parity_count)?;
     chunks_with_parity.extend(parity_buffers.iter().map(|p| p.data().to_vec()));
     chunks_with_parity
 }
@@ -110,7 +104,7 @@ fn regenerate_with_rs(chunks_with_parity: &mut [Vec<u8>], missing_indices: &[usi
 fn sigil_transform(data: &[u8], seed_key: &str, time_restriction: Option<DateTime<FixedOffset>>, place: Option<&str>, manner: Option<&str>) -> (Vec<Vec<u8>>, String, usize, String) {
     let seed = 0.314159;
     let chaos_seq = logistic_chaos(seed, data.len(), 3.99);
-    let encrypted = data.par_iter().zip(chaos_seq.par_iter()).map(|(&b, &c)| b ^ c).collect::<Vec<u8>>();
+    let encrypted = data.iter().zip(chaos_seq.iter()).map(|(&b, &c)| b ^ c).collect::<Vec<u8>>();
     let data_hash = {
         let mut hasher = Sha256::new();
         hasher.update(&encrypted);
@@ -125,7 +119,7 @@ fn sigil_transform(data: &[u8], seed_key: &str, time_restriction: Option<DateTim
     }).collect::<Vec<_>>();
     let chunks_with_parity = add_rs_parity(&chunks, 2);
     let fib_residual = zeckendorf(encrypted.iter().fold(0u64, |acc, &b| (acc << 8) | b as u64));
-    check_access(time_restriction, place, manner)?;
+    check_access(time_restriction, place, manner).unwrap();
     (chunks_with_parity, new_key, data.len(), fib_residual)
 }
 
@@ -173,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_zeckendorf() {
-        assert_eq!(zeckendorf(13), "1001");  // 13 = 13 (Fib8=8, but correct is 13 = 13, Fib seq adjustment
+        assert_eq!(zeckendorf(13), "1001");  // 13 = 13 (Fib), but standard is 1001 for F6=8, F4=3, F3=2
     }
 
     #[test]
@@ -182,6 +176,6 @@ mod tests {
         let (mut transformed, _, orig_len, fib_residual) = sigil_transform(data, "test_key", None, None, None);
         transformed[0] = vec![0; transformed[0].len()];
         let regenerated = sigil_regenerate(&mut transformed, "test_key", &[0], orig_len, &fib_residual).unwrap();
-        assert_eq!(regenerated, data);
+        assert_eq!(regenerated, data.to_vec());
     }
 }
