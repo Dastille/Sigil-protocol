@@ -1,0 +1,665 @@
+//! Sigil protocol v1 — same .sg1 layout as the lab.
+mod attest;
+mod chaos;
+mod folder;
+mod fountain;
+mod gf;
+mod header;
+mod merkle;
+mod open;
+mod pieces;
+mod rs;
+mod show;
+mod work;
+
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use flate2::{read::DeflateDecoder, write::DeflateEncoder, Compression};
+use pbkdf2::pbkdf2_hmac;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+
+pub use attest::{attest, keygen as attest_keygen, talisman_pass, verify_attestation};
+pub use folder::{inscribe_dir, is_dir_pack, scry_dir, unseal_dir, unseal_dir_only};
+pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
+pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
+pub use merkle::merkle_root;
+pub use open::run_open;
+pub use pieces::{
+    deluge as deluge_pieces, gather as gather_pieces, scatter as scatter_pieces, tally as tally_pieces,
+    vessel_present, write_vessel, VESSEL,
+};
+pub use work::{
+    choose_overture, index_pack, inscribe_path, inscribe_stars_dir, overture_report, payload_name,
+    scry_facets, scry_path, unseal_path, unseal_range, unseal_star_at, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
+    OVERTURE, WORK_MAGIC,
+};
+pub use show::run_showing;
+
+pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
+
+pub fn rain_lane() -> u8 {
+    let mut b = [0u8; 1];
+    getrandom(&mut b);
+    16 + (b[0] % 200)
+}
+pub const PBKDF2_ITERS: u32 = 80_000;
+
+/// Pick how many parts. Repair ratio stays the same (Seal = half, Reflection = quarter).
+/// Bigger file → more, smaller parts (cap 254). `--shards` wins if set.
+pub fn choose_kn(mode: Mode, len: u64, piece_bytes: u32, shards: Option<u8>) -> (usize, usize) {
+    let target = piece_bytes.max(64 * 1024) as u64;
+    match mode {
+        Mode::Glyph => {
+            let n = shards.map(|s| s as usize).unwrap_or(16).clamp(16, 254);
+            (n, n)
+        }
+        Mode::Seal => {
+            let mut n = if let Some(s) = shards {
+                s as usize
+            } else if len == 0 {
+                16
+            } else {
+                ((2 * len) / target).clamp(16, 254) as usize
+            };
+            n &= !1;
+            if n < 16 {
+                n = 16;
+            }
+            (n / 2, n)
+        }
+        Mode::Reflection => {
+            let mut n = if let Some(s) = shards {
+                s as usize
+            } else if len == 0 {
+                16
+            } else {
+                ((4 * len) / (3 * target.max(1))).clamp(16, 252) as usize
+            };
+            n -= n % 4;
+            if n < 16 {
+                n = 16;
+            }
+            (3 * n / 4, n)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Glyph,
+    Reflection,
+    Seal,
+}
+
+impl Mode {
+    pub fn kn(self) -> (usize, usize) {
+        match self {
+            Mode::Glyph => (16, 16),
+            Mode::Reflection => (12, 16),
+            Mode::Seal => (8, 16),
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "glyph" => Some(Mode::Glyph),
+            "reflection" => Some(Mode::Reflection),
+            "seal" => Some(Mode::Seal),
+            _ => None,
+        }
+    }
+    pub fn flag(self) -> u8 {
+        match self {
+            Mode::Glyph => 0,
+            Mode::Reflection => 1 << 2,
+            Mode::Seal => 2 << 2,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("{0}")]
+    Msg(String),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    Sha256::digest(data).into()
+}
+
+pub fn sha256_path(path: &std::path::Path) -> Result<[u8; 32]> {
+    use std::io::Read;
+    let mut hasher = Sha256::new();
+    let mut f = std::fs::File::open(path).map_err(|e| Error::Msg(e.to_string()))?;
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| Error::Msg(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+pub fn hex32(h: &[u8; 32]) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn maybe_deflate(data: &[u8]) -> (Vec<u8>, bool) {
+    if data.len() < 24 {
+        return (data.to_vec(), false);
+    }
+    let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
+    if enc.write_all(data).is_err() {
+        return (data.to_vec(), false);
+    }
+    match enc.finish() {
+        Ok(z) if z.len() < data.len() => (z, true),
+        _ => (data.to_vec(), false),
+    }
+}
+
+fn inflate(data: &[u8]) -> Result<Vec<u8>> {
+    let mut dec = DeflateDecoder::new(data);
+    let mut out = Vec::new();
+    dec.read_to_end(&mut out)
+        .map_err(|e| Error::Msg(e.to_string()))?;
+    Ok(out)
+}
+
+fn derive_key(pass: &str, salt: &[u8]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(pass.as_bytes(), salt, PBKDF2_ITERS, &mut key);
+    key
+}
+
+pub fn seal(data: &[u8], mode: Mode, pass: Option<&str>, name: &str, graph: bool) -> Result<Vec<u8>> {
+    seal_ex(data, mode, pass, name, graph, "", &[])
+}
+
+pub fn seal_ex(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+) -> Result<Vec<u8>> {
+    seal_kn(data, mode, pass, name, graph, covenant, geas, None, DEFAULT_PIECE)
+}
+
+pub fn seal_kn(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+) -> Result<Vec<u8>> {
+    let (k, n) = choose_kn(mode, data.len() as u64, piece_bytes, shards);
+    let digest = sha256(data);
+    let mut salt = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    getrandom(&mut salt);
+    getrandom(&mut nonce);
+    let (body, compressed) = maybe_deflate(data);
+    let mut folded = chaos::fold(&body, &salt);
+    let mut tag = [0u8; 16];
+    let mut encrypted = false;
+    if let Some(p) = pass.filter(|s| !s.is_empty()) {
+        let key = derive_key(p, &salt);
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::Msg(e.to_string()))?;
+        let packed = cipher
+            .encrypt(Nonce::from_slice(&nonce), folded.as_ref())
+            .map_err(|_| Error::Msg("encrypt failed".into()))?;
+        let t = packed.len() - 16;
+        tag.copy_from_slice(&packed[t..]);
+        folded = packed[..t].to_vec();
+        encrypted = true;
+    }
+    let shards = if matches!(mode, Mode::Glyph) {
+        rs::stripe(&folded, n)
+    } else {
+        rs::encode_shards(&folded, k, n)
+    };
+    let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
+    let merkle = merkle::merkle_root(&leaves);
+    let mut flags = mode.flag();
+    if compressed {
+        flags |= 1;
+    }
+    if encrypted {
+        flags |= 2;
+    }
+    if graph {
+        flags |= 1 << 4;
+    }
+    flags |= header::FLAG_KEYSTONE;
+    flags |= header::FLAG_EMBER;
+    let has_vow = !covenant.is_empty() || !geas.is_empty();
+    if has_vow {
+        flags |= header::FLAG_VOW;
+    }
+    let entropy_milli = (shannon(data) * 1000.0).round() as u32;
+    let hdr = write_header(&header::Header {
+        version: header::VERSION,
+        flags,
+        k: k as u8,
+        n: n as u8,
+        orig_len: data.len() as u64,
+        folded_len: folded.len() as u64,
+        digest,
+        salt,
+        nonce,
+        tag,
+        shard_len: shards.first().map(|s| s.len() as u32).unwrap_or(1),
+        entropy_milli,
+        name: name.to_string(),
+        merkle,
+    });
+    let mut out = header::wrap_keystone(&hdr);
+    let vow = if has_vow {
+        Some(header::write_vow(covenant, geas))
+    } else {
+        None
+    };
+    if let Some(v) = &vow {
+        out.extend_from_slice(v);
+    }
+    for (i, s) in shards.iter().enumerate() {
+        out.extend_from_slice(&header::write_ember(&hdr, i as u8));
+        if let Some(v) = &vow {
+            out.extend_from_slice(v);
+        }
+        out.extend_from_slice(s);
+        out.extend_from_slice(&crc32fast::hash(s).to_le_bytes());
+    }
+    Ok(out)
+}
+
+pub fn unseal(file: &[u8], pass: Option<&str>) -> Result<Vec<u8>> {
+    unseal_ex(file, pass, &[])
+}
+
+pub fn unseal_ex(file: &[u8], pass: Option<&str>, companions: &[Vec<u8>]) -> Result<Vec<u8>> {
+    let (h, prefix, _) = locate_header(file)?;
+    if h.vow() {
+        let vow_off = prefix.saturating_sub(header::VOW_SIZE);
+        let mut got = file
+            .get(vow_off..vow_off + header::VOW_SIZE)
+            .and_then(header::read_vow);
+        if got.is_none() {
+            let ember_vow = prefix + HEADER_SIZE;
+            got = file
+                .get(ember_vow..ember_vow + header::VOW_SIZE)
+                .and_then(header::read_vow);
+        }
+        if let Some((_, need)) = got {
+            let have: Vec<[u8; 32]> = companions.iter().map(|c| sha256(c)).collect();
+            for n in &need {
+                if !have.iter().any(|hsh| hsh == n) {
+                    return Err(Error::Msg("Geas not met — companion missing or changed.".into()));
+                }
+            }
+        }
+    }
+    let live = header::gather_live_shards(file, &h, prefix);
+    let k = h.k as usize;
+    let folded = if h.mode() == Mode::Glyph {
+        rs::unstripe(&live, h.folded_len as usize)?
+    } else {
+        rs::decode_shards(&live, k, h.folded_len as usize, h.version >= 2)?
+    };
+    let mut folded = folded;
+    let p = pass.unwrap_or("").trim();
+    if h.encrypted() {
+        if p.is_empty() {
+            return Err(Error::Msg("passphrase required".into()));
+        }
+        let key = derive_key(p, &h.salt);
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::Msg(e.to_string()))?;
+        let mut packed = folded;
+        packed.extend_from_slice(&h.tag);
+        folded = cipher
+            .decrypt(Nonce::from_slice(&h.nonce), packed.as_ref())
+            .map_err(|_| Error::Msg("wrong passphrase, or past repair".into()))?;
+    } else if !p.is_empty() {
+        return Err(Error::Msg("seal was not encrypted".into()));
+    }
+    let unfolded = chaos::unfold(&folded, &h.salt);
+    let plain = if h.compressed() {
+        inflate(&unfolded)?
+    } else {
+        unfolded
+    };
+    if plain.len() != h.orig_len as usize {
+        return Err(Error::Msg("length mismatch".into()));
+    }
+    if sha256(&plain) != h.digest {
+        return Err(Error::Msg("SHA-256 mismatch".into()));
+    }
+    Ok(plain)
+}
+
+pub fn verify(file: &[u8]) -> Result<(Header, bool, usize, usize, bool)> {
+    let (h, prefix, recovered) = locate_header(file)?;
+    let live_s = header::gather_live_shards(file, &h, prefix);
+    let live = live_s.iter().filter(|s| s.is_some()).count();
+    let all_ok = live == h.n as usize;
+    let merkle_ok = if all_ok {
+        let leaves: Vec<[u8; 32]> = live_s
+            .iter()
+            .filter_map(|s| s.as_ref().map(|b| sha256(b)))
+            .collect();
+        merkle::merkle_root(&leaves) == h.merkle
+    } else {
+        false
+    };
+    let k = h.k as usize;
+    Ok((h, merkle_ok, live, k, recovered))
+}
+
+fn shannon(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut c = [0u32; 256];
+    for &b in data {
+        c[b as usize] += 1;
+    }
+    let len = data.len() as f64;
+    let mut h = 0.0;
+    for n in c {
+        if n == 0 {
+            continue;
+        }
+        let p = n as f64 / len;
+        h -= p * p.log2();
+    }
+    h
+}
+
+fn getrandom(buf: &mut [u8]) {
+    // Prefer getrandom if present; fall back to /dev/urandom.
+    if let Ok(f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read as _;
+        let mut f = f;
+        let _ = f.read_exact(buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip_seal() {
+        let msg = b"The river is a circle.";
+        let bytes = seal(msg, Mode::Seal, None, "t.txt", false).unwrap();
+        let out = unseal(&bytes, None).unwrap();
+        assert_eq!(out, msg);
+        let (_, merkle_ok, live, k, recovered) = verify(&bytes).unwrap();
+        assert!(merkle_ok);
+        assert_eq!(live, 16);
+        assert_eq!(k, 8);
+        assert!(!recovered);
+    }
+
+    #[test]
+    fn rs_budget() {
+        let msg = b"repair me please -- a little longer for deflate";
+        let bytes = seal(msg, Mode::Seal, None, "t.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let mut torn = bytes.clone();
+        let stride = header::shard_stride(&h);
+        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        for i in 0..8 {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 3;
+        }
+        let out = unseal(&torn, None).unwrap();
+        assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn keystone_smashed_front() {
+        let msg = b"header can die";
+        let bytes = seal(msg, Mode::Seal, None, "t.txt", false).unwrap();
+        let mut smashed = bytes.clone();
+        smashed[..HEADER_SIZE].fill(0);
+        smashed[0] = 0x58;
+        let out = unseal(&smashed, None).unwrap();
+        assert_eq!(out, msg);
+        let mut burned = bytes.clone();
+        burned[..KEYSTONE_SPAN].fill(0);
+        burned[0] = 0x58;
+        let from_ember = unseal(&burned, None).unwrap();
+        assert_eq!(from_ember, msg);
+    }
+
+    #[test]
+    fn covenant_geas() {
+        let msg = b"bound save";
+        let companion = b"game-build";
+        let g = sha256(companion);
+        let bytes = seal_ex(msg, Mode::Seal, None, "s.bin", false, "app=test", &[g]).unwrap();
+        assert!(unseal(&bytes, None).is_err());
+        let out = unseal_ex(&bytes, None, &[companion.to_vec()]).unwrap();
+        assert_eq!(out, msg);
+        let mut burned = bytes.clone();
+        burned[..KEYSTONE_SPAN].fill(0);
+        burned[0] = 0x58;
+        let from_ember = unseal_ex(&burned, None, &[companion.to_vec()]).unwrap();
+        assert_eq!(from_ember, msg);
+    }
+
+    #[test]
+    fn work_pack_and_pieces() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("sigil-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("in.bin");
+        let mut f = std::fs::File::create(&src).unwrap();
+        let payload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        f.write_all(&payload).unwrap();
+        drop(f);
+        let pack = dir.join("out.sgwk");
+        let (orig, stars, work) =
+            crate::work::inscribe_path(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, None, crate::DEFAULT_PIECE, 1).unwrap();
+        assert!(work);
+        assert_eq!(orig, payload.len() as u64);
+        assert!(stars > 1);
+        let back = dir.join("back.bin");
+        crate::work::unseal_path(&pack, &back, None, &[]).unwrap();
+        assert_eq!(std::fs::read(&back).unwrap(), payload);
+        let (head, locs) = crate::work::index_pack(&pack).unwrap();
+        assert!(head.overture >= 1);
+        assert_eq!(locs.len() as u32, stars);
+        let report = crate::work::overture_report(&pack).unwrap();
+        assert!(report.contains("Overture"), "{report}");
+
+        let one = crate::seal(b"piece-me", Mode::Seal, None, "p.txt", false).unwrap();
+        let pdir = dir.join("pieces");
+        crate::pieces::scatter(&one, &pdir).unwrap();
+        // drop 8 pieces (seal budget)
+        for i in 0..8 {
+            let _ = std::fs::remove_file(pdir.join(format!("piece-{i:03}.sgp")));
+        }
+        let rebuilt = crate::pieces::gather(&pdir).unwrap();
+        let plain = crate::unseal(&rebuilt, None).unwrap();
+        assert_eq!(plain, b"piece-me");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_pack() {
+        let dir = std::env::temp_dir().join(format!("sigil-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(src.join("sub/b.txt"), b"beta-file").unwrap();
+        let pack = dir.join("tree.sg1");
+        let (n, _) = crate::folder::inscribe_dir(&src, &pack, Mode::Reflection, None, "", &[], 4 * 1024 * 1024, &[]).unwrap();
+        assert_eq!(n, 2);
+        let dest = dir.join("out");
+        crate::folder::unseal_dir(&pack, &dest, None, &[]).unwrap();
+        assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(std::fs::read(dest.join("sub/b.txt")).unwrap(), b"beta-file");
+        let listing = crate::folder::scry_dir(&pack).unwrap();
+        assert!(listing.contains("file  a.txt"), "{listing}");
+        assert!(listing.contains("file  sub/b.txt"), "{listing}");
+        assert!(listing.contains("dir   sub/"), "{listing}");
+        let one = dir.join("one");
+        let n = crate::folder::unseal_dir_only(&pack, &one, None, &[], &["sub/b.txt".into()], &[]).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(std::fs::read(one.join("sub/b.txt")).unwrap(), b"beta-file");
+        assert!(!one.join("a.txt").exists());
+        let locked = dir.join("locked.sg1");
+        crate::folder::inscribe_dir(
+            &src,
+            &locked,
+            Mode::Glyph,
+            Some("house"),
+            "",
+            &[],
+            4 * 1024 * 1024,
+            &[("sub/b.txt".into(), "room".into())],
+        )
+        .unwrap();
+        let mixed = dir.join("mixed");
+        crate::folder::unseal_dir_only(
+            &locked,
+            &mixed,
+            Some("house"),
+            &[],
+            &[],
+            &[("sub/b.txt".into(), "room".into())],
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(mixed.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(std::fs::read(mixed.join("sub/b.txt")).unwrap(), b"beta-file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shifted_byte_and_bom() {
+        let msg = b"notepad deletes one character in the middle of a seal";
+        let bytes = seal(msg, Mode::Seal, None, "t.txt", false).unwrap();
+        let mid = bytes.len() / 2;
+        let mut shifted = Vec::with_capacity(bytes.len() - 1);
+        shifted.extend_from_slice(&bytes[..mid]);
+        shifted.extend_from_slice(&bytes[mid + 1..]);
+        let out = unseal(&shifted, None).unwrap();
+        assert_eq!(out, msg);
+        let mut bom = vec![0xef, 0xbb, 0xbf];
+        bom.extend_from_slice(&bytes);
+        let out = unseal(&bom, None).unwrap();
+        assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn deluge_rain_only() {
+        let msg = b"send any eight rain drops, not the whole lake";
+        let bytes = seal(msg, Mode::Seal, None, "lake.txt", false).unwrap();
+        let dir = std::env::temp_dir().join(format!("sigil-rain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::pieces::deluge(&bytes, 16, &dir, false, None).unwrap();
+        // keep only extra pieces 16..23 (k=8)
+        for i in 0..16u8 {
+            let _ = std::fs::remove_file(dir.join(format!("piece-{i:03}.sgp")));
+        }
+        for i in 24..32u8 {
+            let _ = std::fs::remove_file(dir.join(format!("piece-{i:03}.sgp")));
+        }
+        let rebuilt = crate::pieces::gather(&dir).unwrap();
+        let plain = unseal(&rebuilt, None).unwrap();
+        assert_eq!(plain, msg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn triad_lanes() {
+        let msg = b"A and B mint different coupons for C";
+        let bytes = seal(msg, Mode::Seal, None, "t.txt", false).unwrap();
+        let a = std::env::temp_dir().join(format!("sigil-lane-a-{}", std::process::id()));
+        let c = std::env::temp_dir().join(format!("sigil-lane-c-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&c);
+        crate::pieces::deluge(&bytes, 8, &a, true, Some(40)).unwrap();
+        crate::pieces::deluge(&bytes, 8, &c, true, Some(80)).unwrap();
+        // C's folder: 4 from A (40-43) + 4 from B (80-83) = 8 for Seal
+        for i in 40..44u8 {
+            std::fs::copy(a.join(format!("piece-{i:03}.sgp")), c.join(format!("piece-{i:03}.sgp"))).unwrap();
+        }
+        for i in 84..88u8 {
+            let _ = std::fs::remove_file(c.join(format!("piece-{i:03}.sgp")));
+        }
+        let rebuilt = crate::pieces::gather(&c).unwrap();
+        assert_eq!(unseal(&rebuilt, None).unwrap(), msg);
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&c);
+    }
+
+    #[test]
+    fn fountain_raptorq() {
+        let msg = b"raptorq rain has no 255 ceiling";
+        let bytes = seal(msg, Mode::Seal, None, "fq.txt", false).unwrap();
+        let dir = std::env::temp_dir().join(format!("sigil-ft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::fountain::deluge_fountain(&bytes, &dir, 8).unwrap();
+        let mut rqs: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+            .collect();
+        rqs.sort();
+        let drop_n = (rqs.len() / 4).max(1);
+        for p in rqs.iter().take(drop_n) {
+            let _ = std::fs::remove_file(p);
+        }
+        let rebuilt = crate::fountain::gather_fountain(&dir).unwrap();
+        assert_eq!(unseal(&rebuilt, None).unwrap(), msg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn choose_kn_scales() {
+        assert_eq!(choose_kn(Mode::Seal, 1_000, DEFAULT_PIECE, None), (8, 16));
+        assert_eq!(choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, None), (16, 32));
+        assert_eq!(choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, Some(64)), (32, 64));
+        assert_eq!(choose_kn(Mode::Reflection, 1_000, DEFAULT_PIECE, None), (12, 16));
+        assert_eq!(choose_kn(Mode::Glyph, 99_000_000, DEFAULT_PIECE, None), (16, 16));
+    }
+
+    #[test]
+    fn attest_roundtrip() {
+        let msg = b"sign me";
+        let bytes = seal(msg, Mode::Glyph, None, "s.txt", false).unwrap();
+        let dir = std::env::temp_dir().join(format!("sigil-at-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mark = dir.join("m.sg1");
+        std::fs::write(&mark, &bytes).unwrap();
+        let key = dir.join("k.bin");
+        crate::attest_keygen(&key).unwrap();
+        crate::attest(&mark, &key).unwrap();
+        let v = crate::verify_attestation(&mark).unwrap();
+        assert!(v.contains("good"), "{v}");
+        std::fs::remove_file(format!("{}.sig", mark.display())).unwrap();
+        let none = crate::verify_attestation(&mark).unwrap();
+        assert!(none.contains("none"), "{none}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

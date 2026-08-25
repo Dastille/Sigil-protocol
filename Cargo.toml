@@ -1,0 +1,21 @@
+[package]
+name = "sigil"
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0"
+authors = ["Ashlynn"]
+description = "Sigil protocol CLI — regenerative .sg1 seals (chaos fold, Reed–Solomon, Merkle)."
+
+[dependencies]
+aes-gcm = "0.10"
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+flate2 = "1"
+getrandom = "0.2"
+hex = "0.4"
+hmac = "0.12"
+pbkdf2 = "0.12"
+raptorq = "2"
+sha2 = "0.10"
+thiserror = "1"

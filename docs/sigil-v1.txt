@@ -1,0 +1,80 @@
+SIGIL PROTOCOL SPECIFICATION
+Version 2 · writers emit v2 · readers accept v1 and v2 · AGPL-3.0 (programs) · Apache-2.0 (this layout)
+
+New marks are version 2: first k shards are the payload (systematic Reed–Solomon);
+parity shards are extra evaluations. Version 1 evaluation-code files still De-scribe.
+Default mode is Reflection (~1.3×, ~25% loss). Seal is opt-in (~2×, ~50% loss).
+
+Sigil is a portable object format (.sg1) that combines a content identifier,
+Reed–Solomon erasure coding, replicated headers, and optional AES-256-GCM.
+It is not a network, filesystem, identity provider, or replacement for PGP,
+rsync, IPFS, or a database. Independent implementations must match this layout.
+
+OBJECT
+A .sg1 packs a payload into n shards (default 16; the CLI may increase n).
+  true name  SHA-256 of the original plaintext
+  binding    Merkle root of shard hashes
+  Ward       optional AES-256-GCM (PBKDF2-HMAC-SHA256, 80 000 iterations)
+  Keystone   three extra copies of the 160-byte header after the primary
+  Ember      SGEM-tagged header copy at the start of each shard
+  Covenant   optional purpose string (not an access-control decision)
+  Geas       optional companion SHA-256 values; decode refuses if absent
+The fold (logistic permutation from a random salt) is obfuscation, not a cipher.
+Confidentiality is claimed only when a Ward is present.
+
+MODES (repair ratio is fixed; n may scale)
+Glyph        k = n           identity / stripe; no repair
+Reflection   k = 3n/4        ~25% shard loss; stored size ~1.3×
+Seal         k = n/2         ~50% shard loss; stored size ~2×
+If fewer than k shards are live, decode refuses. It does not guess plaintext.
+
+SHARD DISTRIBUTION (CLI)
+Scatter      export the n canonical shards as .sgp files
+Deluge       extra evaluations of the same polynomial (indices n…254)
+Gather       rebuild a canonical .sg1 from any k distinct shards
+Vessel       marker file written when Gather has enough shards
+Coven        rsync gossip: peers exchange .sgp files; first peer able to
+             reconstruct mints new Deluge indices for the rest
+Glyph cannot Deluge. Distinct --from lanes avoid duplicate indices among peers.
+Maximum distinct index is 254 (GF(256)).
+
+ACCESS
+The only secret in v1 is the Ward. A label in the object is not authorization.
+RBAC / ABAC / PBAC require a live policy service. A .sg1 does not know a subject.
+
+STAR / CONSTELLATION
+A star is one .sg1. A constellation is a named list of stars.
+The same star may appear on more than one list.
+
+VERIFYING A COPY WITHOUT SIGIL
+SHA-256 the entire .sg1 (envelope hash) at source and destination.
+Reconstruction requires an implementation:
+  sigil scry file.sg1
+  sigil de-scribe -o out.bin file.sg1
+
+HEADER (160 bytes)
+0-3     SGIL
+4       version = 1
+5       flags: deflate | Ward | mode | constellation | Keystone | Ember | Vow
+6-7     k, n
+8-15    original length (u64 le)
+16-23   folded length (u64 le)
+24-55   true name
+56-71   salt
+72-83   AES-GCM nonce
+84-99   AES-GCM tag
+100-103 shard length (u32 le)
+104-107 entropy milli-bits; Ember may store piece index in the high byte
+108-111 header CRC32 (this field zeroed)
+112-127 original file name (UTF-8, padded)
+128-159 binding
+160-639 Keystone (three copies)
+640-767 Vow slab if FLAG_VOW
+then    n × (Ember SGEM 160 [+ Vow] + shard + CRC32 of shard)
+
+Ember magic is SGEM so a shard prefix is not mistaken for the object front.
+Shard CRC covers payload only, so the binding is independent of Ember bytes.
+The Vow is copied after each Ember so Geas still applies if the prefix is gone.
+
+Work packs (magic SGWK) concatenate sequential .sg1 stars for large payloads.
+The browser lab remains size-capped; the Rust CLI is not.
