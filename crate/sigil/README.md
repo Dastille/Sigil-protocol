@@ -24,6 +24,24 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 Large files become a **work pack** (many marks in one file, 4 MiB chunks). Same commands.
 
+**Boot disk (live USB)**
+
+Firmware cannot boot a `.sg1`. The stick stays a normal live USB (GRUB + kernel + initrd). Wrap `live/filesystem.squashfs` (Debian/Parrot) or `casper/filesystem.squashfs` (Ubuntu) as a Seal. Initrd Scrys it; if the squashfs was chewed it De-scribes, then the live image mounts. If too damaged, it stops — Sigil will not guess.
+
+```
+# mount the USB, then:
+./sigil boot prepare /media/usb
+# default is Seal. Copies this `sigil` onto live/sigil and tries to inject the initrd hook.
+
+./sigil boot mend /media/usb
+# exit 0 = intact or repaired, 2 = too damaged, 3 = no mark
+
+# Debian/dracut hooks onto this machine (then rebuild the live initrd):
+sudo ./sigil boot install
+```
+
+`--only-mark` deletes the original squashfs after wrapping (saves space; stick must be writable, or initrd De-scribes into RAM). Ward: `--pass` / `--talisman` / `SIGIL_WARD`. Attest `.sg1.sig` that fails refuses boot. Stub swap is Secure Boot, not Sigil.
+
 **Tape / rsync / Gather (one real path)**
 
 ```

@@ -11,6 +11,14 @@ pub const DEFAULT_CHUNK: u32 = 4 * 1024 * 1024;
 pub const OVERTURE: &str = "OVERTURE";
 pub const DEFAULT_OVERTURE_MB: u32 = 64;
 
+pub fn is_work_pack(path: &Path) -> bool {
+    let mut mag = [0u8; 4];
+    match File::open(path).and_then(|mut f| f.read_exact(&mut mag)) {
+        Ok(()) => mag == WORK_MAGIC,
+        Err(_) => false,
+    }
+}
+
 pub struct WorkHead {
     pub version: u8,
     pub chunk_size: u32,
@@ -150,6 +158,42 @@ pub struct Facet {
     pub orig_off: u64,
     pub orig_len: u32,
     pub digest: [u8; 32],
+}
+
+/// Chunk true names from the SGFC trailer, or by walking stars.
+pub fn read_facet_digests(input: &Path) -> Result<Vec<[u8; 32]>> {
+    let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let len = f.metadata().map_err(|e| crate::Error::Msg(e.to_string()))?.len();
+    let head = read_head(&mut f)?;
+    let n = head.stars as u64;
+    let trailer = 4 + 4 + 32 * n;
+    if len >= trailer {
+        if f.seek(SeekFrom::End(-(trailer as i64))).is_ok() {
+            let mut mag = [0u8; 4];
+            if f.read_exact(&mut mag).is_ok() && mag == *b"SGFC" {
+                let mut nb = [0u8; 4];
+                if f.read_exact(&mut nb).is_ok() {
+                    let cnt = u32::from_le_bytes(nb);
+                    if cnt == head.stars {
+                        let mut out = Vec::with_capacity(cnt as usize);
+                        let mut ok = true;
+                        for _ in 0..cnt {
+                            let mut d = [0u8; 32];
+                            if f.read_exact(&mut d).is_err() {
+                                ok = false;
+                                break;
+                            }
+                            out.push(d);
+                        }
+                        if ok {
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(scry_facets(input)?.into_iter().map(|f| f.digest).collect())
 }
 
 /// Bao-style slice list: each work-pack star is a checkable 4 MiB facet.
@@ -368,6 +412,35 @@ pub fn payload_name(input: &Path) -> Result<String> {
         Ok("payload.bin".into())
     } else {
         Ok(h.name)
+    }
+}
+
+/// Suggested filename for De-scribe. Basename only — never a path.
+pub fn suggested_output_name(input: &Path) -> String {
+    payload_name(input)
+        .ok()
+        .as_deref()
+        .and_then(basename_only)
+        .or_else(|| {
+            input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(basename_only)
+        })
+        .unwrap_or_else(|| "recovered.bin".into())
+}
+
+fn basename_only(name: &str) -> Option<String> {
+    let cleaned = name.replace('\\', "/");
+    let base = Path::new(&cleaned)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let base = base.trim();
+    if base.is_empty() || base == "." || base == ".." {
+        None
+    } else {
+        Some(base.to_string())
     }
 }
 

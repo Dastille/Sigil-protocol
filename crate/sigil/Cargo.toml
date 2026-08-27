@@ -5,6 +5,15 @@ edition = "2021"
 license = "AGPL-3.0"
 authors = ["Ashlynn"]
 description = "Sigil protocol CLI — regenerative .sg1 seals (chaos fold, Reed–Solomon, Merkle)."
+default-run = "sigil"
+
+[features]
+lab = ["dep:eframe", "dep:rfd"]
+
+[[bin]]
+name = "sigil-lab"
+path = "src/bin/sigil-lab.rs"
+required-features = ["lab"]
 
 [dependencies]
 aes-gcm = "0.10"
@@ -19,3 +28,5 @@ pbkdf2 = "0.12"
 raptorq = "2"
 sha2 = "0.10"
 thiserror = "1"
+eframe = { version = "0.31", optional = true }
+rfd = { version = "0.15", optional = true }

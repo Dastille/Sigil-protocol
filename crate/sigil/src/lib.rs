@@ -1,5 +1,6 @@
 //! Sigil protocol v1 — same .sg1 layout as the lab.
 mod attest;
+mod boot;
 mod chaos;
 mod folder;
 mod fountain;
@@ -22,6 +23,7 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
 pub use attest::{attest, keygen as attest_keygen, talisman_pass, verify_attestation};
+pub use boot::{copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, mend_boot, mend_scan, prepare_boot, BootFind, BootOutcome};
 pub use folder::{inscribe_dir, is_dir_pack, scry_dir, unseal_dir, unseal_dir_only};
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
@@ -32,9 +34,9 @@ pub use pieces::{
     vessel_present, write_vessel, VESSEL,
 };
 pub use work::{
-    choose_overture, index_pack, inscribe_path, inscribe_stars_dir, overture_report, payload_name,
-    scry_facets, scry_path, unseal_path, unseal_range, unseal_star_at, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
-    OVERTURE, WORK_MAGIC,
+    choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,
+    payload_name, read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
+    unseal_range, unseal_star_at, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
 };
 pub use show::run_showing;
 
@@ -642,6 +644,31 @@ mod tests {
         assert_eq!(choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, Some(64)), (32, 64));
         assert_eq!(choose_kn(Mode::Reflection, 1_000, DEFAULT_PIECE, None), (12, 16));
         assert_eq!(choose_kn(Mode::Glyph, 99_000_000, DEFAULT_PIECE, None), (16, 16));
+    }
+
+    #[test]
+    fn original_name_survives_and_is_a_basename() {
+        let bytes = seal(b"hi", Mode::Glyph, None, "circle.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        assert_eq!(h.name, "circle.txt");
+        let dir = std::env::temp_dir().join(format!("sigil-name-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mark = dir.join("x.sg1");
+        std::fs::write(&mark, &bytes).unwrap();
+        assert_eq!(payload_name(&mark).unwrap(), "circle.txt");
+        assert_eq!(suggested_output_name(&mark), "circle.txt");
+
+        let evil = seal(b"x", Mode::Glyph, None, "../../etc/passwd", false).unwrap();
+        let em = dir.join("e.sg1");
+        std::fs::write(&em, &evil).unwrap();
+        assert_eq!(suggested_output_name(&em), "passwd");
+
+        let src = dir.join("notes.txt");
+        std::fs::write(&src, b"keep my name").unwrap();
+        let packed = dir.join("notes.sg1");
+        inscribe_path(&src, &packed, Mode::Glyph, None, "", &[], DEFAULT_CHUNK, None, 0, 64).unwrap();
+        assert_eq!(suggested_output_name(&packed), "notes.txt");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

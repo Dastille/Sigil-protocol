@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
-    attest, attest_keygen, deluge_fountain, deluge_pieces, gather_fountain, gather_pieces, hex32,
-    inscribe_dir, inscribe_path, inscribe_stars_dir, is_dir_pack, is_fountain_dir, overture_report,
+    attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces, gather_fountain,
+    gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
+    install_hooks, is_dir_pack, is_fountain_dir, mend_boot, mend_scan, overture_report, prepare_boot,
     run_open, run_showing, scry_dir, scry_path, scatter_pieces, sha256, sha256_path, talisman_pass,
     tally_pieces, unseal_dir_only, unseal_ex, unseal_path, unseal_range, vessel_present, write_vessel,
-    Mode, DEFAULT_CHUNK, OVERTURE, VESSEL,
+    BootOutcome, Mode, DEFAULT_CHUNK, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -230,6 +231,52 @@ enum Cmd {
         #[arg(long)]
         key: PathBuf,
     },
+    /// Live USB: wrap squashfs so initrd can Scry and mend before it mounts. Alias: keystone.
+    #[command(visible_alias = "keystone")]
+    Boot {
+        #[command(subcommand)]
+        cmd: BootCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BootCmd {
+    /// Wrap live/filesystem.squashfs (or casper/) as a Seal on a mounted USB.
+    Prepare {
+        /// Mounted USB root (contains live/ or casper/)
+        root: PathBuf,
+        #[arg(long, value_enum, default_value = "seal")]
+        mode: ModeArg,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Delete the original squashfs after wrapping (needs a writable stick).
+        #[arg(long)]
+        only_mark: bool,
+        /// Do not rewrite the USB's initrd.
+        #[arg(long)]
+        no_inject: bool,
+    },
+    /// Scry the mark; De-scribe the squashfs if it was chewed. Exit 2 = too damaged, 3 = no mark.
+    Mend {
+        /// Mounted USB root. Omit with --scan to search disks.
+        root: Option<PathBuf>,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long, default_value = "/run/sigil")]
+        stage: PathBuf,
+        /// Scan known live-boot mounts and block devices.
+        #[arg(long)]
+        scan: bool,
+    },
+    /// Write Debian live-boot + dracut hooks under a prefix (default /usr). Then rebuild the initrd.
+    Install {
+        #[arg(default_value = "/usr")]
+        prefix: PathBuf,
+    },
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -407,7 +454,21 @@ fn main() {
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
         eprintln!("{e}");
-        std::process::exit(1);
+        std::process::exit(classify_exit(&e.to_string()));
+    }
+}
+
+fn classify_exit(msg: &str) -> i32 {
+    if msg.contains("no boot mark") {
+        3
+    } else if msg.contains("too damaged")
+        || msg.contains("will not guess")
+        || msg.contains("work pack incomplete")
+        || msg.contains("Attest refused")
+    {
+        2
+    } else {
+        1
     }
 }
 
@@ -814,6 +875,101 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Sign { input, key } => {
             let dest = attest(&input, &key)?;
             println!("attestation → {}", dest.display());
+        }
+        Cmd::Boot { cmd } => run_boot(cmd)?,
+    }
+    Ok(())
+}
+
+fn boot_pass(
+    pass: Option<String>,
+    talisman: Option<PathBuf>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let p = resolve_pass(pass, talisman)?;
+    if p.is_some() {
+        return Ok(p);
+    }
+    match std::env::var("SIGIL_WARD") {
+        Ok(s) if !s.trim().is_empty() => Ok(Some(s)),
+        _ => Ok(None),
+    }
+}
+
+fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        BootCmd::Prepare {
+            root,
+            mode,
+            pass,
+            talisman,
+            only_mark,
+            no_inject,
+        } => {
+            let pass = boot_pass(pass, talisman)?;
+            let find = prepare_boot(&root, mode.into(), pass.as_deref(), only_mark)?;
+            println!(
+                "wrapped {} → {} ({})",
+                find.payload.display(),
+                find.mark.display(),
+                match mode {
+                    ModeArg::Glyph => "Glyph",
+                    ModeArg::Reflection => "Reflection",
+                    ModeArg::Seal => "Seal",
+                }
+            );
+            if only_mark {
+                println!("original squashfs removed (--only-mark). Stick must be writable, or initrd will De-scribe into RAM.");
+            }
+            let exe = std::env::current_exe()?;
+            match copy_sigil_binary(&root, &exe) {
+                Ok(p) => println!("helper → {}", p.display()),
+                Err(e) => eprintln!("could not copy sigil onto the stick: {e}"),
+            }
+            if no_inject {
+                println!("skipped initrd. Hook will run if the initrd already carries it, or: sigil boot install && rebuild the live initrd.");
+            } else {
+                match inject_initrd(&root, &exe) {
+                    Ok(p) => println!("initrd injected → {} (backup next to it as .bak)", p.display()),
+                    Err(e) => eprintln!(
+                        "initrd not injected ({e}). The stick still has live/sigil. Put the hook in the initrd, or: sigil boot install && rebuild the live initrd."
+                    ),
+                }
+            }
+            println!("boot: firmware still loads GRUB + kernel + initrd. Initrd Scrys, De-scribes if chewed, then the live image mounts.");
+        }
+        BootCmd::Mend {
+            root,
+            pass,
+            talisman,
+            stage,
+            scan,
+        } => {
+            let pass = boot_pass(pass, talisman)?;
+            let out = if scan {
+                mend_scan(&stage, pass.as_deref())?
+            } else {
+                let root = root.ok_or("boot mend needs a mounted USB path, or --scan")?;
+                mend_boot(&root, pass.as_deref(), &stage)?
+            };
+            match out {
+                BootOutcome::Intact { find } => {
+                    println!("boot intact: {} is itself", find.payload.display());
+                }
+                BootOutcome::Mended { find, wrote } => {
+                    println!(
+                        "boot mended: {} ← {}",
+                        find.payload.display(),
+                        wrote.display()
+                    );
+                }
+            }
+        }
+        BootCmd::Install { prefix } => {
+            let wrote = install_hooks(&prefix)?;
+            for p in &wrote {
+                println!("wrote {}", p.display());
+            }
+            println!("rebuild the live USB's initrd so the stick carries these (update-initramfs / dracut), or run sigil boot prepare on the mounted stick.");
         }
     }
     Ok(())
