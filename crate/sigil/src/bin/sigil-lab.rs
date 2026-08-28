@@ -1359,7 +1359,7 @@ impl Lab {
         ui.add_space(8.0);
         muted(
             ui,
-            "A constellation is the same object, split into piece files you can send on different paths. Any k pieces are enough. This window scatters a .sg1 into a folder and gathers a folder back into one mark.",
+            "Scatter splits one mark into piece files you can send on different paths. Any k pieces are enough. Gather puts them back into one .sg1. A constellation is different: it is a named list of stars (whole marked files), not the pieces of one file.",
         );
         ui.add_space(16.0);
         self.status_line(ui);
@@ -1418,7 +1418,7 @@ impl Lab {
         ui.add_space(12.0);
         muted(
             ui,
-            "Rain (extra pieces) and atlases are the terminal:  sigil deluge  and  sigil gather.",
+            "Rain (extra pieces of one star) is the terminal:  sigil deluge  and  sigil gather. A constellation of many files:  sigil constellation add ./Taxes ./file.",
         );
     }
 
@@ -1470,6 +1470,10 @@ impl Lab {
             (
                 "Boot disk",
                 "A live USB whose filesystem.squashfs is a Seal. Firmware still boots GRUB + kernel + initrd. Initrd Scrys, De-scribes if the image was chewed, and stops if it is too damaged. Terminal: sigil boot prepare <usb>  ·  sigil boot mend <usb>.",
+            ),
+            (
+                "Star / constellation / atlas",
+                "A star is one .sg1. A constellation is a named list of stars, a folder on disk: the card plus one star per unique true name. Adding a file you already have only updates the list. An atlas (.sga) is the bag so they cannot scatter. De-scribe refuses if a named star is missing. Terminal: sigil constellation add ./Taxes ./file  ·  sigil constellation atlas ./Taxes.",
             ),
         ] {
             card(ui, false, |ui| {

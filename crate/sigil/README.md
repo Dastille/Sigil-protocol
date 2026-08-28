@@ -68,6 +68,29 @@ rsync -av --partial dump.sg1 tape@nas:/backup/
 
 ```
 
+**Constellation (add unique files without rewriting the pile)**
+
+A star is one `.sg1`. A constellation is a named list of stars, kept as a folder: the card (`Taxes.sg1`) plus one star per unique true name. Same bytes under a second name join the list without a second star. An atlas (`.sga`) is the bag when they must travel together. De-scribe refuses if a named star is missing.
+
+```
+./sigil constellation add ./Taxes ./tax-2025.pdf --name Taxes
+./sigil constellation add ./Taxes ./notes.txt
+# same bytes, new name: listed twice, one star on disk
+./sigil constellation add ./Taxes ./copy.pdf --as dup.pdf
+
+./sigil scry ./Taxes
+./sigil de-scribe -o ./restored ./Taxes
+
+# one bag for a USB / email (refuses if a star is already missing)
+./sigil constellation atlas ./Taxes
+./sigil de-scribe -o ./restored ./Taxes/Taxes.sga
+
+# rsync only sends new stars
+./sigil constellation add ./Taxes ./receipt.jpg --rsync user@nas:/backup/Taxes/
+```
+
+```
+
 **One file vs pieces**
 
 ```

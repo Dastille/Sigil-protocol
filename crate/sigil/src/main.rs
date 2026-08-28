@@ -1,10 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
-    attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces, gather_fountain,
-    gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
-    install_hooks, is_dir_pack, is_fountain_dir, mend_boot, mend_scan, overture_report, prepare_boot,
-    run_open, run_showing, scry_dir, scry_path, scatter_pieces, sha256, sha256_path, talisman_pass,
-    tally_pieces, unseal_dir_only, unseal_ex, unseal_path, unseal_range, vessel_present, write_vessel,
+    add_to_constellation, attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces,
+    gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
+    install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot,
+    mend_scan, overture_report, pack_atlas, prepare_boot, run_open, run_showing, scry_constellation,
+    scry_dir, scry_path, scatter_pieces, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
+    unseal_dir_only, unseal_ex, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
     BootOutcome, Mode, DEFAULT_CHUNK, OVERTURE, VESSEL,
 };
 use std::fs;
@@ -237,6 +238,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BootCmd,
     },
+    /// Named list of stars. Add unique files; rsync the folder; atlas to carry the bag.
+    Constellation {
+        #[command(subcommand)]
+        cmd: SkyCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -276,6 +282,53 @@ enum BootCmd {
     Install {
         #[arg(default_value = "/usr")]
         prefix: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkyCmd {
+    /// Wrap a file (or a folder of files) as a star and put it on the list. Skips bytes you already have.
+    Add {
+        /// Folder that holds the card and the stars
+        sky: PathBuf,
+        /// File or folder to add
+        input: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+        /// Name of this file on the list (single file only)
+        #[arg(long = "as")]
+        as_name: Option<String>,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long)]
+        covenant: Option<String>,
+        #[arg(long = "bind")]
+        bind: Vec<PathBuf>,
+        #[arg(long, default_value_t = DEFAULT_CHUNK)]
+        chunk: u32,
+        #[arg(long)]
+        rsync: Option<String>,
+        #[arg(long)]
+        rclone: Option<String>,
+        #[arg(long)]
+        wormhole: bool,
+    },
+    /// Pack the card and every star into one atlas (.sga) so they cannot scatter.
+    Atlas {
+        sky: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    Scry {
+        sky: PathBuf,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
     },
 }
 
@@ -465,6 +518,7 @@ fn classify_exit(msg: &str) -> i32 {
         || msg.contains("will not guess")
         || msg.contains("work pack incomplete")
         || msg.contains("Attest refused")
+        || msg.contains("missing a star")
     {
         2
     } else {
@@ -596,6 +650,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else if is_dir_pack(&input) {
                 let n = unseal_dir_only(&input, &output, pass.as_deref(), &companions, &only, &wards)?;
                 println!("de-scribed {n} files → {}", output.display());
+            } else if is_constellation_input(&input) {
+                let n = unseal_constellation(&input, &output, pass.as_deref(), &companions, &only)?;
+                println!("de-scribed {n} files → {}", output.display());
             } else {
                 if !only.is_empty() {
                     return Err("--only is for a folder wrap. This is one file.".into());
@@ -605,7 +662,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Verify { input } | Cmd::Scry { input } => {
-            if is_dir_pack(&input) {
+            if is_constellation_input(&input) {
+                println!("{}", scry_constellation(&input, None)?);
+            } else if is_dir_pack(&input) {
                 println!("{}", scry_dir(&input)?);
             } else {
                 println!("{}", scry_path(&input)?);
@@ -877,6 +936,88 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("attestation → {}", dest.display());
         }
         Cmd::Boot { cmd } => run_boot(cmd)?,
+        Cmd::Constellation { cmd } => run_sky(cmd)?,
+    }
+    Ok(())
+}
+
+fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        SkyCmd::Add {
+            sky,
+            input,
+            name,
+            as_name,
+            mode,
+            pass,
+            talisman,
+            covenant,
+            bind,
+            chunk,
+            rsync,
+            rclone,
+            wormhole,
+        } => {
+            let geas = binds(&bind)?;
+            let pass = resolve_pass(pass, talisman)?;
+            let cov = covenant.unwrap_or_default();
+            let report = add_to_constellation(
+                &sky,
+                &input,
+                AddOpts {
+                    title: name.as_deref(),
+                    mode: mode.into(),
+                    pass: pass.as_deref(),
+                    covenant: &cov,
+                    geas: &geas,
+                    chunk,
+                    as_name: as_name.as_deref(),
+                },
+            )?;
+            println!(
+                "constellation {}  added={} linked={} skipped={} replaced={} new_bytes={}",
+                sky.display(),
+                report.added,
+                report.linked,
+                report.skipped,
+                report.replaced,
+                report.bytes_new
+            );
+            println!("{}", scry_constellation(&sky, pass.as_deref())?);
+            if rsync.is_some() || rclone.is_some() {
+                let src = sky.to_str().ok_or("path")?;
+                if let Some(dest) = rsync {
+                    rsync_dir(src, &dest)?;
+                }
+                if let Some(dest) = rclone {
+                    println!("rclone {src} → {dest}");
+                    run_cmd("rclone", &["copy", src, &dest])?;
+                }
+            }
+            if wormhole {
+                let bag = sky.join(format!(
+                    "{}.sga",
+                    sky.file_name().and_then(|s| s.to_str()).unwrap_or("constellation")
+                ));
+                pack_atlas(&sky, &bag)?;
+                dispatch(&bag, &None, &None, true, false)?;
+            }
+        }
+        SkyCmd::Atlas { sky, output } => {
+            let dest = output.unwrap_or_else(|| {
+                let stem = sky
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("constellation");
+                sky.join(format!("{stem}.sga"))
+            });
+            let n = pack_atlas(&sky, &dest)?;
+            println!("atlas {n} files → {}", dest.display());
+        }
+        SkyCmd::Scry { sky, pass, talisman } => {
+            let pass = resolve_pass(pass, talisman)?;
+            println!("{}", scry_constellation(&sky, pass.as_deref())?);
+        }
     }
     Ok(())
 }

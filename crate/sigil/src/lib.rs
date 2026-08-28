@@ -2,6 +2,7 @@
 mod attest;
 mod boot;
 mod chaos;
+mod constellation;
 mod folder;
 mod fountain;
 mod gf;
@@ -24,6 +25,10 @@ use std::io::{Read, Write};
 
 pub use attest::{attest, keygen as attest_keygen, talisman_pass, verify_attestation};
 pub use boot::{copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, mend_boot, mend_scan, prepare_boot, BootFind, BootOutcome};
+pub use constellation::{
+    add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
+    pack_atlas, scry_constellation, unseal_constellation, AddOpts, AddReport,
+};
 pub use folder::{inscribe_dir, is_dir_pack, scry_dir, unseal_dir, unseal_dir_only};
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};

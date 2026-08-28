@@ -367,16 +367,33 @@ export function unpackAtlas(data: Uint8Array): { name: string; bytes: Uint8Array
   if (data.length < 7 || data[0] !== 0x41 || data[1] !== 0x54 || data[2] !== 0x4c || data[3] !== 0x53) {
     throw new Error("not an atlas");
   }
-  if (data[4] !== 1) throw new Error("unknown atlas version");
-  const count = readU16(data, 5);
-  let o = 7;
+  const version = data[4];
+  if (version === 1) {
+    const count = readU16(data, 5);
+    return readAtlasFiles(data, 7, count, 4);
+  }
+  if (version === 2) {
+    if (data.length < 9) throw new Error("truncated atlas");
+    const count = readU32(data, 5);
+    return readAtlasFiles(data, 9, count, 8);
+  }
+  throw new Error("unknown atlas version");
+}
+
+function readAtlasFiles(
+  data: Uint8Array,
+  start: number,
+  count: number,
+  sizeBytes: 4 | 8,
+): { name: string; bytes: Uint8Array }[] {
+  let o = start;
   const files: { name: string; bytes: Uint8Array }[] = [];
   for (let i = 0; i < count; i++) {
     const nameLen = data[o++];
     const name = new TextDecoder().decode(data.subarray(o, o + nameLen));
     o += nameLen;
-    const size = readU32(data, o);
-    o += 4;
+    const size = sizeBytes === 8 ? readU64(data, o) : readU32(data, o);
+    o += sizeBytes;
     files.push({ name, bytes: data.slice(o, o + size) });
     o += size;
   }
