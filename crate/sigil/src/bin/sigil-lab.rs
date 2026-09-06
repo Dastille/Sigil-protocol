@@ -395,6 +395,7 @@ impl Lab {
             None,
             0,
             64,
+            None,
         ) {
             Ok((orig, stars, work)) => {
                 self.mark = out.display().to_string();

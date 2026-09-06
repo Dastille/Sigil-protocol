@@ -6,7 +6,7 @@ use sigil::{
     mend_scan, overture_report, pack_atlas, prepare_boot, run_open, run_showing, scry_constellation,
     scry_dir, scry_path, scatter_pieces, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
     unseal_dir_only, unseal_ex, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
-    BootOutcome, Mode, DEFAULT_CHUNK, OVERTURE, VESSEL,
+    BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -57,6 +57,9 @@ enum Cmd {
         /// First this many MiB are the boot (Overture). Copy those first; Play can start. 0 = whole file.
         #[arg(long, default_value_t = sigil::DEFAULT_OVERTURE_MB)]
         overture_mb: u32,
+        /// Opt-in FastCDC chunking: `media` (1/4/8 MiB) or `dedup` (256KiB/1/4 MiB). Default = fixed 4 MiB.
+        #[arg(long, value_enum)]
+        cdc: Option<CdcArg>,
         #[arg(long)]
         pieces: Option<PathBuf>,
         /// rsync destination, e.g. user@host:/backup/  (your usual truck)
@@ -346,6 +349,21 @@ enum ModeArg {
     Seal,
 }
 
+#[derive(Copy, Clone, ValueEnum)]
+enum CdcArg {
+    Media,
+    Dedup,
+}
+
+impl From<CdcArg> for CdcProfile {
+    fn from(v: CdcArg) -> Self {
+        match v {
+            CdcArg::Media => CDC_MEDIA,
+            CdcArg::Dedup => CDC_DEDUP,
+        }
+    }
+}
+
 impl From<ModeArg> for Mode {
     fn from(m: ModeArg) -> Self {
         match m {
@@ -548,6 +566,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             piece_mb,
             shards,
             overture_mb,
+            cdc,
             pieces,
             rsync,
             rclone,
@@ -596,6 +615,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         shards,
                         piece_bytes,
                         overture_mb,
+                        cdc.map(Into::into),
                     )?;
                     println!("wrote {stars} stars ({orig} bytes) into {}", dir.display());
                     println!("Overture list: {}/{OVERTURE}", dir.display());
@@ -612,6 +632,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     shards,
                     piece_bytes,
                     overture_mb,
+                    cdc.map(Into::into),
                 )?;
                 if work {
                     println!("work pack {stars} stars, {orig} bytes → {}", output.display());

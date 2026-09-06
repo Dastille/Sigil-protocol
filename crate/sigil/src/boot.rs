@@ -101,6 +101,7 @@ pub fn prepare_boot(root: &Path, mode: Mode, pass: Option<&str>, only_mark: bool
         None,
         0,
         64,
+        None,
     )?;
     if only_mark {
         fs::remove_file(&payload).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -708,6 +709,7 @@ mod tests {
             None,
             0,
             64,
+            None,
         )
         .unwrap();
         assert!(work);
