@@ -36,8 +36,8 @@ pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, 
 pub use merkle::merkle_root;
 pub use open::run_open;
 pub use pieces::{
-    deluge as deluge_pieces, gather as gather_pieces, mend_bytes, scatter as scatter_pieces,
-    tally as tally_pieces, vessel_present, write_vessel, VESSEL,
+    deluge as deluge_pieces, gather as gather_pieces, mend_bytes, mend_bytes_ex,
+    scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel, VESSEL,
 };
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
@@ -711,9 +711,71 @@ mod tests {
         torn[prefix..prefix + stride].fill(0);
         torn[prefix] = 3;
         assert!(crate::pieces::mend_bytes(&torn).is_err());
+        // Soft does not change Glyph: still all-or-nothing.
+        assert!(crate::pieces::mend_bytes_ex(&torn, true).is_err());
         // All shards present: mend succeeds and round-trips.
         let healed = crate::pieces::mend_bytes(&bytes).unwrap();
         assert_eq!(unseal(&healed, None).unwrap(), msg);
+    }
+
+    #[test]
+    fn mend_soft_salvages_crc_trailer_bitrot() {
+        let msg = b"soft salvage bit-rotten CRC trailers before giving up -- pad for deflate xx";
+        let bytes = seal(msg, Mode::Seal, None, "soft.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        let prefix = header::body_prefix(&h);
+        let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let sl = h.shard_len as usize;
+        let mut torn = bytes.clone();
+        // Wipe 8 shards (Seal budget edge): indices 0..7 gone.
+        for i in 0..8usize {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 3;
+        }
+        // Corrupt CRC trailers on shards 8 and 9 (bodies intact) → hard live = 6 < 8.
+        for i in [8usize, 9] {
+            let crc_off = prefix + i * stride + lead + sl;
+            torn[crc_off] ^= 0xff;
+        }
+        let hard = header::gather_live_shards(&torn, &h, prefix);
+        let hard_n = hard.iter().filter(|s| s.is_some()).count();
+        assert!(hard_n < h.k as usize, "hard live {hard_n}");
+        assert!(crate::pieces::mend_bytes(&torn).is_err());
+        let (healed, used_soft) = crate::pieces::mend_bytes_ex(&torn, true).unwrap();
+        assert!(used_soft);
+        let (_, merkle_ok, live, k, _) = verify(&healed).unwrap();
+        assert!(merkle_ok);
+        assert_eq!(live, 16);
+        assert_eq!(k, 8);
+        assert_eq!(unseal(&healed, None).unwrap(), msg);
+        assert_eq!(sha256(msg), read_header(&healed).unwrap().digest);
+    }
+
+    #[test]
+    fn mend_soft_true_name_rejects_garbage() {
+        let msg = b"true-name must gate soft accept -- longer payload for shards";
+        let bytes = seal(msg, Mode::Seal, None, "tn.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        let prefix = header::body_prefix(&h);
+        let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let sl = h.shard_len as usize;
+        let mut torn = bytes.clone();
+        // Destroy 9 shards so even soft present count may be tight; flip body bytes on all survivors.
+        for i in 0..9usize {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 7;
+        }
+        for i in 9..16usize {
+            let body_off = prefix + i * stride + lead;
+            for j in 0..sl.min(64) {
+                torn[body_off + j] ^= 0xa5;
+            }
+        }
+        assert!(crate::pieces::mend_bytes_ex(&torn, true).is_err());
     }
 
     #[test]

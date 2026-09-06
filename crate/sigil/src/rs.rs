@@ -227,6 +227,265 @@ pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8
     Ok(out)
 }
 
+
+/// Soft-RS stripe width within a shard payload (v0).
+pub const SOFT_STRIPE: usize = 4096;
+
+/// One present shard for soft decode: `hard` means whole-shard CRC passed.
+#[derive(Clone, Debug)]
+pub struct SoftPart {
+    pub index: usize,
+    pub body: Vec<u8>,
+    pub hard: bool,
+}
+
+fn shard_len_of(parts: &[SoftPart]) -> usize {
+    parts.iter().map(|p| p.body.len()).max().unwrap_or(0)
+}
+
+/// Decode one column from selected parts (erasure-only).
+fn decode_column_parts(
+    parts: &[(usize, u8)],
+    k: usize,
+    systematic: bool,
+) -> Result<Vec<u8>, Error> {
+    if parts.len() < k {
+        return Err(Error::Msg(format!("need {k} live symbols")));
+    }
+    let mut xs = Vec::with_capacity(k);
+    let mut ys = Vec::with_capacity(k);
+    for &(index, sym) in parts {
+        if xs.len() == k {
+            break;
+        }
+        if index > 254 {
+            continue;
+        }
+        let x = (index + 1) as u8;
+        if xs.contains(&x) {
+            continue;
+        }
+        xs.push(x);
+        ys.push(sym);
+    }
+    if xs.len() < k {
+        return Err(Error::Msg(format!("need {k} distinct symbols")));
+    }
+    let coeffs = gf::solve_vandermonde(&xs, &ys);
+    if systematic {
+        Ok((0..k).map(|i| gf::eval_poly(&coeffs, (i + 1) as u8)).collect())
+    } else {
+        Ok(coeffs)
+    }
+}
+
+/// Stripe-aware graded decode: hard symbols preferred; soft fill gaps.
+/// `erased_soft_stripes` lists (shard_index, stripe_idx) forced to erasure.
+fn decode_graded_with_mask(
+    parts: &[SoftPart],
+    k: usize,
+    payload_len: usize,
+    systematic: bool,
+    erased_soft_stripes: &[(usize, usize)],
+) -> Result<Vec<u8>, Error> {
+    let shard_len = shard_len_of(parts);
+    if shard_len == 0 {
+        return Err(Error::Msg("empty shards".into()));
+    }
+    // Fast path: enough hard shards and no stripe erasures → classic indexed decode.
+    if erased_soft_stripes.is_empty() {
+        let hard: Vec<(usize, Vec<u8>)> = parts
+            .iter()
+            .filter(|p| p.hard)
+            .map(|p| (p.index, p.body.clone()))
+            .collect();
+        if hard.len() >= k {
+            return decode_indexed(&hard, k, payload_len, systematic);
+        }
+    }
+
+    let mut padded = vec![0u8; shard_len * k];
+    for s in 0..shard_len {
+        let stripe = s / SOFT_STRIPE;
+        let mut hard_syms: Vec<(usize, u8)> = Vec::new();
+        let mut soft_syms: Vec<(usize, u8)> = Vec::new();
+        for p in parts {
+            let erased = !p.hard
+                && erased_soft_stripes
+                    .iter()
+                    .any(|&(si, st)| si == p.index && st == stripe);
+            if erased {
+                continue;
+            }
+            let sym = p.body.get(s).copied().unwrap_or(0);
+            if p.hard {
+                hard_syms.push((p.index, sym));
+            } else {
+                soft_syms.push((p.index, sym));
+            }
+        }
+        let mut chosen = hard_syms;
+        if chosen.len() < k {
+            for sym in soft_syms {
+                if chosen.len() >= k {
+                    break;
+                }
+                if chosen.iter().any(|(i, _)| *i == sym.0) {
+                    continue;
+                }
+                chosen.push(sym);
+            }
+        }
+        let col = decode_column_parts(&chosen, k, systematic)?;
+        for i in 0..k {
+            padded[i * shard_len + s] = col[i];
+        }
+    }
+    padded.truncate(payload_len);
+    Ok(padded)
+}
+
+fn soft_stripe_count(parts: &[SoftPart]) -> usize {
+    let sl = shard_len_of(parts);
+    if sl == 0 {
+        0
+    } else {
+        sl.div_ceil(SOFT_STRIPE)
+    }
+}
+
+/// Soft-decision RS (GMD-lite): prefer CRC-hard shards; salvage Soft bodies with
+/// stripe-level erasures. Caller must gate acceptance (Merkle / true-name).
+///
+/// Attempts:
+/// 1. Hard-only erasure decode
+/// 2. Include soft shards; if accept fails, flip ≤ (n−k) lowest-reliability soft
+///    shards (by index) to full erasure and retry
+/// 3. Stripe GMD: flip ≤ (n−k) lowest-reliability soft stripes to erasure and retry
+pub fn decode_soft<F>(
+    parts: &[SoftPart],
+    k: usize,
+    n: usize,
+    payload_len: usize,
+    systematic: bool,
+    mut accept: F,
+) -> Result<Vec<u8>, Error>
+where
+    F: FnMut(&[u8]) -> bool,
+{
+    let hard_n = parts.iter().filter(|p| p.hard).count();
+    let soft_n = parts.iter().filter(|p| !p.hard).count();
+    let present = parts.len();
+    if present < k {
+        return Err(Error::Msg(format!(
+            "need {k} present shards for soft mend, have {present}"
+        )));
+    }
+
+    // 1) Hard-only
+    if hard_n >= k {
+        let hard: Vec<(usize, Vec<u8>)> = parts
+            .iter()
+            .filter(|p| p.hard)
+            .map(|p| (p.index, p.body.clone()))
+            .collect();
+        if let Ok(payload) = decode_indexed(&hard, k, payload_len, systematic) {
+            if accept(&payload) {
+                return Ok(payload);
+            }
+        }
+    }
+
+    if hard_n + soft_n < k {
+        return Err(Error::Msg(format!(
+            "soft mend: need {k} shards with some data, have {}",
+            hard_n + soft_n
+        )));
+    }
+
+    let parity = n.saturating_sub(k);
+    let mut soft_idx: Vec<usize> = parts.iter().filter(|p| !p.hard).map(|p| p.index).collect();
+    soft_idx.sort_unstable();
+
+    // 2) GMD shard-level: erase tau lowest-index soft shards, use the rest
+    let max_tau = parity.min(soft_idx.len());
+    for tau in 0..=max_tau {
+        let erased: std::collections::BTreeSet<usize> =
+            soft_idx.iter().take(tau).copied().collect();
+        let use_parts: Vec<SoftPart> = parts
+            .iter()
+            .filter(|p| p.hard || !erased.contains(&p.index))
+            .cloned()
+            .collect();
+        if use_parts.len() < k {
+            continue;
+        }
+        if let Ok(payload) =
+            decode_graded_with_mask(&use_parts, k, payload_len, systematic, &[])
+        {
+            if accept(&payload) {
+                return Ok(payload);
+            }
+        }
+    }
+
+    // 3) Stripe GMD-lite: flip ≤ parity lowest-reliability soft stripes
+    let n_stripes = soft_stripe_count(parts);
+    if n_stripes == 0 || soft_idx.is_empty() || parity == 0 {
+        return Err(Error::Msg(
+            "soft mend could not reconstruct a true-name match".into(),
+        ));
+    }
+    let mut soft_stripes: Vec<(usize, usize)> = Vec::new();
+    for &si in &soft_idx {
+        for st in 0..n_stripes {
+            soft_stripes.push((si, st));
+        }
+    }
+    // Lowest reliability first: already ordered by shard index then stripe.
+    let max_flip = parity.min(soft_stripes.len());
+    for flip in 1..=max_flip {
+        // Erase the `flip` lowest-reliability soft stripes.
+        let mask = &soft_stripes[..flip];
+        // Also try alongside excluding no whole extra shards (mask only).
+        if let Ok(payload) = decode_graded_with_mask(parts, k, payload_len, systematic, mask) {
+            if accept(&payload) {
+                return Ok(payload);
+            }
+        }
+    }
+
+    // Bounded combo: erase one soft shard entirely + one extra stripe from another
+    if soft_idx.len() >= 2 && parity >= 2 {
+        for (a_i, &a) in soft_idx.iter().enumerate() {
+            for &b in soft_idx.iter().skip(a_i + 1) {
+                for st in 0..n_stripes {
+                    let use_parts: Vec<SoftPart> = parts
+                        .iter()
+                        .filter(|p| p.index != a)
+                        .cloned()
+                        .collect();
+                    if use_parts.len() < k {
+                        continue;
+                    }
+                    let mask = [(b, st)];
+                    if let Ok(payload) =
+                        decode_graded_with_mask(&use_parts, k, payload_len, systematic, &mask)
+                    {
+                        if accept(&payload) {
+                            return Ok(payload);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(Error::Msg(
+        "soft mend could not reconstruct a true-name match".into(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +512,70 @@ mod tests {
             o1[i] = None;
         }
         assert_eq!(decode_shards(&o1, 8, payload.len(), false).unwrap(), payload);
+    }
+
+    #[test]
+    fn soft_recovers_crc_trailer_corruption() {
+        let payload: Vec<u8> = (0..5000).map(|i| (i * 13) as u8).collect();
+        let shards = encode_shards(&payload, 8, 16);
+        let parts: Vec<SoftPart> = shards
+            .iter()
+            .enumerate()
+            .map(|(i, b)| SoftPart {
+                index: i,
+                body: b.clone(),
+                hard: true,
+            })
+            .collect();
+        // 8 missing, 7 hard + 1 soft (intact body) → soft salvage
+        let parts: Vec<SoftPart> = parts
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, mut p)| {
+                if i < 8 {
+                    None
+                } else if i == 8 {
+                    p.hard = false;
+                    Some(p)
+                } else {
+                    Some(p)
+                }
+            })
+            .collect();
+        assert_eq!(parts.iter().filter(|p| p.hard).count(), 7);
+        assert_eq!(parts.iter().filter(|p| !p.hard).count(), 1);
+        let expect = payload.clone();
+        let out = decode_soft(&parts, 8, 16, payload.len(), true, |got| got == expect).unwrap();
+        assert_eq!(out, payload);
+    }
+
+    #[test]
+    fn soft_gmd_drops_bad_soft_shard() {
+        let payload: Vec<u8> = (0..3000).map(|i| (i * 3) as u8).collect();
+        let shards = encode_shards(&payload, 8, 16);
+        let mut parts: Vec<SoftPart> = Vec::new();
+        for i in 0..7 {
+            parts.push(SoftPart {
+                index: i,
+                body: shards[i].clone(),
+                hard: true,
+            });
+        }
+        parts.push(SoftPart {
+            index: 7,
+            body: shards[7].clone(),
+            hard: false,
+        });
+        let mut bad = shards[8].clone();
+        bad[0] ^= 0xff;
+        bad[100] ^= 0x55;
+        parts.push(SoftPart {
+            index: 8,
+            body: bad,
+            hard: false,
+        });
+        let expect = payload.clone();
+        let out = decode_soft(&parts, 8, 16, payload.len(), true, |got| got == expect).unwrap();
+        assert_eq!(out, payload);
     }
 }

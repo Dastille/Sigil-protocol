@@ -14,6 +14,7 @@ Lab: https://dove-bloom-star-island.grok.me
 - **Deluge** — extra indexed RS rain past `n` (index ≤ 254); mixed lanes for coupon collection.
 - **RaptorQ fountain** — `--fountain` / `.rq` packets via `deluge_fountain` / `gather_fountain` (no 255 ceiling).
 - **In-place mend** — `sigil mend torn.sg1 -o healed.sg1` (alias `repair`): locate header → gather live shards → decode ≥`k` → re-encode classic `0..n-1` → rewrite full mark (keystone / ember / vow). No passphrase; stays in the folded domain. Glyph errors if any shard is missing.
+- **Soft-decision RS (opt-in)** — `sigil mend --soft`: when Hard CRC-kill leaves too few shards, keep Soft (CRC-failed) bodies, stripe GMD-lite, accept only on Merkle / true-name. Not a Ward or RaptorQ substitute; no layout break.
 
 ## Gaps still open
 
