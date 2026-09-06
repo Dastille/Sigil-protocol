@@ -68,7 +68,7 @@ pub fn inscribe_dir(
             seal_kn(&data, mode, file_pass.as_deref(), &rel, false, covenant, geas, None, DEFAULT_PIECE)?
         } else {
             let tmp = output.with_extension(&format!("tmp-{rel}", rel = rel.replace('/', "_")));
-            crate::work::inscribe_path(path, &tmp, mode, file_pass.as_deref(), covenant, geas, chunk, None, DEFAULT_PIECE, crate::work::DEFAULT_OVERTURE_MB)?;
+            crate::work::inscribe_path(path, &tmp, mode, file_pass.as_deref(), covenant, geas, chunk, None, DEFAULT_PIECE, crate::work::DEFAULT_OVERTURE_MB, None)?;
             let packed = fs::read(&tmp).map_err(io)?;
             let _ = fs::remove_file(&tmp);
             packed

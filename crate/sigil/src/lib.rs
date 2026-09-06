@@ -1,6 +1,7 @@
 //! Sigil protocol v1 — same .sg1 layout as the lab.
 mod attest;
 mod boot;
+mod cdc;
 mod chaos;
 mod constellation;
 mod folder;
@@ -38,6 +39,7 @@ pub use pieces::{
     deluge as deluge_pieces, gather as gather_pieces, mend_bytes, scatter as scatter_pieces,
     tally as tally_pieces, vessel_present, write_vessel, VESSEL,
 };
+pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,
     payload_name, read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
@@ -483,7 +485,7 @@ mod tests {
         drop(f);
         let pack = dir.join("out.sgwk");
         let (orig, stars, work) =
-            crate::work::inscribe_path(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, None, crate::DEFAULT_PIECE, 1).unwrap();
+            crate::work::inscribe_path(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, None, crate::DEFAULT_PIECE, 1, None).unwrap();
         assert!(work);
         assert_eq!(orig, payload.len() as u64);
         assert!(stars > 1);
@@ -671,7 +673,7 @@ mod tests {
         let src = dir.join("notes.txt");
         std::fs::write(&src, b"keep my name").unwrap();
         let packed = dir.join("notes.sg1");
-        inscribe_path(&src, &packed, Mode::Glyph, None, "", &[], DEFAULT_CHUNK, None, 0, 64).unwrap();
+        inscribe_path(&src, &packed, Mode::Glyph, None, "", &[], DEFAULT_CHUNK, None, 0, 64, None).unwrap();
         assert_eq!(suggested_output_name(&packed), "notes.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -732,4 +734,116 @@ mod tests {
         assert!(none.contains("none"), "{none}");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn cdc_inscribe_roundtrip() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("sigil-cdc-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("in.bin");
+        let payload: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::File::create(&src).unwrap().write_all(&payload).unwrap();
+        let pack = dir.join("out.sgwk");
+        let fine = crate::CdcProfile {
+            name: "test",
+            min: crate::CDC_FLOOR,
+            avg: 128 * 1024,
+            max: 256 * 1024,
+        };
+        let (orig, stars, work) = crate::work::inscribe_path(
+            &src,
+            &pack,
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            DEFAULT_CHUNK,
+            None,
+            crate::DEFAULT_PIECE,
+            1,
+            Some(fine),
+        )
+        .unwrap();
+        assert_eq!(orig, payload.len() as u64);
+        assert!(work, "expected multi-star work pack");
+        assert!(stars >= 2);
+        let back = dir.join("back.bin");
+        crate::work::unseal_path(&pack, &back, None, &[]).unwrap();
+        assert_eq!(std::fs::read(&back).unwrap(), payload);
+        let facets = crate::work::scry_facets(&pack).unwrap();
+        assert_eq!(facets.len() as u32, stars);
+        let mut off = 0u64;
+        for f in &facets {
+            assert_eq!(f.orig_off, off);
+            assert!(f.orig_len as usize <= fine.max);
+            off += f.orig_len as u64;
+        }
+        assert_eq!(off, orig);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cdc_edit_locality_inscribe() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("sigil-cdc-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fine = crate::CdcProfile {
+            name: "test",
+            min: crate::CDC_FLOOR,
+            avg: 128 * 1024,
+            max: 256 * 1024,
+        };
+        let mut payload: Vec<u8> = (0..900_000u32).map(|i| ((i * 13) % 251) as u8).collect();
+        let src = dir.join("a.bin");
+        std::fs::File::create(&src).unwrap().write_all(&payload).unwrap();
+        let pack_a = dir.join("a.sgwk");
+        let (_, stars_a, work_a) = crate::work::inscribe_path(
+            &src,
+            &pack_a,
+            Mode::Glyph,
+            None,
+            "",
+            &[],
+            DEFAULT_CHUNK,
+            None,
+            crate::DEFAULT_PIECE,
+            1,
+            Some(fine),
+        )
+        .unwrap();
+        assert!(work_a && stars_a >= 3);
+        let dig_a = crate::work::read_facet_digests(&pack_a).unwrap();
+        let mid = payload.len() / 2;
+        for i in 0..64 {
+            payload[mid + i] ^= 0xa5;
+        }
+        std::fs::File::create(&src).unwrap().write_all(&payload).unwrap();
+        let pack_b = dir.join("b.sgwk");
+        crate::work::inscribe_path(
+            &src,
+            &pack_b,
+            Mode::Glyph,
+            None,
+            "",
+            &[],
+            DEFAULT_CHUNK,
+            None,
+            crate::DEFAULT_PIECE,
+            1,
+            Some(fine),
+        )
+        .unwrap();
+        let dig_b = crate::work::read_facet_digests(&pack_b).unwrap();
+        let kept = dig_a.iter().filter(|d| dig_b.contains(d)).count();
+        assert!(
+            kept + 2 >= dig_a.len() && kept >= dig_a.len().saturating_sub(3).max(1),
+            "expected most facet digests to survive middle edit; kept {kept} of {}",
+            dig_a.len()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
 }

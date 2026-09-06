@@ -1,6 +1,7 @@
 //! Streamed work pack for files too big for one in-memory mark.
 //! Magic SGWK. Each record is a complete .sg1 star of one chunk.
 
+use crate::cdc::{self, ChunkRange, Profile as CdcProfile};
 use crate::{seal_kn, unseal_ex, Mode, Result, DEFAULT_PIECE};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -82,6 +83,7 @@ fn read_head<R: Read>(r: &mut R) -> Result<WorkHead> {
 }
 
 /// Inscribe any size: one .sg1 if it fits in one chunk, else an SGWK pack.
+/// When `cdc` is set, FastCDC picks variable star boundaries (opt-in).
 pub fn inscribe_path(
     input: &Path,
     output: &Path,
@@ -93,23 +95,49 @@ pub fn inscribe_path(
     shards: Option<u8>,
     piece_bytes: u32,
     overture_mb: u32,
+    cdc: Option<CdcProfile>,
 ) -> Result<(u64, u32, bool)> {
     let meta = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = meta.len();
-    let chunk = chunk.max(64 * 1024);
     let piece_bytes = if piece_bytes == 0 { DEFAULT_PIECE } else { piece_bytes };
     let name = input
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("file")
         .to_string();
-    if orig <= chunk as u64 {
+
+    let ranges: Vec<ChunkRange> = if let Some(profile) = cdc {
         let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let out = seal_kn(&data, mode, pass, &name, false, covenant, geas, shards, piece_bytes)?;
-        std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        return Ok((orig, 1, false));
-    }
-    let stars = orig.div_ceil(chunk as u64) as u32;
+        let r = cdc::chunk_ranges(&data, profile);
+        // Drop the full buffer; re-read per star below for large files would be better,
+        // but we already hold `data` — seal from slices of it.
+        return inscribe_ranges(
+            &data, &name, output, mode, pass, covenant, geas, shards, piece_bytes, overture_mb, &r, profile.max as u32,
+        );
+    } else {
+        let chunk = chunk.max(64 * 1024);
+        if orig <= chunk as u64 {
+            let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            let out = seal_kn(&data, mode, pass, &name, false, covenant, geas, shards, piece_bytes)?;
+            std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            return Ok((orig, 1, false));
+        }
+        let mut r = Vec::new();
+        let mut off = 0u64;
+        while off < orig {
+            let n = (orig - off).min(chunk as u64) as usize;
+            r.push(ChunkRange {
+                offset: off as usize,
+                length: n,
+            });
+            off += n as u64;
+        }
+        r
+    };
+
+    // Fixed chunking path: stream from disk (no full read).
+    let chunk = chunk.max(64 * 1024);
+    let stars = ranges.len() as u32;
     let overture = choose_overture(stars, orig, chunk, overture_mb);
     let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
     let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
@@ -124,11 +152,9 @@ pub fn inscribe_path(
     writer.write_all(&stars.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
     writer.write_all(&overture.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut buf = vec![0u8; chunk as usize];
-    let mut remain = orig;
-    let mut i = 0u32;
     let mut facets = Vec::new();
-    while remain > 0 {
-        let n = remain.min(chunk as u64) as usize;
+    for (i, range) in ranges.iter().enumerate() {
+        let n = range.length;
         reader.read_exact(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let star_name = format!("{name}.{i:04}");
         let sealed = seal_kn(&buf[..n], mode, pass, &star_name, false, covenant, geas, shards, piece_bytes)?;
@@ -141,8 +167,65 @@ pub fn inscribe_path(
         } else {
             facets.push([0u8; 32]);
         }
-        remain -= n as u64;
-        i += 1;
+    }
+    writer.write_all(b"SGFC").map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&(facets.len() as u32).to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    for d in &facets {
+        writer.write_all(d).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    }
+    writer.flush().map_err(|e| crate::Error::Msg(e.to_string()))?;
+    Ok((orig, stars, true))
+}
+
+fn inscribe_ranges(
+    data: &[u8],
+    name: &str,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    overture_mb: u32,
+    ranges: &[ChunkRange],
+    header_chunk: u32,
+) -> Result<(u64, u32, bool)> {
+    let orig = data.len() as u64;
+    if ranges.len() <= 1 {
+        let slice = if ranges.is_empty() { data } else { &data[ranges[0].offset..ranges[0].end()] };
+        let out = seal_kn(slice, mode, pass, name, false, covenant, geas, shards, piece_bytes)?;
+        std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        return Ok((orig, 1, false));
+    }
+    let stars = ranges.len() as u32;
+    let chunk = header_chunk.max(64 * 1024);
+    let overture = choose_overture(stars, orig, chunk, overture_mb);
+    let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    writer.write_all(&WORK_MAGIC).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&[2u8]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&chunk.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&orig.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let nb = name.as_bytes();
+    let nlen = nb.len().min(255) as u8;
+    writer.write_all(&[nlen]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&nb[..nlen as usize]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&stars.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer.write_all(&overture.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut facets = Vec::new();
+    for (i, range) in ranges.iter().enumerate() {
+        let slice = &data[range.offset..range.end()];
+        let star_name = format!("{name}.{i:04}");
+        let sealed = seal_kn(slice, mode, pass, &star_name, false, covenant, geas, shards, piece_bytes)?;
+        writer
+            .write_all(&(sealed.len() as u64).to_le_bytes())
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        writer.write_all(&sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        if let Ok((h, _, _)) = crate::locate_header(&sealed) {
+            facets.push(h.digest);
+        } else {
+            facets.push([0u8; 32]);
+        }
     }
     writer.write_all(b"SGFC").map_err(|e| crate::Error::Msg(e.to_string()))?;
     writer.write_all(&(facets.len() as u32).to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -202,23 +285,24 @@ pub fn scry_facets(input: &Path) -> Result<Vec<Facet>> {
     let head = read_head(&mut reader)?;
     let mut out = Vec::new();
     let mut remain = head.orig_total;
+    let mut orig_off = 0u64;
     for i in 0..head.stars {
         let mut lenb = [0u8; 8];
         reader.read_exact(&mut lenb).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let len = u64::from_le_bytes(lenb) as usize;
         let mut star = vec![0u8; len];
         reader.read_exact(&mut star).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let orig_len = remain.min(head.chunk_size as u64) as u32;
-        let digest = crate::locate_header(&star)
-            .ok()
-            .map(|(h, _, _)| h.digest)
-            .unwrap_or([0u8; 32]);
+        let (digest, orig_len) = match crate::locate_header(&star) {
+            Ok((h, _, _)) => (h.digest, h.orig_len.min(remain) as u32),
+            Err(_) => ([0u8; 32], remain.min(head.chunk_size as u64) as u32),
+        };
         out.push(Facet {
             index: i,
-            orig_off: (i as u64) * head.chunk_size as u64,
+            orig_off,
             orig_len,
             digest,
         });
+        orig_off += orig_len as u64;
         remain = remain.saturating_sub(orig_len as u64);
     }
     Ok(out)
@@ -238,6 +322,7 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
     let head = read_head(&mut f)?;
     let mut loc = Vec::new();
     let mut remain = head.orig_total;
+    let mut orig_off = 0u64;
     for i in 0..head.stars {
         let mut lenb = [0u8; 8];
         if f.read_exact(&mut lenb).is_err() {
@@ -248,17 +333,29 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
             Ok(o) => o,
             Err(_) => break,
         };
-        let orig_len = remain.min(head.chunk_size as u64) as u32;
-        if std::io::Seek::seek(&mut f, SeekFrom::Current(star_len as i64)).is_err() {
+        // Read enough of the star to parse the header (CDC lengths vary).
+        let peek_n = (star_len as usize).min(crate::header::KEYSTONE_SPAN + 64);
+        let mut peek = vec![0u8; peek_n];
+        if f.read_exact(&mut peek).is_err() {
             break;
+        }
+        let orig_len = crate::locate_header(&peek)
+            .map(|(h, _, _)| h.orig_len.min(remain) as u32)
+            .unwrap_or(remain.min(head.chunk_size as u64) as u32);
+        let leftover = star_len as i64 - peek_n as i64;
+        if leftover > 0 {
+            if std::io::Seek::seek(&mut f, SeekFrom::Current(leftover)).is_err() {
+                break;
+            }
         }
         loc.push(StarLoc {
             index: i,
             file_off,
             star_len,
-            orig_off: (i as u64) * head.chunk_size as u64,
+            orig_off,
             orig_len,
         });
+        orig_off += orig_len as u64;
         remain = remain.saturating_sub(orig_len as u64);
     }
     Ok((head, loc))
@@ -316,37 +413,82 @@ pub fn inscribe_stars_dir(
     shards: Option<u8>,
     piece_bytes: u32,
     overture_mb: u32,
+    cdc: Option<CdcProfile>,
 ) -> Result<(u64, u32)> {
     std::fs::create_dir_all(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?.len();
-    let chunk = chunk.max(64 * 1024);
     let piece_bytes = if piece_bytes == 0 { DEFAULT_PIECE } else { piece_bytes };
     let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-    let stars = orig.div_ceil(chunk as u64).max(1) as u32;
-    let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
-    let mut buf = vec![0u8; chunk as usize];
-    let mut remain = orig;
-    let mut i = 0u32;
     if orig == 0 {
         let sealed = seal_kn(&[], mode, pass, name, false, covenant, geas, shards, piece_bytes)?;
         std::fs::write(dir.join("star-0000.sg1"), sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
         return Ok((0, 1));
     }
+    if let Some(profile) = cdc {
+        let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let r = cdc::chunk_ranges(&data, profile);
+        let stars = r.len().max(1) as u32;
+        let chunk = profile.max as u32;
+        for (i, range) in r.iter().enumerate() {
+            let slice = &data[range.offset..range.end()];
+            let sealed = seal_kn(
+                slice,
+                mode,
+                pass,
+                &format!("{name}.{i:04}"),
+                false,
+                covenant,
+                geas,
+                shards,
+                piece_bytes,
+            )?;
+            std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed)
+                .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        }
+        let ov = choose_overture(stars, orig, chunk, overture_mb);
+        let man = format!(
+            "name={name}\nstars={stars}\norig={orig}\nchunk={chunk}\ncdc={}\noverture={ov}\n",
+            profile.name
+        );
+        std::fs::write(dir.join("manifest.txt"), man).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let mut boot =
+            String::from("Overture — copy these first; you can start before the rest arrives.\n");
+        for i in 0..ov {
+            boot.push_str(&format!("star-{i:04}.sg1\n"));
+        }
+        std::fs::write(dir.join(OVERTURE), boot).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        return Ok((orig, stars));
+    }
+    let chunk = chunk.max(64 * 1024);
+    let stars = orig.div_ceil(chunk as u64).max(1) as u32;
+    let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let mut buf = vec![0u8; chunk as usize];
+    let mut remain = orig;
+    let mut i = 0u32;
     while remain > 0 {
         let n = remain.min(chunk as u64) as usize;
         reader.read_exact(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let sealed = seal_kn(&buf[..n], mode, pass, &format!("{name}.{i:04}"), false, covenant, geas, shards, piece_bytes)?;
-        std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let sealed = seal_kn(
+            &buf[..n],
+            mode,
+            pass,
+            &format!("{name}.{i:04}"),
+            false,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+        )?;
+        std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         remain -= n as u64;
         i += 1;
     }
-    let man = format!(
-        "name={name}\nstars={stars}\norig={orig}\nchunk={chunk}\noverture={ov}\n",
-        ov = choose_overture(stars, orig, chunk, overture_mb)
-    );
-    std::fs::write(dir.join("manifest.txt"), man).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let ov = choose_overture(stars, orig, chunk, overture_mb);
-    let mut boot = String::from("Overture — copy these first; you can start before the rest arrives.\n");
+    let man = format!("name={name}\nstars={stars}\norig={orig}\nchunk={chunk}\noverture={ov}\n");
+    std::fs::write(dir.join("manifest.txt"), man).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut boot =
+        String::from("Overture — copy these first; you can start before the rest arrives.\n");
     for i in 0..ov {
         boot.push_str(&format!("star-{i:04}.sg1\n"));
     }

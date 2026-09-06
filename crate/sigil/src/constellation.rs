@@ -669,6 +669,7 @@ fn mint_or_reuse(
             None,
             crate::DEFAULT_PIECE,
             crate::work::DEFAULT_OVERTURE_MB,
+            None,
         )?;
     }
     Ok(dest)
