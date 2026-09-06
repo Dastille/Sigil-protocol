@@ -8,6 +8,7 @@ mod folder;
 mod fountain;
 mod gf;
 mod header;
+mod kit;
 mod mds;
 mod merkle;
 mod open;
@@ -41,9 +42,11 @@ pub use mds::{
 };
 pub use open::run_open;
 pub use pieces::{
-    deluge as deluge_pieces, gather as gather_pieces, mend_bytes, mend_bytes_ex,
-    scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel, VESSEL,
+    deluge as deluge_pieces, gather as gather_pieces, gather_dirs as gather_piece_dirs, mend_bytes,
+    mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
+    VESSEL,
 };
+pub use kit::{is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST};
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,

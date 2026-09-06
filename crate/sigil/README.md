@@ -102,6 +102,8 @@ A star is one `.sg1`. A constellation is a named list of stars, kept as a folder
 
 # split an existing .sg1
 ./sigil scatter mark.sg1 -o ./pieces
+./sigil kit place mark.sg1 --drives 4 -o ./kit/
+./sigil kit mend ./kit -o healed.sg1
 ./sigil gather ./pieces -o mark.sg1
 
 # rain extra pieces (Seal/Reflection). Far side needs any k, not all 16.

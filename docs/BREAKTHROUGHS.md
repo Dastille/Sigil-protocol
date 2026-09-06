@@ -16,6 +16,7 @@ Lab: https://dove-bloom-star-island.grok.me
 - **In-place mend** — `sigil mend torn.sg1 -o healed.sg1` (alias `repair`): locate header → gather live shards → decode ≥`k` → re-encode classic `0..n-1` → rewrite full mark (keystone / ember / vow). No passphrase; stays in the folded domain. Glyph errors if any shard is missing.
 - **Soft-decision RS (opt-in)** — `sigil mend --soft`: when Hard CRC-kill leaves too few shards, keep Soft (CRC-failed) bodies, stripe GMD-lite, accept only on Merkle / true-name. Not a Ward or RaptorQ substitute; no layout break.
 - **Cauchy MDS bake-off** — `MdsBackend` + `sigil bench-mds`; Cauchy opt-in (`--mds cauchy`) after measured encode/decode win; Vandermonde remains default. See `docs/CAUCHY-BAKEOFF.md`.
+- **Cold-USB kits (Option A)** — `sigil kit place` / `sigil kit mend`: round-robin Seal shards across N USB dirs; one drive loss stays in Seal budget. No Azure LRC codec yet. See `docs/LRC-COLD-USB.md`.
 
 ## Gaps still open
 
@@ -30,7 +31,7 @@ Lab: https://dove-bloom-star-island.grok.me
 2. ~~In-place `mend`~~ — done (this branch).
 3. **Streaming / chunked Inscribe** — unblocks movie libraries without whole-file RAM.
 4. **zstd + passthrough codec flag (v2)** — media → none; dumps → zstd; keep deflate for v1.
-5. **Constellation index + Geas productization** — cold USB kits, `.sga` atlas workflows.
+5. **Constellation index + Geas productization** — `.sga` atlas workflows (cold-USB Option A placement shipped).
 6. Optional: cross-star heal, Argon2id Ward, CDC stars.
 
 ## Math notes
