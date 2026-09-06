@@ -8,6 +8,8 @@ mod folder;
 mod fountain;
 mod gf;
 mod header;
+mod kit;
+mod mds;
 mod merkle;
 mod open;
 mod pieces;
@@ -34,11 +36,17 @@ pub use folder::{inscribe_dir, is_dir_pack, scry_dir, unseal_dir, unseal_dir_onl
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
 pub use merkle::merkle_root;
+pub use mds::{
+    backend_by_name, default_backend, format_bakeoff_report, run_bakeoff, CauchyRs, MdsBackend,
+    MdsBenchRow, VandermondeRs,
+};
 pub use open::run_open;
 pub use pieces::{
-    deluge as deluge_pieces, gather as gather_pieces, mend_bytes, scatter as scatter_pieces,
-    tally as tally_pieces, vessel_present, write_vessel, VESSEL,
+    deluge as deluge_pieces, gather as gather_pieces, gather_dirs as gather_piece_dirs, mend_bytes,
+    mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
+    VESSEL,
 };
+pub use kit::{is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST};
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,
@@ -214,6 +222,33 @@ pub fn seal_kn(
     shards: Option<u8>,
     piece_bytes: u32,
 ) -> Result<Vec<u8>> {
+    seal_kn_mds(
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        &*mds::default_backend(),
+    )
+}
+
+/// Like `seal_kn`, but encode with an explicit MDS backend (Cauchy opt-in).
+pub fn seal_kn_mds(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    mds_be: &dyn mds::MdsBackend,
+) -> Result<Vec<u8>> {
     let (k, n) = choose_kn(mode, data.len() as u64, piece_bytes, shards);
     let digest = sha256(data);
     let mut salt = [0u8; 16];
@@ -238,7 +273,7 @@ pub fn seal_kn(
     let shards = if matches!(mode, Mode::Glyph) {
         rs::stripe(&folded, n)
     } else {
-        rs::encode_shards(&folded, k, n)
+        mds_be.encode(&folded, k, n)
     };
     let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
     let merkle = merkle::merkle_root(&leaves);
@@ -300,6 +335,16 @@ pub fn unseal(file: &[u8], pass: Option<&str>) -> Result<Vec<u8>> {
 }
 
 pub fn unseal_ex(file: &[u8], pass: Option<&str>, companions: &[Vec<u8>]) -> Result<Vec<u8>> {
+    unseal_ex_mds(file, pass, companions, &*mds::default_backend())
+}
+
+/// Like `unseal_ex`, but decode with an explicit MDS backend (must match seal).
+pub fn unseal_ex_mds(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    mds_be: &dyn mds::MdsBackend,
+) -> Result<Vec<u8>> {
     let (h, prefix, _) = locate_header(file)?;
     if h.vow() {
         let vow_off = prefix.saturating_sub(header::VOW_SIZE);
@@ -325,8 +370,10 @@ pub fn unseal_ex(file: &[u8], pass: Option<&str>, companions: &[Vec<u8>]) -> Res
     let k = h.k as usize;
     let folded = if h.mode() == Mode::Glyph {
         rs::unstripe(&live, h.folded_len as usize)?
-    } else {
+    } else if mds_be.name() == "vandermonde" {
         rs::decode_shards(&live, k, h.folded_len as usize, h.version >= 2)?
+    } else {
+        mds_be.decode(&live, k, h.folded_len as usize)?
     };
     let mut folded = folded;
     let p = pass.unwrap_or("").trim();
@@ -711,9 +758,71 @@ mod tests {
         torn[prefix..prefix + stride].fill(0);
         torn[prefix] = 3;
         assert!(crate::pieces::mend_bytes(&torn).is_err());
+        // Soft does not change Glyph: still all-or-nothing.
+        assert!(crate::pieces::mend_bytes_ex(&torn, true).is_err());
         // All shards present: mend succeeds and round-trips.
         let healed = crate::pieces::mend_bytes(&bytes).unwrap();
         assert_eq!(unseal(&healed, None).unwrap(), msg);
+    }
+
+    #[test]
+    fn mend_soft_salvages_crc_trailer_bitrot() {
+        let msg = b"soft salvage bit-rotten CRC trailers before giving up -- pad for deflate xx";
+        let bytes = seal(msg, Mode::Seal, None, "soft.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        let prefix = header::body_prefix(&h);
+        let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let sl = h.shard_len as usize;
+        let mut torn = bytes.clone();
+        // Wipe 8 shards (Seal budget edge): indices 0..7 gone.
+        for i in 0..8usize {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 3;
+        }
+        // Corrupt CRC trailers on shards 8 and 9 (bodies intact) → hard live = 6 < 8.
+        for i in [8usize, 9] {
+            let crc_off = prefix + i * stride + lead + sl;
+            torn[crc_off] ^= 0xff;
+        }
+        let hard = header::gather_live_shards(&torn, &h, prefix);
+        let hard_n = hard.iter().filter(|s| s.is_some()).count();
+        assert!(hard_n < h.k as usize, "hard live {hard_n}");
+        assert!(crate::pieces::mend_bytes(&torn).is_err());
+        let (healed, used_soft) = crate::pieces::mend_bytes_ex(&torn, true).unwrap();
+        assert!(used_soft);
+        let (_, merkle_ok, live, k, _) = verify(&healed).unwrap();
+        assert!(merkle_ok);
+        assert_eq!(live, 16);
+        assert_eq!(k, 8);
+        assert_eq!(unseal(&healed, None).unwrap(), msg);
+        assert_eq!(sha256(msg), read_header(&healed).unwrap().digest);
+    }
+
+    #[test]
+    fn mend_soft_true_name_rejects_garbage() {
+        let msg = b"true-name must gate soft accept -- longer payload for shards";
+        let bytes = seal(msg, Mode::Seal, None, "tn.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        let prefix = header::body_prefix(&h);
+        let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let sl = h.shard_len as usize;
+        let mut torn = bytes.clone();
+        // Destroy 9 shards so even soft present count may be tight; flip body bytes on all survivors.
+        for i in 0..9usize {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 7;
+        }
+        for i in 9..16usize {
+            let body_off = prefix + i * stride + lead;
+            for j in 0..sl.min(64) {
+                torn[body_off + j] ^= 0xa5;
+            }
+        }
+        assert!(crate::pieces::mend_bytes_ex(&torn, true).is_err());
     }
 
     #[test]
@@ -781,6 +890,42 @@ mod tests {
         }
         assert_eq!(off, orig);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cauchy_seal_unseal_true_name() {
+        let msg: Vec<u8> = (0..50_000).map(|i| (i % 251) as u8).collect();
+        let be = crate::CauchyRs::new();
+        let bytes = seal_kn_mds(
+            &msg,
+            Mode::Seal,
+            None,
+            "c.bin",
+            false,
+            "",
+            &[],
+            Some(16),
+            DEFAULT_PIECE,
+            &be,
+        )
+        .unwrap();
+        let out = unseal_ex_mds(&bytes, None, &[], &be).unwrap();
+        assert_eq!(out, msg);
+        assert_eq!(sha256(&out), sha256(&msg));
+        // Intact systematic mark: both backends can take the data-shard fast path.
+        // Wipe data shards 0..7 so decode must use Cauchy parity — Vandermonde then fails.
+        let h = read_header(&bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        let mut torn = bytes.clone();
+        for i in 0..8 {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 3;
+        }
+        assert!(unseal(&torn, None).is_err(), "Vandermonde must not decode Cauchy parity");
+        let healed = unseal_ex_mds(&torn, None, &[], &be).unwrap();
+        assert_eq!(healed, msg);
     }
 
     #[test]

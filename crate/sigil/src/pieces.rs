@@ -2,9 +2,10 @@
 //! Gather rebuilds a normal .sg1 from any k distinct pieces — originals or rain.
 
 use crate::header::{
-    body_prefix, locate_header, shard_stride, write_ember, write_header, Header, HEADER_SIZE, VOW_SIZE,
+    body_prefix, locate_header, shard_stride, write_ember, write_header, GradedShard, Header,
+    HEADER_SIZE, VOW_SIZE,
 };
-use crate::{header, rs, Result};
+use crate::{header, merkle, rs, sha256, Result};
 use std::fs;
 use std::path::Path;
 
@@ -161,40 +162,50 @@ pub fn vessel_present(dir: &Path) -> bool {
 }
 
 fn scan(dir: &Path) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec<(usize, Vec<u8>)>)> {
+    scan_dirs(&[dir])
+}
+
+/// Collect pieces from one or more folders (e.g. cold-USB `usb-*` dirs).
+fn scan_dirs(dirs: &[&Path]) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec<(usize, Vec<u8>)>)> {
     let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut map: Option<Vec<u8>> = None;
     let mut k = 0u8;
     let mut n = 0u8;
-    let rd = fs::read_dir(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    for ent in rd {
-        let ent = ent.map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let name = ent.file_name();
-        let name = name.to_string_lossy();
-        if !name.ends_with(".sgp") {
-            continue;
-        }
-        let raw = fs::read(ent.path()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        if raw.len() < 16 || raw[0..4] != PIECE_MAGIC {
-            continue;
-        }
-        let index = raw[5] as usize;
-        n = raw[6];
-        k = raw[7];
-        let map_len = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
-        if 12 + map_len + 4 > raw.len() {
-            continue;
-        }
-        if map.is_none() {
-            map = Some(raw[12..12 + map_len].to_vec());
-        }
-        let body_len = u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
-        let start = 16 + map_len;
-        if start + body_len > raw.len() {
-            continue;
-        }
-        let body = raw[start..start + body_len].to_vec();
-        if index <= MAX_INDEX {
-            parts.push((index, body));
+    for dir in dirs {
+        let rd = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for ent in rd {
+            let ent = ent.map_err(|e| crate::Error::Msg(e.to_string()))?;
+            let name = ent.file_name();
+            let name = name.to_string_lossy();
+            if !name.ends_with(".sgp") {
+                continue;
+            }
+            let raw = fs::read(ent.path()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            if raw.len() < 16 || raw[0..4] != PIECE_MAGIC {
+                continue;
+            }
+            let index = raw[5] as usize;
+            n = raw[6];
+            k = raw[7];
+            let map_len = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
+            if 12 + map_len + 4 > raw.len() {
+                continue;
+            }
+            if map.is_none() {
+                map = Some(raw[12..12 + map_len].to_vec());
+            }
+            let body_len = u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
+            let start = 16 + map_len;
+            if start + body_len > raw.len() {
+                continue;
+            }
+            let body = raw[start..start + body_len].to_vec();
+            if index <= MAX_INDEX && !parts.iter().any(|(i, _)| *i == index) {
+                parts.push((index, body));
+            }
         }
     }
     let map = map.ok_or(crate::Error::Msg("no pieces yet".into()))?;
@@ -253,49 +264,155 @@ fn vow_from_prefix(file: &[u8], h: &Header, prefix: usize) -> Option<Vec<u8>> {
     None
 }
 
-/// In-place mend: rebuild a healthy .sg1 from ≥k live shards in a torn mark.
+/// In-place mend: rebuild a healthy .sg1 from ≥k CRC-good shards in a torn mark.
 /// Glyph requires every shard; Seal/Reflection need any k.
 pub fn mend_bytes(file: &[u8]) -> Result<Vec<u8>> {
+    mend_bytes_ex(file, false).map(|(bytes, _)| bytes)
+}
+
+/// Soft-capable mend. When `soft`, falls back to graded Soft shards + GMD-lite
+/// after hard CRC-kill fails. Returns `(mark, used_soft_salvage)`.
+pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     if file.len() >= 4 && &file[0..4] == b"SGWK" {
         return Err(crate::Error::Msg(
             "this is a work pack of many marks. Mend each star.sg1.".into(),
         ));
     }
     let (h, prefix, _) = locate_header(file)?;
-    let live = header::gather_live_shards(file, &h, prefix);
     let n = h.n as usize;
     let k = h.k as usize;
-    let live_count = live.iter().filter(|s| s.is_some()).count();
+    let vow = vow_from_prefix(file, &h, prefix);
+
     if h.mode() == crate::Mode::Glyph {
+        let live = header::gather_live_shards(file, &h, prefix);
+        let live_count = live.iter().filter(|s| s.is_some()).count();
         if live.iter().any(|s| s.is_none()) {
             return Err(crate::Error::Msg(format!(
                 "Glyph needs all {n} shards, have {live_count}"
             )));
         }
         let shards: Vec<Vec<u8>> = live.into_iter().map(|s| s.expect("checked")).collect();
-        let vow = vow_from_prefix(file, &h, prefix);
-        return Ok(assemble_mark(&h, &shards, vow.as_deref()));
+        return Ok((assemble_mark(&h, &shards, vow.as_deref()), false));
     }
-    if live_count < k {
+
+    let live = header::gather_live_shards(file, &h, prefix);
+    let live_count = live.iter().filter(|s| s.is_some()).count();
+    if live_count >= k {
+        let parts: Vec<(usize, Vec<u8>)> = live
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|b| (i, b.clone())))
+            .collect();
+        match rs::decode_indexed(&parts, k, h.folded_len as usize, h.version >= 2) {
+            Ok(payload) if accept_folded(&h, &payload) => {
+                let shards: Vec<Vec<u8>> = (0..n)
+                    .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
+                    .collect();
+                return Ok((assemble_mark(&h, &shards, vow.as_deref()), false));
+            }
+            Ok(_) if !soft => {
+                return Err(crate::Error::Msg(
+                    "hard mend failed true-name/Merkle check (try --soft)".into(),
+                ));
+            }
+            Err(e) if !soft => return Err(e),
+            _ => {}
+        }
+    } else if !soft {
         return Err(crate::Error::Msg(format!(
             "need {k} live shards to mend, have {live_count}"
         )));
     }
-    let parts: Vec<(usize, Vec<u8>)> = live
+
+    // Soft path: keep CRC-failed bodies, stripe GMD-lite, gate on true-name/Merkle.
+    let graded = header::gather_graded_shards(file, &h, prefix);
+    let present = graded.iter().filter(|g| g.is_present()).count();
+    if present < k {
+        return Err(crate::Error::Msg(format!(
+            "soft mend needs {k} shards with some data, have {present} (hard live {live_count})"
+        )));
+    }
+    let parts: Vec<rs::SoftPart> = graded
         .iter()
         .enumerate()
-        .filter_map(|(i, s)| s.as_ref().map(|b| (i, b.clone())))
+        .filter_map(|(i, g)| match g {
+            GradedShard::Hard(b) => Some(rs::SoftPart {
+                index: i,
+                body: b.clone(),
+                hard: true,
+            }),
+            GradedShard::Soft(b) => Some(rs::SoftPart {
+                index: i,
+                body: b.clone(),
+                hard: false,
+            }),
+            GradedShard::Missing => None,
+        })
         .collect();
-    let payload = rs::decode_indexed(&parts, k, h.folded_len as usize, h.version >= 2)?;
-    let vow = vow_from_prefix(file, &h, prefix);
+
+    let systematic = h.version >= 2;
+    let payload = rs::decode_soft(
+        &parts,
+        k,
+        n,
+        h.folded_len as usize,
+        systematic,
+        |p| accept_folded(&h, p),
+    )?;
     let shards: Vec<Vec<u8>> = (0..n)
-        .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
+        .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
         .collect();
-    Ok(assemble_mark(&h, &shards, vow.as_deref()))
+    Ok((assemble_mark(&h, &shards, vow.as_deref()), true))
+}
+
+fn accept_folded(h: &Header, payload: &[u8]) -> bool {
+    if payload.len() != h.folded_len as usize {
+        return false;
+    }
+    let systematic = h.version >= 2;
+    let n = h.n as usize;
+    let k = h.k as usize;
+    let shards: Vec<Vec<u8>> = (0..n)
+        .map(|i| rs::encode_shard_index(payload, k, i, systematic))
+        .collect();
+    let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
+    if merkle::merkle_root(&leaves) != h.merkle {
+        return false;
+    }
+    if !h.encrypted() {
+        let unfolded = crate::chaos::unfold(payload, &h.salt);
+        let plain = if h.compressed() {
+            match inflate_local(&unfolded) {
+                Ok(p) => p,
+                Err(_) => return false,
+            }
+        } else {
+            unfolded
+        };
+        if plain.len() != h.orig_len as usize || sha256(&plain) != h.digest {
+            return false;
+        }
+    }
+    true
+}
+
+fn inflate_local(data: &[u8]) -> Result<Vec<u8>> {
+    use flate2::read::DeflateDecoder;
+    use std::io::Read;
+    let mut d = DeflateDecoder::new(data);
+    let mut out = Vec::new();
+    d.read_to_end(&mut out)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    Ok(out)
 }
 
 pub fn gather(dir: &Path) -> Result<Vec<u8>> {
-    let (mut shards, k, n, map, parts) = scan(dir)?;
+    gather_dirs(&[dir])
+}
+
+/// Rebuild a healthy .sg1 from pieces spread across several folders.
+pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
+    let (mut shards, k, n, map, parts) = scan_dirs(dirs)?;
     let (h, _, _) = locate_header(&map)?;
     if h.mode() == crate::Mode::Glyph {
         if shards.len() < n {

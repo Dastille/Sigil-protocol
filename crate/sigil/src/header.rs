@@ -140,6 +140,102 @@ pub fn shard_stride(h: &Header) -> usize {
     lead + h.shard_len as usize + 4
 }
 
+
+/// Soft-RS grading: CRC-good (Hard), present-but-CRC-fail (Soft), or absent.
+#[derive(Clone, Debug)]
+pub enum GradedShard {
+    Hard(Vec<u8>),
+    Soft(Vec<u8>),
+    Missing,
+}
+
+impl GradedShard {
+    #[allow(dead_code)]
+    pub fn body(&self) -> Option<&[u8]> {
+        match self {
+            GradedShard::Hard(b) | GradedShard::Soft(b) => Some(b),
+            GradedShard::Missing => None,
+        }
+    }
+    #[allow(dead_code)]
+    pub fn is_hard(&self) -> bool {
+        matches!(self, GradedShard::Hard(_))
+    }
+    pub fn is_present(&self) -> bool {
+        !matches!(self, GradedShard::Missing)
+    }
+}
+
+fn grade_shard(shard: Vec<u8>, crc: u32) -> GradedShard {
+    if crc32fast::hash(&shard) == crc {
+        GradedShard::Hard(shard)
+    } else {
+        GradedShard::Soft(shard)
+    }
+}
+
+/// Like [`gather_live_shards`], but keeps CRC-failed shard bodies as Soft for soft-RS salvage.
+pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<GradedShard> {
+    let n = h.n as usize;
+    let sl = h.shard_len as usize;
+    let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { VOW_SIZE } else { 0 };
+    let stride = shard_stride(h);
+    let mut live = vec![GradedShard::Missing; n];
+    if h.ember() {
+        struct Hit {
+            slot: usize,
+            grade: GradedShard,
+        }
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut i = 0usize;
+        while i + HEADER_SIZE <= file.len() {
+            if file[i..i + 4] != MAGIC_EMBER {
+                i += 1;
+                continue;
+            }
+            match parse_header(&file[i..], &MAGIC_EMBER) {
+                Ok(eh) if eh.merkle == h.merkle && eh.shard_len == h.shard_len => {
+                    let slot = (eh.entropy_milli >> 24) as usize;
+                    let off = i + lead;
+                    if off + sl + 4 <= file.len() {
+                        let shard = file[off..off + sl].to_vec();
+                        let crc = u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
+                        hits.push(Hit {
+                            slot,
+                            grade: grade_shard(shard, crc),
+                        });
+                    }
+                    i += HEADER_SIZE;
+                }
+                _ => i += 1,
+            }
+        }
+        let unique: std::collections::BTreeSet<usize> =
+            hits.iter().map(|h| h.slot).filter(|s| *s < n).collect();
+        let use_order = unique.len() < 2;
+        for (order, hit) in hits.into_iter().enumerate() {
+            let slot = if use_order { order } else { hit.slot };
+            if slot < n && matches!(live[slot], GradedShard::Missing) {
+                live[slot] = hit.grade;
+            }
+        }
+    }
+    let body = if prefix <= file.len() { &file[prefix..] } else { file };
+    for i in 0..n {
+        if !matches!(live[i], GradedShard::Missing) {
+            continue;
+        }
+        let off = i * stride + lead;
+        if off + sl + 4 > body.len() {
+            continue;
+        }
+        let shard = body[off..off + sl].to_vec();
+        let crc = u32::from_le_bytes(body[off + sl..off + sl + 4].try_into().unwrap());
+        live[i] = grade_shard(shard, crc);
+    }
+    live
+}
+
 /// Walk the file for Ember maps. A deleted byte only kills that piece; later pieces stay findable.
 pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<Vec<u8>>> {
     let n = h.n as usize;
