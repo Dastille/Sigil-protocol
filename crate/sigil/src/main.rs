@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
     add_to_constellation, attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces,
     gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
-    install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot,
+    install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot, mend_bytes,
     mend_scan, overture_report, pack_atlas, prepare_boot, run_open, run_showing, scry_constellation,
     scry_dir, scry_path, scatter_pieces, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
     unseal_dir_only, unseal_ex, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
@@ -146,6 +146,13 @@ enum Cmd {
         /// Wait for parts to show up. Write VESSEL when rebuilt so the sender can stop.
         #[arg(long)]
         watch: bool,
+    },
+    /// Rebuild a healthy .sg1 from live shards in a torn mark (no passphrase). Alias: repair.
+    #[command(visible_alias = "repair")]
+    Mend {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
     },
     /// Copy an existing mark with rsync, rclone, and/or wormhole.
     #[command(visible_alias = "send")]
@@ -815,6 +822,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("gathered mark → {}", output.display());
                 }
             }
+        }
+        Cmd::Mend { input, output } => {
+            let data = fs::read(&input)?;
+            let healed = mend_bytes(&data)?;
+            fs::write(&output, &healed)?;
+            let (h, merkle_ok, live, k, _) = sigil::verify(&healed)?;
+            println!(
+                "mended {} → {} (live {live}/{n}, need {k}, merkle {ok})",
+                input.display(),
+                output.display(),
+                n = h.n,
+                ok = if merkle_ok { "ok" } else { "open" }
+            );
         }
         Cmd::Dispatch {
             input,
