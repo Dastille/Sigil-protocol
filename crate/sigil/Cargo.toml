@@ -9,6 +9,8 @@ default-run = "sigil"
 
 [features]
 lab = ["dep:eframe", "dep:rfd"]
+# Opt-in Cauchy MDS (bake-off). Off by default — Vandermonde stays production.
+mds-cauchy = []
 
 [[bin]]
 name = "sigil-lab"

@@ -8,6 +8,7 @@ mod folder;
 mod fountain;
 mod gf;
 mod header;
+mod mds;
 mod merkle;
 mod open;
 mod pieces;
@@ -34,6 +35,10 @@ pub use folder::{inscribe_dir, is_dir_pack, scry_dir, unseal_dir, unseal_dir_onl
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
 pub use merkle::merkle_root;
+pub use mds::{
+    backend_by_name, default_backend, format_bakeoff_report, run_bakeoff, CauchyRs, MdsBackend,
+    MdsBenchRow, VandermondeRs,
+};
 pub use open::run_open;
 pub use pieces::{
     deluge as deluge_pieces, gather as gather_pieces, mend_bytes, mend_bytes_ex,
@@ -214,6 +219,33 @@ pub fn seal_kn(
     shards: Option<u8>,
     piece_bytes: u32,
 ) -> Result<Vec<u8>> {
+    seal_kn_mds(
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        &*mds::default_backend(),
+    )
+}
+
+/// Like `seal_kn`, but encode with an explicit MDS backend (Cauchy opt-in).
+pub fn seal_kn_mds(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    mds_be: &dyn mds::MdsBackend,
+) -> Result<Vec<u8>> {
     let (k, n) = choose_kn(mode, data.len() as u64, piece_bytes, shards);
     let digest = sha256(data);
     let mut salt = [0u8; 16];
@@ -238,7 +270,7 @@ pub fn seal_kn(
     let shards = if matches!(mode, Mode::Glyph) {
         rs::stripe(&folded, n)
     } else {
-        rs::encode_shards(&folded, k, n)
+        mds_be.encode(&folded, k, n)
     };
     let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
     let merkle = merkle::merkle_root(&leaves);
@@ -300,6 +332,16 @@ pub fn unseal(file: &[u8], pass: Option<&str>) -> Result<Vec<u8>> {
 }
 
 pub fn unseal_ex(file: &[u8], pass: Option<&str>, companions: &[Vec<u8>]) -> Result<Vec<u8>> {
+    unseal_ex_mds(file, pass, companions, &*mds::default_backend())
+}
+
+/// Like `unseal_ex`, but decode with an explicit MDS backend (must match seal).
+pub fn unseal_ex_mds(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    mds_be: &dyn mds::MdsBackend,
+) -> Result<Vec<u8>> {
     let (h, prefix, _) = locate_header(file)?;
     if h.vow() {
         let vow_off = prefix.saturating_sub(header::VOW_SIZE);
@@ -325,8 +367,10 @@ pub fn unseal_ex(file: &[u8], pass: Option<&str>, companions: &[Vec<u8>]) -> Res
     let k = h.k as usize;
     let folded = if h.mode() == Mode::Glyph {
         rs::unstripe(&live, h.folded_len as usize)?
-    } else {
+    } else if mds_be.name() == "vandermonde" {
         rs::decode_shards(&live, k, h.folded_len as usize, h.version >= 2)?
+    } else {
+        mds_be.decode(&live, k, h.folded_len as usize)?
     };
     let mut folded = folded;
     let p = pass.unwrap_or("").trim();
@@ -843,6 +887,42 @@ mod tests {
         }
         assert_eq!(off, orig);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cauchy_seal_unseal_true_name() {
+        let msg: Vec<u8> = (0..50_000).map(|i| (i % 251) as u8).collect();
+        let be = crate::CauchyRs::new();
+        let bytes = seal_kn_mds(
+            &msg,
+            Mode::Seal,
+            None,
+            "c.bin",
+            false,
+            "",
+            &[],
+            Some(16),
+            DEFAULT_PIECE,
+            &be,
+        )
+        .unwrap();
+        let out = unseal_ex_mds(&bytes, None, &[], &be).unwrap();
+        assert_eq!(out, msg);
+        assert_eq!(sha256(&out), sha256(&msg));
+        // Intact systematic mark: both backends can take the data-shard fast path.
+        // Wipe data shards 0..7 so decode must use Cauchy parity — Vandermonde then fails.
+        let h = read_header(&bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        let mut torn = bytes.clone();
+        for i in 0..8 {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 3;
+        }
+        assert!(unseal(&torn, None).is_err(), "Vandermonde must not decode Cauchy parity");
+        let healed = unseal_ex_mds(&torn, None, &[], &be).unwrap();
+        assert_eq!(healed, msg);
     }
 
     #[test]

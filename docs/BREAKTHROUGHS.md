@@ -15,6 +15,7 @@ Lab: https://dove-bloom-star-island.grok.me
 - **RaptorQ fountain** — `--fountain` / `.rq` packets via `deluge_fountain` / `gather_fountain` (no 255 ceiling).
 - **In-place mend** — `sigil mend torn.sg1 -o healed.sg1` (alias `repair`): locate header → gather live shards → decode ≥`k` → re-encode classic `0..n-1` → rewrite full mark (keystone / ember / vow). No passphrase; stays in the folded domain. Glyph errors if any shard is missing.
 - **Soft-decision RS (opt-in)** — `sigil mend --soft`: when Hard CRC-kill leaves too few shards, keep Soft (CRC-failed) bodies, stripe GMD-lite, accept only on Merkle / true-name. Not a Ward or RaptorQ substitute; no layout break.
+- **Cauchy MDS bake-off** — `MdsBackend` + `sigil bench-mds`; Cauchy opt-in (`--mds cauchy`) after measured encode/decode win; Vandermonde remains default. See `docs/CAUCHY-BAKEOFF.md`.
 
 ## Gaps still open
 
@@ -35,6 +36,7 @@ Lab: https://dove-bloom-star-island.grok.me
 ## Math notes
 
 - Vandermonde RS over GF(256) is in `rs.rs` / `gf.rs` (systematic v2).
+- Cauchy RS opt-in in `mds.rs` (systematic coding matrix); not the wire default.
 - Indexed RS rain and RaptorQ are **already** the fountain/regeneration tools — not a future invention on this branch.
 - Order must stay: compress → fold → Ward (never encrypt then compress).
 - Prove same true name from: full `.sg1` | any `k` shards + Ember | piece folder gather | fountain gather | mend rewrite.

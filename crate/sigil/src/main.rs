@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
     add_to_constellation, attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces,
-    gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
+    backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
     install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot, mend_bytes_ex,
-    mend_scan, overture_report, pack_atlas, prepare_boot, run_open, run_showing, scry_constellation,
-    scry_dir, scry_path, scatter_pieces, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
-    unseal_dir_only, unseal_ex, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
+    mend_scan, overture_report, pack_atlas, prepare_boot, run_bakeoff, run_open, run_showing, scry_constellation,
+    scry_dir, scry_path, scatter_pieces, seal_kn_mds, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
+    unseal_dir_only, unseal_ex, unseal_ex_mds, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
     BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, OVERTURE, VESSEL,
 };
 use std::fs;
@@ -60,6 +60,10 @@ enum Cmd {
         /// Opt-in FastCDC chunking: `media` (1/4/8 MiB) or `dedup` (256KiB/1/4 MiB). Default = fixed 4 MiB.
         #[arg(long, value_enum)]
         cdc: Option<CdcArg>,
+        /// MDS backend: vandermonde (default) or cauchy (opt-in after bake-off win). Env SIGIL_MDS.
+        /// Cauchy is experimental (no header marker) — De-scribe with the same --mds. Single-star .sg1 only.
+        #[arg(long, default_value = "vandermonde")]
+        mds: String,
         #[arg(long)]
         pieces: Option<PathBuf>,
         /// rsync destination, e.g. user@host:/backup/  (your usual truck)
@@ -97,6 +101,9 @@ enum Cmd {
         /// Work pack: stop at this payload offset (MiB)
         #[arg(long)]
         to_mb: Option<u32>,
+        /// Must match Inscribe --mds when Cauchy was used. Env SIGIL_MDS.
+        #[arg(long, default_value = "vandermonde")]
+        mds: String,
     },
     Verify {
         input: PathBuf,
@@ -255,6 +262,13 @@ enum Cmd {
     Constellation {
         #[command(subcommand)]
         cmd: SkyCmd,
+    },
+    /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
+    #[command(name = "bench-mds")]
+    BenchMds {
+        /// Iterations per (backend, k/n, size). Default 3.
+        #[arg(long, default_value_t = 3)]
+        iters: usize,
     },
 }
 
@@ -554,6 +568,23 @@ fn classify_exit(msg: &str) -> i32 {
     }
 }
 
+fn resolve_mds(cli: &str) -> Result<Box<dyn sigil::MdsBackend>, String> {
+    let from_cli = cli.trim().to_ascii_lowercase();
+    let name = if from_cli != "vandermonde" && !from_cli.is_empty() {
+        from_cli
+    } else {
+        std::env::var("SIGIL_MDS")
+            .ok()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "vandermonde".into())
+    };
+    // Bake-off measured a clear win; --mds cauchy is opt-in. Vandermonde stays default.
+    // Feature `mds-cauchy` documents the opt-in; Cauchy code is always compiled for benches.
+    let _ = cfg!(feature = "mds-cauchy");
+    backend_by_name(&name).map_err(|e| e.to_string())
+}
+
 fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.cmd {
         Cmd::Seal {
@@ -570,6 +601,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             shards,
             overture_mb,
             cdc,
+            mds,
             pieces,
             rsync,
             rclone,
@@ -580,6 +612,37 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let wards = parse_wards(&ward)?;
             let pass = resolve_pass(pass, talisman)?;
             let piece_bytes = piece_mb.saturating_mul(1024 * 1024).max(64 * 1024);
+            let mds_be = resolve_mds(&mds)?;
+            if mds_be.name() != "vandermonde" {
+                if input.is_dir() || pieces.is_some() || cdc.is_some() {
+                    return Err(
+                        "Cauchy --mds is single-star .sg1 only (no folder / --pieces / --cdc yet)".into(),
+                    );
+                }
+                let data = fs::read(&input)?;
+                let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+                let sg1 = seal_kn_mds(
+                    &data,
+                    mode.into(),
+                    pass.as_deref(),
+                    name,
+                    false,
+                    cov,
+                    &geas,
+                    shards,
+                    piece_bytes,
+                    &*mds_be,
+                )?;
+                fs::write(&output, &sg1)?;
+                println!(
+                    "inscribed {} bytes → {} (mds {})",
+                    data.len(),
+                    output.display(),
+                    mds_be.name()
+                );
+                dispatch(&output, &rsync, &rclone, wormhole, false)?;
+                return Ok(());
+            }
             if input.is_dir() {
                 if pieces.is_some() {
                     return Err("folder Inscribe writes one pack. Omit --pieces.".into());
@@ -657,10 +720,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             star,
             from_mb,
             to_mb,
+            mds,
         } => {
             let companions = companion_bytes(&bind)?;
             let wards = parse_wards(&ward)?;
             let pass = resolve_pass(pass, talisman)?;
+            let mds_be = resolve_mds(&mds)?;
+            if mds_be.name() != "vandermonde" {
+                if star.is_some() || from_mb.is_some() || to_mb.is_some() || is_dir_pack(&input) || is_constellation_input(&input) {
+                    return Err("Cauchy --mds De-scribe is plain .sg1 only for now".into());
+                }
+                let data = fs::read(&input)?;
+                let plain = unseal_ex_mds(&data, pass.as_deref(), &companions, &*mds_be)?;
+                let n = plain.len();
+                fs::write(&output, &plain)?;
+                println!("de-scribed {n} bytes → {} (mds {})", output.display(), mds_be.name());
+                return Ok(());
+            }
             if star.is_some() || from_mb.is_some() || to_mb.is_some() {
                 let (head, _) = sigil::index_pack(&input)?;
                 let from = if let Some(s) = star {
@@ -982,6 +1058,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
+        Cmd::BenchMds { iters } => {
+            let rows = run_bakeoff(iters);
+            let (report, _keep) = format_bakeoff_report(&rows);
+            print!("{report}");
+        }
     }
     Ok(())
 }
