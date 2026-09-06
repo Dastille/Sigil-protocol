@@ -5,6 +5,7 @@ use sigil::{
     install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot, mend_bytes_ex,
     mend_scan, overture_report, pack_atlas, prepare_boot, run_bakeoff, run_open, run_showing, scry_constellation,
     scry_dir, scry_path, scatter_pieces, seal_kn_mds, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
+    place_kit, mend_kit,
     unseal_dir_only, unseal_ex, unseal_ex_mds, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
     BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, OVERTURE, VESSEL,
 };
@@ -263,12 +264,38 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SkyCmd,
     },
+    /// Cold-USB kit: spread a Seal across sticks (Option A placement). Alias: cold-usb.
+    #[command(visible_alias = "cold-usb")]
+    Kit {
+        #[command(subcommand)]
+        cmd: KitCmd,
+    },
     /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
     #[command(name = "bench-mds")]
     BenchMds {
         /// Iterations per (backend, k/n, size). Default 3.
         #[arg(long, default_value_t = 3)]
         iters: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum KitCmd {
+    /// Round-robin pieces into usb-0..usb-(N-1) plus a KIT manifest (Option A).
+    Place {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// How many USB directories (default 4 → 4 shards each for Seal 16).
+        #[arg(long, default_value_t = 4)]
+        drives: usize,
+    },
+    /// Rebuild a healthy .sg1 from the remaining usb-* folders after a drive loss.
+    Mend {
+        /// Kit folder that still has the surviving usb-* dirs (+ KIT).
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
     },
 }
 
@@ -1058,10 +1085,45 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
+        Cmd::Kit { cmd } => run_kit(cmd)?,
         Cmd::BenchMds { iters } => {
             let rows = run_bakeoff(iters);
             let (report, _keep) = format_bakeoff_report(&rows);
             print!("{report}");
+        }
+    }
+    Ok(())
+}
+
+fn run_kit(cmd: KitCmd) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        KitCmd::Place {
+            input,
+            output,
+            drives,
+        } => {
+            let data = fs::read(&input)?;
+            let report = place_kit(&data, &output, drives)?;
+            println!(
+                "cold-USB kit Option A → {}  drives={} pieces={} ({} each) star={}",
+                output.display(),
+                report.drives,
+                report.pieces,
+                report
+                    .per_drive
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                &report.star_id[..8.min(report.star_id.len())],
+            );
+            println!("copy each usb-* folder to its own stick. Lose one stick → sigil kit mend");
+        }
+        KitCmd::Mend { input, output } => {
+            let healed = mend_kit(&input)?;
+            let n = healed.len();
+            fs::write(&output, &healed)?;
+            println!("kit mend {n} bytes → {}", output.display());
         }
     }
     Ok(())

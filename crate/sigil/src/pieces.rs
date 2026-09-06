@@ -162,40 +162,50 @@ pub fn vessel_present(dir: &Path) -> bool {
 }
 
 fn scan(dir: &Path) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec<(usize, Vec<u8>)>)> {
+    scan_dirs(&[dir])
+}
+
+/// Collect pieces from one or more folders (e.g. cold-USB `usb-*` dirs).
+fn scan_dirs(dirs: &[&Path]) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec<(usize, Vec<u8>)>)> {
     let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut map: Option<Vec<u8>> = None;
     let mut k = 0u8;
     let mut n = 0u8;
-    let rd = fs::read_dir(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    for ent in rd {
-        let ent = ent.map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let name = ent.file_name();
-        let name = name.to_string_lossy();
-        if !name.ends_with(".sgp") {
-            continue;
-        }
-        let raw = fs::read(ent.path()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        if raw.len() < 16 || raw[0..4] != PIECE_MAGIC {
-            continue;
-        }
-        let index = raw[5] as usize;
-        n = raw[6];
-        k = raw[7];
-        let map_len = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
-        if 12 + map_len + 4 > raw.len() {
-            continue;
-        }
-        if map.is_none() {
-            map = Some(raw[12..12 + map_len].to_vec());
-        }
-        let body_len = u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
-        let start = 16 + map_len;
-        if start + body_len > raw.len() {
-            continue;
-        }
-        let body = raw[start..start + body_len].to_vec();
-        if index <= MAX_INDEX {
-            parts.push((index, body));
+    for dir in dirs {
+        let rd = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for ent in rd {
+            let ent = ent.map_err(|e| crate::Error::Msg(e.to_string()))?;
+            let name = ent.file_name();
+            let name = name.to_string_lossy();
+            if !name.ends_with(".sgp") {
+                continue;
+            }
+            let raw = fs::read(ent.path()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            if raw.len() < 16 || raw[0..4] != PIECE_MAGIC {
+                continue;
+            }
+            let index = raw[5] as usize;
+            n = raw[6];
+            k = raw[7];
+            let map_len = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
+            if 12 + map_len + 4 > raw.len() {
+                continue;
+            }
+            if map.is_none() {
+                map = Some(raw[12..12 + map_len].to_vec());
+            }
+            let body_len = u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
+            let start = 16 + map_len;
+            if start + body_len > raw.len() {
+                continue;
+            }
+            let body = raw[start..start + body_len].to_vec();
+            if index <= MAX_INDEX && !parts.iter().any(|(i, _)| *i == index) {
+                parts.push((index, body));
+            }
         }
     }
     let map = map.ok_or(crate::Error::Msg("no pieces yet".into()))?;
@@ -397,7 +407,12 @@ fn inflate_local(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn gather(dir: &Path) -> Result<Vec<u8>> {
-    let (mut shards, k, n, map, parts) = scan(dir)?;
+    gather_dirs(&[dir])
+}
+
+/// Rebuild a healthy .sg1 from pieces spread across several folders.
+pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
+    let (mut shards, k, n, map, parts) = scan_dirs(dirs)?;
     let (h, _, _) = locate_header(&map)?;
     if h.mode() == crate::Mode::Glyph {
         if shards.len() < n {
