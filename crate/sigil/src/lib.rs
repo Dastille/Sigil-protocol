@@ -35,8 +35,8 @@ pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, 
 pub use merkle::merkle_root;
 pub use open::run_open;
 pub use pieces::{
-    deluge as deluge_pieces, gather as gather_pieces, scatter as scatter_pieces, tally as tally_pieces,
-    vessel_present, write_vessel, VESSEL,
+    deluge as deluge_pieces, gather as gather_pieces, mend_bytes, scatter as scatter_pieces,
+    tally as tally_pieces, vessel_present, write_vessel, VESSEL,
 };
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,
@@ -674,6 +674,44 @@ mod tests {
         inscribe_path(&src, &packed, Mode::Glyph, None, "", &[], DEFAULT_CHUNK, None, 0, 64).unwrap();
         assert_eq!(suggested_output_name(&packed), "notes.txt");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mend_torn_seal() {
+        let msg = b"mend me in place please -- longer for deflate";
+        let bytes = seal(msg, Mode::Seal, None, "t.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let mut torn = bytes.clone();
+        let stride = header::shard_stride(&h);
+        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        // Smash half the shards (Seal budget = 8 of 16).
+        for i in 0..8 {
+            let off = prefix + i * stride;
+            torn[off..off + stride].fill(0);
+            torn[off] = 3;
+        }
+        let healed = crate::pieces::mend_bytes(&torn).unwrap();
+        let (_, merkle_ok, live, k, _) = verify(&healed).unwrap();
+        assert!(merkle_ok);
+        assert_eq!(live, 16);
+        assert_eq!(k, 8);
+        assert_eq!(unseal(&healed, None).unwrap(), msg);
+    }
+
+    #[test]
+    fn mend_glyph_errors() {
+        let msg = b"glyph cannot mend a missing shard";
+        let bytes = seal(msg, Mode::Glyph, None, "g.txt", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let mut torn = bytes.clone();
+        let stride = header::shard_stride(&h);
+        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        torn[prefix..prefix + stride].fill(0);
+        torn[prefix] = 3;
+        assert!(crate::pieces::mend_bytes(&torn).is_err());
+        // All shards present: mend succeeds and round-trips.
+        let healed = crate::pieces::mend_bytes(&bytes).unwrap();
+        assert_eq!(unseal(&healed, None).unwrap(), msg);
     }
 
     #[test]

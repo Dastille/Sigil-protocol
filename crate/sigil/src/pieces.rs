@@ -215,6 +215,85 @@ fn scan(dir: &Path) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec
     Ok((shards, k, n, map, parts))
 }
 
+/// Rewrite a healthy classic mark (keystone / vow / ember / shards) from payload shards.
+fn assemble_mark(h: &Header, shards: &[Vec<u8>], vow: Option<&[u8]>) -> Vec<u8> {
+    let hdr = write_header(h);
+    let mut out = if h.keystone() {
+        header::wrap_keystone(&hdr)
+    } else {
+        hdr.clone()
+    };
+    if let Some(v) = vow {
+        out.extend_from_slice(v);
+    }
+    for (i, s) in shards.iter().enumerate() {
+        let body = pack_stride(&hdr, h, s, i as u8, vow);
+        out.extend_from_slice(&body);
+    }
+    out
+}
+
+fn vow_from_prefix(file: &[u8], h: &Header, prefix: usize) -> Option<Vec<u8>> {
+    if !h.vow() {
+        return None;
+    }
+    let vow_off = prefix.saturating_sub(VOW_SIZE);
+    if let Some(slice) = file.get(vow_off..vow_off + VOW_SIZE) {
+        if header::read_vow(slice).is_some() {
+            return Some(slice.to_vec());
+        }
+    }
+    // Ember stride may still carry the Vow when the front map is gone.
+    let ember_vow = prefix + HEADER_SIZE;
+    if let Some(slice) = file.get(ember_vow..ember_vow + VOW_SIZE) {
+        if header::read_vow(slice).is_some() {
+            return Some(slice.to_vec());
+        }
+    }
+    None
+}
+
+/// In-place mend: rebuild a healthy .sg1 from ≥k live shards in a torn mark.
+/// Glyph requires every shard; Seal/Reflection need any k.
+pub fn mend_bytes(file: &[u8]) -> Result<Vec<u8>> {
+    if file.len() >= 4 && &file[0..4] == b"SGWK" {
+        return Err(crate::Error::Msg(
+            "this is a work pack of many marks. Mend each star.sg1.".into(),
+        ));
+    }
+    let (h, prefix, _) = locate_header(file)?;
+    let live = header::gather_live_shards(file, &h, prefix);
+    let n = h.n as usize;
+    let k = h.k as usize;
+    let live_count = live.iter().filter(|s| s.is_some()).count();
+    if h.mode() == crate::Mode::Glyph {
+        if live.iter().any(|s| s.is_none()) {
+            return Err(crate::Error::Msg(format!(
+                "Glyph needs all {n} shards, have {live_count}"
+            )));
+        }
+        let shards: Vec<Vec<u8>> = live.into_iter().map(|s| s.expect("checked")).collect();
+        let vow = vow_from_prefix(file, &h, prefix);
+        return Ok(assemble_mark(&h, &shards, vow.as_deref()));
+    }
+    if live_count < k {
+        return Err(crate::Error::Msg(format!(
+            "need {k} live shards to mend, have {live_count}"
+        )));
+    }
+    let parts: Vec<(usize, Vec<u8>)> = live
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| s.as_ref().map(|b| (i, b.clone())))
+        .collect();
+    let payload = rs::decode_indexed(&parts, k, h.folded_len as usize, h.version >= 2)?;
+    let vow = vow_from_prefix(file, &h, prefix);
+    let shards: Vec<Vec<u8>> = (0..n)
+        .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
+        .collect();
+    Ok(assemble_mark(&h, &shards, vow.as_deref()))
+}
+
 pub fn gather(dir: &Path) -> Result<Vec<u8>> {
     let (mut shards, k, n, map, parts) = scan(dir)?;
     let (h, _, _) = locate_header(&map)?;
@@ -238,7 +317,6 @@ pub fn gather(dir: &Path) -> Result<Vec<u8>> {
         return Err(crate::Error::Msg(format!("need {k} pieces, have {}", shards.len())));
     }
     let payload = rs::decode_indexed(&shards, k, h.folded_len as usize, h.version >= 2)?;
-    let hdr = write_header(&h);
     let vow = if h.vow() && map.len() >= body_prefix(&h) {
         let p = body_prefix(&h);
         if p >= VOW_SIZE {
@@ -249,17 +327,8 @@ pub fn gather(dir: &Path) -> Result<Vec<u8>> {
     } else {
         None
     };
-    let mut out = map;
-    let pfx = body_prefix(&h);
-    if out.len() > pfx {
-        out.truncate(pfx);
-    } else if out.len() < pfx {
-        out.resize(pfx, 0);
-    }
-    for i in 0..n {
-        let shard = rs::encode_shard_index(&payload, k, i, h.version >= 2);
-        let body = pack_stride(&hdr, &h, &shard, i as u8, vow.as_deref());
-        out.extend_from_slice(&body);
-    }
-    Ok(out)
+    let rebuilt: Vec<Vec<u8>> = (0..n)
+        .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
+        .collect();
+    Ok(assemble_mark(&h, &rebuilt, vow.as_deref()))
 }

@@ -25,7 +25,7 @@ getrandom = "0.2"
 hex = "0.4"
 hmac = "0.12"
 pbkdf2 = "0.12"
-raptorq = "2"
+raptorq = "=2.0.0"
 sha2 = "0.10"
 thiserror = "1"
 eframe = { version = "0.31", optional = true }
