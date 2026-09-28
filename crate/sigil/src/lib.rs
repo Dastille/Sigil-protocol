@@ -11,6 +11,7 @@ mod header;
 mod kit;
 mod mds;
 mod merkle;
+mod nest;
 mod open;
 mod pieces;
 mod rs;
@@ -32,7 +33,11 @@ pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
     pack_atlas, scry_constellation, unseal_constellation, AddOpts, AddReport,
 };
-pub use folder::{inscribe_dir, is_dir_pack, scry_dir, unseal_dir, unseal_dir_only};
+pub use folder::{inscribe_dir, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_only, DirEntry};
+pub use nest::{
+    is_nestable_bytes, kind_of_bytes, path_extract, path_list, path_walk, refuse_if_cycle, NestKind,
+    PathEntry, PathView, MAX_NEST_DEPTH,
+};
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
 pub use merkle::merkle_root;

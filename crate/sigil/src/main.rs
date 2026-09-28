@@ -3,11 +3,11 @@ use sigil::{
     add_to_constellation, attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces,
     backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
     install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot, mend_bytes_ex,
-    mend_scan, overture_report, pack_atlas, prepare_boot, run_bakeoff, run_open, run_showing, scry_constellation,
+    mend_scan, overture_report, pack_atlas, path_extract, path_walk, prepare_boot, run_bakeoff, run_open, run_showing, scry_constellation,
     scry_dir, scry_path, scatter_pieces, seal_kn_mds, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
     place_kit, mend_kit,
     unseal_dir_only, unseal_ex, unseal_ex_mds, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
-    BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, OVERTURE, VESSEL,
+    BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -269,6 +269,29 @@ enum Cmd {
     Kit {
         #[command(subcommand)]
         cmd: KitCmd,
+    },
+    /// Walk nested .sg1 seals (breadcrumb) without unpacking the durable store. Aliases: walk, ls.
+    #[command(visible_aliases = ["walk", "ls"])]
+    Path {
+        /// Outer .sg1 (folder pack or single-file mark)
+        input: PathBuf,
+        /// Breadcrumb segments (positional). Same as repeating --into.
+        segments: Vec<String>,
+        /// Descend into this entry / nest layer (repeatable). Use `.` to unwrap a single-file nest.
+        #[arg(long = "into")]
+        into: Vec<String>,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long = "ward")]
+        ward: Vec<String>,
+        /// Max nest depth (hard cap 32).
+        #[arg(long, default_value_t = MAX_NEST_DEPTH)]
+        depth: usize,
+        /// Extract the current view (nested mark or leaf bytes) to this path — temp-friendly; outer .sg1 unchanged.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
     /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
     #[command(name = "bench-mds")]
@@ -1086,6 +1109,32 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
         Cmd::Kit { cmd } => run_kit(cmd)?,
+        Cmd::Path {
+            input,
+            segments,
+            into,
+            pass,
+            talisman,
+            ward,
+            depth,
+            output,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let wards = parse_wards(&ward)?;
+            let mut steps = into;
+            steps.extend(segments);
+            let view = path_walk(&input, &steps, pass.as_deref(), &wards, depth)?;
+            println!("{}", view.format());
+            if let Some(dest) = output {
+                let (written, trail) =
+                    path_extract(&input, &steps, &dest, pass.as_deref(), &wards, depth)?;
+                println!(
+                    "extracted {} → {} (outer .sg1 unchanged)",
+                    trail.join(" → "),
+                    written.display()
+                );
+            }
+        }
         Cmd::BenchMds { iters } => {
             let rows = run_bakeoff(iters);
             let (report, _keep) = format_bakeoff_report(&rows);
