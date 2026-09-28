@@ -145,5 +145,27 @@ Shrink still runs **before** the Ward. Encrypted bytes do not shrink.
 On the far computer: `sha256sum dump.sg1` then `./sigil scry dump.sg1` then `./sigil de-scribe -o dump.sql dump.sg1`.
 
 
+
+**Mount (read-only FUSE / export-dir)**
+
+Apps see normal paths; cleartext stays in RAM (FUSE) or a temp tree (`--export-dir`). The `.sg1` is never rewritten. Read-only for this spike — no dirty/re-seal.
+
+```
+# FUSE (Linux/Parrot: needs /dev/fuse + fusermount3; usually in the `fuse3` package)
+mkdir -p ./view
+./sigil mount tree.sg1 ./view
+# Warded: --pass house --ward photos/secret.jpg=room
+# Vault tip: ./sigil mount ./notes.txt ./view --vault
+ls ./view
+./sigil umount ./view
+# or: fusermount3 -u ./view
+
+# No FUSE / containers: same API, materialize a read-only tree (seal stays intact)
+mkdir -p /tmp/sigil-view
+./sigil mount tree.sg1 ./view --export-dir /tmp/sigil-view
+```
+
+Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`).
+
 AGPL-3.0.
 

@@ -316,6 +316,28 @@ fn entry_by_n<'a>(chart: &'a Chart, n: u32) -> Result<&'a VersionEntry> {
         .ok_or_else(|| crate::Error::Msg(format!("version v{n} not in CHART")))
 }
 
+/// Path to the tip version seal (`vN.sg1`) for a live file or `.sgv` chart dir.
+pub fn tip_seal_path(path: &Path) -> Result<(PathBuf, u32)> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    if !vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "not tracked (no {}). Run `sigil vault track` first.",
+            vault_dir.display()
+        )));
+    }
+    let chart = load_chart(&vault_dir)?;
+    let entry = entry_by_n(&chart, chart.tip)?;
+    let seal = chart.vault_dir.join(&entry.seal);
+    if !seal.is_file() {
+        return Err(crate::Error::Msg(format!(
+            "missing tip seal {} for v{}",
+            seal.display(),
+            chart.tip
+        )));
+    }
+    Ok((seal, chart.tip))
+}
+
 fn payload_name(live: &Path) -> String {
     live.file_name()
         .and_then(|n| n.to_str())
