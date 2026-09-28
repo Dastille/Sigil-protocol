@@ -201,7 +201,11 @@ pub fn scry_dir(input: &Path) -> Result<String> {
         out.push('\n');
     }
     for e in &entries {
-        out.push_str("file  ");
+        if e.nest {
+            out.push_str("nest  ");
+        } else {
+            out.push_str("file  ");
+        }
         out.push_str(&e.path);
         if let Some(n) = e.orig {
             out.push_str(&format!("  {n} bytes"));
@@ -214,6 +218,10 @@ pub fn scry_dir(input: &Path) -> Result<String> {
 pub struct DirEntry {
     pub path: String,
     pub orig: Option<u64>,
+    /// Likely a nested .sg1 / work pack (by name or peeked magic).
+    pub nest: bool,
+    /// Payload true-name digest from the entry's star header, when readable.
+    pub digest: Option<[u8; 32]>,
 }
 
 pub fn list_dir_pack(input: &Path) -> Result<Vec<DirEntry>> {
@@ -248,6 +256,7 @@ pub fn list_dir_pack(input: &Path) -> Result<Vec<DirEntry>> {
             reader.read_exact(&mut peek).map_err(io)?;
         }
         let orig = peek_orig(&peek);
+        let (nest, digest) = peek_nest(&peek, &path);
         let mut left = slen.saturating_sub(peek_n as u64);
         let mut buf = vec![0u8; 64 * 1024];
         while left > 0 {
@@ -255,7 +264,7 @@ pub fn list_dir_pack(input: &Path) -> Result<Vec<DirEntry>> {
             reader.read_exact(&mut buf[..take]).map_err(io)?;
             left -= take as u64;
         }
-        entries.push(DirEntry { path, orig });
+        entries.push(DirEntry { path, orig, nest, digest });
     }
     Ok(entries)
 }
@@ -282,4 +291,76 @@ pub fn is_dir_pack(path: &Path) -> bool {
         }
     }
     false
+}
+
+/// True when a relative path looks like a nested seal (by extension).
+pub fn looks_like_nest_name(path: &str) -> bool {
+    let p = path.trim().replace('\\', "/");
+    let base = p.rsplit('/').next().unwrap_or(p.as_str());
+    let lower = base.to_ascii_lowercase();
+    lower.ends_with(".sg1") || lower.ends_with(".sgwk")
+}
+
+/// Peek nest flag + true-name digest from the first bytes of a star.
+fn peek_nest(peek: &[u8], path: &str) -> (bool, Option<[u8; 32]>) {
+    let mut nest = looks_like_nest_name(path);
+    let mut digest = None;
+    if peek.starts_with(&crate::work::WORK_MAGIC) {
+        nest = true;
+    } else if peek.starts_with(&DIR_MAGIC) {
+        nest = true;
+    } else if let Ok((h, _, _)) = crate::locate_header(peek) {
+        digest = Some(h.digest);
+        if looks_like_nest_name(&h.name) {
+            nest = true;
+        }
+    }
+    (nest, digest)
+}
+
+/// Stream one entry's star bytes out of an SGDR pack (no full unpack to disk).
+pub fn read_dir_entry_star(input: &Path, want: &str) -> Result<Vec<u8>> {
+    let want = want.trim().trim_start_matches("./");
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    let mut mag = [0u8; 4];
+    reader.read_exact(&mut mag).map_err(io)?;
+    if mag != DIR_MAGIC {
+        return Err(crate::Error::Msg("not a folder pack (SGDR)".into()));
+    }
+    let mut ver = [0u8; 1];
+    reader.read_exact(&mut ver).map_err(io)?;
+    if ver[0] != 1 {
+        return Err(crate::Error::Msg(format!("unknown folder pack version {}", ver[0])));
+    }
+    let mut nbuf = [0u8; 4];
+    reader.read_exact(&mut nbuf).map_err(io)?;
+    let n = u32::from_le_bytes(nbuf);
+    for _ in 0..n {
+        let mut lb = [0u8; 2];
+        reader.read_exact(&mut lb).map_err(io)?;
+        let nlen = u16::from_le_bytes(lb) as usize;
+        let mut name = vec![0u8; nlen];
+        reader.read_exact(&mut name).map_err(io)?;
+        let rel = String::from_utf8_lossy(&name).into_owned();
+        let mut sl = [0u8; 8];
+        reader.read_exact(&mut sl).map_err(io)?;
+        let slen = u64::from_le_bytes(sl) as usize;
+        if rel == want {
+            let mut star = vec![0u8; slen];
+            if slen > 0 {
+                reader.read_exact(&mut star).map_err(io)?;
+            }
+            return Ok(star);
+        }
+        let mut left = slen;
+        let mut buf = vec![0u8; 64 * 1024];
+        while left > 0 {
+            let take = left.min(buf.len());
+            reader.read_exact(&mut buf[..take]).map_err(io)?;
+            left -= take;
+        }
+    }
+    Err(crate::Error::Msg(format!(
+        "no entry '{want}' in folder pack (Scry / path to list)"
+    )))
 }
