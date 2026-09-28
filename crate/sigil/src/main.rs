@@ -7,6 +7,8 @@ use sigil::{
     scry_dir, scry_path, scatter_pieces, seal_kn_mds, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
     place_kit, mend_kit,
     unseal_dir_only, unseal_ex, unseal_ex_mds, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
+    vault_commit, vault_format_status, vault_format_versions, vault_list_versions, vault_prune, vault_restore,
+    vault_status, vault_track,
     BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
@@ -293,12 +295,77 @@ enum Cmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Version tip + drift detect for a live path (sidecar `.sgv` chart). Alias: backup.
+    #[command(visible_alias = "backup")]
+    Vault {
+        #[command(subcommand)]
+        cmd: VaultCmd,
+    },
     /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
     #[command(name = "bench-mds")]
     BenchMds {
         /// Iterations per (backend, k/n, size). Default 3.
         #[arg(long, default_value_t = 3)]
         iters: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Start tracking a live file: create `<path>.sgv/` chart + seal v1. Alias: init.
+    #[command(visible_alias = "init")]
+    Track {
+        /// Live file to protect
+        path: PathBuf,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+    },
+    /// Report drift of live bytes vs tip true-name (match | changed | missing-seal | missing-live).
+    Status {
+        /// Live file or its `.sgv` chart dir
+        path: PathBuf,
+    },
+    /// Re-seal live into the next version; tip moves. Skips when already matching unless --force.
+    Commit {
+        path: PathBuf,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Commit even when live already matches tip
+        #[arg(long)]
+        force: bool,
+        /// After commit, keep only the newest N version seals (full retention if omitted)
+        #[arg(long)]
+        keep: Option<u32>,
+    },
+    /// List version stack (v1…tip) from the chart.
+    Versions {
+        path: PathBuf,
+    },
+    /// Restore tip (or --version N) over the live path. Mends a torn seal if needed.
+    Restore {
+        path: PathBuf,
+        /// Version number (default: tip)
+        #[arg(long)]
+        version: Option<u32>,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+    },
+    /// Drop old version seals; keep the newest N (always keeps tip).
+    Prune {
+        path: PathBuf,
+        /// How many newest versions to keep (≥ 1)
+        #[arg(long)]
+        keep: u32,
     },
 }
 
@@ -1135,10 +1202,115 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Cmd::Vault { cmd } => run_vault(cmd)?,
         Cmd::BenchMds { iters } => {
             let rows = run_bakeoff(iters);
             let (report, _keep) = format_bakeoff_report(&rows);
             print!("{report}");
+        }
+    }
+    Ok(())
+}
+
+fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        VaultCmd::Track {
+            path,
+            mode,
+            pass,
+            talisman,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let report = vault_track(&path, mode.into(), pass.as_deref())?;
+            println!(
+                "vault track → {}  v{}  {} bytes  digest={}",
+                report.vault_dir.display(),
+                report.version,
+                report.size,
+                &hex32(&report.digest)[..12]
+            );
+            println!("{}", vault_format_status(&vault_status(&path)?));
+        }
+        VaultCmd::Status { path } => {
+            println!("{}", vault_format_status(&vault_status(&path)?));
+        }
+        VaultCmd::Commit {
+            path,
+            mode,
+            pass,
+            talisman,
+            force,
+            keep,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let report = vault_commit(&path, mode.into(), pass.as_deref(), force)?;
+            if report.skipped {
+                println!(
+                    "vault commit skipped (live matches tip v{})  digest={}",
+                    report.version,
+                    &hex32(&report.digest)[..12]
+                );
+            } else {
+                println!(
+                    "vault commit → v{}  {} bytes  digest={}",
+                    report.version,
+                    report.size,
+                    &hex32(&report.digest)[..12]
+                );
+            }
+            if let Some(k) = keep {
+                let p = vault_prune(&path, k)?;
+                if !p.removed.is_empty() {
+                    println!(
+                        "pruned v{{{}}}  kept={}",
+                        p.removed
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        p.kept
+                    );
+                }
+            }
+            println!("{}", vault_format_status(&vault_status(&path)?));
+        }
+        VaultCmd::Versions { path } => {
+            print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+        }
+        VaultCmd::Restore {
+            path,
+            version,
+            pass,
+            talisman,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let report = vault_restore(&path, version, pass.as_deref())?;
+            println!(
+                "vault restore → {}  v{}  {} bytes  digest={}{}",
+                report.path.display(),
+                report.version,
+                report.size,
+                &hex32(&report.digest)[..12],
+                if report.mended { "  (mended seal)" } else { "" }
+            );
+            println!("{}", vault_format_status(&vault_status(&path)?));
+        }
+        VaultCmd::Prune { path, keep } => {
+            let p = vault_prune(&path, keep)?;
+            let removed = if p.removed.is_empty() {
+                "(none)".to_string()
+            } else {
+                p.removed
+                    .iter()
+                    .map(|n| format!("v{n}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            println!(
+                "vault prune kept={} tip=v{} removed={}",
+                p.kept, p.tip, removed
+            );
+            print!("{}", vault_format_versions(&vault_list_versions(&path)?));
         }
     }
     Ok(())

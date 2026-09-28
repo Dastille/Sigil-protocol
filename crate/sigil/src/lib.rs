@@ -16,6 +16,7 @@ mod open;
 mod pieces;
 mod rs;
 mod show;
+mod vault;
 mod work;
 
 use aes_gcm::{
@@ -52,6 +53,13 @@ pub use pieces::{
     VESSEL,
 };
 pub use kit::{is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST};
+pub use vault::{
+    commit as vault_commit, format_status as vault_format_status, format_versions as vault_format_versions,
+    list_versions as vault_list_versions, prune as vault_prune, restore as vault_restore, status as vault_status,
+    track as vault_track, vault_dir_for, CommitReport as VaultCommitReport, Drift as VaultDrift,
+    PruneReport as VaultPruneReport, RestoreReport as VaultRestoreReport, StatusReport as VaultStatusReport,
+    TrackReport as VaultTrackReport, CHART_NAME as VAULT_CHART, VAULT_SUFFIX,
+};
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,
