@@ -17,3 +17,8 @@ cargo build --release
 No extra libraries. AGPL-3.0 for this program. Apache-2.0 for the `.sg1` layout (`LICENSE.SPEC` at the repo root).
 
 Tag **v1.0** on GitHub when you push `Dastille/Sigil-protocol` (this sandbox cannot log into your GitHub).
+
+**Mount / FUSE (Linux)**
+
+`sigil mount` links `fuser` on Unix. Runtime needs `/dev/fuse` and `fusermount3` (`fuse3` package). If the environment forbids FUSE (common in containers), use `--export-dir` instead — same read-only view, seal untouched.
+

@@ -3,10 +3,10 @@ use sigil::{
     add_to_constellation, attest, attest_keygen, copy_sigil_binary, deluge_fountain, deluge_pieces,
     backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
     install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, mend_boot, mend_bytes_ex,
-    mend_scan, overture_report, pack_atlas, path_extract, path_walk, prepare_boot, run_bakeoff, run_open, run_showing, scry_constellation,
+    mend_scan, overture_report, pack_atlas, path_extract, path_walk, prepare_boot, run_bakeoff, run_mount, run_open, run_showing, scry_constellation,
     scry_dir, scry_path, scatter_pieces, seal_kn_mds, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
     place_kit, mend_kit,
-    unseal_dir_only, unseal_ex, unseal_ex_mds, unseal_path, unseal_range, vessel_present, write_vessel, AddOpts,
+    unseal_dir_only, unseal_ex, unseal_ex_mds, unseal_path, unseal_range, umount_path, vessel_present, write_vessel, AddOpts,
     vault_commit, vault_format_status, vault_format_versions, vault_list_versions, vault_prune, vault_restore,
     vault_status, vault_track,
     BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
@@ -202,8 +202,8 @@ enum Cmd {
         #[arg(long, default_value_t = 8)]
         extra: u8,
     },
-    /// Plex/Jellyfin or any HTTP player: De-scribe the bytes they ask for (work-pack slices). Alias: showing, mount, unveil.
-    #[command(visible_aliases = ["showing", "mount", "unveil"])]
+    /// Plex/Jellyfin or any HTTP player: De-scribe the bytes they ask for (work-pack slices). Alias: showing, unveil.
+    #[command(visible_aliases = ["showing", "unveil"])]
     Show {
         input: PathBuf,
         /// e.g. 127.0.0.1:7845 (Plex on this machine)
@@ -300,6 +300,32 @@ enum Cmd {
     Vault {
         #[command(subcommand)]
         cmd: VaultCmd,
+    },
+    /// Read-only FUSE mount of a .sg1 / SGDR pack (or vault tip). Alias: fuse.
+    /// Cleartext stays in RAM; durable seal is never rewritten. Use --export-dir without FUSE.
+    #[command(visible_alias = "fuse")]
+    Mount {
+        /// .sg1 / SGDR pack, or a vault live path / `.sgv` chart (with --vault)
+        input: PathBuf,
+        /// Empty directory mountpoint (ignored with --export-dir)
+        mountpoint: PathBuf,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long = "ward")]
+        ward: Vec<String>,
+        /// Mount the vault tip seal for this live path / `.sgv` dir
+        #[arg(long)]
+        vault: bool,
+        /// Materialize a read-only tree here instead of FUSE (seal still intact)
+        #[arg(long)]
+        export_dir: Option<PathBuf>,
+    },
+    /// Unmount a Sigil FUSE mountpoint (`fusermount3 -u`). Alias: unmount.
+    #[command(visible_alias = "unmount")]
+    Umount {
+        mountpoint: PathBuf,
     },
     /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
     #[command(name = "bench-mds")]
@@ -1203,6 +1229,37 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Vault { cmd } => run_vault(cmd)?,
+        Cmd::Mount {
+            input,
+            mountpoint,
+            pass,
+            talisman,
+            ward,
+            vault,
+            export_dir,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let pass = match pass {
+                Some(p) => Some(p),
+                None => match std::env::var("SIGIL_WARD") {
+                    Ok(s) if !s.trim().is_empty() => Some(s),
+                    _ => None,
+                },
+            };
+            let wards = parse_wards(&ward)?;
+            run_mount(
+                &input,
+                &mountpoint,
+                pass.as_deref(),
+                &wards,
+                vault,
+                export_dir.as_deref(),
+            )?;
+        }
+        Cmd::Umount { mountpoint } => {
+            umount_path(&mountpoint)?;
+            println!("unmounted {}", mountpoint.display());
+        }
         Cmd::BenchMds { iters } => {
             let rows = run_bakeoff(iters);
             let (report, _keep) = format_bakeoff_report(&rows);

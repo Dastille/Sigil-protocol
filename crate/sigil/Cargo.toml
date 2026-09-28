@@ -32,3 +32,6 @@ sha2 = "0.10"
 thiserror = "1"
 eframe = { version = "0.31", optional = true }
 rfd = { version = "0.15", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+fuser = "0.18"

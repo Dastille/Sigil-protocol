@@ -11,6 +11,7 @@ mod header;
 mod kit;
 mod mds;
 mod merkle;
+mod mount;
 mod nest;
 mod open;
 mod pieces;
@@ -67,6 +68,10 @@ pub use work::{
     unseal_range, unseal_star_at, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
 };
 pub use show::run_showing;
+pub use mount::{
+    fuse_available, mount_fuse, run_mount, umount as umount_path, VaultFs,
+};
+pub use vault::tip_seal_path as vault_tip_seal_path;
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
 
