@@ -2,7 +2,7 @@
 //! Gather rebuilds a normal .sg1 from any k distinct pieces — originals or rain.
 
 use crate::header::{
-    body_prefix, locate_header, shard_stride, write_ember, write_header, GradedShard, Header,
+    locate_header, shard_stride, write_ember, write_header, GradedShard, Header,
     HEADER_SIZE, VOW_SIZE,
 };
 use crate::{header, merkle, rs, sha256, Result};
@@ -226,14 +226,17 @@ fn scan_dirs(dirs: &[&Path]) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec
     Ok((shards, k, n, map, parts))
 }
 
-/// Rewrite a healthy classic mark (keystone / vow / ember / shards) from payload shards.
-fn assemble_mark(h: &Header, shards: &[Vec<u8>], vow: Option<&[u8]>) -> Vec<u8> {
+/// Rewrite a healthy classic mark (keystone / SGTO / vow / ember / shards) from payload shards.
+fn assemble_mark(h: &Header, shards: &[Vec<u8>], vow: Option<&[u8]>, sgto: Option<&[u8]>) -> Vec<u8> {
     let hdr = write_header(h);
     let mut out = if h.keystone() {
         header::wrap_keystone(&hdr)
     } else {
         hdr.clone()
     };
+    if let Some(s) = sgto {
+        out.extend_from_slice(s);
+    }
     if let Some(v) = vow {
         out.extend_from_slice(v);
     }
@@ -242,6 +245,10 @@ fn assemble_mark(h: &Header, shards: &[Vec<u8>], vow: Option<&[u8]>) -> Vec<u8> 
         out.extend_from_slice(&body);
     }
     out
+}
+
+fn sgto_from_prefix(file: &[u8], h: &Header) -> Option<Vec<u8>> {
+    header::sgto_slice(h, file).map(|s| s.to_vec())
 }
 
 fn vow_from_prefix(file: &[u8], h: &Header, prefix: usize) -> Option<Vec<u8>> {
@@ -282,6 +289,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     let n = h.n as usize;
     let k = h.k as usize;
     let vow = vow_from_prefix(file, &h, prefix);
+    let sgto = sgto_from_prefix(file, &h);
 
     if h.mode() == crate::Mode::Glyph {
         let live = header::gather_live_shards(file, &h, prefix);
@@ -292,7 +300,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
             )));
         }
         let shards: Vec<Vec<u8>> = live.into_iter().map(|s| s.expect("checked")).collect();
-        return Ok((assemble_mark(&h, &shards, vow.as_deref()), false));
+        return Ok((assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()), false));
     }
 
     let live = header::gather_live_shards(file, &h, prefix);
@@ -308,7 +316,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
                 let shards: Vec<Vec<u8>> = (0..n)
                     .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
                     .collect();
-                return Ok((assemble_mark(&h, &shards, vow.as_deref()), false));
+                return Ok((assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()), false));
             }
             Ok(_) if !soft => {
                 return Err(crate::Error::Msg(
@@ -362,7 +370,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     let shards: Vec<Vec<u8>> = (0..n)
         .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
         .collect();
-    Ok((assemble_mark(&h, &shards, vow.as_deref()), true))
+    Ok((assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()), true))
 }
 
 fn accept_folded(h: &Header, payload: &[u8]) -> bool {
@@ -434,10 +442,10 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
         return Err(crate::Error::Msg(format!("need {k} pieces, have {}", shards.len())));
     }
     let payload = rs::decode_indexed(&shards, k, h.folded_len as usize, h.version >= 2)?;
-    let vow = if h.vow() && map.len() >= body_prefix(&h) {
-        let p = body_prefix(&h);
-        if p >= VOW_SIZE {
-            Some(map[p - VOW_SIZE..p].to_vec())
+    let prefix = header::body_prefix_file(&h, &map);
+    let vow = if h.vow() && map.len() >= prefix {
+        if prefix >= VOW_SIZE {
+            Some(map[prefix - VOW_SIZE..prefix].to_vec())
         } else {
             None
         }
@@ -447,5 +455,5 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
     let rebuilt: Vec<Vec<u8>> = (0..n)
         .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
         .collect();
-    Ok(assemble_mark(&h, &rebuilt, vow.as_deref()))
+    Ok(assemble_mark(&h, &rebuilt, vow.as_deref(), sgto_from_prefix(&map, &h).as_deref()))
 }

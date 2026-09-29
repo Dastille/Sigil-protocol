@@ -25,11 +25,13 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1"
 getrandom = "0.2"
 hex = "0.4"
+hkdf = "0.12"
 hmac = "0.12"
 pbkdf2 = "0.12"
 raptorq = "=2.0.0"
 sha2 = "0.10"
 thiserror = "1"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 eframe = { version = "0.31", optional = true }
 rfd = { version = "0.15", optional = true }
 

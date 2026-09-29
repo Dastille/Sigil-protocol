@@ -8,6 +8,7 @@ mod folder;
 mod fountain;
 mod gf;
 mod header;
+mod keys;
 mod kit;
 mod mds;
 mod merkle;
@@ -52,6 +53,10 @@ pub use pieces::{
     deluge as deluge_pieces, gather as gather_pieces, gather_dirs as gather_piece_dirs, mend_bytes,
     mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
     VESSEL,
+};
+pub use keys::{
+    keygen_ecc, keygen_legacy, resolve_recipient, Identity, PublicIdentity, ID_MAGIC, PUB_MAGIC,
+    SGTO_MAGIC,
 };
 pub use kit::{is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST};
 pub use vault::{
@@ -267,6 +272,27 @@ pub fn seal_kn_mds(
     piece_bytes: u32,
     mds_be: &dyn mds::MdsBackend,
 ) -> Result<Vec<u8>> {
+    seal_kn_mds_to(
+        data, mode, pass, name, graph, covenant, geas, shards, piece_bytes, mds_be, &[],
+    )
+}
+
+/// Seal with optional encrypt-to recipients (`--to`). When `recipients` is non-empty,
+/// body is AES-GCM'd under a random CEK; SGTO holds X25519 wraps (and a passphrase
+/// wrap if `pass` is also set). Encrypt-to alone is enough; with both, either opens.
+pub fn seal_kn_mds_to(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    mds_be: &dyn mds::MdsBackend,
+    recipients: &[keys::PublicIdentity],
+) -> Result<Vec<u8>> {
     let (k, n) = choose_kn(mode, data.len() as u64, piece_bytes, shards);
     let digest = sha256(data);
     let mut salt = [0u8; 16];
@@ -277,7 +303,24 @@ pub fn seal_kn_mds(
     let mut folded = chaos::fold(&body, &salt);
     let mut tag = [0u8; 16];
     let mut encrypted = false;
-    if let Some(p) = pass.filter(|s| !s.is_empty()) {
+    let mut sgto_block: Option<Vec<u8>> = None;
+    let use_to = !recipients.is_empty();
+    let pass_nonempty = pass.filter(|s| !s.is_empty());
+    if use_to {
+        // Random CEK; wrap for each recipient (+ optional passphrase wrap).
+        let mut cek = [0u8; 32];
+        getrandom(&mut cek);
+        let cipher = Aes256Gcm::new_from_slice(&cek).map_err(|e| Error::Msg(e.to_string()))?;
+        let packed = cipher
+            .encrypt(Nonce::from_slice(&nonce), folded.as_ref())
+            .map_err(|_| Error::Msg("encrypt failed".into()))?;
+        let t = packed.len() - 16;
+        tag.copy_from_slice(&packed[t..]);
+        folded = packed[..t].to_vec();
+        encrypted = true;
+        sgto_block = Some(keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?);
+    } else if let Some(p) = pass_nonempty {
+        // Legacy passphrase Ward: PBKDF2 → AES-GCM on folded body (unchanged).
         let key = derive_key(p, &salt);
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::Msg(e.to_string()))?;
         let packed = cipher
@@ -329,6 +372,10 @@ pub fn seal_kn_mds(
         merkle,
     });
     let mut out = header::wrap_keystone(&hdr);
+    // SGTO sits after keystone, before vow (detected by magic — no flag bit).
+    if let Some(sg) = &sgto_block {
+        out.extend_from_slice(sg);
+    }
     let vow = if has_vow {
         Some(header::write_vow(covenant, geas))
     } else {
@@ -363,6 +410,18 @@ pub fn unseal_ex_mds(
     companions: &[Vec<u8>],
     mds_be: &dyn mds::MdsBackend,
 ) -> Result<Vec<u8>> {
+    unseal_ex_mds_keys(file, pass, companions, mds_be, &[])
+}
+
+/// Unseal with optional `--identity` keys. Tries SGTO CEK unwrap (identity or passphrase
+/// wrap) before falling back to legacy PBKDF2 body decrypt for passphrase-only seals.
+pub fn unseal_ex_mds_keys(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    mds_be: &dyn mds::MdsBackend,
+    identities: &[keys::Identity],
+) -> Result<Vec<u8>> {
     let (h, prefix, _) = locate_header(file)?;
     if h.vow() {
         let vow_off = prefix.saturating_sub(header::VOW_SIZE);
@@ -396,16 +455,38 @@ pub fn unseal_ex_mds(
     let mut folded = folded;
     let p = pass.unwrap_or("").trim();
     if h.encrypted() {
-        if p.is_empty() {
-            return Err(Error::Msg("passphrase required".into()));
-        }
-        let key = derive_key(p, &h.salt);
+        let sgto = header::sgto_slice(&h, file);
+        let key = if let Some(block) = sgto {
+            // Encrypt-to (and optional passphrase wrap in SGTO).
+            match keys::unwrap_cek(block, identities, pass.filter(|s| !s.is_empty()), &h.salt) {
+                Ok(cek) => cek,
+                Err(e) => {
+                    if identities.is_empty() && p.is_empty() {
+                        return Err(Error::Msg(
+                            "passphrase or --identity required".into(),
+                        ));
+                    }
+                    return Err(e);
+                }
+            }
+        } else {
+            // Legacy passphrase Ward.
+            if p.is_empty() {
+                if !identities.is_empty() {
+                    return Err(Error::Msg(
+                        "seal has no encrypt-to recipients; passphrase required".into(),
+                    ));
+                }
+                return Err(Error::Msg("passphrase required".into()));
+            }
+            derive_key(p, &h.salt)
+        };
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::Msg(e.to_string()))?;
         let mut packed = folded;
         packed.extend_from_slice(&h.tag);
         folded = cipher
             .decrypt(Nonce::from_slice(&h.nonce), packed.as_ref())
-            .map_err(|_| Error::Msg("wrong passphrase, or past repair".into()))?;
+            .map_err(|_| Error::Msg("wrong passphrase/identity, or past repair".into()))?;
     } else if !p.is_empty() {
         return Err(Error::Msg("seal was not encrypted".into()));
     }
@@ -422,6 +503,16 @@ pub fn unseal_ex_mds(
         return Err(Error::Msg("SHA-256 mismatch".into()));
     }
     Ok(plain)
+}
+
+/// Convenience: unseal with identities (default MDS).
+pub fn unseal_ex_keys(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[keys::Identity],
+) -> Result<Vec<u8>> {
+    unseal_ex_mds_keys(file, pass, companions, &*mds::default_backend(), identities)
 }
 
 pub fn verify(file: &[u8]) -> Result<(Header, bool, usize, usize, bool)> {
@@ -1005,6 +1096,81 @@ mod tests {
             "expected most facet digests to survive middle edit; kept {kept} of {}",
             dig_a.len()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn encrypt_to_roundtrip() {
+        let alice = crate::Identity::generate().unwrap();
+        let bob = crate::Identity::generate().unwrap();
+        let msg = b"encrypt-to river circle";
+        let bytes = seal_kn_mds_to(
+            msg,
+            Mode::Seal,
+            None,
+            "t.txt",
+            false,
+            "",
+            &[],
+            Some(16),
+            DEFAULT_PIECE,
+            &*mds::default_backend(),
+            &[alice.public()],
+        )
+        .unwrap();
+        assert!(bytes.windows(4).any(|w| w == b"SGTO"));
+        let out = unseal_ex_keys(&bytes, None, &[], &[alice]).unwrap();
+        assert_eq!(out, msg);
+        assert!(unseal_ex_keys(&bytes, None, &[], &[bob]).is_err());
+        assert!(unseal(&bytes, None).is_err());
+    }
+
+    #[test]
+    fn encrypt_to_or_passphrase() {
+        let alice = crate::Identity::generate().unwrap();
+        let msg = b"either key opens";
+        let bytes = seal_kn_mds_to(
+            msg,
+            Mode::Reflection,
+            Some("ward-pass"),
+            "t.txt",
+            false,
+            "",
+            &[],
+            Some(16),
+            DEFAULT_PIECE,
+            &*mds::default_backend(),
+            &[alice.public()],
+        )
+        .unwrap();
+        assert_eq!(unseal_ex_keys(&bytes, None, &[], &[alice]).unwrap(), msg);
+        assert_eq!(unseal_ex_keys(&bytes, Some("ward-pass"), &[], &[]).unwrap(), msg);
+        assert!(unseal_ex_keys(&bytes, Some("wrong"), &[], &[]).is_err());
+    }
+
+    #[test]
+    fn passphrase_only_still_works() {
+        let msg = b"legacy ward";
+        let bytes = seal(msg, Mode::Seal, Some("secret"), "t.txt", false).unwrap();
+        assert!(!bytes.windows(4).any(|w| w == b"SGTO"));
+        assert_eq!(unseal(&bytes, Some("secret")).unwrap(), msg);
+        assert!(unseal(&bytes, Some("nope")).is_err());
+    }
+
+    #[test]
+    fn legacy_keygen_attest_seed() {
+        let dir = std::env::temp_dir().join(format!("sigil-legkey-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let key = dir.join("legacy.bin");
+        let pk = crate::keygen_legacy(&key).unwrap();
+        assert_eq!(std::fs::read(&key).unwrap().len(), 32);
+        let mark = dir.join("m.sg1");
+        let bytes = seal(b"x", Mode::Glyph, None, "x", false).unwrap();
+        std::fs::write(&mark, &bytes).unwrap();
+        crate::attest(&mark, &key).unwrap();
+        let v = crate::verify_attestation(&mark).unwrap();
+        assert!(v.contains("good"), "{v}");
+        assert_eq!(pk.len(), 32);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

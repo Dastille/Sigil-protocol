@@ -146,6 +146,33 @@ On the far computer: `sha256sum dump.sg1` then `./sigil scry dump.sg1` then `./s
 
 
 
+
+
+**Keys + encrypt-to (ECC Ward)**
+
+Modern identity (default `sigil keygen`): `.sgk` holds a 32-byte master; X25519 (encrypt-to) and Ed25519 (attest) are HKDF-split. Public half is written to `<out>.pub` (or `--pub-out`).
+
+```
+# modern identity (X25519 + Ed25519)
+./sigil keygen -o me.sgk
+# → me.sgk + me.sgk.pub
+
+# legacy raw 32-byte attest/Talisman seed (old behaviour)
+./sigil keygen --legacy -o attest.bin
+
+# encrypt-to one or more recipients (implies encrypted; passphrase optional)
+./sigil inscribe --to alice.pub --to bob.pub -o secret.sg1 file.bin
+# open with matching identity (or passphrase if also sealed with --pass)
+./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
+
+# both --pass and --to: either passphrase OR any matching identity unwraps the CEK
+./sigil inscribe --pass house --to alice.pub -o secret.sg1 file.bin
+./sigil de-scribe --pass house -o file.bin secret.sg1
+./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
+```
+
+Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. Passkeys/WebAuthn and PGP import are roadmap follow-ups.
+
 **Mount (read-only FUSE / export-dir)**
 
 Apps see normal paths; cleartext stays in RAM (FUSE) or a temp tree (`--export-dir`). The `.sg1` is never rewritten. Read-only for this spike — no dirty/re-seal.

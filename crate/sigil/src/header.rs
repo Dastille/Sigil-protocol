@@ -298,9 +298,26 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
     live
 }
 
+pub fn maps_len(h: &Header) -> usize {
+    if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE }
+}
+
+/// Body prefix without peeking for SGTO (legacy / when file bytes unavailable).
+#[allow(dead_code)]
 pub fn body_prefix(h: &Header) -> usize {
-    let maps = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
-    maps + if h.vow() { VOW_SIZE } else { 0 }
+    maps_len(h) + if h.vow() { VOW_SIZE } else { 0 }
+}
+
+/// Body prefix including an optional SGTO companion block (magic `SGTO` after keystone).
+pub fn body_prefix_file(h: &Header, file: &[u8]) -> usize {
+    let maps = maps_len(h);
+    let sgto = crate::keys::sgto_len_at(file, maps);
+    maps + sgto + if h.vow() { VOW_SIZE } else { 0 }
+}
+
+/// Slice of SGTO bytes after the keystone maps, if present.
+pub fn sgto_slice<'a>(h: &Header, file: &'a [u8]) -> Option<&'a [u8]> {
+    crate::keys::read_sgto_at(file, maps_len(h))
 }
 
 pub fn write_vow(covenant: &str, geas: &[[u8; 32]]) -> Vec<u8> {
@@ -375,6 +392,12 @@ fn locate_from_ember(file: &[u8]) -> Option<(Header, usize)> {
                 let stride = shard_stride(&h);
                 if stride > 0 {
                     let mut prefixes = vec![0usize, KEYSTONE_SPAN, KEYSTONE_SPAN + VOW_SIZE];
+                    // SGTO (variable) may sit after keystone — probe common offsets + magic scan.
+                    if let Some(block) = crate::keys::read_sgto_at(file, KEYSTONE_SPAN) {
+                        let s = block.len();
+                        prefixes.push(KEYSTONE_SPAN + s);
+                        prefixes.push(KEYSTONE_SPAN + s + VOW_SIZE);
+                    }
                     for k in 0..h.n as usize {
                         if i >= k * stride {
                             prefixes.push(i - k * stride);
@@ -406,7 +429,7 @@ pub fn wrap_keystone(header: &[u8]) -> Vec<u8> {
 /// Returns (header, body prefix, recovered from a spare copy).
 pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
     if let Ok(h) = read_header(file) {
-        let prefix = body_prefix(&h);
+        let prefix = body_prefix_file(&h, file);
         return Ok((h, prefix, false));
     }
     for slot in 1..=KEYSTONE_COPIES {
@@ -416,7 +439,8 @@ pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
         }
         if let Ok(h) = read_header(&file[off..]) {
             if h.keystone() {
-                let prefix = body_prefix(&h);
+                // Keystone spare: SGTO still sits after the full keystone span from file start.
+                let prefix = body_prefix_file(&h, file);
                 return Ok((h, prefix, true));
             }
         }
@@ -431,7 +455,7 @@ pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
             continue;
         }
         if let Ok(h) = read_header(&file[i..]) {
-            let prefix = i + body_prefix(&h);
+            let prefix = i + body_prefix_file(&h, &file[i..]);
             return Ok((h, prefix, true));
         }
     }
