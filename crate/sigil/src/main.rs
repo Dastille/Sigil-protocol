@@ -1,15 +1,17 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
     add_to_constellation, attest, copy_sigil_binary, deluge_fountain, deluge_pieces,
-    backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd, inscribe_dir, inscribe_path, inscribe_stars_dir,
-    install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex,
-    mend_scan, overture_report, pack_atlas, path_extract, path_walk, prepare_boot, resolve_recipient, run_bakeoff, run_mount, run_open, run_showing, scry_constellation,
-    scry_dir, scry_path, scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces, unseal_constellation,
-    place_kit, mend_kit, Identity,
-    unseal_dir_only, unseal_ex, unseal_ex_keys, unseal_ex_mds_keys, unseal_path, unseal_range, umount_path, vessel_present, write_vessel, AddOpts,
-    vault_commit, vault_format_status, vault_format_versions, vault_list_versions, vault_prune, vault_restore,
-    vault_status, vault_track,
-    BootOutcome, CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd,
+    inscribe_dir_to, inscribe_path_to, inscribe_stars_dir_to, install_hooks, is_constellation_input,
+    is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_scan,
+    overture_report, pack_atlas, path_extract_keys, path_walk_keys, prepare_boot, resolve_recipient,
+    run_bakeoff, run_mount_keys, run_open_keys, run_showing, scry_constellation, scry_dir, scry_path,
+    scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
+    unseal_constellation, place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
+    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, umount_path,
+    vessel_present, write_vessel, AddOpts, vault_commit, vault_format_status, vault_format_versions,
+    vault_list_versions, vault_prune, vault_restore, vault_status, vault_track, BootOutcome,
+    CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -789,11 +791,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let recipients = load_recipients(&to)?;
             let piece_bytes = piece_mb.saturating_mul(1024 * 1024).max(64 * 1024);
             let mds_be = resolve_mds(&mds)?;
-            if !recipients.is_empty() && (input.is_dir() || pieces.is_some() || cdc.is_some()) {
-                return Err(
-                    "--to encrypt-to is single-star .sg1 only this slice (no folder / --pieces / --cdc yet)".into(),
-                );
-            }
             if mds_be.name() != "vandermonde" {
                 if input.is_dir() || pieces.is_some() || cdc.is_some() {
                     return Err(
@@ -830,9 +827,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if pieces.is_some() {
                     return Err("folder Inscribe writes one pack. Omit --pieces.".into());
                 }
-                let (n, orig) =
-                    inscribe_dir(&input, &output, mode.into(), pass.as_deref(), cov, &geas, chunk, &wards)?;
-                println!("folder {n} files, {orig} bytes → {}", output.display());
+                let (n, orig) = inscribe_dir_to(
+                    &input, &output, mode.into(), pass.as_deref(), cov, &geas, chunk, &wards, &recipients,
+                )?;
+                println!(
+                    "folder {n} files, {orig} bytes → {}{}",
+                    output.display(),
+                    if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else if let Some(dir) = pieces {
                 let meta = fs::metadata(&input)?;
@@ -855,7 +857,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let n = scatter_pieces(&sg1, &dir)?;
                     println!("scattered {n} pieces into {}", dir.display());
                 } else {
-                    let (orig, stars) = inscribe_stars_dir(
+                    let (orig, stars) = inscribe_stars_dir_to(
                         &input,
                         &dir,
                         mode.into(),
@@ -867,11 +869,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         piece_bytes,
                         overture_mb,
                         cdc.map(Into::into),
+                        &recipients,
                     )?;
-                    println!("wrote {stars} stars ({orig} bytes) into {}", dir.display());
+                    println!(
+                        "wrote {stars} stars ({orig} bytes) into {}{}",
+                        dir.display(),
+                        if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                    );
                     println!("Overture list: {}/{OVERTURE}", dir.display());
                 }
-            } else if !recipients.is_empty() {
+            } else if !recipients.is_empty() && cdc.is_none() {
+                // Single-star encrypt-to (vandermonde / explicit mds already handled above).
                 let data = fs::read(&input)?;
                 let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
                 let sg1 = seal_kn_mds_to(
@@ -897,7 +905,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {
-                let (orig, stars, work) = inscribe_path(
+                let (orig, stars, work) = inscribe_path_to(
                     &input,
                     &output,
                     mode.into(),
@@ -909,12 +917,21 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     piece_bytes,
                     overture_mb,
                     cdc.map(Into::into),
+                    &recipients,
                 )?;
                 if work {
-                    println!("work pack {stars} stars, {orig} bytes → {}", output.display());
+                    println!(
+                        "work pack {stars} stars, {orig} bytes → {}{}",
+                        output.display(),
+                        if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                    );
                     println!("Overture: first {overture_mb} MiB is boot. sigil overture {}", output.display());
                 } else {
-                    println!("inscribed {orig} bytes → {}", output.display());
+                    println!(
+                        "inscribed {orig} bytes → {}{}",
+                        output.display(),
+                        if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                    );
                 }
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             }
@@ -949,29 +966,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("de-scribed {n} bytes → {} (mds {})", output.display(), mds_be.name());
                 return Ok(());
             }
-            if !identities.is_empty()
-                && (star.is_some()
-                    || from_mb.is_some()
-                    || to_mb.is_some()
-                    || is_dir_pack(&input)
-                    || is_constellation_input(&input))
-            {
-                // Single-star path below handles --identity; packs need follow-up wiring.
-                if is_dir_pack(&input) || is_constellation_input(&input) || star.is_some() || from_mb.is_some() || to_mb.is_some() {
-                    let data = fs::read(&input)?;
-                    // For plain .sg1 only when not a pack — fall through if pack detected wrongly
-                    if !is_dir_pack(&input) && !is_constellation_input(&input) && star.is_none() && from_mb.is_none() && to_mb.is_none() {
-                        let plain = unseal_ex_keys(&data, pass.as_deref(), &companions, &identities)?;
-                        let n = plain.len();
-                        fs::write(&output, &plain)?;
-                        println!("de-scribed {n} bytes → {}", output.display());
-                        return Ok(());
-                    }
-                    return Err(
-                        "--identity on folder/work packs is not wired this slice; use a single-star .sg1".into(),
-                    );
-                }
-            }
             if star.is_some() || from_mb.is_some() || to_mb.is_some() {
                 let (head, _) = sigil::index_pack(&input)?;
                 let from = if let Some(s) = star {
@@ -987,28 +981,31 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     head.stars.saturating_sub(1)
                 };
-                let (n, stars) = unseal_range(&input, &output, pass.as_deref(), &companions, from, to)?;
+                let (n, stars) = unseal_range_keys(
+                    &input, &output, pass.as_deref(), &companions, from, to, &identities,
+                )?;
                 println!("de-scribed {stars} slices ({n} bytes) → {}", output.display());
             } else if is_dir_pack(&input) {
-                let n = unseal_dir_only(&input, &output, pass.as_deref(), &companions, &only, &wards)?;
+                let n = unseal_dir_only_keys(
+                    &input, &output, pass.as_deref(), &companions, &only, &wards, &identities,
+                )?;
                 println!("de-scribed {n} files → {}", output.display());
             } else if is_constellation_input(&input) {
+                if !identities.is_empty() {
+                    return Err(
+                        "--identity on constellation packs is not wired yet; de-scribe member .sg1s directly".into(),
+                    );
+                }
                 let n = unseal_constellation(&input, &output, pass.as_deref(), &companions, &only)?;
                 println!("de-scribed {n} files → {}", output.display());
             } else {
                 if !only.is_empty() {
                     return Err("--only is for a folder wrap. This is one file.".into());
                 }
-                if !identities.is_empty() {
-                    let data = fs::read(&input)?;
-                    let plain = unseal_ex_keys(&data, pass.as_deref(), &companions, &identities)?;
-                    let n = plain.len();
-                    fs::write(&output, &plain)?;
-                    println!("de-scribed {n} bytes → {}", output.display());
-                } else {
-                    let n = unseal_path(&input, &output, pass.as_deref(), &companions)?;
-                    println!("de-scribed {n} bytes → {}", output.display());
-                }
+                let n = unseal_path_keys(
+                    &input, &output, pass.as_deref(), &companions, &identities,
+                )?;
+                println!("de-scribed {n} bytes → {}", output.display());
             }
         }
         Cmd::Verify { input } | Cmd::Scry { input } => {
@@ -1290,30 +1287,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            if !identities.is_empty() {
-                // open.rs still passphrase-only; decrypt via temp when identity given
-                let data = fs::read(&input)?;
-                let plain = unseal_ex_keys(&data, pass.as_deref(), &[], &identities)?;
-                let tmp = std::env::temp_dir().join(format!(
-                    "sigil-open-{}-{}.bin",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                ));
-                fs::write(&tmp, &plain)?;
-                // Best-effort: hand cleartext path to `open` via run_open on a Glyph seal would re-encrypt;
-                // for identity seals, write beside and print path.
-                println!("opened with --identity → {} ({} bytes)", tmp.display(), plain.len());
-                if !keep {
-                    // leave for user to read; still print
-                }
-                let _ = only;
-                let _ = ward;
-            } else {
-                run_open(&input, pass.as_deref(), &parse_wards(&ward)?, &only, keep)?;
-            }
+            run_open_keys(
+                &input,
+                pass.as_deref(),
+                &parse_wards(&ward)?,
+                &only,
+                keep,
+                &identities,
+            )?;
         }
         Cmd::Keygen {
             output,
@@ -1361,19 +1342,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            if !identities.is_empty() {
-                return Err(
-                    "--identity on `path` nest-walk is not wired this slice; de-scribe the outer star first".into(),
-                );
-            }
             let wards = parse_wards(&ward)?;
             let mut steps = into;
             steps.extend(segments);
-            let view = path_walk(&input, &steps, pass.as_deref(), &wards, depth)?;
+            let view = path_walk_keys(&input, &steps, pass.as_deref(), &wards, depth, &identities)?;
             println!("{}", view.format());
             if let Some(dest) = output {
-                let (written, trail) =
-                    path_extract(&input, &steps, &dest, pass.as_deref(), &wards, depth)?;
+                let (written, trail) = path_extract_keys(
+                    &input, &steps, &dest, pass.as_deref(), &wards, depth, &identities,
+                )?;
                 println!(
                     "extracted {} → {} (outer .sg1 unchanged)",
                     trail.join(" → "),
@@ -1394,11 +1371,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            if !identities.is_empty() {
-                return Err(
-                    "--identity on mount is not wired this slice; de-scribe with --identity or use passphrase Ward".into(),
-                );
-            }
             let pass = match pass {
                 Some(p) => Some(p),
                 None => match std::env::var("SIGIL_WARD") {
@@ -1407,13 +1379,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
             let wards = parse_wards(&ward)?;
-            run_mount(
+            run_mount_keys(
                 &input,
                 &mountpoint,
                 pass.as_deref(),
                 &wards,
                 vault,
                 export_dir.as_deref(),
+                &identities,
             )?;
         }
         Cmd::Umount { mountpoint } => {

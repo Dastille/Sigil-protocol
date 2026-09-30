@@ -1,6 +1,7 @@
 //! Folder Inscribe: a directory becomes one SGDR pack of per-file marks.
 
-use crate::{seal_kn, unseal_ex, Mode, Result, DEFAULT_PIECE};
+use crate::keys::{Identity, PublicIdentity};
+use crate::{seal_kn_to, unseal_ex_keys, Mode, Result, DEFAULT_PIECE};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
@@ -48,6 +49,21 @@ pub fn inscribe_dir(
     chunk: u32,
     wards: &[(String, String)],
 ) -> Result<(u32, u64)> {
+    inscribe_dir_to(root, output, mode, pass, covenant, geas, chunk, wards, &[])
+}
+
+/// Like `inscribe_dir`, with encrypt-to recipients applied to every file star.
+pub fn inscribe_dir_to(
+    root: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    wards: &[(String, String)],
+    recipients: &[PublicIdentity],
+) -> Result<(u32, u64)> {
     let mut files = Vec::new();
     walk(root, root, &mut files)?;
     if files.is_empty() {
@@ -65,10 +81,10 @@ pub fn inscribe_dir(
         let file_pass = pass_for(&rel, pass, wards);
         let star = if size <= chunk as u64 {
             let data = fs::read(path).map_err(io)?;
-            seal_kn(&data, mode, file_pass.as_deref(), &rel, false, covenant, geas, None, DEFAULT_PIECE)?
+            seal_kn_to(&data, mode, file_pass.as_deref(), &rel, false, covenant, geas, None, DEFAULT_PIECE, recipients)?
         } else {
             let tmp = output.with_extension(&format!("tmp-{rel}", rel = rel.replace('/', "_")));
-            crate::work::inscribe_path(path, &tmp, mode, file_pass.as_deref(), covenant, geas, chunk, None, DEFAULT_PIECE, crate::work::DEFAULT_OVERTURE_MB, None)?;
+            crate::work::inscribe_path_to(path, &tmp, mode, file_pass.as_deref(), covenant, geas, chunk, None, DEFAULT_PIECE, crate::work::DEFAULT_OVERTURE_MB, None, recipients)?;
             let packed = fs::read(&tmp).map_err(io)?;
             let _ = fs::remove_file(&tmp);
             packed
@@ -95,6 +111,18 @@ pub fn unseal_dir_only(
     companions: &[Vec<u8>],
     only: &[String],
     wards: &[(String, String)],
+) -> Result<u32> {
+    unseal_dir_only_keys(input, dest, pass, companions, only, wards, &[])
+}
+
+pub fn unseal_dir_only_keys(
+    input: &Path,
+    dest: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    only: &[String],
+    wards: &[(String, String)],
+    identities: &[Identity],
 ) -> Result<u32> {
     fs::create_dir_all(dest).map_err(io)?;
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
@@ -137,10 +165,10 @@ pub fn unseal_dir_only(
         if star.starts_with(&crate::work::WORK_MAGIC) {
             let tmp = out_path.with_extension("sgwk");
             fs::write(&tmp, &star).map_err(io)?;
-            crate::work::unseal_path(&tmp, &out_path, pass_for(&rel, pass, wards).as_deref(), companions)?;
+            crate::work::unseal_path_keys(&tmp, &out_path, pass_for(&rel, pass, wards).as_deref(), companions, identities)?;
             let _ = fs::remove_file(&tmp);
         } else {
-            let plain = unseal_ex(&star, pass_for(&rel, pass, wards).as_deref(), companions)?;
+            let plain = unseal_ex_keys(&star, pass_for(&rel, pass, wards).as_deref(), companions, identities)?;
             fs::write(&out_path, plain).map_err(io)?;
         }
         got += 1;

@@ -1,6 +1,7 @@
 //! Open: De-scribe to temp, launch the usual app, delete when you say you're done.
 
-use crate::{is_dir_pack, payload_name, unseal_dir_only, unseal_path, Result};
+use crate::keys::Identity;
+use crate::{is_dir_pack, payload_name, unseal_dir_only_keys, unseal_path_keys, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -12,11 +13,22 @@ pub fn run_open(
     only: &[String],
     keep: bool,
 ) -> Result<()> {
+    run_open_keys(mark, pass, wards, only, keep, &[])
+}
+
+pub fn run_open_keys(
+    mark: &Path,
+    pass: Option<&str>,
+    wards: &[(String, String)],
+    only: &[String],
+    keep: bool,
+    identities: &[Identity],
+) -> Result<()> {
     let tmp = std::env::temp_dir().join(format!("sigil-open-{}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let target = if is_dir_pack(mark) {
-        unseal_dir_only(mark, &tmp, pass, &[], only, wards)?;
+        unseal_dir_only_keys(mark, &tmp, pass, &[], only, wards, identities)?;
         if only.is_empty() {
             tmp.clone()
         } else {
@@ -25,7 +37,7 @@ pub fn run_open(
     } else {
         let name = payload_name(mark)?;
         let dest = tmp.join(name);
-        unseal_path(mark, &dest, pass, &[])?;
+        unseal_path_keys(mark, &dest, pass, &[], identities)?;
         dest
     };
     println!("opened {}", target.display());
