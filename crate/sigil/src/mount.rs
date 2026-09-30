@@ -5,8 +5,9 @@
 
 use crate::folder::{is_dir_pack, list_dir_pack, read_dir_entry_star, DirEntry};
 use crate::vault::{self, VAULT_SUFFIX};
-use crate::work::{is_work_pack, payload_name, unseal_path};
-use crate::{locate_header, unseal_ex, Result};
+use crate::keys::Identity;
+use crate::work::{is_work_pack, payload_name, unseal_path_keys};
+use crate::{locate_header, unseal_ex_keys, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
@@ -43,6 +44,7 @@ pub struct VaultFs {
     seal: PathBuf,
     pass: Option<String>,
     wards: Vec<(String, String)>,
+    identities: Vec<Identity>,
     nodes: HashMap<u64, Node>,
     /// path → ino ("" = root)
     by_path: HashMap<String, u64>,
@@ -60,11 +62,22 @@ impl VaultFs {
         wards: &[(String, String)],
         prefer_vault: bool,
     ) -> Result<Self> {
+        Self::open_keys(input, pass, wards, prefer_vault, &[])
+    }
+
+    pub fn open_keys(
+        input: &Path,
+        pass: Option<&str>,
+        wards: &[(String, String)],
+        prefer_vault: bool,
+        identities: &[Identity],
+    ) -> Result<Self> {
         let seal = resolve_seal(input, prefer_vault)?;
         let mut fs = VaultFs {
             seal: seal.clone(),
             pass: pass.map(|s| s.to_string()),
             wards: wards.to_vec(),
+            identities: identities.to_vec(),
             nodes: HashMap::new(),
             by_path: HashMap::new(),
             next_ino: 2,
@@ -361,11 +374,11 @@ impl VaultFs {
             NodeKind::Dir => return Err(crate::Error::Msg("is a directory".into())),
         };
         let data = match src {
-            FileSrc::Whole => decode_whole(&self.seal, self.pass.as_deref())?,
+            FileSrc::Whole => decode_whole(&self.seal, self.pass.as_deref(), &self.identities)?,
             FileSrc::Entry { rel } => {
                 let star = read_dir_entry_star(&self.seal, &rel)?;
                 let file_pass = pass_for(&rel, self.pass.as_deref(), &self.wards);
-                decode_star(&star, file_pass.as_deref())?
+                decode_star(&star, file_pass.as_deref(), &self.identities)?
             }
         };
         let arc = Arc::new(data);
@@ -408,7 +421,7 @@ fn resolve_seal(input: &Path, prefer_vault: bool) -> Result<PathBuf> {
     )))
 }
 
-fn decode_whole(seal: &Path, pass: Option<&str>) -> Result<Vec<u8>> {
+fn decode_whole(seal: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Vec<u8>> {
     if is_work_pack(seal) {
         let tmp = std::env::temp_dir().join(format!(
             "sigil-mount-wk-{}-{}",
@@ -418,17 +431,17 @@ fn decode_whole(seal: &Path, pass: Option<&str>) -> Result<Vec<u8>> {
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0)
         ));
-        unseal_path(seal, &tmp, pass, &[])?;
+        unseal_path_keys(seal, &tmp, pass, &[], identities)?;
         let data = fs::read(&tmp).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let _ = fs::remove_file(&tmp);
         Ok(data)
     } else {
         let bytes = fs::read(seal).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        unseal_ex(&bytes, pass, &[])
+        unseal_ex_keys(&bytes, pass, &[], identities)
     }
 }
 
-fn decode_star(star: &[u8], pass: Option<&str>) -> Result<Vec<u8>> {
+fn decode_star(star: &[u8], pass: Option<&str>, identities: &[Identity]) -> Result<Vec<u8>> {
     if star.starts_with(&crate::work::WORK_MAGIC) {
         let tmp = std::env::temp_dir().join(format!(
             "sigil-mount-star-{}-{}",
@@ -440,13 +453,13 @@ fn decode_star(star: &[u8], pass: Option<&str>) -> Result<Vec<u8>> {
         ));
         fs::write(&tmp, star).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let out = tmp.with_extension("bin");
-        unseal_path(&tmp, &out, pass, &[])?;
+        unseal_path_keys(&tmp, &out, pass, &[], identities)?;
         let data = fs::read(&out).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let _ = fs::remove_file(&tmp);
         let _ = fs::remove_file(&out);
         Ok(data)
     } else {
-        unseal_ex(star, pass, &[])
+        unseal_ex_keys(star, pass, &[], identities)
     }
 }
 
@@ -799,8 +812,20 @@ pub fn run_mount(
     prefer_vault: bool,
     export: Option<&Path>,
 ) -> Result<()> {
+    run_mount_keys(input, mountpoint, pass, wards, prefer_vault, export, &[])
+}
+
+pub fn run_mount_keys(
+    input: &Path,
+    mountpoint: &Path,
+    pass: Option<&str>,
+    wards: &[(String, String)],
+    prefer_vault: bool,
+    export: Option<&Path>,
+    identities: &[Identity],
+) -> Result<()> {
     let before = sha_of(&resolve_seal(input, prefer_vault)?)?;
-    let fs = VaultFs::open(input, pass, wards, prefer_vault)?;
+    let fs = VaultFs::open_keys(input, pass, wards, prefer_vault, identities)?;
     if let Some(dest) = export {
         let n = fs.export_dir(dest)?;
         let after = sha_of(fs.seal_path())?;
@@ -959,4 +984,38 @@ mod tests {
         assert_eq!(&vfs.read_file("plain.txt").unwrap()[..], b"plain");
         let _ = fs::remove_dir_all(&d);
     }
+
+    #[test]
+    fn mount_export_encrypt_to_identity() {
+        let d = tmp("id-export");
+        let alice = crate::Identity::generate().unwrap();
+        let mark = d.join("m.sg1");
+        let bytes = crate::seal_kn_to(
+            b"mount-id-clear",
+            Mode::Seal,
+            None,
+            "secret.bin",
+            false,
+            "",
+            &[],
+            None,
+            crate::DEFAULT_PIECE,
+            &[alice.public()],
+        )
+        .unwrap();
+        fs::write(&mark, &bytes).unwrap();
+        let before = crate::sha256_path(&mark).unwrap();
+        let vfs = VaultFs::open_keys(&mark, None, &[], false, &[alice]).unwrap();
+        let dest = d.join("view");
+        let n = vfs.export_dir(&dest).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(fs::read(dest.join("secret.bin")).unwrap(), b"mount-id-clear");
+        assert_eq!(crate::sha256_path(&mark).unwrap(), before);
+        assert!(VaultFs::open_keys(&mark, None, &[], false, &[]).is_ok());
+        // listing works without identity; read should fail without matching key
+        let vfs_no = VaultFs::open(&mark, None, &[], false).unwrap();
+        assert!(vfs_no.read_file("secret.bin").is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
 }

@@ -3,7 +3,8 @@
 
 use crate::folder::{list_dir_pack, looks_like_nest_name, read_dir_entry_star, DirEntry, DIR_MAGIC};
 use crate::work::WORK_MAGIC;
-use crate::{hex32, locate_header, unseal_ex, Result};
+use crate::keys::Identity;
+use crate::{hex32, locate_header, unseal_ex_keys, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -181,6 +182,7 @@ fn view_mark_bytes(
     trail: Vec<String>,
     seen: Vec<[u8; 32]>,
     pass: Option<&str>,
+    identities: &[Identity],
 ) -> Result<PathView> {
     let kind = kind_of_bytes(data);
     match kind {
@@ -213,8 +215,8 @@ fn view_mark_bytes(
             let (h, _, _) = locate_header(data)?;
             let mut nest_payload = looks_like_nest_name(&h.name);
             // Try unseal when not encrypted, or when pass given, to confirm payload magic.
-            if !h.encrypted() || pass.is_some() {
-                match unseal_ex(data, pass, &[]) {
+            if !h.encrypted() || pass.is_some() || !identities.is_empty() {
+                match unseal_ex_keys(data, pass, &[], identities) {
                     Ok(plain) if is_nestable_bytes(&plain) => nest_payload = true,
                     Ok(_) => {
                         if !looks_like_nest_name(&h.name) {
@@ -261,6 +263,17 @@ pub fn path_walk(
     wards: &[(String, String)],
     max_depth: usize,
 ) -> Result<PathView> {
+    path_walk_keys(mark, into, pass, wards, max_depth, &[])
+}
+
+pub fn path_walk_keys(
+    mark: &Path,
+    into: &[String],
+    pass: Option<&str>,
+    wards: &[(String, String)],
+    max_depth: usize,
+    identities: &[Identity],
+) -> Result<PathView> {
     let max_depth = max_depth.min(MAX_NEST_DEPTH);
     check_depth(into.len(), max_depth)?;
 
@@ -290,7 +303,7 @@ pub fn path_walk(
                 .filter(|s| !s.is_empty()),
             _ => None,
         };
-        let next = descend_one(&cur, step, pass, wards, &trail)?;
+        let next = descend_one(&cur, step, pass, wards, &trail, identities)?;
         let id = mark_id(&next);
         push_seen(&mut seen, id)?;
         let label = if step.is_empty() || step == "." {
@@ -308,7 +321,7 @@ pub fn path_walk(
         cur = next;
     }
 
-    view_mark_bytes(&cur, trail, seen, pass)
+    view_mark_bytes(&cur, trail, seen, pass, identities)
 }
 
 fn payload_label(data: &[u8]) -> Option<String> {
@@ -346,6 +359,7 @@ fn descend_one(
     pass: Option<&str>,
     wards: &[(String, String)],
     trail: &[String],
+    identities: &[Identity],
 ) -> Result<Vec<u8>> {
     let kind = kind_of_bytes(cur);
     match kind {
@@ -375,13 +389,13 @@ fn descend_one(
                 ));
                 fs::write(&tmp2, &star).map_err(|e| crate::Error::Msg(e.to_string()))?;
                 let out = tmp2.with_extension("bin");
-                crate::work::unseal_path(&tmp2, &out, file_pass.as_deref(), &[])?;
+                crate::work::unseal_path_keys(&tmp2, &out, file_pass.as_deref(), &[], identities)?;
                 let plain = fs::read(&out).map_err(|e| crate::Error::Msg(e.to_string()))?;
                 let _ = fs::remove_file(&tmp2);
                 let _ = fs::remove_file(&out);
                 Ok(plain)
             } else {
-                unseal_ex(&star, file_pass.as_deref(), &[])
+                unseal_ex_keys(&star, file_pass.as_deref(), &[], identities)
             }
         }
         NestKind::Mark => {
@@ -404,7 +418,7 @@ fn descend_one(
                     )));
                 }
             }
-            let plain = unseal_ex(cur, pass, &[])?;
+            let plain = unseal_ex_keys(cur, pass, &[], identities)?;
             if !is_nestable_bytes(&plain) && step != "." && !step.is_empty() {
                 // User asked to descend into a leaf by name — still return leaf bytes.
                 return Ok(plain);
@@ -437,7 +451,19 @@ pub fn path_extract(
     wards: &[(String, String)],
     max_depth: usize,
 ) -> Result<(PathBuf, Vec<String>)> {
-    let view = path_walk(mark, into, pass, wards, max_depth)?;
+    path_extract_keys(mark, into, dest, pass, wards, max_depth, &[])
+}
+
+pub fn path_extract_keys(
+    mark: &Path,
+    into: &[String],
+    dest: &Path,
+    pass: Option<&str>,
+    wards: &[(String, String)],
+    max_depth: usize,
+    identities: &[Identity],
+) -> Result<(PathBuf, Vec<String>)> {
+    let view = path_walk_keys(mark, into, pass, wards, max_depth, identities)?;
     // Re-walk to get final bytes (path_walk does not return them).
     let max_depth = max_depth.min(MAX_NEST_DEPTH);
     let root_bytes = fs::read(mark).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -448,7 +474,7 @@ pub fn path_extract(
     for (i, step) in into.iter().enumerate() {
         check_depth(i + 1, max_depth)?;
         let step = step.trim().trim_start_matches("./");
-        let next = descend_one(&cur, step, pass, wards, &trail[.. i + 1.min(trail.len())])?;
+        let next = descend_one(&cur, step, pass, wards, &trail[.. i + 1.min(trail.len())], identities)?;
         push_seen(&mut seen, mark_id(&next))?;
         cur = next;
     }

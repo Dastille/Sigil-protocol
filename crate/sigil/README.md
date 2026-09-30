@@ -162,8 +162,14 @@ Modern identity (default `sigil keygen`): `.sgk` holds a 32-byte master; X25519 
 
 # encrypt-to one or more recipients (implies encrypted; passphrase optional)
 ./sigil inscribe --to alice.pub --to bob.pub -o secret.sg1 file.bin
+# also works on folders, work packs, --cdc, and --pieces stars
+./sigil inscribe --to alice.pub -o tree.sg1 ./myfolder
+
 # open with matching identity (or passphrase if also sealed with --pass)
 ./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
+./sigil open --identity alice.sgk secret.sg1
+./sigil path --identity alice.sgk secret.sg1 --into .
+./sigil mount --identity alice.sgk secret.sg1 ./view --export-dir /tmp/view
 
 # both --pass and --to: either passphrase OR any matching identity unwraps the CEK
 ./sigil inscribe --pass house --to alice.pub -o secret.sg1 file.bin
@@ -171,7 +177,7 @@ Modern identity (default `sigil keygen`): `.sgk` holds a 32-byte master; X25519 
 ./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
 ```
 
-Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. Passkeys/WebAuthn and PGP import are roadmap follow-ups.
+Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, and pieces. Passkeys/WebAuthn and PGP import are roadmap follow-ups.
 
 **Mount (read-only FUSE / export-dir)**
 
@@ -182,6 +188,7 @@ Apps see normal paths; cleartext stays in RAM (FUSE) or a temp tree (`--export-d
 mkdir -p ./view
 ./sigil mount tree.sg1 ./view
 # Warded: --pass house --ward photos/secret.jpg=room
+# Encrypt-to: --identity alice.sgk
 # Vault tip: ./sigil mount ./notes.txt ./view --vault
 ls ./view
 ./sigil umount ./view

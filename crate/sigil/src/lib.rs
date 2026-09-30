@@ -36,10 +36,10 @@ pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
     pack_atlas, scry_constellation, unseal_constellation, AddOpts, AddReport,
 };
-pub use folder::{inscribe_dir, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_only, DirEntry};
+pub use folder::{inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_only, unseal_dir_only_keys, DirEntry};
 pub use nest::{
-    is_nestable_bytes, kind_of_bytes, path_extract, path_list, path_walk, refuse_if_cycle, NestKind,
-    PathEntry, PathView, MAX_NEST_DEPTH,
+    is_nestable_bytes, kind_of_bytes, path_extract, path_extract_keys, path_list, path_walk,
+    path_walk_keys, refuse_if_cycle, NestKind, PathEntry, PathView, MAX_NEST_DEPTH,
 };
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
@@ -48,7 +48,7 @@ pub use mds::{
     backend_by_name, default_backend, format_bakeoff_report, run_bakeoff, CauchyRs, MdsBackend,
     MdsBenchRow, VandermondeRs,
 };
-pub use open::run_open;
+pub use open::{run_open, run_open_keys};
 pub use pieces::{
     deluge as deluge_pieces, gather as gather_pieces, gather_dirs as gather_piece_dirs, mend_bytes,
     mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
@@ -68,13 +68,15 @@ pub use vault::{
 };
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
-    choose_overture, index_pack, inscribe_path, inscribe_stars_dir, is_work_pack, overture_report,
-    payload_name, read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
-    unseal_range, unseal_star_at, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
+    choose_overture, index_pack, inscribe_path, inscribe_path_to, inscribe_stars_dir,
+    inscribe_stars_dir_to, is_work_pack, overture_report, payload_name, read_facet_digests,
+    scry_facets, scry_path, suggested_output_name, unseal_path, unseal_path_keys, unseal_range,
+    unseal_range_keys, unseal_star_at, unseal_star_at_keys, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
+    OVERTURE, WORK_MAGIC,
 };
 pub use show::run_showing;
 pub use mount::{
-    fuse_available, mount_fuse, run_mount, umount as umount_path, VaultFs,
+    fuse_available, mount_fuse, run_mount, run_mount_keys, umount as umount_path, VaultFs,
 };
 pub use vault::tip_seal_path as vault_tip_seal_path;
 
@@ -245,7 +247,23 @@ pub fn seal_kn(
     shards: Option<u8>,
     piece_bytes: u32,
 ) -> Result<Vec<u8>> {
-    seal_kn_mds(
+    seal_kn_to(data, mode, pass, name, graph, covenant, geas, shards, piece_bytes, &[])
+}
+
+/// Like `seal_kn`, with optional encrypt-to recipients (`--to`).
+pub fn seal_kn_to(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    recipients: &[keys::PublicIdentity],
+) -> Result<Vec<u8>> {
+    seal_kn_mds_to(
         data,
         mode,
         pass,
@@ -256,6 +274,7 @@ pub fn seal_kn(
         shards,
         piece_bytes,
         &*mds::default_backend(),
+        recipients,
     )
 }
 
@@ -1155,6 +1174,120 @@ mod tests {
         assert!(!bytes.windows(4).any(|w| w == b"SGTO"));
         assert_eq!(unseal(&bytes, Some("secret")).unwrap(), msg);
         assert!(unseal(&bytes, Some("nope")).is_err());
+    }
+
+    #[test]
+    fn folder_encrypt_to_identity_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("sigil-folder-to-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src/sub")).unwrap();
+        std::fs::write(dir.join("src/a.txt"), b"alpha-to").unwrap();
+        std::fs::write(dir.join("src/sub/b.txt"), b"beta-to").unwrap();
+        let alice = crate::Identity::generate().unwrap();
+        let bob = crate::Identity::generate().unwrap();
+        let pack = dir.join("pack.sg1");
+        crate::folder::inscribe_dir_to(
+            &dir.join("src"),
+            &pack,
+            Mode::Reflection,
+            None,
+            "",
+            &[],
+            4 * 1024 * 1024,
+            &[],
+            &[alice.public()],
+        )
+        .unwrap();
+        let dest = dir.join("out");
+        let n = crate::folder::unseal_dir_only_keys(
+            &pack, &dest, None, &[], &[], &[], &[alice],
+        )
+        .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"alpha-to");
+        assert_eq!(std::fs::read(dest.join("sub/b.txt")).unwrap(), b"beta-to");
+        assert!(crate::folder::unseal_dir_only_keys(
+            &pack, &dir.join("bad"), None, &[], &[], &[], &[bob],
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn work_pack_encrypt_to_identity() {
+        let dir = std::env::temp_dir().join(format!("sigil-work-to-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("big.bin");
+        let payload = vec![0x5au8; 200 * 1024];
+        std::fs::write(&src, &payload).unwrap();
+        let alice = crate::Identity::generate().unwrap();
+        let pack = dir.join("w.sgwk");
+        let (orig, stars, work) = crate::work::inscribe_path_to(
+            &src,
+            &pack,
+            Mode::Glyph,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            DEFAULT_PIECE,
+            1,
+            None,
+            &[alice.public()],
+        )
+        .unwrap();
+        assert!(work && stars >= 2);
+        assert_eq!(orig, payload.len() as u64);
+        let back = dir.join("back.bin");
+        crate::work::unseal_path_keys(&pack, &back, None, &[], &[alice]).unwrap();
+        assert_eq!(std::fs::read(&back).unwrap(), payload);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_walk_identity_nested_mark() {
+        let dir = std::env::temp_dir().join(format!("sigil-path-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let alice = crate::Identity::generate().unwrap();
+        let inner = seal_kn_to(
+            b"nested-clear",
+            Mode::Glyph,
+            None,
+            "leaf.txt",
+            false,
+            "",
+            &[],
+            None,
+            DEFAULT_PIECE,
+            &[alice.public()],
+        )
+        .unwrap();
+        let outer = seal_kn_to(
+            &inner,
+            Mode::Glyph,
+            None,
+            "inner.sg1",
+            false,
+            "",
+            &[],
+            None,
+            DEFAULT_PIECE,
+            &[alice.public()],
+        )
+        .unwrap();
+        let mark = dir.join("outer.sg1");
+        std::fs::write(&mark, &outer).unwrap();
+        let view = crate::path_walk_keys(&mark, &[], None, &[], 8, &[alice.clone()]).unwrap();
+        assert!(view.nest_payload, "outer encrypt-to mark should advertise nested payload");
+        // --into . unwraps outer → inner .sg1 bytes (still a seal); then identity-unseal leaf.
+        let dest = dir.join("inner.sg1");
+        crate::path_extract_keys(&mark, &[".".into()], &dest, None, &[], 8, &[alice.clone()]).unwrap();
+        let leaf = unseal_ex_keys(&std::fs::read(&dest).unwrap(), None, &[], &[alice]).unwrap();
+        assert_eq!(leaf, b"nested-clear");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

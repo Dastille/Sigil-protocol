@@ -2,7 +2,8 @@
 //! Magic SGWK. Each record is a complete .sg1 star of one chunk.
 
 use crate::cdc::{self, ChunkRange, Profile as CdcProfile};
-use crate::{seal_kn, unseal_ex, Mode, Result, DEFAULT_PIECE};
+use crate::keys::{Identity, PublicIdentity};
+use crate::{seal_kn_to, unseal_ex_keys, Mode, Result, DEFAULT_PIECE};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -97,6 +98,26 @@ pub fn inscribe_path(
     overture_mb: u32,
     cdc: Option<CdcProfile>,
 ) -> Result<(u64, u32, bool)> {
+    inscribe_path_to(
+        input, output, mode, pass, covenant, geas, chunk, shards, piece_bytes, overture_mb, cdc, &[],
+    )
+}
+
+/// Like `inscribe_path`, with optional encrypt-to recipients on every star.
+pub fn inscribe_path_to(
+    input: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    shards: Option<u8>,
+    piece_bytes: u32,
+    overture_mb: u32,
+    cdc: Option<CdcProfile>,
+    recipients: &[PublicIdentity],
+) -> Result<(u64, u32, bool)> {
     let meta = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = meta.len();
     let piece_bytes = if piece_bytes == 0 { DEFAULT_PIECE } else { piece_bytes };
@@ -112,13 +133,13 @@ pub fn inscribe_path(
         // Drop the full buffer; re-read per star below for large files would be better,
         // but we already hold `data` — seal from slices of it.
         return inscribe_ranges(
-            &data, &name, output, mode, pass, covenant, geas, shards, piece_bytes, overture_mb, &r, profile.max as u32,
+            &data, &name, output, mode, pass, covenant, geas, shards, piece_bytes, overture_mb, &r, profile.max as u32, recipients,
         );
     } else {
         let chunk = chunk.max(64 * 1024);
         if orig <= chunk as u64 {
             let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let out = seal_kn(&data, mode, pass, &name, false, covenant, geas, shards, piece_bytes)?;
+            let out = seal_kn_to(&data, mode, pass, &name, false, covenant, geas, shards, piece_bytes, recipients)?;
             std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
             return Ok((orig, 1, false));
         }
@@ -157,7 +178,7 @@ pub fn inscribe_path(
         let n = range.length;
         reader.read_exact(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let star_name = format!("{name}.{i:04}");
-        let sealed = seal_kn(&buf[..n], mode, pass, &star_name, false, covenant, geas, shards, piece_bytes)?;
+        let sealed = seal_kn_to(&buf[..n], mode, pass, &star_name, false, covenant, geas, shards, piece_bytes, recipients)?;
         writer
             .write_all(&(sealed.len() as u64).to_le_bytes())
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -190,11 +211,12 @@ fn inscribe_ranges(
     overture_mb: u32,
     ranges: &[ChunkRange],
     header_chunk: u32,
+    recipients: &[PublicIdentity],
 ) -> Result<(u64, u32, bool)> {
     let orig = data.len() as u64;
     if ranges.len() <= 1 {
         let slice = if ranges.is_empty() { data } else { &data[ranges[0].offset..ranges[0].end()] };
-        let out = seal_kn(slice, mode, pass, name, false, covenant, geas, shards, piece_bytes)?;
+        let out = seal_kn_to(slice, mode, pass, name, false, covenant, geas, shards, piece_bytes, recipients)?;
         std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
         return Ok((orig, 1, false));
     }
@@ -216,7 +238,7 @@ fn inscribe_ranges(
     for (i, range) in ranges.iter().enumerate() {
         let slice = &data[range.offset..range.end()];
         let star_name = format!("{name}.{i:04}");
-        let sealed = seal_kn(slice, mode, pass, &star_name, false, covenant, geas, shards, piece_bytes)?;
+        let sealed = seal_kn_to(slice, mode, pass, &star_name, false, covenant, geas, shards, piece_bytes, recipients)?;
         writer
             .write_all(&(sealed.len() as u64).to_le_bytes())
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -362,12 +384,22 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
 }
 
 pub fn unseal_star_at(input: &Path, loc: &StarLoc, pass: Option<&str>, companions: &[Vec<u8>]) -> Result<Vec<u8>> {
+    unseal_star_at_keys(input, loc, pass, companions, &[])
+}
+
+pub fn unseal_star_at_keys(
+    input: &Path,
+    loc: &StarLoc,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<Vec<u8>> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     std::io::Seek::seek(&mut f, SeekFrom::Start(loc.file_off))
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut star = vec![0u8; loc.star_len as usize];
     f.read_exact(&mut star).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    unseal_ex(&star, pass, companions)
+    unseal_ex_keys(&star, pass, companions, identities)
 }
 
 pub fn unseal_range(
@@ -378,6 +410,18 @@ pub fn unseal_range(
     from_star: u32,
     to_star: u32,
 ) -> Result<(u64, u32)> {
+    unseal_range_keys(input, output, pass, companions, from_star, to_star, &[])
+}
+
+pub fn unseal_range_keys(
+    input: &Path,
+    output: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    from_star: u32,
+    to_star: u32,
+    identities: &[Identity],
+) -> Result<(u64, u32)> {
     let (head, locs) = index_pack(input)?;
     let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
     let mut written = 0u64;
@@ -386,7 +430,7 @@ pub fn unseal_range(
         if loc.index < from_star || loc.index > to_star {
             continue;
         }
-        let plain = unseal_star_at(input, loc, pass, companions)?;
+        let plain = unseal_star_at_keys(input, loc, pass, companions, identities)?;
         writer.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
         written += plain.len() as u64;
         n += 1;
@@ -415,12 +459,32 @@ pub fn inscribe_stars_dir(
     overture_mb: u32,
     cdc: Option<CdcProfile>,
 ) -> Result<(u64, u32)> {
+    inscribe_stars_dir_to(
+        input, dir, mode, pass, covenant, geas, chunk, shards, piece_bytes, overture_mb, cdc, &[],
+    )
+}
+
+/// Like `inscribe_stars_dir`, with optional encrypt-to recipients on every star.
+pub fn inscribe_stars_dir_to(
+    input: &Path,
+    dir: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    shards: Option<u8>,
+    piece_bytes: u32,
+    overture_mb: u32,
+    cdc: Option<CdcProfile>,
+    recipients: &[PublicIdentity],
+) -> Result<(u64, u32)> {
     std::fs::create_dir_all(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?.len();
     let piece_bytes = if piece_bytes == 0 { DEFAULT_PIECE } else { piece_bytes };
     let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
     if orig == 0 {
-        let sealed = seal_kn(&[], mode, pass, name, false, covenant, geas, shards, piece_bytes)?;
+        let sealed = seal_kn_to(&[], mode, pass, name, false, covenant, geas, shards, piece_bytes, recipients)?;
         std::fs::write(dir.join("star-0000.sg1"), sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
         return Ok((0, 1));
     }
@@ -431,7 +495,7 @@ pub fn inscribe_stars_dir(
         let chunk = profile.max as u32;
         for (i, range) in r.iter().enumerate() {
             let slice = &data[range.offset..range.end()];
-            let sealed = seal_kn(
+            let sealed = seal_kn_to(
                 slice,
                 mode,
                 pass,
@@ -441,6 +505,7 @@ pub fn inscribe_stars_dir(
                 geas,
                 shards,
                 piece_bytes,
+                recipients,
             )?;
             std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed)
                 .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -468,7 +533,7 @@ pub fn inscribe_stars_dir(
     while remain > 0 {
         let n = remain.min(chunk as u64) as usize;
         reader.read_exact(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let sealed = seal_kn(
+        let sealed = seal_kn_to(
             &buf[..n],
             mode,
             pass,
@@ -478,6 +543,7 @@ pub fn inscribe_stars_dir(
             geas,
             shards,
             piece_bytes,
+            recipients,
         )?;
         std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -497,6 +563,16 @@ pub fn inscribe_stars_dir(
 }
 
 pub fn unseal_path(input: &Path, output: &Path, pass: Option<&str>, companions: &[Vec<u8>]) -> Result<u64> {
+    unseal_path_keys(input, output, pass, companions, &[])
+}
+
+pub fn unseal_path_keys(
+    input: &Path,
+    output: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<u64> {
     let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
     let mut mag = [0u8; 4];
     reader.read_exact(&mut mag).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -513,7 +589,7 @@ pub fn unseal_path(input: &Path, output: &Path, pass: Option<&str>, companions: 
             let len = u64::from_le_bytes(lenb) as usize;
             let mut star = vec![0u8; len];
             reader.read_exact(&mut star).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let plain = unseal_ex(&star, pass, companions)?;
+            let plain = unseal_ex_keys(&star, pass, companions, identities)?;
             writer.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
             written += plain.len() as u64;
         }
@@ -528,7 +604,7 @@ pub fn unseal_path(input: &Path, output: &Path, pass: Option<&str>, companions: 
     }
     drop(reader);
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let plain = unseal_ex(&data, pass, companions)?;
+    let plain = unseal_ex_keys(&data, pass, companions, identities)?;
     let n = plain.len() as u64;
     std::fs::write(output, plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok(n)
