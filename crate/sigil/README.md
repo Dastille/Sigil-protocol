@@ -177,11 +177,11 @@ Modern identity (default `sigil keygen`): `.sgk` holds a 32-byte master; X25519 
 ./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
 ```
 
-Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, and pieces. Passkeys/WebAuthn and PGP import are roadmap follow-ups.
+Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, pieces, and vault track/commit/restore. Passkeys/WebAuthn and PGP import are roadmap follow-ups.
 
-**Mount (read-only FUSE / export-dir)**
+**Mount (FUSE read-only / export-dir)**
 
-Apps see normal paths; cleartext stays in RAM (FUSE) or a temp tree (`--export-dir`). The `.sg1` is never rewritten. Read-only for this spike — no dirty/re-seal.
+Apps see normal paths; cleartext stays in RAM (FUSE) or an export tree (`--export-dir`). The durable `.sg1` is never rewritten in place. FUSE stays read-only; use `--export-dir --writable` for a dirty cleartext tree, then `sigil vault commit --from-export` to re-seal as a new vault version.
 
 ```
 # FUSE (Linux/Parrot: needs /dev/fuse + fusermount3; usually in the `fuse3` package)
@@ -194,12 +194,20 @@ ls ./view
 ./sigil umount ./view
 # or: fusermount3 -u ./view
 
-# No FUSE / containers: same API, materialize a read-only tree (seal stays intact)
+# No FUSE / containers: materialize a read-only tree (seal stays intact)
 mkdir -p /tmp/sigil-view
 ./sigil mount tree.sg1 ./view --export-dir /tmp/sigil-view
+
+# Dirty write path (vault-tracked single-file live; no /dev/fuse needed)
+./sigil vault track ./notes.txt
+mkdir -p /tmp/sigil-dirty
+./sigil mount ./notes.txt ./view --vault --export-dir /tmp/sigil-dirty --writable
+# edit files under /tmp/sigil-dirty …
+./sigil vault commit --from-export /tmp/sigil-dirty
+# optional: --to alice.pub  --keep 5  --force
 ```
 
-Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`).
+Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`). Folder/SGDR dirty re-seal is not in this slice.
 
 AGPL-3.0.
 
