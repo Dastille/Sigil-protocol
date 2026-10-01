@@ -9,7 +9,7 @@ use sigil::{
     scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
     unseal_constellation, place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, umount_path,
-    vessel_present, write_vessel, AddOpts, vault_commit, vault_format_status, vault_format_versions,
+    vessel_present, write_vessel, AddOpts, vault_commit, vault_commit_from_export, vault_format_status, vault_format_versions,
     vault_list_versions, vault_prune, vault_restore, vault_status, vault_track, BootOutcome,
     CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
@@ -324,8 +324,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VaultCmd,
     },
-    /// Read-only FUSE mount of a .sg1 / SGDR pack (or vault tip). Alias: fuse.
-    /// Cleartext stays in RAM; durable seal is never rewritten. Use --export-dir without FUSE.
+    /// FUSE mount (read-only) or export-dir of a .sg1 / SGDR pack (or vault tip). Alias: fuse.
+    /// Durable seal is never rewritten. Use --export-dir --writable for a dirty cleartext tree.
     #[command(visible_alias = "fuse")]
     Mount {
         /// .sg1 / SGDR pack, or a vault live path / `.sgv` chart (with --vault)
@@ -343,9 +343,12 @@ enum Cmd {
         /// Mount the vault tip seal for this live path / `.sgv` dir
         #[arg(long)]
         vault: bool,
-        /// Materialize a read-only tree here instead of FUSE (seal still intact)
+        /// Materialize a tree here instead of FUSE (seal still intact)
         #[arg(long)]
         export_dir: Option<PathBuf>,
+        /// With --export-dir: writable cleartext + `.sigil-dirty` sidecar (re-seal via vault commit --from-export)
+        #[arg(long)]
+        writable: bool,
     },
     /// Unmount a Sigil FUSE mountpoint (`fusermount3 -u`). Alias: unmount.
     #[command(visible_alias = "unmount")]
@@ -374,22 +377,33 @@ enum VaultCmd {
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
+        /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
+        #[arg(long = "to")]
+        to: Vec<String>,
     },
     /// Report drift of live bytes vs tip true-name (match | changed | missing-seal | missing-live).
     Status {
         /// Live file or its `.sgv` chart dir
         path: PathBuf,
     },
-    /// Re-seal live into the next version; tip moves. Skips when already matching unless --force.
+    /// Re-seal live (or a dirty --from-export tree) into the next version; tip moves.
+    /// Skips when already matching unless --force.
     Commit {
-        path: PathBuf,
+        /// Live file or `.sgv` (optional when --from-export supplies the target via sidecar)
+        path: Option<PathBuf>,
+        /// Dirty export dir from `mount … --export-dir DIR --writable`
+        #[arg(long = "from-export")]
+        from_export: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
         #[arg(long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
-        /// Commit even when live already matches tip
+        /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Commit even when cleartext already matches tip
         #[arg(long)]
         force: bool,
         /// After commit, keep only the newest N version seals (full retention if omitted)
@@ -410,6 +424,9 @@ enum VaultCmd {
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
+        /// Identity (.sgk) to unwrap encrypt-to CEK (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
     /// Drop old version seals; keep the newest N (always keeps tip).
     Prune {
@@ -1368,6 +1385,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ward,
             vault,
             export_dir,
+            writable,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
@@ -1387,6 +1405,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 vault,
                 export_dir.as_deref(),
                 &identities,
+                writable,
             )?;
         }
         Cmd::Umount { mountpoint } => {
@@ -1409,9 +1428,11 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             mode,
             pass,
             talisman,
+            to,
         } => {
             let pass = resolve_pass(pass, talisman)?;
-            let report = vault_track(&path, mode.into(), pass.as_deref())?;
+            let recipients = load_recipients(&to)?;
+            let report = vault_track(&path, mode.into(), pass.as_deref(), &recipients)?;
             println!(
                 "vault track → {}  v{}  {} bytes  digest={}",
                 report.vault_dir.display(),
@@ -1419,6 +1440,9 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 report.size,
                 &hex32(&report.digest)[..12]
             );
+            if !recipients.is_empty() {
+                println!("encrypt-to {} recipient{}", recipients.len(), if recipients.len() == 1 { "" } else { "s" });
+            }
             println!("{}", vault_format_status(&vault_status(&path)?));
         }
         VaultCmd::Status { path } => {
@@ -1426,17 +1450,33 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
         }
         VaultCmd::Commit {
             path,
+            from_export,
             mode,
             pass,
             talisman,
+            to,
             force,
             keep,
         } => {
             let pass = resolve_pass(pass, talisman)?;
-            let report = vault_commit(&path, mode.into(), pass.as_deref(), force)?;
+            let recipients = load_recipients(&to)?;
+            let (report, status_path) = if let Some(export) = from_export {
+                let report =
+                    vault_commit_from_export(&export, mode.into(), pass.as_deref(), force, &recipients)?;
+                let meta = sigil::VaultDirtyMeta::read(&export)?;
+                let live = meta.live.ok_or("dirty export missing live= (not vault-tracked)")?;
+                (report, live)
+            } else {
+                let path = path.ok_or(
+                    "vault commit needs a live path, or --from-export DIR",
+                )?;
+                let report =
+                    vault_commit(&path, mode.into(), pass.as_deref(), force, &recipients)?;
+                (report, path)
+            };
             if report.skipped {
                 println!(
-                    "vault commit skipped (live matches tip v{})  digest={}",
+                    "vault commit skipped (matches tip v{})  digest={}",
                     report.version,
                     &hex32(&report.digest)[..12]
                 );
@@ -1448,8 +1488,15 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     &hex32(&report.digest)[..12]
                 );
             }
+            if !recipients.is_empty() && !report.skipped {
+                println!(
+                    "encrypt-to {} recipient{}",
+                    recipients.len(),
+                    if recipients.len() == 1 { "" } else { "s" }
+                );
+            }
             if let Some(k) = keep {
-                let p = vault_prune(&path, k)?;
+                let p = vault_prune(&status_path, k)?;
                 if !p.removed.is_empty() {
                     println!(
                         "pruned v{{{}}}  kept={}",
@@ -1462,7 +1509,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
-            println!("{}", vault_format_status(&vault_status(&path)?));
+            println!("{}", vault_format_status(&vault_status(&status_path)?));
         }
         VaultCmd::Versions { path } => {
             print!("{}", vault_format_versions(&vault_list_versions(&path)?));
@@ -1472,9 +1519,11 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             version,
             pass,
             talisman,
+            identity,
         } => {
             let pass = resolve_pass(pass, talisman)?;
-            let report = vault_restore(&path, version, pass.as_deref())?;
+            let identities = load_identities(&identity)?;
+            let report = vault_restore(&path, version, pass.as_deref(), &identities)?;
             println!(
                 "vault restore → {}  v{}  {} bytes  digest={}{}",
                 report.path.display(),

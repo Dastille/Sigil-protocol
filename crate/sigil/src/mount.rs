@@ -1,7 +1,9 @@
-//! Read-only mount of a `.sg1` / SGDR pack (or vault tip) so apps see normal paths.
+//! Mount of a `.sg1` / SGDR pack (or vault tip) so apps see normal paths.
 //!
-//! Durable seals stay intact: cleartext lives only in RAM (FUSE) or a temp/export
-//! directory. No dirty / re-seal in this spike.
+//! Durable seals stay intact: cleartext lives only in RAM (FUSE) or an export
+//! directory. Use `--export-dir --writable` for a dirty cleartext tree, then
+//! `sigil vault commit --from-export` to re-seal as a new vault version.
+//! FUSE remains read-only this slice.
 
 use crate::folder::{is_dir_pack, list_dir_pack, read_dir_entry_star, DirEntry};
 use crate::vault::{self, VAULT_SUFFIX};
@@ -150,8 +152,18 @@ impl VaultFs {
         }
     }
 
-    /// Materialize a read-only tree under `dest`. Source `.sg1` is never modified.
+    /// Materialize a tree under `dest`. Source `.sg1` is never modified.
+    /// When `writable`, cleartext gets normal write bits and `dirty` sidecar is written.
     pub fn export_dir(&self, dest: &Path) -> Result<u32> {
+        self.export_dir_ex(dest, false, None)
+    }
+
+    pub fn export_dir_ex(
+        &self,
+        dest: &Path,
+        writable: bool,
+        dirty: Option<&vault::DirtyMeta>,
+    ) -> Result<u32> {
         if dest.exists() {
             if !dest.is_dir() {
                 return Err(crate::Error::Msg(format!(
@@ -195,21 +207,46 @@ impl VaultFs {
                 }
             }
         }
-        // Lock down after all writes (dirs 0555 would block creating children).
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let (dir_mode, file_mode) = if writable {
+                (0o755, 0o644)
+            } else {
+                (0o555, 0o444)
+            };
             for (path, ino) in &self.by_path {
                 if path.is_empty() {
                     continue;
                 }
                 let out = dest.join(path);
                 let mode = match &self.nodes[ino].kind {
-                    NodeKind::Dir => 0o555,
-                    NodeKind::File { .. } => 0o444,
+                    NodeKind::Dir => dir_mode,
+                    NodeKind::File { .. } => file_mode,
                 };
                 let _ = fs::set_permissions(&out, fs::Permissions::from_mode(mode));
             }
+            // Export root needs write bit when dirty so the sidecar (and later edits) work.
+            if writable {
+                let _ = fs::set_permissions(dest, fs::Permissions::from_mode(0o755));
+            }
+        }
+        if writable {
+            let meta = match dirty {
+                Some(m) => m.clone(),
+                None => vault::DirtyMeta {
+                    source: self.seal.clone(),
+                    seal: self.seal.clone(),
+                    live: None,
+                    vault: false,
+                    kind: if is_dir_pack(&self.seal) {
+                        "folder".into()
+                    } else {
+                        "single".into()
+                    },
+                },
+            };
+            meta.write(dest)?;
         }
         Ok(n)
     }
@@ -812,7 +849,7 @@ pub fn run_mount(
     prefer_vault: bool,
     export: Option<&Path>,
 ) -> Result<()> {
-    run_mount_keys(input, mountpoint, pass, wards, prefer_vault, export, &[])
+    run_mount_keys(input, mountpoint, pass, wards, prefer_vault, export, &[], false)
 }
 
 pub fn run_mount_keys(
@@ -823,21 +860,44 @@ pub fn run_mount_keys(
     prefer_vault: bool,
     export: Option<&Path>,
     identities: &[Identity],
+    writable: bool,
 ) -> Result<()> {
-    let before = sha_of(&resolve_seal(input, prefer_vault)?)?;
+    if writable && export.is_none() {
+        return Err(crate::Error::Msg(
+            "--writable requires --export-dir (FUSE stays read-only this slice)".into(),
+        ));
+    }
+    let seal_path = resolve_seal(input, prefer_vault)?;
+    let before = sha_of(&seal_path)?;
     let fs = VaultFs::open_keys(input, pass, wards, prefer_vault, identities)?;
     if let Some(dest) = export {
-        let n = fs.export_dir(dest)?;
+        let dirty = if writable {
+            Some(vault::dirty_meta_for(input, fs.seal_path(), prefer_vault)?)
+        } else {
+            None
+        };
+        let n = fs.export_dir_ex(dest, writable, dirty.as_ref())?;
         let after = sha_of(fs.seal_path())?;
         if before != after {
             return Err(crate::Error::Msg(
                 "seal changed during export — this should never happen".into(),
             ));
         }
-        println!(
-            "exported {n} file(s) → {}  (seal intact, read-only view)",
-            dest.display()
-        );
+        if writable {
+            println!(
+                "exported {n} file(s) → {}  (writable dirty tree; seal intact)",
+                dest.display()
+            );
+            println!(
+                "re-seal: sigil vault commit --from-export {}",
+                dest.display()
+            );
+        } else {
+            println!(
+                "exported {n} file(s) → {}  (seal intact, read-only view)",
+                dest.display()
+            );
+        }
         println!("source {}", fs.seal_path().display());
         return Ok(());
     }
@@ -1015,6 +1075,62 @@ mod tests {
         // listing works without identity; read should fail without matching key
         let vfs_no = VaultFs::open(&mark, None, &[], false).unwrap();
         assert!(vfs_no.read_file("secret.bin").is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn export_dir_writable_and_commit_roundtrip() {
+        use crate::vault::{self, DIRTY_NAME};
+        let d = tmp("writable");
+        let live = d.join("notes.txt");
+        fs::write(&live, b"v1-clear").unwrap();
+        vault::track(&live, Mode::Glyph, None, &[]).unwrap();
+        let tip = vault::tip_seal_path(&live).unwrap().0;
+        let before = crate::sha256_path(&tip).unwrap();
+
+        let vfs = VaultFs::open_keys(&live, None, &[], true, &[]).unwrap();
+        let dest = d.join("dirty");
+        let meta = vault::dirty_meta_for(&live, vfs.seal_path(), true).unwrap();
+        assert!(meta.vault);
+        let n = vfs.export_dir_ex(&dest, true, Some(&meta)).unwrap();
+        assert_eq!(n, 1);
+        assert!(dest.join(DIRTY_NAME).is_file());
+        assert_eq!(crate::sha256_path(&tip).unwrap(), before);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dest.join("notes.txt")).unwrap().permissions().mode();
+            assert_ne!(mode & 0o222, 0, "writable export should allow writes");
+        }
+
+        fs::write(dest.join("notes.txt"), b"v2-edited").unwrap();
+        let c = vault::commit_from_export(&dest, Mode::Glyph, None, false, &[]).unwrap();
+        assert_eq!(c.version, 2);
+        assert_eq!(fs::read(&live).unwrap(), b"v2-edited");
+        assert_eq!(vault::status(&live).unwrap().tip, 2);
+        // Durable tip seal advanced; v1 immutable still there
+        assert!(vault::vault_dir_for(&live).join("v1.sg1").is_file());
+        assert_ne!(crate::sha256_path(&vault::tip_seal_path(&live).unwrap().0).unwrap(), before);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn export_dir_readonly_still_non_writable() {
+        let d = tmp("ro-bits");
+        let mark = d.join("m.sg1");
+        let bytes = seal(b"ro", Mode::Glyph, None, "x.bin", false).unwrap();
+        fs::write(&mark, &bytes).unwrap();
+        let vfs = VaultFs::open(&mark, None, &[], false).unwrap();
+        let dest = d.join("view");
+        vfs.export_dir(&dest).unwrap();
+        assert!(!dest.join(crate::vault::DIRTY_NAME).exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dest.join("x.bin")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o222, 0);
+        }
         let _ = fs::remove_dir_all(&d);
     }
 
