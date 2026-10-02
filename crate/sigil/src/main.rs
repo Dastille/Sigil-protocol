@@ -9,8 +9,10 @@ use sigil::{
     scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
     unseal_constellation, place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, umount_path,
-    vessel_present, write_vessel, AddOpts, vault_commit, vault_commit_from_export, vault_format_status, vault_format_versions,
-    vault_list_versions, vault_prune, vault_restore, vault_status, vault_track, BootOutcome,
+    vessel_present, write_vessel, AddOpts, vault_commit, vault_commit_from_export,
+    vault_format_retention, vault_format_status, vault_format_versions, vault_get_retention,
+    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore,
+    vault_set_retention, vault_status, vault_track, BootOutcome, VaultRetention,
     CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
@@ -406,9 +408,15 @@ enum VaultCmd {
         /// Commit even when cleartext already matches tip
         #[arg(long)]
         force: bool,
-        /// After commit, keep only the newest N version seals (full retention if omitted)
+        /// After commit, keep only the newest N version seals (overrides light policy for this commit)
         #[arg(long)]
         keep: Option<u32>,
+        /// Cold kit root for auto-prune / --keep (DIR/vN/); required when light policy would drop
+        #[arg(long)]
+        cold: Option<PathBuf>,
+        /// Light auto-prune: discard without --cold
+        #[arg(long = "force-drop")]
+        force_drop: bool,
     },
     /// List version stack (v1…tip) from the chart.
     Versions {
@@ -434,6 +442,26 @@ enum VaultCmd {
         /// How many newest versions to keep (≥ 1)
         #[arg(long)]
         keep: u32,
+        /// Before deleting a version seal, archive it under DIR/vN/ (kit place or plain .sg1)
+        #[arg(long)]
+        cold: Option<PathBuf>,
+        /// Light retention: allow dropping seals without --cold (discards history)
+        #[arg(long = "force-drop")]
+        force_drop: bool,
+    },
+    /// Show or set chart retention (full = keep all; light = keep newest N hot).
+    Retention {
+        /// Live file or its `.sgv` chart dir
+        path: PathBuf,
+        /// Keep every version seal in the chart (Bitcoin full-node style)
+        #[arg(long, conflicts_with = "light")]
+        full: bool,
+        /// Keep only newest N hot; older seals need --cold on prune (pruned-node style)
+        #[arg(long, conflicts_with = "full")]
+        light: bool,
+        /// With --light: how many newest versions stay hot (≥ 1)
+        #[arg(long)]
+        keep: Option<u32>,
     },
 }
 
@@ -1457,6 +1485,8 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             force,
             keep,
+            cold,
+            force_drop,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
@@ -1495,18 +1525,31 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     if recipients.len() == 1 { "" } else { "s" }
                 );
             }
-            if let Some(k) = keep {
-                let p = vault_prune(&status_path, k)?;
-                if !p.removed.is_empty() {
-                    println!(
-                        "pruned v{{{}}}  kept={}",
-                        p.removed
-                            .iter()
-                            .map(|n| n.to_string())
-                            .collect::<Vec<_>>()
-                            .join(","),
-                        p.kept
-                    );
+            // Explicit --keep, or chart light policy: prune after a real commit.
+            if !report.skipped {
+                if let Some(p) = vault_maybe_prune_after_commit(
+                    &status_path,
+                    keep,
+                    cold.as_deref(),
+                    force_drop,
+                )? {
+                    if !p.removed.is_empty() {
+                        let where_cold = p
+                            .cold_dir
+                            .as_ref()
+                            .map(|d| format!("  cold={}", d.display()))
+                            .unwrap_or_default();
+                        println!(
+                            "pruned v{{{}}}  kept={}{}",
+                            p.removed
+                                .iter()
+                                .map(|n| n.to_string())
+                                .collect::<Vec<_>>()
+                                .join(","),
+                            p.kept,
+                            where_cold
+                        );
+                    }
                 }
             }
             println!("{}", vault_format_status(&vault_status(&status_path)?));
@@ -1534,8 +1577,13 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
             println!("{}", vault_format_status(&vault_status(&path)?));
         }
-        VaultCmd::Prune { path, keep } => {
-            let p = vault_prune(&path, keep)?;
+        VaultCmd::Prune {
+            path,
+            keep,
+            cold,
+            force_drop,
+        } => {
+            let p = vault_prune_with(&path, keep, cold.as_deref(), force_drop)?;
             let removed = if p.removed.is_empty() {
                 "(none)".to_string()
             } else {
@@ -1545,10 +1593,39 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     .collect::<Vec<_>>()
                     .join(",")
             };
+            let where_cold = p
+                .cold_dir
+                .as_ref()
+                .map(|d| format!("  cold={}", d.display()))
+                .unwrap_or_default();
             println!(
-                "vault prune kept={} tip=v{} removed={}",
-                p.kept, p.tip, removed
+                "vault prune kept={} tip=v{} removed={}{}",
+                p.kept, p.tip, removed, where_cold
             );
+            print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+        }
+        VaultCmd::Retention {
+            path,
+            full,
+            light,
+            keep,
+        } => {
+            if full {
+                let p = vault_set_retention(&path, VaultRetention::Full)?;
+                println!("vault retention → {}", vault_format_retention(p));
+            } else if light {
+                let k = keep.ok_or("light retention needs --keep N (≥ 1)")?;
+                if k == 0 {
+                    return Err("light --keep must be ≥ 1".into());
+                }
+                let p = vault_set_retention(&path, VaultRetention::Light { keep: k })?;
+                println!("vault retention → {}", vault_format_retention(p));
+            } else if keep.is_some() {
+                return Err("pass --light with --keep N, or --full".into());
+            } else {
+                let p = vault_get_retention(&path)?;
+                println!("vault {}  {}", path.display(), vault_format_retention(p));
+            }
             print!("{}", vault_format_versions(&vault_list_versions(&path)?));
         }
     }
