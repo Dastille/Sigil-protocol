@@ -3,6 +3,10 @@
 //! Each tracked file gets a sidecar chart dir `<live>.sgv/` holding a `CHART`
 //! index and immutable version seals `v1.sg1`, `v2.sg1`, …. New Inscribe =
 //! new version entry; tip moves. History is never rewritten inside one seal.
+//!
+//! Retention: **full** (default, keep all seals) or **light** (newest N hot;
+//! older seals archive to a cold kit before leaving the chart). See
+//! `docs/VAULT-RETENTION.md`.
 
 use crate::folder::is_dir_pack;
 use crate::header::locate_header;
@@ -57,12 +61,46 @@ pub struct VersionEntry {
     pub time: u64,
 }
 
+/// How many version seals stay hot in the `.sgv` chart.
+///
+/// **Full** (default): keep every version — like a Bitcoin full node.
+/// **Light**: keep only the newest `keep` versions hot; older seals should
+/// move to a cold kit (`--cold`) before leaving the chart — like a pruned node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetentionPolicy {
+    Full,
+    Light { keep: u32 },
+}
+
+impl RetentionPolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            RetentionPolicy::Full => "full",
+            RetentionPolicy::Light { .. } => "light",
+        }
+    }
+
+    pub fn keep(self) -> Option<u32> {
+        match self {
+            RetentionPolicy::Full => None,
+            RetentionPolicy::Light { keep } => Some(keep),
+        }
+    }
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        RetentionPolicy::Full
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Chart {
     pub live: PathBuf,
     pub vault_dir: PathBuf,
     pub tip: u32,
     pub versions: Vec<VersionEntry>,
+    pub retention: RetentionPolicy,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +145,8 @@ pub struct PruneReport {
     pub removed: Vec<u32>,
     pub kept: u32,
     pub tip: u32,
+    /// Cold kit root used when pruning (if any).
+    pub cold_dir: Option<PathBuf>,
 }
 
 /// Metadata written beside a writable export tree (never stores passphrases).
@@ -339,6 +379,14 @@ fn write_chart(chart: &Chart) -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("live");
     let mut body = format!("{CHART_MAGIC}\nlive={live_name}\ntip={}\n", chart.tip);
+    match chart.retention {
+        RetentionPolicy::Full => {
+            body.push_str("retention=full\n");
+        }
+        RetentionPolicy::Light { keep } => {
+            body.push_str(&format!("retention=light\nkeep={keep}\n"));
+        }
+    }
     for v in &chart.versions {
         body.push_str(&format!(
             "version={} seal={} digest={} size={} time={}\n",
@@ -360,6 +408,8 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
     let mut live_name: Option<String> = None;
     let mut versions = Vec::new();
     let mut saw_magic = false;
+    let mut retention_kind: Option<String> = None;
+    let mut retention_keep: Option<u32> = None;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -375,6 +425,14 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
             tip = rest
                 .parse()
                 .map_err(|_| crate::Error::Msg(format!("bad tip: {rest}")))?;
+        } else if let Some(rest) = line.strip_prefix("retention=") {
+            retention_kind = Some(rest.trim().to_ascii_lowercase());
+        } else if let Some(rest) = line.strip_prefix("keep=") {
+            // Chart-level light keep=N (not a version= line field).
+            retention_keep = Some(
+                rest.parse()
+                    .map_err(|_| crate::Error::Msg(format!("bad keep: {rest}")))?,
+            );
         } else if let Some(rest) = line.strip_prefix("version=") {
             // version=N seal=vN.sg1 digest=… size=… time=…
             let mut n = 0u32;
@@ -454,11 +512,29 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
     if tip == 0 {
         tip = versions.last().map(|v| v.n).unwrap_or(0);
     }
+    let retention = match retention_kind.as_deref() {
+        None | Some("full") => RetentionPolicy::Full,
+        Some("light") => {
+            let keep = retention_keep.unwrap_or(1);
+            if keep == 0 {
+                return Err(crate::Error::Msg(
+                    "CHART retention=light needs keep≥1".into(),
+                ));
+            }
+            RetentionPolicy::Light { keep }
+        }
+        Some(other) => {
+            // Unknown retention value: tolerate as full (extras stay forward-compat).
+            let _ = other;
+            RetentionPolicy::Full
+        }
+    };
     Ok(Chart {
         live,
         vault_dir: vault_dir.to_path_buf(),
         tip,
         versions,
+        retention,
     })
 }
 
@@ -541,6 +617,7 @@ pub fn track(
             size,
             time: now_unix(),
         }],
+        retention: RetentionPolicy::Full,
     };
     write_chart(&chart)?;
     Ok(TrackReport {
@@ -875,7 +952,22 @@ pub fn restore(
 }
 
 /// Drop old version seals, keeping the newest `keep` (and always the tip).
+///
+/// Under **light** retention, seals that would leave the chart must go to
+/// `--cold DIR` first (kit place when possible, else a plain `.sg1` copy),
+/// unless `--force-drop` is set. **Full** retention with an explicit keep
+/// still allows drop-without-cold (legacy); pass `--cold` to archive anyway.
 pub fn prune(path: &Path, keep: u32) -> Result<PruneReport> {
+    prune_with(path, keep, None, false)
+}
+
+/// Like [`prune`], with optional cold-kit handoff and force-drop escape hatch.
+pub fn prune_with(
+    path: &Path,
+    keep: u32,
+    cold: Option<&Path>,
+    force_drop: bool,
+) -> Result<PruneReport> {
     if keep == 0 {
         return Err(crate::Error::Msg("--keep must be ≥ 1".into()));
     }
@@ -884,14 +976,38 @@ pub fn prune(path: &Path, keep: u32) -> Result<PruneReport> {
     chart.versions.sort_by_key(|v| v.n);
     let tip = chart.tip;
     let mut removed = Vec::new();
+    let cold_owned = cold.map(|p| p.to_path_buf());
     if chart.versions.len() <= keep as usize {
         return Ok(PruneReport {
             removed,
             kept: chart.versions.len() as u32,
             tip,
+            cold_dir: cold_owned,
         });
     }
     let cutoff = chart.versions.len() - keep as usize;
+    let dropping: Vec<VersionEntry> = chart
+        .versions
+        .iter()
+        .enumerate()
+        .filter(|(i, v)| *i < cutoff && v.n != tip)
+        .map(|(_, v)| v.clone())
+        .collect();
+    if !dropping.is_empty() {
+        let is_light = matches!(chart.retention, RetentionPolicy::Light { .. });
+        if is_light && cold.is_none() && !force_drop {
+            return Err(crate::Error::Msg(
+                "light retention prune would drop version seals — pass --cold DIR                  (kit-place / archive) or --force-drop to discard without a cold kit"
+                    .into(),
+            ));
+        }
+        if let Some(cold_root) = cold {
+            fs::create_dir_all(cold_root).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            for v in &dropping {
+                cold_archive_version(&chart.vault_dir, v, cold_root)?;
+            }
+        }
+    }
     let mut kept_entries = Vec::new();
     for (i, v) in chart.versions.iter().enumerate() {
         if i < cutoff && v.n != tip {
@@ -908,7 +1024,107 @@ pub fn prune(path: &Path, keep: u32) -> Result<PruneReport> {
         removed,
         kept: chart.versions.len() as u32,
         tip,
+        cold_dir: cold_owned,
     })
+}
+
+/// Place a version seal into `cold_root/vN/` via kit place when safe; else copy the `.sg1`.
+fn cold_archive_version(vault_dir: &Path, entry: &VersionEntry, cold_root: &Path) -> Result<()> {
+    let seal_path = vault_dir.join(&entry.seal);
+    let bytes = fs::read(&seal_path).map_err(|e| {
+        crate::Error::Msg(format!(
+            "read seal {} for cold archive: {e}",
+            seal_path.display()
+        ))
+    })?;
+    let dest = cold_root.join(format!("v{}", entry.n));
+    fs::create_dir_all(&dest).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    match crate::kit::place(&bytes, &dest, crate::kit::DEFAULT_DRIVES) {
+        Ok(_) => Ok(()),
+        Err(kit_err) => {
+            // Glyph (no repair budget) or Reflection with too few drives: keep the mark as a file.
+            let archive_name = if entry.seal.is_empty() {
+                seal_name(entry.n)
+            } else {
+                entry.seal.clone()
+            };
+            fs::write(dest.join(&archive_name), &bytes).map_err(|e| {
+                crate::Error::Msg(format!(
+                    "cold plain copy to {}: {e} (kit place also failed: {kit_err})",
+                    dest.display()
+                ))
+            })?;
+            let note = format!(
+                "sigil-cold-archive=1\nkind=plain-sg1\nseal={archive_name}\nkit_error={kit_err}\n"
+            );
+            let _ = fs::write(dest.join("ARCHIVE"), note);
+            Ok(())
+        }
+    }
+}
+
+/// Read retention policy from a live path / `.sgv`.
+pub fn get_retention(path: &Path) -> Result<RetentionPolicy> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    if !vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "not tracked (no {}). Run `sigil vault track` first.",
+            vault_dir.display()
+        )));
+    }
+    Ok(load_chart(&vault_dir)?.retention)
+}
+
+/// Set chart retention (`full` or `light` with keep≥1) and rewrite CHART.
+pub fn set_retention(path: &Path, policy: RetentionPolicy) -> Result<RetentionPolicy> {
+    if let RetentionPolicy::Light { keep } = policy {
+        if keep == 0 {
+            return Err(crate::Error::Msg("light --keep must be ≥ 1".into()));
+        }
+    }
+    let (_live, vault_dir) = resolve_paths(path)?;
+    if !vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "not tracked (no {}). Run `sigil vault track` first.",
+            vault_dir.display()
+        )));
+    }
+    let mut chart = load_chart(&vault_dir)?;
+    chart.retention = policy;
+    write_chart(&chart)?;
+    Ok(policy)
+}
+
+pub fn format_retention(policy: RetentionPolicy) -> String {
+    match policy {
+        RetentionPolicy::Full => "retention=full (keep all version seals in the chart)".into(),
+        RetentionPolicy::Light { keep } => format!(
+            "retention=light keep={keep} (newest {keep} hot; older need --cold before prune)"
+        ),
+    }
+}
+
+/// Keep count to apply after a successful commit: explicit `--keep`, else light policy, else none.
+pub fn commit_prune_keep(chart: &Chart, keep_override: Option<u32>) -> Option<u32> {
+    if let Some(k) = keep_override {
+        return Some(k);
+    }
+    chart.retention.keep()
+}
+
+/// After a non-skipped commit, prune when light policy (or explicit keep) says so.
+pub fn maybe_prune_after_commit(
+    path: &Path,
+    keep_override: Option<u32>,
+    cold: Option<&Path>,
+    force_drop: bool,
+) -> Result<Option<PruneReport>> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    let chart = load_chart(&vault_dir)?;
+    let Some(keep) = commit_prune_keep(&chart, keep_override) else {
+        return Ok(None);
+    };
+    Ok(Some(prune_with(path, keep, cold, force_drop)?))
 }
 
 pub fn format_status(s: &StatusReport) -> String {
@@ -932,11 +1148,16 @@ pub fn format_status(s: &StatusReport) -> String {
 }
 
 pub fn format_versions(chart: &Chart) -> String {
+    let ret = match chart.retention {
+        RetentionPolicy::Full => "full".to_string(),
+        RetentionPolicy::Light { keep } => format!("light keep={keep}"),
+    };
     let mut out = format!(
-        "vault {}  tip=v{}  versions={}\n",
+        "vault {}  tip=v{}  versions={}  retention={}\n",
         chart.live.display(),
         chart.tip,
-        chart.versions.len()
+        chart.versions.len(),
+        ret
     );
     for v in &chart.versions {
         let mark = if v.n == chart.tip { " *" } else { "" };
@@ -1157,6 +1378,157 @@ mod tests {
             err.to_string().contains("folder dirty re-seal not in this slice"),
             "{err}"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn retention_full_default_and_set_light() {
+        let dir = tmpdir("ret-default");
+        let live = dir.join("doc.txt");
+        fs::write(&live, b"v1").unwrap();
+        track(&live, Mode::Glyph, None, &[]).unwrap();
+        assert_eq!(get_retention(&live).unwrap(), RetentionPolicy::Full);
+        // CHART without retention= still loads as full
+        let chart_path = vault_dir_for(&live).join(CHART_NAME);
+        let raw = fs::read_to_string(&chart_path).unwrap();
+        assert!(raw.contains("retention=full"), "{raw}");
+
+        set_retention(&live, RetentionPolicy::Light { keep: 2 }).unwrap();
+        assert_eq!(
+            get_retention(&live).unwrap(),
+            RetentionPolicy::Light { keep: 2 }
+        );
+        let raw2 = fs::read_to_string(&chart_path).unwrap();
+        assert!(raw2.contains("retention=light"), "{raw2}");
+        assert!(raw2.contains("keep=2"), "{raw2}");
+
+        set_retention(&live, RetentionPolicy::Full).unwrap();
+        assert_eq!(get_retention(&live).unwrap(), RetentionPolicy::Full);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn light_auto_prune_after_commit_with_cold() {
+        let dir = tmpdir("ret-light-cold");
+        let live = dir.join("notes.txt");
+        fs::write(&live, b"alpha").unwrap();
+        track(&live, Mode::Seal, None, &[]).unwrap();
+        set_retention(&live, RetentionPolicy::Light { keep: 2 }).unwrap();
+
+        fs::write(&live, b"bravo").unwrap();
+        assert!(!commit(&live, Mode::Seal, None, false, &[]).unwrap().skipped);
+        fs::write(&live, b"charlie").unwrap();
+        assert!(!commit(&live, Mode::Seal, None, false, &[]).unwrap().skipped);
+        fs::write(&live, b"delta").unwrap();
+        assert!(!commit(&live, Mode::Seal, None, false, &[]).unwrap().skipped);
+
+        // 4 versions hot until prune — light policy alone does not prune inside commit()
+        assert_eq!(list_versions(&live).unwrap().versions.len(), 4);
+
+        let cold = dir.join("cold-kit");
+        let p = maybe_prune_after_commit(&live, None, Some(&cold), false)
+            .unwrap()
+            .expect("light should prune");
+        assert_eq!(p.kept, 2);
+        assert!(p.removed.contains(&1) && p.removed.contains(&2));
+        assert_eq!(list_versions(&live).unwrap().versions.len(), 2);
+        // tip still v4; restore works
+        assert_eq!(list_versions(&live).unwrap().tip, 4);
+        assert!(cold.join("v1").is_dir());
+        assert!(cold.join("v2").is_dir());
+        // Seal → kit place should leave KIT under cold/v1
+        assert!(
+            crate::kit::is_kit_dir(&cold.join("v1"))
+                || cold.join("v1").join("v1.sg1").is_file(),
+            "cold/v1 should be kit or plain archive"
+        );
+        assert!(!vault_dir_for(&live).join("v1.sg1").is_file());
+        assert!(vault_dir_for(&live).join("v3.sg1").is_file());
+        assert!(vault_dir_for(&live).join("v4.sg1").is_file());
+
+        restore(&live, Some(3), None, &[]).unwrap();
+        assert_eq!(fs::read(&live).unwrap(), b"charlie");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn light_prune_requires_cold_or_force_drop() {
+        let dir = tmpdir("ret-force");
+        let live = dir.join("x.bin");
+        fs::write(&live, b"1").unwrap();
+        track(&live, Mode::Glyph, None, &[]).unwrap();
+        set_retention(&live, RetentionPolicy::Light { keep: 1 }).unwrap();
+        fs::write(&live, b"2").unwrap();
+        commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        fs::write(&live, b"3").unwrap();
+        commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+
+        let err = prune_with(&live, 1, None, false).unwrap_err();
+        assert!(
+            err.to_string().contains("--cold") || err.to_string().contains("force-drop"),
+            "{err}"
+        );
+        assert_eq!(list_versions(&live).unwrap().versions.len(), 3);
+
+        let p = prune_with(&live, 1, None, true).unwrap();
+        assert_eq!(p.kept, 1);
+        assert!(p.removed.len() >= 2);
+        assert_eq!(list_versions(&live).unwrap().tip, 3);
+        // Glyph cold path: plain copy when --cold used
+        let cold = dir.join("cold");
+        fs::write(&live, b"4").unwrap();
+        commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        // now tip=4, hot has tip only if we pruned to 1 — need another version
+        fs::write(&live, b"5").unwrap();
+        commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        set_retention(&live, RetentionPolicy::Light { keep: 1 }).unwrap();
+        let p2 = prune_with(&live, 1, Some(&cold), false).unwrap();
+        assert!(!p2.removed.is_empty());
+        let archived = cold
+            .read_dir()
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .count();
+        assert!(archived >= 1, "expected cold/vN dirs");
+        // Glyph → plain .sg1 archive
+        let any_plain = cold
+            .read_dir()
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                let p = e.path();
+                p.is_dir()
+                    && (p.join("ARCHIVE").is_file()
+                        || p.join("v1.sg1").is_file()
+                        || p.join(format!("{}.sg1", e.file_name().to_string_lossy())).is_file()
+                        || fs::read_dir(&p).ok().map(|rd| {
+                            rd.filter_map(|x| x.ok())
+                                .any(|x| x.path().extension().map(|e| e == "sg1").unwrap_or(false))
+                        }).unwrap_or(false))
+            });
+        assert!(any_plain || crate::kit::is_kit_dir(&cold.join(format!("v{}", p2.removed[0]))));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_prune_still_drops_without_cold() {
+        let dir = tmpdir("ret-full-prune");
+        let live = dir.join("f.txt");
+        fs::write(&live, b"a").unwrap();
+        track(&live, Mode::Glyph, None, &[]).unwrap();
+        assert_eq!(get_retention(&live).unwrap(), RetentionPolicy::Full);
+        for (i, b) in [(2u8, b"b" as &[u8]), (3, b"c"), (4, b"d")] {
+            let _ = i;
+            fs::write(&live, b).unwrap();
+            commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        }
+        let p = prune(&live, 2).unwrap();
+        assert_eq!(p.kept, 2);
+        assert!(p.removed.contains(&1));
+        assert!(maybe_prune_after_commit(&live, None, None, false)
+            .unwrap()
+            .is_none());
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -209,5 +209,21 @@ mkdir -p /tmp/sigil-dirty
 
 Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`). Folder/SGDR dirty re-seal is not in this slice.
 
+**Vault (version tip + retention)**
+
+Track a live file; each commit adds an immutable `vN.sg1` under `<live>.sgv/`. Retention is full (keep all) or light (newest N hot; older seals go to a cold kit before leaving the chart).
+
+```
+./sigil vault track ./notes.txt
+./sigil vault status ./notes.txt
+./sigil vault commit ./notes.txt
+./sigil vault versions ./notes.txt
+./sigil vault restore ./notes.txt --version 2
+./sigil vault retention ./notes.txt --light --keep 3
+./sigil vault prune ./notes.txt --keep 3 --cold ./vault-cold/
+```
+
+Details: [docs/VAULT-RETENTION.md](../../docs/VAULT-RETENTION.md).
+
 AGPL-3.0.
 

@@ -61,13 +61,17 @@ pub use keys::{
 pub use kit::{is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST};
 pub use vault::{
     commit as vault_commit, commit_from_export as vault_commit_from_export,
-    dirty_meta_for as vault_dirty_meta_for, format_status as vault_format_status,
-    format_versions as vault_format_versions, list_versions as vault_list_versions,
-    prune as vault_prune, restore as vault_restore, status as vault_status, track as vault_track,
+    dirty_meta_for as vault_dirty_meta_for, format_retention as vault_format_retention,
+    format_status as vault_format_status, format_versions as vault_format_versions,
+    get_retention as vault_get_retention, list_versions as vault_list_versions,
+    maybe_prune_after_commit as vault_maybe_prune_after_commit, prune as vault_prune,
+    prune_with as vault_prune_with, restore as vault_restore,
+    set_retention as vault_set_retention, status as vault_status, track as vault_track,
     vault_dir_for, CommitReport as VaultCommitReport, DirtyMeta as VaultDirtyMeta,
     Drift as VaultDrift, PruneReport as VaultPruneReport, RestoreReport as VaultRestoreReport,
-    StatusReport as VaultStatusReport, TrackReport as VaultTrackReport, CHART_NAME as VAULT_CHART,
-    DIRTY_NAME as VAULT_DIRTY, VAULT_SUFFIX,
+    RetentionPolicy as VaultRetention, StatusReport as VaultStatusReport,
+    TrackReport as VaultTrackReport, CHART_NAME as VAULT_CHART, DIRTY_NAME as VAULT_DIRTY,
+    VAULT_SUFFIX,
 };
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
