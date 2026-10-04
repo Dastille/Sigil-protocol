@@ -1,6 +1,6 @@
 # Vault retention (full vs light)
 
-A **vault** tracks one live file with a sidecar chart dir `<live>.sgv/`. Inside: a `CHART` index and immutable version seals `v1.sg1`, `v2.sg1`, …. New commit = new seal; tip moves. History inside one seal is never rewritten.
+A **vault** tracks one live file (or one folder — see [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md#folder-vaults--sgdr-dirty-re-seal)) with a sidecar chart dir `<live>.sgv/`. Inside: a `CHART` index and immutable version seals `v1.sg1`, `v2.sg1`, …. New commit = new seal; tip moves. History inside one seal is never rewritten.
 
 Think Bitcoin: **full** node vs **light/pruned** node.
 
@@ -64,6 +64,7 @@ Each pruned seal lands under `DIR/vN/`:
 
 - **Seal** (and Reflection when the drive budget fits): `sigil kit place` layout (`usb-*` + `KIT`) so one lost USB is still mendable.
 - **Glyph** (or kit place rejected): plain `vN.sg1` copy plus an `ARCHIVE` note — still better than a silent delete.
+- **Folder vault** versions (SGDR packs): always the plain `vN.sg1` copy + `ARCHIVE` (kit place is single-star only).
 
 After a successful (non-skipped) **commit**, light policy auto-prunes to `keep`. Explicit `--keep` on commit overrides for that commit. Pass `--cold` (or `--force-drop`) the same way:
 

@@ -205,15 +205,21 @@ mkdir -p /tmp/sigil-dirty
 # edit files under /tmp/sigil-dirty …
 ./sigil vault commit --from-export /tmp/sigil-dirty
 # optional: --to alice.pub  --keep 5  --force
+
+# Folder vault: same flow, each version is an SGDR pack
+./sigil vault track ./photos
+./sigil mount ./photos ./view --vault --export-dir /tmp/photos-dirty --writable
+# edit / add / delete under /tmp/photos-dirty …
+./sigil vault commit --from-export /tmp/photos-dirty
 ```
 
-Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`). Folder/SGDR dirty re-seal is not in this slice.
+Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`). Folder vault tip model, sync rules, and `--ward` / `--force`: [docs/VAULT-MOUNT-NEST.md](../../docs/VAULT-MOUNT-NEST.md#folder-vaults--sgdr-dirty-re-seal).
 
 Composed vault + mount + nest recipes: [docs/VAULT-MOUNT-NEST.md](../../docs/VAULT-MOUNT-NEST.md).
 
 **Vault (version tip + retention)**
 
-Track a live file; each commit adds an immutable `vN.sg1` under `<live>.sgv/`. Retention is full (keep all) or light (newest N hot; older seals go to a cold kit before leaving the chart).
+Track a live file or folder; each commit adds an immutable `vN.sg1` under `<live>.sgv/` (folder vaults: SGDR packs, CHART `kind=folder`). Retention is full (keep all) or light (newest N hot; older seals go to a cold kit before leaving the chart).
 
 ```
 ./sigil vault track ./notes.txt

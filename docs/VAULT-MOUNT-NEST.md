@@ -12,7 +12,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mar
 | **Mount** | Apps see normal paths over a tip / bare `.sg1` / SGDR pack | Seal untouched; cleartext in RAM (FUSE) or an export tree |
 | **Path / nest** | Breadcrumb walk into nested `.sg1` layers inside a pack or mark | Outer mark unchanged; optional extract to a temp path |
 
-`vault track` needs a **regular file** (not a directory). Folder packs (SGDR) are still mountable and walkable as bare `.sg1` marks; versioning a folder as a vault live tip is not the track path today.
+`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` marks.
 
 ## When to use which
 
@@ -72,9 +72,30 @@ mkdir -p /tmp/sigil-dirty
 
 `--writable` without `--export-dir` is refused (FUSE stays read-only). Export without `--writable` is a read-only tree (no `.sigil-dirty`, no commit-from-export).
 
-### Folder / SGDR dirty re-seal (stub)
+### Folder vaults + SGDR dirty re-seal
 
-Mount and export of SGDR folder packs work (including nested `.sg1` entries as files). **`vault commit --from-export` for folder/SGDR dirty trees is not implemented yet** — it errors with `folder dirty re-seal not in this slice (single-file vault tip only)`. Single-file vault tip dirty → re-seal works. Until folder re-seal lands, version a folder by packing with `inscribe` to a new mark, or keep the live tip as a single file.
+```
+./sigil vault track ./photos            # photos.sgv/CHART (kind=folder) + v1.sg1 (SGDR)
+./sigil mount ./photos ./view --vault --export-dir /tmp/photos-dirty --writable
+# edit / add / delete files under /tmp/photos-dirty …
+./sigil vault commit --from-export /tmp/photos-dirty
+# → v2.sg1 (new SGDR pack); tip moves; v1 untouched
+./sigil vault versions ./photos         # … kind=folder
+./sigil vault restore ./photos --version 1
+# options as single-file: --mode seal  --pass house  --ward photos/cat.jpg=room  --to alice.pub
+#                         --keep N  --cold DIR  --force-drop  (restore: --identity, --force)
+```
+
+**Tip model.** The chart's tip seal (an SGDR `vN.sg1`) is the durable source of truth; the live directory and any `--writable` export tree are working copies. That is the same rule as single-file vaults (commit reads a working copy, restore writes one), so no second "live dir is the truth" model exists.
+
+- **Version digest** = tree true-name: SHA-256 over `sigil-tree=1` + sorted `rel\0size\0sha256` lines (dotfiles skipped — the same set folder Inscribe packs). It lives only in `CHART`; the SGDR layout is unchanged, so every folder version opens with plain `de-scribe` / `mount` / `path`.
+- **Chart** gains one additive line, `kind=folder`. Single-file charts are written byte-for-byte as before; a missing `kind=` means single.
+- `vault commit ./photos` seals the live dir; `--from-export DIR` seals the export tree (the `.sigil-dirty` sidecar is ignored). Unchanged tree → skipped unless `--force`.
+- After a from-export commit the live dir is **synced** (adds / edits / deletes) only if it was clean (matched a hot version) or missing. If it had its own uncommitted edits it is left untouched and commit prints a `note:`; use `vault restore --force` to take the tip.
+- `vault restore` mirrors a version into the live dir (unpacks to a staging dir, verifies the tree true-name, then syncs). It refuses to drop edits that match no hot version unless `--force`. Dotfiles in the live dir are never touched.
+- Secrets are not remembered: pass the same `--pass` / `--ward` / `--to` on commit as on track (the sidecar never stores them). Mount the export with `--identity` / `--pass` / `--ward` to read protected entries.
+- Light retention archives pruned folder versions as a plain `vN.sg1` copy + `ARCHIVE` note (kit place is single-star only).
+- A bare SGDR (not vault-tracked) `--writable` export cannot `--from-export`; `vault track` the folder, or pack the edited tree with `sigil inscribe EXPORT -o new.sg1`.
 
 ## Nested `.sg1` / SGDR: path vs mount
 
@@ -137,8 +158,9 @@ Dirty re-seal: pass `--to` / `--pass` on `vault commit --from-export` the same w
 
 ## Limits (current)
 
-- Vault track/commit live tip: **single regular file** only.
-- Dirty `--from-export` re-seal: **single-file** vault tip only; folder/SGDR stubbed (clear error).
+- Vault track/commit live tip: a regular file, or a directory (folder vault, SGDR versions).
+- Dirty `--from-export` re-seal: single-file and folder vault tips; bare (non-vault) SGDR exports must be tracked or re-inscribed.
+- Folder vault restore does not run a whole-pack mend on a torn SGDR version yet (it refuses on a tree true-name mismatch); single-file restore mends.
 - FUSE: read-only; writable needs `--export-dir`.
 - Nested seals: mount shows one layer; `sigil path` walks deeper.
 - Constellation `--identity`: deferred.

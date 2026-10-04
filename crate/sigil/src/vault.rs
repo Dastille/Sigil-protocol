@@ -7,13 +7,22 @@
 //! Retention: **full** (default, keep all seals) or **light** (newest N hot;
 //! older seals archive to a cold kit before leaving the chart). See
 //! `docs/VAULT-RETENTION.md`.
+//!
+//! Folder vaults (`vault track DIR`): same chart, but each `vN.sg1` is an
+//! ordinary SGDR folder pack and the CHART carries an additive `kind=folder`
+//! line. The version digest is a **tree true-name** (SHA-256 over a sorted
+//! `rel\0size\0sha256` manifest); it lives only in CHART — the SGDR layout
+//! is unchanged. Tip model: the chart's tip seal is the durable truth; the
+//! live directory (or a `--writable` export tree) is a working copy that
+//! commit reads from and restore writes to. See `docs/VAULT-MOUNT-NEST.md`.
 
-use crate::folder::is_dir_pack;
+use crate::folder::{inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_only_keys};
 use crate::header::locate_header;
 use crate::keys::{Identity, PublicIdentity};
 use crate::pieces::mend_bytes;
 use crate::{
-    hex32, seal_kn_to, sha256, sha256_path, unseal_ex_keys, Mode, Result, DEFAULT_PIECE,
+    hex32, seal_kn_to, sha256, sha256_path, unseal_ex_keys, Mode, Result, DEFAULT_CHUNK,
+    DEFAULT_PIECE,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +34,26 @@ const CHART_MAGIC: &str = "sigil-vault=1";
 /// Sidecar left in a `--export-dir --writable` tree (no passphrases).
 pub const DIRTY_NAME: &str = ".sigil-dirty";
 const DIRTY_MAGIC: &str = "sigil-dirty=1";
+const TREE_MAGIC: &str = "sigil-tree=1";
+
+/// What a vault's live path is: one regular file, or a directory (SGDR versions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ChartKind {
+    /// Live is a regular file; each `vN.sg1` is a single-file mark (default; legacy charts).
+    #[default]
+    Single,
+    /// Live is a directory; each `vN.sg1` is an SGDR folder pack. CHART line `kind=folder`.
+    Folder,
+}
+
+impl ChartKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ChartKind::Single => "single",
+            ChartKind::Folder => "folder",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Drift {
@@ -101,6 +130,8 @@ pub struct Chart {
     pub tip: u32,
     pub versions: Vec<VersionEntry>,
     pub retention: RetentionPolicy,
+    /// `single` (default; no CHART line) or `folder` (`kind=folder`).
+    pub kind: ChartKind,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +160,8 @@ pub struct CommitReport {
     pub digest: [u8; 32],
     pub size: u64,
     pub skipped: bool,
+    /// Optional human note (e.g. folder live dir left untouched because it had local edits).
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -160,7 +193,7 @@ pub struct DirtyMeta {
     pub live: Option<PathBuf>,
     /// True when export came from a vault tip.
     pub vault: bool,
-    /// `single` (one payload file) or `folder` (SGDR — commit stubbed this slice).
+    /// `single` (one payload file) or `folder` (SGDR pack → folder vault re-seal).
     pub kind: String,
 }
 
@@ -298,6 +331,8 @@ pub fn dirty_meta_for(input: &Path, seal: &Path, prefer_vault: bool) -> Result<D
 
 /// Sidecar chart dir for a live path: `notes.txt` → `notes.txt.sgv/`.
 pub fn vault_dir_for(live: &Path) -> PathBuf {
+    // `photos/` and `photos` name the same live dir → `photos.sgv` (not `photos/.sgv`).
+    let live = live.components().as_path();
     let mut s = live.as_os_str().to_os_string();
     s.push(VAULT_SUFFIX);
     PathBuf::from(s)
@@ -379,6 +414,10 @@ fn write_chart(chart: &Chart) -> Result<()> {
         .and_then(|n| n.to_str())
         .unwrap_or("live");
     let mut body = format!("{CHART_MAGIC}\nlive={live_name}\ntip={}\n", chart.tip);
+    // Additive: single-file charts stay byte-identical to pre-folder CHARTs.
+    if chart.kind == ChartKind::Folder {
+        body.push_str("kind=folder\n");
+    }
     match chart.retention {
         RetentionPolicy::Full => {
             body.push_str("retention=full\n");
@@ -410,6 +449,7 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
     let mut saw_magic = false;
     let mut retention_kind: Option<String> = None;
     let mut retention_keep: Option<u32> = None;
+    let mut kind = ChartKind::Single;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -425,6 +465,11 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
             tip = rest
                 .parse()
                 .map_err(|_| crate::Error::Msg(format!("bad tip: {rest}")))?;
+        } else if let Some(rest) = line.strip_prefix("kind=") {
+            kind = match rest.trim() {
+                "folder" => ChartKind::Folder,
+                _ => ChartKind::Single,
+            };
         } else if let Some(rest) = line.strip_prefix("retention=") {
             retention_kind = Some(rest.trim().to_ascii_lowercase());
         } else if let Some(rest) = line.strip_prefix("keep=") {
@@ -535,6 +580,7 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
         tip,
         versions,
         retention,
+        kind,
     })
 }
 
@@ -585,9 +631,24 @@ pub fn track(
     pass: Option<&str>,
     recipients: &[PublicIdentity],
 ) -> Result<TrackReport> {
+    track_ex(live, mode, pass, recipients, &[])
+}
+
+/// Like [`track`]; a **directory** live path becomes a folder vault (SGDR versions).
+/// `wards` (`--ward rel=pass`) apply per-file passphrases inside folder versions.
+pub fn track_ex(
+    live: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
+) -> Result<TrackReport> {
+    if live.is_dir() {
+        return track_dir(live, mode, pass, recipients, wards);
+    }
     if !live.is_file() {
         return Err(crate::Error::Msg(format!(
-            "vault track needs a regular file (got {})",
+            "vault track needs a regular file or a directory (got {})",
             live.display()
         )));
     }
@@ -618,6 +679,7 @@ pub fn track(
             time: now_unix(),
         }],
         retention: RetentionPolicy::Full,
+        kind: ChartKind::Single,
     };
     write_chart(&chart)?;
     Ok(TrackReport {
@@ -627,6 +689,131 @@ pub fn track(
         digest,
         size,
     })
+}
+
+fn track_dir(
+    live: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
+) -> Result<TrackReport> {
+    let (live, vault_dir) = resolve_paths(live)?;
+    if vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "already tracked ({} exists). Use `sigil vault commit` for a new version.",
+            vault_dir.join(CHART_NAME).display()
+        )));
+    }
+    if vault_dir.starts_with(&live) {
+        return Err(crate::Error::Msg("vault chart cannot live inside the tracked folder".into()));
+    }
+    let (digest, size, _n) = tree_digest(&live)?;
+    fs::create_dir_all(&vault_dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let seal_file = seal_name(1);
+    seal_tree_version(&live, &vault_dir.join(&seal_file), mode, pass, recipients, wards)?;
+    let chart = Chart {
+        live: live.clone(),
+        vault_dir: vault_dir.clone(),
+        tip: 1,
+        versions: vec![VersionEntry {
+            n: 1,
+            seal: seal_file,
+            digest,
+            size,
+            time: now_unix(),
+        }],
+        retention: RetentionPolicy::Full,
+        kind: ChartKind::Folder,
+    };
+    write_chart(&chart)?;
+    Ok(TrackReport {
+        live,
+        vault_dir,
+        version: 1,
+        digest,
+        size,
+    })
+}
+
+/// Tree true-name of a directory: SHA-256 over `sigil-tree=1` + sorted
+/// `rel\0size\0sha256hex\n` lines (dotfiles skipped — same set folder Inscribe packs).
+/// Returns `(digest, total_bytes, file_count)`.
+pub fn tree_digest(dir: &Path) -> Result<([u8; 32], u64, u32)> {
+    let files = tree_files(dir)?;
+    let mut manifest = format!("{TREE_MAGIC}\n");
+    let mut total = 0u64;
+    for (rel, path) in &files {
+        let size = path.metadata().map_err(|e| crate::Error::Msg(e.to_string()))?.len();
+        total += size;
+        manifest.push_str(&format!("{rel}\0{size}\0{}\n", hex32(&sha256_path(path)?)));
+    }
+    Ok((sha256(manifest.as_bytes()), total, files.len() as u32))
+}
+
+/// Seal `src` as an SGDR pack at `out` (written via `.part` + rename; never overwrites).
+fn seal_tree_version(
+    src: &Path,
+    out: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
+) -> Result<()> {
+    if out.exists() {
+        return Err(crate::Error::Msg(format!(
+            "refusing to overwrite existing version seal {}",
+            out.display()
+        )));
+    }
+    let mut part = out.as_os_str().to_os_string();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let res = inscribe_dir_to(src, &part, mode, pass, "", &[], DEFAULT_CHUNK, wards, recipients);
+    match res {
+        Ok(_) => fs::rename(&part, out).map_err(|e| crate::Error::Msg(e.to_string())),
+        Err(e) => {
+            let _ = fs::remove_file(&part);
+            Err(match e {
+                crate::Error::Msg(m) if m == "folder is empty" => crate::Error::Msg(
+                    "folder is empty — a folder version needs at least one (non-dot) file".into(),
+                ),
+                other => other,
+            })
+        }
+    }
+}
+
+/// Make `dst` mirror `src` (non-dot files): copy every file, delete files absent
+/// from `src`, drop dirs left empty. Dotfiles in `dst` are never touched.
+fn sync_tree(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let src_files = tree_files(src)?;
+    let keep: std::collections::HashSet<&str> = src_files.iter().map(|(r, _)| r.as_str()).collect();
+    for (rel, path) in &src_files {
+        let out = dst.join(rel);
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        }
+        if out.exists() {
+            let _ = fs::remove_file(&out);
+        }
+        fs::copy(path, &out).map_err(|e| crate::Error::Msg(format!("copy {rel}: {e}")))?;
+    }
+    for (rel, path) in tree_files(dst)? {
+        if keep.contains(rel.as_str()) {
+            continue;
+        }
+        fs::remove_file(&path).map_err(|e| crate::Error::Msg(format!("remove {rel}: {e}")))?;
+        let mut cur = path.parent().map(|p| p.to_path_buf());
+        while let Some(d) = cur {
+            if d == dst || !d.starts_with(dst) || fs::remove_dir(&d).is_err() {
+                break;
+            }
+            cur = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+    Ok(())
 }
 
 fn seal_version(
@@ -692,7 +879,11 @@ pub fn status(path: &Path) -> Result<StatusReport> {
             tip_size: Some(tip_entry.size),
         });
     }
-    if !live.is_file() {
+    let live_present = match chart.kind {
+        ChartKind::Single => live.is_file(),
+        ChartKind::Folder => live.is_dir(),
+    };
+    if !live_present {
         return Ok(StatusReport {
             live: chart.live,
             vault_dir: chart.vault_dir,
@@ -703,7 +894,10 @@ pub fn status(path: &Path) -> Result<StatusReport> {
             tip_size: Some(tip_entry.size),
         });
     }
-    let live_digest = sha256_path(&live)?;
+    let live_digest = match chart.kind {
+        ChartKind::Single => sha256_path(&live)?,
+        ChartKind::Folder => tree_digest(&live)?.0,
+    };
     let drift = if live_digest == tip_entry.digest {
         Drift::Match
     } else {
@@ -729,12 +923,33 @@ pub fn commit(
     force: bool,
     recipients: &[PublicIdentity],
 ) -> Result<CommitReport> {
+    commit_ex(path, mode, pass, force, recipients, &[])
+}
+
+/// Like [`commit`], with per-file `wards` for folder vaults.
+pub fn commit_ex(
+    path: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    force: bool,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
+) -> Result<CommitReport> {
     let (live, vault_dir) = resolve_paths(path)?;
     if !vault_dir.join(CHART_NAME).is_file() {
         return Err(crate::Error::Msg(format!(
             "not tracked (no {}). Run `sigil vault track` first.",
             vault_dir.display()
         )));
+    }
+    if load_chart(&vault_dir)?.kind == ChartKind::Folder {
+        if !live.is_dir() {
+            return Err(crate::Error::Msg(format!(
+                "live folder missing: {} (restore a version, or recreate the folder)",
+                live.display()
+            )));
+        }
+        return commit_tree(&live, &live, &vault_dir, mode, pass, force, recipients, wards);
     }
     if !live.is_file() {
         return Err(crate::Error::Msg(format!(
@@ -765,6 +980,7 @@ fn commit_bytes(
                 digest,
                 size: tip.size,
                 skipped: true,
+                note: None,
             });
         }
     }
@@ -788,20 +1004,90 @@ fn commit_bytes(
         digest,
         size,
         skipped: false,
+        note: None,
+    })
+}
+
+/// Seal directory `src` as the next folder-vault version (SGDR); tip moves.
+/// `src` is the live dir (ordinary commit) or a dirty export tree.
+fn commit_tree(
+    src: &Path,
+    live: &Path,
+    vault_dir: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    force: bool,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
+) -> Result<CommitReport> {
+    let mut chart = load_chart(vault_dir)?;
+    if chart.kind != ChartKind::Folder {
+        return Err(crate::Error::Msg(
+            "vault chart is a single-file vault, not a folder vault".into(),
+        ));
+    }
+    chart.live = live.to_path_buf();
+    let (digest, size, _n) = tree_digest(src)?;
+    if let Ok(tip) = entry_by_n(&chart, chart.tip) {
+        if tip.digest == digest && !force {
+            return Ok(CommitReport {
+                version: chart.tip,
+                digest,
+                size: tip.size,
+                skipped: true,
+                note: None,
+            });
+        }
+    }
+    let next = chart.versions.iter().map(|v| v.n).max().unwrap_or(0) + 1;
+    let seal_file = seal_name(next);
+    seal_tree_version(src, &vault_dir.join(&seal_file), mode, pass, recipients, wards)?;
+    chart.versions.push(VersionEntry {
+        n: next,
+        seal: seal_file,
+        digest,
+        size,
+        time: now_unix(),
+    });
+    chart.tip = next;
+    write_chart(&chart)?;
+    Ok(CommitReport {
+        version: next,
+        digest,
+        size,
+        skipped: false,
+        note: None,
     })
 }
 
 /// Re-seal cleartext from a writable `--export-dir` tree into the next vault version.
 ///
-/// Requires `.sigil-dirty` sidecar (from `mount … --writable`). Single-file vault tips only;
-/// folder/SGDR dirty re-seal returns a clear stub error this slice.
-/// On success, updates the live path to match committed bytes (old seals stay immutable).
+/// Requires `.sigil-dirty` sidecar (from `mount … --writable`).
+///
+/// - **Single-file** vault tip: on success the live file is updated to the committed bytes.
+/// - **Folder** vault tip (SGDR): the export tree is sealed as a new SGDR version. The live
+///   directory is synced (adds / edits / deletes) only when it was clean (matched a hot
+///   version) or missing; otherwise it is left untouched and `note` says so.
+///
+/// Old seals stay immutable either way.
 pub fn commit_from_export(
     export_dir: &Path,
     mode: Mode,
     pass: Option<&str>,
     force: bool,
     recipients: &[PublicIdentity],
+) -> Result<CommitReport> {
+    commit_from_export_ex(export_dir, mode, pass, force, recipients, &[])
+}
+
+/// Like [`commit_from_export`], with per-file `wards` for folder re-seal.
+pub fn commit_from_export_ex(
+    export_dir: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    force: bool,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
 ) -> Result<CommitReport> {
     if !export_dir.is_dir() {
         return Err(crate::Error::Msg(format!(
@@ -811,9 +1097,7 @@ pub fn commit_from_export(
     }
     let meta = DirtyMeta::read(export_dir)?;
     if meta.kind == "folder" || is_dir_pack(&meta.seal) {
-        return Err(crate::Error::Msg(
-            "folder dirty re-seal not in this slice (single-file vault tip only)".into(),
-        ));
+        return commit_folder_from_export(export_dir, &meta, mode, pass, force, recipients, wards);
     }
     if !meta.vault {
         return Err(crate::Error::Msg(
@@ -837,6 +1121,67 @@ pub fn commit_from_export(
             fs::create_dir_all(parent).map_err(|e| crate::Error::Msg(e.to_string()))?;
         }
         fs::write(&live, &data).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    }
+    Ok(report)
+}
+
+fn commit_folder_from_export(
+    export_dir: &Path,
+    meta: &DirtyMeta,
+    mode: Mode,
+    pass: Option<&str>,
+    force: bool,
+    recipients: &[PublicIdentity],
+    wards: &[(String, String)],
+) -> Result<CommitReport> {
+    let not_vault = || {
+        crate::Error::Msg(
+            "folder export is not from a folder vault — `sigil vault track DIR` then \
+             `mount DIR … --vault --export-dir … --writable`, or pack the edited tree as a new \
+             mark with `sigil inscribe EXPORT -o new.sg1`"
+                .into(),
+        )
+    };
+    if !meta.vault {
+        return Err(not_vault());
+    }
+    let live = meta.live.clone().ok_or_else(not_vault)?;
+    let (_l, vault_dir) = resolve_paths(&live)?;
+    if !vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "not tracked (no {}). Run `sigil vault track` first.",
+            vault_dir.display()
+        )));
+    }
+    let chart = load_chart(&vault_dir)?;
+    if chart.kind != ChartKind::Folder {
+        return Err(not_vault());
+    }
+    let export_abs = fs::canonicalize(export_dir).unwrap_or_else(|_| export_dir.to_path_buf());
+    if export_abs.starts_with(&live) || live.starts_with(&export_abs) {
+        return Err(crate::Error::Msg(
+            "export dir must not be inside the live folder (or contain it)".into(),
+        ));
+    }
+    // Was the live working copy clean (matches some hot version) before we commit?
+    let live_clean = if live.is_dir() {
+        let d = tree_digest(&live)?.0;
+        chart.versions.iter().any(|v| v.digest == d)
+    } else {
+        !live.exists()
+    };
+    let mut report = commit_tree(export_dir, &live, &vault_dir, mode, pass, force, recipients, wards)?;
+    if !report.skipped {
+        if live_clean {
+            sync_tree(export_dir, &live)?;
+        } else {
+            report.note = Some(format!(
+                "live folder {} has uncommitted edits — left untouched (tip v{} holds the export; \
+                 `vault restore --force` to replace live)",
+                live.display(),
+                report.version
+            ));
+        }
     }
     Ok(report)
 }
@@ -897,6 +1242,22 @@ pub fn restore(
     pass: Option<&str>,
     identities: &[Identity],
 ) -> Result<RestoreReport> {
+    restore_ex(path, version, pass, identities, &[], false)
+}
+
+/// Like [`restore`], with per-file `wards` and `force` for folder vaults.
+///
+/// Folder restore mirrors the version into the live dir (adds / overwrites / deletes
+/// non-dot files). It refuses when the live dir has edits that match no hot version
+/// (they would be lost) unless `force`. Single-file restore ignores `force` (unchanged).
+pub fn restore_ex(
+    path: &Path,
+    version: Option<u32>,
+    pass: Option<&str>,
+    identities: &[Identity],
+    wards: &[(String, String)],
+    force: bool,
+) -> Result<RestoreReport> {
     let (live, vault_dir) = resolve_paths(path)?;
     if !vault_dir.join(CHART_NAME).is_file() {
         return Err(crate::Error::Msg(format!(
@@ -913,6 +1274,9 @@ pub fn restore(
             "missing seal {} for v{n}",
             seal_path.display()
         )));
+    }
+    if chart.kind == ChartKind::Folder {
+        return restore_tree(&chart, &entry, &seal_path, &live, pass, identities, wards, force);
     }
     let raw = fs::read(&seal_path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mended = false;
@@ -948,6 +1312,65 @@ pub fn restore(
         size: plain.len() as u64,
         path: live,
         mended,
+    })
+}
+
+fn restore_tree(
+    chart: &Chart,
+    entry: &VersionEntry,
+    seal_path: &Path,
+    live: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+    wards: &[(String, String)],
+    force: bool,
+) -> Result<RestoreReport> {
+    if live.exists() && !live.is_dir() {
+        return Err(crate::Error::Msg(format!(
+            "folder vault live path is not a directory: {}",
+            live.display()
+        )));
+    }
+    if live.is_dir() && !force {
+        let d = tree_digest(live)?.0;
+        if !chart.versions.iter().any(|v| v.digest == d) {
+            return Err(crate::Error::Msg(format!(
+                "live folder {} has uncommitted edits (matches no hot version) — \
+                 `vault commit` first, or pass --force to overwrite",
+                live.display()
+            )));
+        }
+    }
+    let parent = live.parent().unwrap_or_else(|| Path::new("."));
+    let stage = parent.join(format!(
+        ".{}.sigil-restore-{}-{}",
+        live.file_name().and_then(|n| n.to_str()).unwrap_or("live"),
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let result = (|| -> Result<([u8; 32], u64)> {
+        unseal_dir_only_keys(seal_path, &stage, pass, &[], &[], wards, identities)?;
+        let (digest, size, _n) = tree_digest(&stage)?;
+        if digest != entry.digest {
+            return Err(crate::Error::Msg(format!(
+                "restored tree does not match CHART tree true-name for v{}",
+                entry.n
+            )));
+        }
+        sync_tree(&stage, live)?;
+        Ok((digest, size))
+    })();
+    let _ = fs::remove_dir_all(&stage);
+    let (digest, size) = result?;
+    Ok(RestoreReport {
+        version: entry.n,
+        digest,
+        size,
+        path: live.to_path_buf(),
+        mended: false,
     })
 }
 
@@ -1039,7 +1462,16 @@ fn cold_archive_version(vault_dir: &Path, entry: &VersionEntry, cold_root: &Path
     })?;
     let dest = cold_root.join(format!("v{}", entry.n));
     fs::create_dir_all(&dest).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    match crate::kit::place(&bytes, &dest, crate::kit::DEFAULT_DRIVES) {
+    // Kit place is single-star: on an SGDR folder pack `locate_header` would find only
+    // the first inner star and archive that alone. Folder versions go cold as a plain copy.
+    let placed = if bytes.starts_with(&crate::folder::DIR_MAGIC) {
+        Err(crate::Error::Msg(
+            "SGDR folder pack (kit place is single-star only)".into(),
+        ))
+    } else {
+        crate::kit::place(&bytes, &dest, crate::kit::DEFAULT_DRIVES)
+    };
+    match placed {
         Ok(_) => Ok(()),
         Err(kit_err) => {
             // Glyph (no repair budget) or Reflection with too few drives: keep the mark as a file.
@@ -1152,12 +1584,14 @@ pub fn format_versions(chart: &Chart) -> String {
         RetentionPolicy::Full => "full".to_string(),
         RetentionPolicy::Light { keep } => format!("light keep={keep}"),
     };
+    let kind = if chart.kind == ChartKind::Folder { "  kind=folder" } else { "" };
     let mut out = format!(
-        "vault {}  tip=v{}  versions={}  retention={}\n",
+        "vault {}  tip=v{}  versions={}  retention={}{}\n",
         chart.live.display(),
         chart.tip,
         chart.versions.len(),
-        ret
+        ret,
+        kind
     );
     for v in &chart.versions {
         let mark = if v.n == chart.tip { " *" } else { "" };
@@ -1360,8 +1794,8 @@ mod tests {
     }
 
     #[test]
-    fn commit_from_export_folder_stub() {
-        let dir = tmpdir("folder-stub");
+    fn commit_from_export_bare_folder_needs_vault() {
+        let dir = tmpdir("folder-bare");
         let export = dir.join("dirty");
         fs::create_dir_all(&export).unwrap();
         fs::write(export.join("a.txt"), b"a").unwrap();
@@ -1369,15 +1803,236 @@ mod tests {
             source: dir.join("tree.sg1"),
             seal: dir.join("tree.sg1"),
             live: None,
-            vault: true,
+            vault: false,
             kind: "folder".into(),
         };
         meta.write(&export).unwrap();
         let err = commit_from_export(&export, Mode::Glyph, None, false, &[]).unwrap_err();
-        assert!(
-            err.to_string().contains("folder dirty re-seal not in this slice"),
-            "{err}"
+        assert!(err.to_string().contains("not from a folder vault"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn write_tree(root: &Path, files: &[(&str, &[u8])]) {
+        for (rel, data) in files {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, data).unwrap();
+        }
+    }
+
+    fn tree_map(root: &Path) -> Vec<(String, Vec<u8>)> {
+        tree_files(root)
+            .unwrap()
+            .into_iter()
+            .map(|(r, p)| (r, fs::read(p).unwrap()))
+            .collect()
+    }
+
+    fn export_writable(live: &Path, dest: &Path, identities: &[Identity]) {
+        let vfs = crate::mount::VaultFs::open_keys(live, None, &[], true, identities).unwrap();
+        let meta = dirty_meta_for(live, vfs.seal_path(), true).unwrap();
+        assert!(meta.vault);
+        assert_eq!(meta.kind, "folder");
+        vfs.export_dir_ex(dest, true, Some(&meta)).unwrap();
+    }
+
+    #[test]
+    fn vault_dir_for_ignores_trailing_slash() {
+        assert_eq!(vault_dir_for(Path::new("photos/")), PathBuf::from("photos.sgv"));
+        assert_eq!(vault_dir_for(Path::new("/a/photos")), PathBuf::from("/a/photos.sgv"));
+    }
+
+    #[test]
+    fn folder_vault_track_commit_restore() {
+        let dir = tmpdir("fold-round");
+        let live = dir.join("photos");
+        write_tree(&live, &[("a.txt", b"alpha"), ("b.txt", b"bravo"), ("sub/c.txt", b"charlie")]);
+        let t = track(&live, Mode::Glyph, None, &[]).unwrap();
+        assert_eq!(t.version, 1);
+        let vdir = vault_dir_for(&live);
+        let chart_txt = fs::read_to_string(vdir.join(CHART_NAME)).unwrap();
+        assert!(chart_txt.contains("kind=folder"), "{chart_txt}");
+        // v1 is an ordinary SGDR pack — plain folder unseal opens it.
+        assert!(is_dir_pack(&vdir.join("v1.sg1")));
+        assert_eq!(status(&live).unwrap().drift, Drift::Match);
+
+        // Dotfiles are not part of the tree (same rule as folder Inscribe).
+        fs::write(live.join(".DS_Store"), b"junk").unwrap();
+        assert_eq!(status(&live).unwrap().drift, Drift::Match);
+
+        fs::write(live.join("a.txt"), b"alpha-2").unwrap();
+        fs::remove_file(live.join("b.txt")).unwrap();
+        assert_eq!(status(&live).unwrap().drift, Drift::Changed);
+        let c = commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        assert_eq!((c.version, c.skipped), (2, false));
+        assert!(commit(&live, Mode::Glyph, None, false, &[]).unwrap().skipped);
+
+        // Restore v1: b.txt back, a.txt old bytes; dotfile untouched.
+        let r = restore(&live, Some(1), None, &[]).unwrap();
+        assert_eq!(r.version, 1);
+        assert_eq!(
+            tree_map(&live),
+            vec![
+                ("a.txt".into(), b"alpha".to_vec()),
+                ("b.txt".into(), b"bravo".to_vec()),
+                ("sub/c.txt".into(), b"charlie".to_vec()),
+            ]
         );
+        assert!(live.join(".DS_Store").is_file());
+        // Back to tip v2: b.txt removed again.
+        restore(&live, None, None, &[]).unwrap();
+        assert!(!live.join("b.txt").exists());
+        assert_eq!(status(&live).unwrap().drift, Drift::Match);
+
+        // Missing live folder → restore recreates it.
+        fs::remove_dir_all(&live).unwrap();
+        assert_eq!(status(&live).unwrap().drift, Drift::MissingLive);
+        restore(&live, None, None, &[]).unwrap();
+        assert_eq!(status(&live).unwrap().drift, Drift::Match);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_export_reseal_edit_add_delete() {
+        let dir = tmpdir("fold-export");
+        let live = dir.join("docs");
+        write_tree(&live, &[("keep.txt", b"keep"), ("edit.txt", b"before"), ("gone/old.txt", b"old")]);
+        track(&live, Mode::Reflection, None, &[]).unwrap();
+        let v1 = vault_dir_for(&live).join("v1.sg1");
+        let v1_sha = sha256_path(&v1).unwrap();
+
+        let export = dir.join("dirty");
+        export_writable(&live, &export, &[]);
+        assert!(export.join(DIRTY_NAME).is_file());
+
+        // Untouched export → skip (no new version).
+        let skip = commit_from_export(&export, Mode::Reflection, None, false, &[]).unwrap();
+        assert!(skip.skipped);
+
+        fs::write(export.join("edit.txt"), b"after").unwrap();
+        write_tree(&export, &[("new/added.txt", b"added")]);
+        fs::remove_file(export.join("gone/old.txt")).unwrap();
+        let c = commit_from_export(&export, Mode::Reflection, None, false, &[]).unwrap();
+        assert_eq!((c.version, c.skipped), (2, false));
+        assert!(c.note.is_none(), "{:?}", c.note);
+
+        let want = vec![
+            ("edit.txt".to_string(), b"after".to_vec()),
+            ("keep.txt".to_string(), b"keep".to_vec()),
+            ("new/added.txt".to_string(), b"added".to_vec()),
+        ];
+        // Live synced (clean before) and tip matches.
+        assert_eq!(tree_map(&live), want);
+        assert!(!live.join("gone").exists());
+        assert_eq!(status(&live).unwrap().drift, Drift::Match);
+        assert_eq!(list_versions(&live).unwrap().tip, 2);
+
+        // New tip is a plain SGDR pack; open it with ordinary folder unseal.
+        let out2 = dir.join("open-v2");
+        unseal_dir_only_keys(&tip_seal_path(&live).unwrap().0, &out2, None, &[], &[], &[], &[]).unwrap();
+        assert_eq!(tree_map(&out2), want);
+        // v1 immutable and still opens.
+        assert_eq!(sha256_path(&v1).unwrap(), v1_sha);
+        let out1 = dir.join("open-v1");
+        unseal_dir_only_keys(&v1, &out1, None, &[], &[], &[], &[]).unwrap();
+        assert_eq!(fs::read(out1.join("gone/old.txt")).unwrap(), b"old");
+        assert_eq!(fs::read(out1.join("edit.txt")).unwrap(), b"before");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_export_leaves_dirty_live_untouched() {
+        let dir = tmpdir("fold-dirty-live");
+        let live = dir.join("proj");
+        write_tree(&live, &[("x.txt", b"x1")]);
+        track(&live, Mode::Glyph, None, &[]).unwrap();
+        let export = dir.join("dirty");
+        export_writable(&live, &export, &[]);
+        fs::write(export.join("x.txt"), b"x-from-export").unwrap();
+        // Local uncommitted edit in live.
+        fs::write(live.join("local.txt"), b"mine").unwrap();
+        let c = commit_from_export(&export, Mode::Glyph, None, false, &[]).unwrap();
+        assert_eq!(c.version, 2);
+        assert!(c.note.as_deref().unwrap_or("").contains("left untouched"));
+        assert_eq!(fs::read(live.join("x.txt")).unwrap(), b"x1");
+        assert!(live.join("local.txt").is_file());
+        assert_eq!(status(&live).unwrap().drift, Drift::Changed);
+
+        // Restore refuses to eat local edits without --force.
+        let err = restore(&live, None, None, &[]).unwrap_err();
+        assert!(err.to_string().contains("uncommitted"), "{err}");
+        restore_ex(&live, None, None, &[], &[], true).unwrap();
+        assert_eq!(tree_map(&live), vec![("x.txt".into(), b"x-from-export".to_vec())]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_reseal_keeps_encrypt_to_pass_and_ward() {
+        let dir = tmpdir("fold-keys");
+        let live = dir.join("sec");
+        write_tree(&live, &[("a.txt", b"aaa"), ("p/b.txt", b"bbb")]);
+        let alice = crate::Identity::generate().unwrap();
+        track(&live, Mode::Glyph, None, &[alice.public()]).unwrap();
+        let v1 = tip_seal_path(&live).unwrap().0;
+        assert!(unseal_dir_only_keys(&v1, &dir.join("noid"), None, &[], &[], &[], &[]).is_err());
+
+        let export = dir.join("dirty");
+        export_writable(&live, &export, &[alice.clone()]);
+        fs::write(export.join("a.txt"), b"aaa-2").unwrap();
+        let wards = vec![("p/b.txt".to_string(), "room".to_string())];
+        let c = commit_from_export_ex(
+            &export, Mode::Glyph, Some("house"), false, &[alice.public()], &wards,
+        )
+        .unwrap();
+        assert_eq!(c.version, 2);
+        let v2 = tip_seal_path(&live).unwrap().0;
+        // Identity alone opens a.txt (encrypt-to); p/b.txt needs its ward pass or identity.
+        let o = dir.join("o-id");
+        unseal_dir_only_keys(&v2, &o, None, &[], &[], &[], &[alice.clone()]).unwrap();
+        assert_eq!(fs::read(o.join("a.txt")).unwrap(), b"aaa-2");
+        // Passphrase path: house for a.txt, room for p/b.txt.
+        let o2 = dir.join("o-pass");
+        unseal_dir_only_keys(&v2, &o2, Some("house"), &[], &[], &wards, &[]).unwrap();
+        assert_eq!(fs::read(o2.join("p/b.txt")).unwrap(), b"bbb");
+        // Wrong ward for p/b.txt fails.
+        let o3 = dir.join("o-bad");
+        assert!(unseal_dir_only_keys(&v2, &o3, Some("house"), &[], &[], &[], &[]).is_err());
+
+        // Restore older v1 with identity (live synced from export, matches v2 → clean).
+        restore_ex(&live, Some(1), None, &[alice], &[], false).unwrap();
+        assert_eq!(fs::read(live.join("a.txt")).unwrap(), b"aaa");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_light_retention_prunes_to_cold() {
+        let dir = tmpdir("fold-light");
+        let live = dir.join("t");
+        write_tree(&live, &[("f.txt", b"1")]);
+        track(&live, Mode::Seal, None, &[]).unwrap();
+        let v1_sha = sha256_path(&vault_dir_for(&live).join("v1.sg1")).unwrap();
+        set_retention(&live, RetentionPolicy::Light { keep: 1 }).unwrap();
+        let export = dir.join("dirty");
+        export_writable(&live, &export, &[]);
+        fs::write(export.join("f.txt"), b"2").unwrap();
+        commit_from_export(&export, Mode::Seal, None, false, &[]).unwrap();
+        // Same retention hooks as ordinary commit.
+        assert!(maybe_prune_after_commit(&live, None, None, false).is_err());
+        let cold = dir.join("cold");
+        let p = maybe_prune_after_commit(&live, None, Some(&cold), false).unwrap().unwrap();
+        assert_eq!(p.removed, vec![1]);
+        assert!(cold.join("v1").is_dir());
+        assert!(!vault_dir_for(&live).join("v1.sg1").exists());
+        // Whole SGDR version archived (not just its first inner star).
+        let archived = cold.join("v1").join("v1.sg1");
+        assert_eq!(sha256_path(&archived).unwrap(), v1_sha);
+        assert!(cold.join("v1").join("ARCHIVE").is_file());
+        assert!(!crate::kit::is_kit_dir(&cold.join("v1")));
+        let o = dir.join("o-cold");
+        unseal_dir_only_keys(&archived, &o, None, &[], &[], &[], &[]).unwrap();
+        assert_eq!(fs::read(o.join("f.txt")).unwrap(), b"1");
+        assert_eq!(list_versions(&live).unwrap().tip, 2);
+        assert_eq!(fs::read(live.join("f.txt")).unwrap(), b"2");
         let _ = fs::remove_dir_all(&dir);
     }
 

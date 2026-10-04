@@ -86,6 +86,11 @@ pub use mount::{
     fuse_available, mount_fuse, run_mount, run_mount_keys, umount as umount_path, VaultFs,
 };
 pub use vault::tip_seal_path as vault_tip_seal_path;
+pub use vault::{
+    commit_ex as vault_commit_ex, commit_from_export_ex as vault_commit_from_export_ex,
+    restore_ex as vault_restore_ex, track_ex as vault_track_ex, tree_digest as vault_tree_digest,
+    ChartKind as VaultChartKind,
+};
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
 
