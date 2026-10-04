@@ -31,7 +31,7 @@ Think Bitcoin: **full** node vs **light/pruned** node.
 # encrypt-to: --identity alice.sgk
 ```
 
-Dirty write path (export tree → new version): see the Mount section in `crate/sigil/README.md` (`mount … --writable` then `vault commit --from-export`).
+Dirty write path (export tree → new version): see [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) and the Mount section in `crate/sigil/README.md` (`mount … --writable` then `vault commit --from-export`).
 
 ## Retention policy
 
