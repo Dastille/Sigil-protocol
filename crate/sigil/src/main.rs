@@ -9,10 +9,11 @@ use sigil::{
     scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
     unseal_constellation, place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, umount_path,
-    vessel_present, write_vessel, AddOpts, vault_commit, vault_commit_from_export,
+    vessel_present, write_vessel, AddOpts,
     vault_format_retention, vault_format_status, vault_format_versions, vault_get_retention,
-    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore,
-    vault_set_retention, vault_status, vault_track, BootOutcome, VaultRetention,
+    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
+    vault_set_retention, vault_status, BootOutcome, VaultRetention,
+    vault_commit_ex, vault_commit_from_export_ex, vault_restore_ex, vault_track_ex,
     CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
@@ -368,10 +369,11 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum VaultCmd {
-    /// Start tracking a live file: create `<path>.sgv/` chart + seal v1. Alias: init.
+    /// Start tracking a live file or folder: create `<path>.sgv/` chart + seal v1. Alias: init.
+    /// A folder becomes a folder vault (each version is an SGDR pack).
     #[command(visible_alias = "init")]
     Track {
-        /// Live file to protect
+        /// Live file or folder to protect
         path: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
@@ -382,6 +384,9 @@ enum VaultCmd {
         /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
         #[arg(long = "to")]
         to: Vec<String>,
+        /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
+        #[arg(long = "ward")]
+        ward: Vec<String>,
     },
     /// Report drift of live bytes vs tip true-name (match | changed | missing-seal | missing-live).
     Status {
@@ -405,6 +410,9 @@ enum VaultCmd {
         /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
         #[arg(long = "to")]
         to: Vec<String>,
+        /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
+        #[arg(long = "ward")]
+        ward: Vec<String>,
         /// Commit even when cleartext already matches tip
         #[arg(long)]
         force: bool,
@@ -435,6 +443,12 @@ enum VaultCmd {
         /// Identity (.sgk) to unwrap encrypt-to CEK (repeatable)
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
+        /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
+        #[arg(long = "ward")]
+        ward: Vec<String>,
+        /// Folder vault: overwrite a live folder that has uncommitted edits
+        #[arg(long)]
+        force: bool,
     },
     /// Drop old version seals; keep the newest N (always keeps tip).
     Prune {
@@ -1457,10 +1471,12 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass,
             talisman,
             to,
+            ward,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
-            let report = vault_track(&path, mode.into(), pass.as_deref(), &recipients)?;
+            let wards = parse_wards(&ward)?;
+            let report = vault_track_ex(&path, mode.into(), pass.as_deref(), &recipients, &wards)?;
             println!(
                 "vault track → {}  v{}  {} bytes  digest={}",
                 report.vault_dir.display(),
@@ -1483,6 +1499,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass,
             talisman,
             to,
+            ward,
             force,
             keep,
             cold,
@@ -1490,9 +1507,16 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
+            let wards = parse_wards(&ward)?;
             let (report, status_path) = if let Some(export) = from_export {
-                let report =
-                    vault_commit_from_export(&export, mode.into(), pass.as_deref(), force, &recipients)?;
+                let report = vault_commit_from_export_ex(
+                    &export,
+                    mode.into(),
+                    pass.as_deref(),
+                    force,
+                    &recipients,
+                    &wards,
+                )?;
                 let meta = sigil::VaultDirtyMeta::read(&export)?;
                 let live = meta.live.ok_or("dirty export missing live= (not vault-tracked)")?;
                 (report, live)
@@ -1501,7 +1525,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     "vault commit needs a live path, or --from-export DIR",
                 )?;
                 let report =
-                    vault_commit(&path, mode.into(), pass.as_deref(), force, &recipients)?;
+                    vault_commit_ex(&path, mode.into(), pass.as_deref(), force, &recipients, &wards)?;
                 (report, path)
             };
             if report.skipped {
@@ -1517,6 +1541,9 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     report.size,
                     &hex32(&report.digest)[..12]
                 );
+            }
+            if let Some(note) = &report.note {
+                println!("note: {note}");
             }
             if !recipients.is_empty() && !report.skipped {
                 println!(
@@ -1563,10 +1590,14 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass,
             talisman,
             identity,
+            ward,
+            force,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            let report = vault_restore(&path, version, pass.as_deref(), &identities)?;
+            let wards = parse_wards(&ward)?;
+            let report =
+                vault_restore_ex(&path, version, pass.as_deref(), &identities, &wards, force)?;
             println!(
                 "vault restore → {}  v{}  {} bytes  digest={}{}",
                 report.path.display(),

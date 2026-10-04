@@ -39,6 +39,16 @@ fn rel(root: &Path, file: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Sorted `(rel, path)` list of the files a folder Inscribe would pack
+/// (dotfiles skipped, `/` separators). Used by vault tree digests.
+pub(crate) fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let mut files = Vec::new();
+    walk(root, root, &mut files)?;
+    let mut out: Vec<(String, PathBuf)> = files.into_iter().map(|p| (rel(root, &p), p)).collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
 pub fn inscribe_dir(
     root: &Path,
     output: &Path,
