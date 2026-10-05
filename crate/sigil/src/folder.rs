@@ -191,6 +191,175 @@ pub fn unseal_dir_only_keys(
     Ok(got)
 }
 
+/// Parse an SGDR pack, unseal each wanted entry into `dest`, and mend classic
+/// (non-WORK) inner stars that fail to unseal within Seal mend budget.
+///
+/// Returns `(files_written, healed_pack)`. `healed_pack` is `Some` when at least
+/// one classic star was mended; the outer SGDR container is rewritten with healed
+/// star bytes (same layout — the pack itself is not RS-coded). Vault
+/// [`crate::vault::restore_ex`] persists that pack over the version seal path.
+///
+/// WORK/SGWK large-file members are **not** mended in this slice: a torn WORK
+/// star returns a clear error. Small classic `.sg1` stars are mended.
+pub fn unseal_dir_mend_keys(
+    input: &Path,
+    dest: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    only: &[String],
+    wards: &[(String, String)],
+    identities: &[Identity],
+) -> Result<(u32, Option<Vec<u8>>)> {
+    fs::create_dir_all(dest).map_err(io)?;
+    let raw = fs::read(input).map_err(io)?;
+    let entries = parse_sgdr_entries(&raw)?;
+    let mut healed_stars: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
+    let mut any_mended = false;
+    let mut got = 0u32;
+
+    for (rel, star) in entries {
+        let mut star = star;
+        if rel.contains("..") || Path::new(&rel).is_absolute() {
+            return Err(crate::Error::Msg("refusing unsafe path in folder pack".into()));
+        }
+        let want = wanted(&rel, only);
+        if want {
+            if star.starts_with(&crate::work::WORK_MAGIC) {
+                // WORK/SGWK: not mended in this slice — try ordinary unseal only.
+                let out_path = dest.join(&rel);
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent).map_err(io)?;
+                }
+                let tmp = out_path.with_extension("sgwk");
+                fs::write(&tmp, &star).map_err(io)?;
+                match crate::work::unseal_path_keys(
+                    &tmp,
+                    &out_path,
+                    pass_for(&rel, pass, wards).as_deref(),
+                    companions,
+                    identities,
+                ) {
+                    Ok(_) => {
+                        let _ = fs::remove_file(&tmp);
+                    }
+                    Err(e) => {
+                        let _ = fs::remove_file(&tmp);
+                        return Err(crate::Error::Msg(format!(
+                            "WORK/SGWK member '{rel}' failed to unseal and is not mended in this slice: {e}"
+                        )));
+                    }
+                }
+                got += 1;
+            } else {
+                let file_pass = pass_for(&rel, pass, wards);
+                // Classic seal: unseal may succeed within Seal budget while shards
+                // remain torn. Mend whenever unseal fails or verify shows damage.
+                // (Outer SGDR container is not RS-coded.)
+                let opened = unseal_ex_keys(&star, file_pass.as_deref(), companions, identities);
+                let plain = match opened {
+                    Ok(p) if !classic_star_torn(&star) => p,
+                    _ => {
+                        let healed = crate::pieces::mend_bytes(&star).map_err(|e| {
+                            crate::Error::Msg(format!(
+                                "classic star '{rel}' failed to unseal/verify and could not be mended: {e}"
+                            ))
+                        })?;
+                        let p = unseal_ex_keys(
+                            &healed,
+                            file_pass.as_deref(),
+                            companions,
+                            identities,
+                        )?;
+                        star = healed;
+                        any_mended = true;
+                        p
+                    }
+                };
+                let out_path = dest.join(&rel);
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent).map_err(io)?;
+                }
+                fs::write(&out_path, plain).map_err(io)?;
+                got += 1;
+            }
+        }
+        healed_stars.push((rel, star));
+    }
+
+    if !only.is_empty() && got == 0 {
+        return Err(crate::Error::Msg(
+            "nothing matched --only (Scry the pack to see paths)".into(),
+        ));
+    }
+
+    let healed_pack = if any_mended {
+        Some(encode_sgdr(&healed_stars)?)
+    } else {
+        None
+    };
+    Ok((got, healed_pack))
+}
+
+fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    if raw.len() < 9 {
+        return Err(crate::Error::Msg("folder pack too short".into()));
+    }
+    if raw[0..4] != DIR_MAGIC {
+        return Err(crate::Error::Msg("not a folder pack (SGDR)".into()));
+    }
+    if raw[4] != 1 {
+        return Err(crate::Error::Msg(format!("unknown folder pack version {}", raw[4])));
+    }
+    let n = u32::from_le_bytes(raw[5..9].try_into().unwrap());
+    let mut off = 9usize;
+    let mut entries = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        if off + 2 > raw.len() {
+            return Err(crate::Error::Msg("truncated folder pack (name len)".into()));
+        }
+        let nlen = u16::from_le_bytes(raw[off..off + 2].try_into().unwrap()) as usize;
+        off += 2;
+        if off + nlen + 8 > raw.len() {
+            return Err(crate::Error::Msg("truncated folder pack (name/star len)".into()));
+        }
+        let name = String::from_utf8_lossy(&raw[off..off + nlen]).into_owned();
+        off += nlen;
+        let slen = u64::from_le_bytes(raw[off..off + 8].try_into().unwrap()) as usize;
+        off += 8;
+        if off + slen > raw.len() {
+            return Err(crate::Error::Msg("truncated folder pack (star bytes)".into()));
+        }
+        let star = raw[off..off + slen].to_vec();
+        off += slen;
+        entries.push((name, star));
+    }
+    Ok(entries)
+}
+
+fn encode_sgdr(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&DIR_MAGIC);
+    out.push(1u8);
+    out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (rel, star) in entries {
+        let pb = rel.as_bytes();
+        let nlen = (pb.len().min(65535)) as u16;
+        out.extend_from_slice(&nlen.to_le_bytes());
+        out.extend_from_slice(&pb[..nlen as usize]);
+        out.extend_from_slice(&(star.len() as u64).to_le_bytes());
+        out.extend_from_slice(star);
+    }
+    Ok(out)
+}
+
+
+fn classic_star_torn(star: &[u8]) -> bool {
+    match crate::verify(star) {
+        Ok((_, merkle_ok, _, _, _)) => !merkle_ok,
+        Err(_) => true,
+    }
+}
+
 fn pass_for(rel: &str, default: Option<&str>, wards: &[(String, String)]) -> Option<String> {
     for (p, w) in wards {
         if p == rel {
