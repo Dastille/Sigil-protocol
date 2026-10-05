@@ -36,7 +36,7 @@ pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
     pack_atlas, scry_constellation, unseal_constellation, AddOpts, AddReport,
 };
-pub use folder::{inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_only, unseal_dir_only_keys, DirEntry};
+pub use folder::{inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry};
 pub use nest::{
     is_nestable_bytes, kind_of_bytes, path_extract, path_extract_keys, path_list, path_walk,
     path_walk_keys, refuse_if_cycle, NestKind, PathEntry, PathView, MAX_NEST_DEPTH,

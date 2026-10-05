@@ -16,7 +16,7 @@
 //! live directory (or a `--writable` export tree) is a working copy that
 //! commit reads from and restore writes to. See `docs/VAULT-MOUNT-NEST.md`.
 
-use crate::folder::{inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_only_keys};
+use crate::folder::{inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_mend_keys, unseal_dir_only_keys};
 use crate::header::locate_header;
 use crate::keys::{Identity, PublicIdentity};
 use crate::pieces::mend_bytes;
@@ -1214,7 +1214,7 @@ fn read_export_payload(export_dir: &Path) -> Result<Vec<u8>> {
     }
     if files.len() != 1 {
         return Err(crate::Error::Msg(format!(
-            "folder dirty re-seal not in this slice (found {} files under {})",
+            "single-file dirty export must contain exactly one cleartext file (found {} under {}); folder vault tips re-seal via commit --from-export / commit_folder_from_export",
             files.len(),
             export_dir.display()
         )));
@@ -1280,13 +1280,13 @@ pub fn restore_ex(
     }
     let raw = fs::read(&seal_path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mended = false;
+    // Unseal may still succeed within Seal budget while shards remain torn.
+    // Mend + persist whenever unseal fails, or verify shows a damaged mark.
     let seal_bytes = match unseal_ex_keys(&raw, pass, &[], identities) {
-        Ok(_) => raw,
-        Err(_) => {
-            // Try mend, then unseal the healed mark.
+        Ok(_) if !mark_torn(&raw) => raw,
+        Ok(_) | Err(_) => {
             let healed = mend_bytes(&raw)?;
             mended = true;
-            // Persist healed seal so the chart stays usable (same version file).
             fs::write(&seal_path, &healed).map_err(|e| crate::Error::Msg(e.to_string()))?;
             healed
         }
@@ -1351,8 +1351,16 @@ fn restore_tree(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let result = (|| -> Result<([u8; 32], u64)> {
-        unseal_dir_only_keys(seal_path, &stage, pass, &[], &[], wards, identities)?;
+    let result = (|| -> Result<([u8; 32], u64, bool)> {
+        // Mend classic inner stars (outer SGDR is not RS-coded); persist healed pack.
+        let (_n, healed) =
+            unseal_dir_mend_keys(seal_path, &stage, pass, &[], &[], wards, identities)?;
+        let mended = if let Some(pack) = healed {
+            fs::write(seal_path, &pack).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            true
+        } else {
+            false
+        };
         let (digest, size, _n) = tree_digest(&stage)?;
         if digest != entry.digest {
             return Err(crate::Error::Msg(format!(
@@ -1361,17 +1369,25 @@ fn restore_tree(
             )));
         }
         sync_tree(&stage, live)?;
-        Ok((digest, size))
+        Ok((digest, size, mended))
     })();
     let _ = fs::remove_dir_all(&stage);
-    let (digest, size) = result?;
+    let (digest, size, mended) = result?;
     Ok(RestoreReport {
         version: entry.n,
         digest,
         size,
         path: live.to_path_buf(),
-        mended: false,
+        mended,
     })
+}
+
+/// True when a classic `.sg1` still opens within mend budget but shards/Merkle are damaged.
+fn mark_torn(raw: &[u8]) -> bool {
+    match crate::verify(raw) {
+        Ok((_, merkle_ok, _, _, _)) => !merkle_ok,
+        Err(_) => true,
+    }
 }
 
 /// Drop old version seals, keeping the newest `keep` (and always the tip).
@@ -1709,15 +1725,86 @@ mod tests {
         let chart = list_versions(&live).unwrap();
         let seal_path = chart.vault_dir.join(&chart.versions[0].seal);
         let mut bytes = fs::read(&seal_path).unwrap();
-        // Corrupt a middle byte in a shard region (past header) — Seal can mend.
-        if bytes.len() > 200 {
-            bytes[200] ^= 0xff;
-            fs::write(&seal_path, &bytes).unwrap();
-        }
+        // Smash one shard past Keystone/header (byte 200 is still inside keystone copies).
+        let (h, prefix, _) = locate_header(&bytes).unwrap();
+        let stride = crate::header::shard_stride(&h);
+        assert!(prefix + stride <= bytes.len());
+        bytes[prefix..prefix + stride].fill(0);
+        bytes[prefix] = 3;
+        fs::write(&seal_path, &bytes).unwrap();
+        assert!(mark_torn(&fs::read(&seal_path).unwrap()));
         fs::write(&live, b"garbage").unwrap();
         let r = restore(&live, Some(1), None, &[]).unwrap();
         assert_eq!(fs::read(&live).unwrap(), b"mend-me-please-0123456789abcdef");
         assert_eq!(r.digest, sha256(b"mend-me-please-0123456789abcdef"));
+        assert!(r.mended, "single-file restore should mend a torn Seal mark");
+        // On-disk seal healed (Merkle clean).
+        let healed = fs::read(&seal_path).unwrap();
+        let (_, merkle_ok, _, _, _) = crate::verify(&healed).unwrap();
+        assert!(merkle_ok);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_restore_mends_torn_inner_star() {
+        let dir = tmpdir("fold-mend");
+        let live = dir.join("photos");
+        write_tree(
+            &live,
+            &[
+                ("a.txt", b"mend-folder-a-0123456789abcdef-AAAAAAAA"),
+                ("b.txt", b"mend-folder-b-0123456789abcdef-BBBBBBBB"),
+                ("sub/c.txt", b"mend-folder-c-0123456789abcdef-CCCCCCCC"),
+            ],
+        );
+        track(&live, Mode::Seal, None, &[]).unwrap();
+        let v1 = vault_dir_for(&live).join("v1.sg1");
+        let mut bytes = fs::read(&v1).unwrap();
+        // Smash one shard inside the first classic inner star (past Keystone/header).
+        assert!(bytes.len() >= 9 && &bytes[0..4] == b"SGDR");
+        let mut off = 9usize;
+        let nlen = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
+        off += 2 + nlen;
+        let slen = u64::from_le_bytes(bytes[off..off + 8].try_into().unwrap()) as usize;
+        off += 8; // start of first star
+        let star = &bytes[off..off + slen];
+        let (h, prefix, _) = locate_header(star).unwrap();
+        let stride = crate::header::shard_stride(&h);
+        assert!(
+            prefix + stride <= slen,
+            "inner star too short (slen={slen} prefix={prefix} stride={stride})"
+        );
+        let smash = off + prefix;
+        bytes[smash..smash + stride].fill(0);
+        bytes[smash] = 3;
+        fs::write(&v1, &bytes).unwrap();
+        let torn = fs::read(&v1).unwrap();
+
+        // Trash live so restore must rebuild from the torn tip seal.
+        fs::remove_dir_all(&live).unwrap();
+        let r = restore(&live, Some(1), None, &[]).unwrap();
+        assert!(r.mended, "folder restore should report mended");
+        assert_eq!(
+            tree_map(&live),
+            vec![
+                ("a.txt".into(), b"mend-folder-a-0123456789abcdef-AAAAAAAA".to_vec()),
+                ("b.txt".into(), b"mend-folder-b-0123456789abcdef-BBBBBBBB".to_vec()),
+                ("sub/c.txt".into(), b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()),
+            ]
+        );
+        // On-disk version seal is healed.
+        let healed = fs::read(&v1).unwrap();
+        assert_ne!(healed, torn);
+        let open = dir.join("open-healed");
+        unseal_dir_only_keys(&v1, &open, None, &[], &[], &[], &[]).unwrap();
+        assert_eq!(
+            tree_map(&open),
+            vec![
+                ("a.txt".into(), b"mend-folder-a-0123456789abcdef-AAAAAAAA".to_vec()),
+                ("b.txt".into(), b"mend-folder-b-0123456789abcdef-BBBBBBBB".to_vec()),
+                ("sub/c.txt".into(), b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()),
+            ]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

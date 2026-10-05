@@ -160,7 +160,7 @@ Dirty re-seal: pass `--to` / `--pass` on `vault commit --from-export` the same w
 
 - Vault track/commit live tip: a regular file, or a directory (folder vault, SGDR versions).
 - Dirty `--from-export` re-seal: single-file and folder vault tips; bare (non-vault) SGDR exports must be tracked or re-inscribed.
-- Folder vault restore does not run a whole-pack mend on a torn SGDR version yet (it refuses on a tree true-name mismatch); single-file restore mends.
+- Folder vault restore mends torn classic (non-WORK) inner stars in an SGDR version, persists the healed pack, and sets `mended` — same spirit as single-file restore (outer SGDR is not RS-coded; WORK/SGWK members are not mended yet).
 - FUSE: read-only; writable needs `--export-dir`.
 - Nested seals: mount shows one layer; `sigil path` walks deeper.
 - Constellation `--identity`: deferred.
