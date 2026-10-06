@@ -562,6 +562,136 @@ pub fn inscribe_stars_dir_to(
     Ok((orig, stars))
 }
 
+/// Outcome of [`mend_pack_to`].
+pub struct WorkMend {
+    /// Plaintext bytes written.
+    pub written: u64,
+    /// Rebuilt SGWK bytes when at least one star was healed (same layout, same facets).
+    pub healed: Option<Vec<u8>>,
+    /// Indexes of stars that were mended.
+    pub mended: Vec<u32>,
+}
+
+/// True when a star still opens but shards / Merkle (or its primary header) are damaged.
+pub fn star_torn(star: &[u8]) -> bool {
+    match crate::verify(star) {
+        Ok((_, merkle_ok, _, _, recovered)) => !merkle_ok || recovered,
+        Err(_) => true,
+    }
+}
+
+/// Unseal an in-memory SGWK pack into `out`, mending torn chunk stars on the way.
+///
+/// Each chunk star is a complete `.sg1`, so it heals with the same RS mend as a
+/// single-file mark. A star is mended when it fails to unseal, or opens but still
+/// shows damage (bad shard CRC / Merkle / primary header). Healed stars must keep
+/// the chunk true-name recorded in the SGFC facet trailer. The SGWK head, the
+/// per-star length framing and the trailer are not RS-coded (like the outer SGDR):
+/// damage there is refused, never guessed.
+pub fn mend_pack_to<W: Write>(
+    pack: &[u8],
+    out: &mut W,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<WorkMend> {
+    let mut cur = std::io::Cursor::new(pack);
+    let head = read_head(&mut cur)?;
+    let head_len = cur.position() as usize;
+    let mut off = head_len;
+    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(head.stars as usize);
+    for i in 0..head.stars {
+        let lb = pack.get(off..off + 8).ok_or_else(|| {
+            crate::Error::Msg(format!("work pack framing damaged at star {i} (length missing)"))
+        })?;
+        let len = u64::from_le_bytes(lb.try_into().unwrap()) as usize;
+        off += 8;
+        let end = off.checked_add(len).filter(|&e| e <= pack.len()).ok_or_else(|| {
+            crate::Error::Msg(format!("work pack framing damaged at star {i} (bad length)"))
+        })?;
+        spans.push((off, end));
+        off = end;
+    }
+    let trailer = &pack[off..];
+    let facets: Option<Vec<[u8; 32]>> = {
+        let n = head.stars as usize;
+        if trailer.len() == 8 + 32 * n
+            && &trailer[0..4] == b"SGFC"
+            && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
+        {
+            Some(trailer[8..].chunks(32).map(|c| c.try_into().unwrap()).collect())
+        } else {
+            None
+        }
+    };
+
+    let mut healed_stars: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut written = 0u64;
+    for (i, &(a, b)) in spans.iter().enumerate() {
+        let i = i as u32;
+        let star = &pack[a..b];
+        let opened = unseal_ex_keys(star, pass, companions, identities);
+        let plain = match opened {
+            Ok(p) if !star_torn(star) => p,
+            opened => match crate::pieces::mend_bytes(star) {
+                Ok(healed) => {
+                    let p = unseal_ex_keys(&healed, pass, companions, identities)?;
+                    if let Some(f) = &facets {
+                        let (h, _, _) = crate::locate_header(&healed)?;
+                        if h.digest != f[i as usize] {
+                            return Err(crate::Error::Msg(format!(
+                                "mended star {i} does not match the pack's facet true-name"
+                            )));
+                        }
+                    }
+                    healed_stars.push((i, healed));
+                    p
+                }
+                // Opened within budget but couldn't be re-sealed clean: keep bytes as-is.
+                Err(_) if opened.is_ok() => opened.unwrap(),
+                Err(e) => {
+                    return Err(crate::Error::Msg(format!(
+                        "star {i} of {} is too damaged to mend: {e}",
+                        head.stars
+                    )))
+                }
+            },
+        };
+        out.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        written += plain.len() as u64;
+    }
+    if written != head.orig_total {
+        return Err(crate::Error::Msg(format!(
+            "work length mismatch: got {written} expected {}",
+            head.orig_total
+        )));
+    }
+    let mended: Vec<u32> = healed_stars.iter().map(|(i, _)| *i).collect();
+    let healed = if healed_stars.is_empty() {
+        None
+    } else {
+        let mut rebuilt = Vec::with_capacity(pack.len());
+        rebuilt.extend_from_slice(&pack[..head_len]);
+        let mut next = healed_stars.into_iter().peekable();
+        for (i, &(a, b)) in spans.iter().enumerate() {
+            let replacement = match next.peek() {
+                Some((j, _)) if *j as usize == i => next.next().map(|(_, s)| s),
+                _ => None,
+            };
+            let star: &[u8] = replacement.as_deref().unwrap_or(&pack[a..b]);
+            rebuilt.extend_from_slice(&(star.len() as u64).to_le_bytes());
+            rebuilt.extend_from_slice(star);
+        }
+        rebuilt.extend_from_slice(trailer);
+        Some(rebuilt)
+    };
+    Ok(WorkMend {
+        written,
+        healed,
+        mended,
+    })
+}
+
 pub fn unseal_path(input: &Path, output: &Path, pass: Option<&str>, companions: &[Vec<u8>]) -> Result<u64> {
     unseal_path_keys(input, output, pass, companions, &[])
 }
@@ -752,4 +882,146 @@ pub fn overture_report(input: &Path) -> Result<String> {
         return Err(crate::Error::Msg("no OVERTURE list in this folder".into()));
     }
     Ok("This is one small mark — copy the whole file; there is no separate boot.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sigil-work-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn data(n: usize) -> Vec<u8> {
+        let mut x = 0x9e3779b97f4a7c15u64;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    /// (start, end) of each chunk star inside an SGWK pack.
+    pub(crate) fn star_spans(pack: &[u8]) -> Vec<(usize, usize)> {
+        let mut cur = std::io::Cursor::new(pack);
+        let head = read_head(&mut cur).unwrap();
+        let mut off = cur.position() as usize;
+        let mut v = Vec::new();
+        for _ in 0..head.stars {
+            let len = u64::from_le_bytes(pack[off..off + 8].try_into().unwrap()) as usize;
+            off += 8;
+            v.push((off, off + len));
+            off += len;
+        }
+        v
+    }
+
+    /// Zero shard `shard` of the star starting at `star_off` (past Keystone/header).
+    pub(crate) fn smash_shard(pack: &mut [u8], star_off: usize, star_end: usize, shard: usize) {
+        let (h, prefix, _) = crate::locate_header(&pack[star_off..star_end]).unwrap();
+        let stride = crate::header::shard_stride(&h);
+        let a = star_off + prefix + shard * stride;
+        assert!(a + stride <= star_end);
+        pack[a..a + stride].fill(0);
+        pack[a] = 3;
+    }
+
+    fn make_pack(dir: &Path, n: usize, recipients: &[PublicIdentity]) -> (Vec<u8>, Vec<u8>) {
+        let d = data(n);
+        let src = dir.join("big.bin");
+        std::fs::write(&src, &d).unwrap();
+        let out = dir.join("big.sg1");
+        let (_, stars, is_work) = inscribe_path_to(
+            &src, &out, Mode::Seal, None, "", &[], 64 * 1024, None, DEFAULT_PIECE, 0, None, recipients,
+        )
+        .unwrap();
+        assert!(is_work && stars >= 4, "want a multi-star work pack");
+        (d, std::fs::read(&out).unwrap())
+    }
+
+    #[test]
+    fn mend_pack_heals_torn_chunk_stars_and_keeps_layout() {
+        let dir = tmp("mend");
+        let (d, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let spans = star_spans(&pack);
+        let mut torn = pack.clone();
+        smash_shard(&mut torn, spans[1].0, spans[1].1, 0);
+        smash_shard(&mut torn, spans[3].0, spans[3].1, 2);
+        assert!(star_torn(&torn[spans[1].0..spans[1].1]));
+
+        let mut out = Vec::new();
+        let m = mend_pack_to(&torn, &mut out, None, &[], &[]).unwrap();
+        assert_eq!(out, d);
+        assert_eq!(m.written, d.len() as u64);
+        assert_eq!(m.mended, vec![1, 3]);
+        let healed = m.healed.expect("healed pack");
+        assert_eq!(healed.len(), pack.len(), "same layout");
+        assert_eq!(&healed[..spans[0].0], &pack[..spans[0].0], "same head");
+        assert_eq!(read_facet_digests_bytes(&healed), read_facet_digests_bytes(&pack));
+        for (a, b) in star_spans(&healed) {
+            assert!(!star_torn(&healed[a..b]));
+        }
+        // Healed pack opens with the ordinary streaming path and needs no more mending.
+        let hp = dir.join("healed.sg1");
+        std::fs::write(&hp, &healed).unwrap();
+        unseal_path_keys(&hp, &dir.join("o.bin"), None, &[], &[]).unwrap();
+        assert_eq!(std::fs::read(dir.join("o.bin")).unwrap(), d);
+        let mut again = Vec::new();
+        let m2 = mend_pack_to(&healed, &mut again, None, &[], &[]).unwrap();
+        assert!(m2.healed.is_none() && m2.mended.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn read_facet_digests_bytes(pack: &[u8]) -> Vec<u8> {
+        let i = pack.len() - pack.windows(4).rev().position(|w| w == b"SGFC").unwrap() - 4;
+        pack[i..].to_vec()
+    }
+
+    #[test]
+    fn mend_pack_refuses_too_damaged_star_and_bad_framing() {
+        let dir = tmp("refuse");
+        let (_, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let spans = star_spans(&pack);
+        let (h, _, _) = crate::locate_header(&pack[spans[2].0..spans[2].1]).unwrap();
+        let mut torn = pack.clone();
+        // Seal tolerates n-k losses; smash one more than that.
+        for s in 0..=(h.n - h.k) as usize {
+            smash_shard(&mut torn, spans[2].0, spans[2].1, s);
+        }
+        let mut out = Vec::new();
+        let e = mend_pack_to(&torn, &mut out, None, &[], &[]).err().unwrap().to_string();
+        assert!(e.contains("star 2"), "{e}");
+
+        let mut framing = pack.clone();
+        framing[spans[1].0 - 8..spans[1].0].copy_from_slice(&u64::MAX.to_le_bytes());
+        let e = mend_pack_to(&framing, &mut Vec::new(), None, &[], &[]).err().unwrap().to_string();
+        assert!(e.contains("framing"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mend_pack_encrypt_to_member() {
+        let dir = tmp("mend-to");
+        let id = Identity::generate().unwrap();
+        let (d, pack) = make_pack(&dir, 260 * 1024, &[id.public()]);
+        let spans = star_spans(&pack);
+        let mut torn = pack.clone();
+        smash_shard(&mut torn, spans[0].0, spans[0].1, 1);
+        assert!(mend_pack_to(&torn, &mut Vec::new(), None, &[], &[]).is_err(), "needs identity");
+        let mut out = Vec::new();
+        let m = mend_pack_to(&torn, &mut out, None, &[], &[id]).unwrap();
+        assert_eq!(out, d);
+        assert_eq!(m.mended, vec![0]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
