@@ -15,6 +15,7 @@ mod merkle;
 mod mount;
 mod nest;
 mod open;
+pub mod passkey;
 mod pieces;
 pub mod pgp;
 mod rs;

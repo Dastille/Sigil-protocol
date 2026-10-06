@@ -16,7 +16,7 @@ pub fn keygen(path: &Path) -> Result<[u8; 32]> {
 fn load_seed(path: &Path) -> Result<[u8; 32]> {
     let b = std::fs::read(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // Modern .sgk identity: attest with the Ed25519 half.
-    if b.len() >= 8 && b[0..4] == *b"SGIK" {
+    if b.len() >= 8 && (b[0..4] == *b"SGIK" || b[0..4] == crate::passkey::SGKW_MAGIC) {
         let id = crate::keys::Identity::load(path)?;
         return Ok(id.ed25519_seed);
     }

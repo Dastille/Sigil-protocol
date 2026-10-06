@@ -271,6 +271,22 @@ enum Cmd {
         /// Force modern ECC identity even if defaults change later.
         #[arg(long = "ecc", default_value_t = true)]
         ecc: bool,
+        /// Protect the new identity with a FIDO2 passkey (hmac-secret / PRF) — the plain
+        /// secret is never written to disk. Needs a build with `--features passkey`.
+        #[arg(long, conflicts_with = "legacy")]
+        passkey: bool,
+        /// Relying-party id for the passkey credential.
+        #[arg(long = "rp-id", default_value = sigil::passkey::DEFAULT_RP_ID, requires = "passkey")]
+        rp_id: String,
+        /// Touch-only passkey (skip PIN / user verification). Default requires UV.
+        #[arg(long = "no-uv", requires = "passkey")]
+        no_uv: bool,
+    },
+    /// Identity key-file tools: passkey protect / unprotect / backup keys / info.
+    #[command(name = "identity")]
+    IdentityTool {
+        #[command(subcommand)]
+        cmd: IdentityCmd,
     },
     /// Import an OpenPGP Curve25519 key (Ed25519 primary + cv25519 subkey).
     /// Public key → .pub for --to. Unprotected secret key + -o → .sgk for --identity.
@@ -378,6 +394,52 @@ enum Cmd {
         #[arg(long, default_value_t = 3)]
         iters: usize,
     },
+}
+
+#[derive(Subcommand)]
+enum IdentityCmd {
+    /// Wrap a plain .sgk (v1 or imported v2) under a FIDO2 passkey (SGKW key file).
+    Protect {
+        input: PathBuf,
+        /// Write the protected identity here
+        #[arg(short, long, required_unless_present = "in_place")]
+        output: Option<PathBuf>,
+        /// Replace the input file (atomic rename). Delete other plain copies yourself.
+        #[arg(long = "in-place", conflicts_with = "output")]
+        in_place: bool,
+        /// Required: the protection method (only passkeys today)
+        #[arg(long, required = true)]
+        passkey: bool,
+        #[arg(long = "rp-id", default_value = sigil::passkey::DEFAULT_RP_ID)]
+        rp_id: String,
+        /// Touch-only (no PIN / user verification)
+        #[arg(long = "no-uv")]
+        no_uv: bool,
+    },
+    /// Add a backup passkey slot (unlock with an existing one, then register a new key).
+    #[command(name = "add-passkey")]
+    AddPasskey {
+        input: PathBuf,
+        #[arg(long = "rp-id", default_value = sigil::passkey::DEFAULT_RP_ID)]
+        rp_id: String,
+        #[arg(long = "no-uv")]
+        no_uv: bool,
+    },
+    /// Remove passkey slot N (see `identity info`). Refuses to drop the last slot.
+    #[command(name = "remove-passkey")]
+    RemovePasskey {
+        input: PathBuf,
+        #[arg(long)]
+        slot: usize,
+    },
+    /// Write a plain .sgk back out (unlocks with the passkey).
+    Unprotect {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Show identity kind, public keys and passkey slots (no unlock, no secrets).
+    Info { input: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -1373,8 +1435,30 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pub_out,
             legacy,
             ecc: _,
+            passkey,
+            rp_id,
+            no_uv,
         } => {
-            if legacy {
+            if passkey {
+                let id = Identity::generate()?;
+                let mut auth = sigil::passkey::default_authenticator()?;
+                let w = sigil::passkey::Wrapped::protect(&id, auth.as_mut(), &rp_id, !no_uv)?;
+                w.write(&output)?;
+                let pub_path = pub_out.unwrap_or_else(|| {
+                    let mut p = output.as_os_str().to_os_string();
+                    p.push(".pub");
+                    PathBuf::from(p)
+                });
+                w.public.write(&pub_path)?;
+                println!(
+                    "identity → {}  (passkey-protected, {})  x25519 {}",
+                    output.display(),
+                    if w.slots[0].uv { "PIN/UV" } else { "touch only" },
+                    hex32(&w.public.x25519_pk)
+                );
+                println!("public → {}  (encrypt-to: --to {})", pub_path.display(), pub_path.display());
+                println!("add a backup key now: sigil identity add-passkey {}", output.display());
+            } else if legacy {
                 let pk = keygen_legacy(&output)?;
                 println!("legacy attest key → {}  public {}", output.display(), hex32(&pk));
                 println!("same file is a Talisman: --talisman {}", output.display());
@@ -1471,6 +1555,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Vault { cmd } => run_vault(cmd)?,
+        Cmd::IdentityTool { cmd } => run_identity(cmd)?,
         Cmd::Mount {
             input,
             mountpoint,
@@ -1511,6 +1596,93 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let rows = run_bakeoff(iters);
             let (report, _keep) = format_bakeoff_report(&rows);
             print!("{report}");
+        }
+    }
+    Ok(())
+}
+
+fn write_atomic_secret(
+    dest: &Path,
+    w: &sigil::passkey::Wrapped,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tmp = dest.as_os_str().to_os_string();
+    tmp.push(".sigil-tmp");
+    let tmp = PathBuf::from(tmp);
+    w.write(&tmp)?;
+    fs::rename(&tmp, dest)?;
+    Ok(())
+}
+
+fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
+    use sigil::passkey::{default_authenticator, is_wrapped, Wrapped};
+    match cmd {
+        IdentityCmd::Protect {
+            input,
+            output,
+            in_place,
+            passkey: _,
+            rp_id,
+            no_uv,
+        } => {
+            let raw = fs::read(&input)?;
+            if is_wrapped(&raw) {
+                return Err("already passkey-protected; use `identity add-passkey` for a backup key".into());
+            }
+            let id = Identity::load(&input)?;
+            let mut auth = default_authenticator()?;
+            let w = Wrapped::protect(&id, auth.as_mut(), &rp_id, !no_uv)?;
+            // Prove the new file opens before anything is replaced.
+            Wrapped::parse(&w.to_bytes())?.unlock(auth.as_mut())?;
+            let dest = if in_place { input.clone() } else { output.unwrap() };
+            write_atomic_secret(&dest, &w)?;
+            println!(
+                "protected → {}  ({}, rp {})",
+                dest.display(),
+                if w.slots[0].uv { "PIN/UV" } else { "touch only" },
+                rp_id
+            );
+            if !in_place {
+                println!("the plain copy {} still exists — delete it (shred -u) once you've tested the new file", input.display());
+            }
+            println!("add a backup key: sigil identity add-passkey {}", dest.display());
+        }
+        IdentityCmd::AddPasskey { input, rp_id, no_uv } => {
+            let mut w = Wrapped::load(&input)?;
+            let mut unlock = default_authenticator()?;
+            let mut new_auth = default_authenticator()?;
+            eprintln!("passkey: unlock with an existing key first; then plug in the new key when asked");
+            w.add_slot(unlock.as_mut(), new_auth.as_mut(), &rp_id, !no_uv)?;
+            write_atomic_secret(&input, &w)?;
+            println!("added passkey slot #{} → {}", w.slots.len() - 1, input.display());
+        }
+        IdentityCmd::RemovePasskey { input, slot } => {
+            let mut w = Wrapped::load(&input)?;
+            w.remove_slot(slot)?;
+            write_atomic_secret(&input, &w)?;
+            println!("removed passkey slot #{slot}; {} left", w.slots.len());
+        }
+        IdentityCmd::Unprotect { input, output } => {
+            let id = Identity::load(&input)?;
+            id.write(&output)?;
+            println!("plain identity → {}  (owner-only; anyone with this file can open your seals)", output.display());
+        }
+        IdentityCmd::Info { input } => {
+            let raw = fs::read(&input)?;
+            if is_wrapped(&raw) {
+                print!("{}", Wrapped::parse(&raw)?.describe());
+            } else {
+                let pk = sigil::PublicIdentity::load(&input)?;
+                let kind = if raw.len() > 4 && raw[0..4] == sigil::ID_MAGIC {
+                    match raw[4] {
+                        1 => "plain identity (.sgk v1, unprotected)",
+                        2 => "plain identity (.sgk v2 imported, unprotected)",
+                        _ => "identity (unknown version)",
+                    }
+                } else {
+                    "public key"
+                };
+                println!("{kind}\n  x25519 {}\n  ed25519 {}", hex32(&pk.x25519_pk), hex32(&pk.ed25519_pk));
+            }
         }
     }
     Ok(())

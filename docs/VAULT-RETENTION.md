@@ -77,4 +77,4 @@ After a successful (non-skipped) **commit**, light policy auto-prunes to `keep`.
 
 Only versions still listed in `CHART` (hot set) restore via `vault restore`. Cold kit folders are ordinary kits / archives — use `sigil kit mend` (or copy the plain `.sg1` back) if you need an older seal again; re-track / re-commit is a separate story.
 
-Passkeys/WebAuthn and PGP import are roadmap follow-ons, not part of retention.
+Passkeys and PGP import live in key files (see PASSKEY.md, PGP-IMPORT.md), not in retention.
