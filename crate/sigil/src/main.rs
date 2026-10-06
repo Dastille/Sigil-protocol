@@ -173,6 +173,7 @@ enum Cmd {
         watch: bool,
     },
     /// Rebuild a healthy .sg1 from live shards in a torn mark (no passphrase). Alias: repair.
+    /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input.
     #[command(visible_alias = "repair")]
     Mend {
         input: PathBuf,
@@ -1297,10 +1298,31 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        Cmd::Mend { input, output, soft } if sigil::is_work_pack(&input) => {
+            let rep = sigil::mend_pack_path(&input, &output, soft)?;
+            let healed = if rep.mended.is_empty() {
+                "no damage".to_string()
+            } else {
+                let list: Vec<String> = rep.mended.iter().map(|i| i.to_string()).collect();
+                format!("healed {} chunk star(s): {}", rep.mended.len(), list.join(", "))
+            };
+            println!(
+                "mended work pack {} → {} ({healed}; {} stars verified{}{})",
+                input.display(),
+                output.display(),
+                rep.stars,
+                if rep.facets_checked { ", facets ok" } else { ", no facet trailer" },
+                if rep.soft_used { ", soft salvage" } else { "" }
+            );
+        }
         Cmd::Mend { input, output, soft } => {
             let data = fs::read(&input)?;
             let (healed, used_soft) = mend_bytes_ex(&data, soft)?;
-            fs::write(&output, &healed)?;
+            let mut tmp = output.as_os_str().to_os_string();
+            tmp.push(".mend-part");
+            let tmp = PathBuf::from(tmp);
+            fs::write(&tmp, &healed)?;
+            fs::rename(&tmp, &output)?;
             let (h, merkle_ok, live, k, _) = sigil::verify(&healed)?;
             println!(
                 "mended {} → {} (live {live}/{n}, need {k}, merkle {ok}{soft_note})",

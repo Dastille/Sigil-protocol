@@ -562,6 +562,151 @@ pub fn inscribe_stars_dir_to(
     Ok((orig, stars))
 }
 
+/// Outcome of [`mend_pack_path`].
+#[derive(Debug)]
+pub struct PackMendReport {
+    pub stars: u32,
+    /// Indexes of chunk stars that were healed.
+    pub mended: Vec<u32>,
+    /// At least one star needed soft-RS salvage.
+    pub soft_used: bool,
+    /// Every star's header true-name matched the SGFC facet trailer.
+    pub facets_checked: bool,
+    pub bytes: u64,
+}
+
+/// Heal one chunk star without keys: returns `Some(healed)` when it was torn.
+/// A healed star must verify clean (all shards, Merkle) and keep its true-name.
+fn mend_chunk_star(i: u32, stars: u32, star: &[u8], soft: bool) -> Result<Option<(Vec<u8>, bool)>> {
+    if !star_torn(star) {
+        return Ok(None);
+    }
+    let (healed, used_soft) = crate::pieces::mend_bytes_ex(star, soft).map_err(|e| {
+        crate::Error::Msg(format!("chunk star {i} of {stars} is too damaged to mend: {e}"))
+    })?;
+    match crate::verify(&healed) {
+        Ok((_, true, _, _, _)) => Ok(Some((healed, used_soft))),
+        _ => Err(crate::Error::Msg(format!(
+            "chunk star {i} of {stars} did not verify clean after mend"
+        ))),
+    }
+}
+
+/// Standalone, key-free mend of a whole SGWK large-file pack (`sigil mend`).
+///
+/// Streams star by star (one chunk in memory at a time), heals every torn chunk
+/// star with the same RS mend as a single mark, and checks every star's header
+/// true-name against the SGFC facet trailer when present. Output goes to a temp
+/// file beside `output` and is renamed into place only when every star is clean,
+/// so `output` may equal `input`. The SGWK head, per-star length framing and the
+/// trailer are not RS-coded: damage there is refused, never guessed. Nothing is
+/// decrypted, so Warded / encrypt-to packs mend without a passphrase or identity.
+pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMendReport> {
+    let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
+    let file_len = std::fs::metadata(input).map_err(io)?.len();
+    let mut r = BufReader::new(File::open(input).map_err(io)?);
+    let head = read_head(&mut r)?;
+    let head_len = r.stream_position().map_err(io)?;
+    // Pass 1: framing only (lengths must tile the file, trailer must parse).
+    let mut spans = Vec::with_capacity(head.stars as usize);
+    let mut off = head_len;
+    for i in 0..head.stars {
+        if off + 8 > file_len {
+            return Err(crate::Error::Msg(format!(
+                "work pack framing damaged at star {i} (length missing); not RS-coded, refusing"
+            )));
+        }
+        r.seek(SeekFrom::Start(off)).map_err(io)?;
+        let mut lb = [0u8; 8];
+        r.read_exact(&mut lb).map_err(io)?;
+        let len = u64::from_le_bytes(lb);
+        let end = (off + 8).checked_add(len).filter(|&e| e <= file_len).ok_or_else(|| {
+            crate::Error::Msg(format!(
+                "work pack framing damaged at star {i} (bad length); not RS-coded, refusing"
+            ))
+        })?;
+        spans.push((off + 8, len));
+        off = end;
+    }
+    let trailer_len = file_len - off;
+    let mut trailer = vec![0u8; trailer_len as usize];
+    r.seek(SeekFrom::Start(off)).map_err(io)?;
+    r.read_exact(&mut trailer).map_err(io)?;
+    let n = head.stars as usize;
+    let facets: Option<Vec<[u8; 32]>> = if trailer.is_empty() {
+        None
+    } else if trailer.len() == 8 + 32 * n
+        && &trailer[0..4] == b"SGFC"
+        && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
+    {
+        Some(trailer[8..].chunks(32).map(|c| c.try_into().unwrap()).collect())
+    } else {
+        return Err(crate::Error::Msg(
+            "work pack facet trailer (SGFC) damaged; not RS-coded, refusing".into(),
+        ));
+    };
+
+    // Pass 2: heal + write to a temp file beside the output.
+    let mut tmp = output.as_os_str().to_os_string();
+    tmp.push(".mend-part");
+    let tmp = std::path::PathBuf::from(tmp);
+    let result = (|| -> Result<PackMendReport> {
+        let mut w = BufWriter::new(File::create(&tmp).map_err(io)?);
+        let mut head_bytes = vec![0u8; head_len as usize];
+        r.seek(SeekFrom::Start(0)).map_err(io)?;
+        r.read_exact(&mut head_bytes).map_err(io)?;
+        w.write_all(&head_bytes).map_err(io)?;
+        let mut mended = Vec::new();
+        let mut soft_used = false;
+        for (i, &(start, len)) in spans.iter().enumerate() {
+            let i = i as u32;
+            r.seek(SeekFrom::Start(start)).map_err(io)?;
+            let mut star = vec![0u8; len as usize];
+            r.read_exact(&mut star).map_err(io)?;
+            if let Some((healed, used_soft)) = mend_chunk_star(i, head.stars, &star, soft)? {
+                star = healed;
+                soft_used |= used_soft;
+                mended.push(i);
+            }
+            if let Some(f) = &facets {
+                let (h, _, _) = crate::locate_header(&star)?;
+                if h.digest != f[i as usize] {
+                    return Err(crate::Error::Msg(format!(
+                        "chunk star {i} true-name does not match the pack facet (swapped star or damaged trailer); refusing"
+                    )));
+                }
+            }
+            w.write_all(&(star.len() as u64).to_le_bytes()).map_err(io)?;
+            w.write_all(&star).map_err(io)?;
+        }
+        w.write_all(&trailer).map_err(io)?;
+        w.flush().map_err(io)?;
+        w.get_ref().sync_all().map_err(io)?;
+        Ok(PackMendReport {
+            stars: head.stars,
+            mended,
+            soft_used,
+            facets_checked: facets.is_some(),
+            bytes: 0,
+        })
+    })();
+    match result {
+        Ok(mut rep) => {
+            drop(r);
+            std::fs::rename(&tmp, output).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp);
+                io(e)
+            })?;
+            rep.bytes = std::fs::metadata(output).map_err(io)?.len();
+            Ok(rep)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// Outcome of [`mend_pack_to`].
 pub struct WorkMend {
     /// Plaintext bytes written.
@@ -1024,4 +1169,94 @@ mod tests {
         assert_eq!(m.mended, vec![0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn mend_pack_path_heals_all_torn_chunks_in_place() {
+        let dir = tmp("mendpath");
+        let (d, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let spans = star_spans(&pack);
+        let mut torn = pack.clone();
+        smash_shard(&mut torn, spans[0].0, spans[0].1, 1);
+        smash_shard(&mut torn, spans[2].0, spans[2].1, 0);
+        smash_shard(&mut torn, spans[4].0, spans[4].1, 3);
+        let p = dir.join("torn.sg1");
+        std::fs::write(&p, &torn).unwrap();
+        let rep = mend_pack_path(&p, &p, false).unwrap();
+        assert_eq!(rep.mended, vec![0, 2, 4]);
+        assert!(rep.facets_checked && !rep.soft_used);
+        let healed = std::fs::read(&p).unwrap();
+        assert_eq!(healed.len(), pack.len());
+        for (a, b) in star_spans(&healed) {
+            assert!(!star_torn(&healed[a..b]));
+        }
+        assert!(!dir.join("torn.sg1.mend-part").exists());
+        unseal_path_keys(&p, &dir.join("o.bin"), None, &[], &[]).unwrap();
+        assert_eq!(std::fs::read(dir.join("o.bin")).unwrap(), d);
+        // Clean pack: nothing to heal, bytes unchanged.
+        let rep2 = mend_pack_path(&p, &dir.join("again.sg1"), false).unwrap();
+        assert!(rep2.mended.is_empty());
+        assert_eq!(std::fs::read(dir.join("again.sg1")).unwrap(), healed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mend_pack_path_needs_no_keys_for_encrypt_to() {
+        let dir = tmp("mendpath-to");
+        let id = Identity::generate().unwrap();
+        let (d, pack) = make_pack(&dir, 260 * 1024, &[id.public()]);
+        let spans = star_spans(&pack);
+        let mut torn = pack.clone();
+        smash_shard(&mut torn, spans[1].0, spans[1].1, 0);
+        let p = dir.join("torn.sg1");
+        let out = dir.join("fixed.sg1");
+        std::fs::write(&p, &torn).unwrap();
+        assert_eq!(mend_pack_path(&p, &out, false).unwrap().mended, vec![1]);
+        unseal_path_keys(&out, &dir.join("o.bin"), None, &[], &[id]).unwrap();
+        assert_eq!(std::fs::read(dir.join("o.bin")).unwrap(), d);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mend_pack_path_refuses_cleanly() {
+        let dir = tmp("mendpath-refuse");
+        let (_, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let spans = star_spans(&pack);
+        let p = dir.join("in.sg1");
+        let out = dir.join("out.sg1");
+        let check = |bytes: &[u8], want: &str| {
+            std::fs::write(&p, bytes).unwrap();
+            let e = mend_pack_path(&p, &out, false).err().expect("should refuse").to_string();
+            assert!(e.contains(want), "{e}");
+            assert!(!out.exists(), "no output on refusal");
+            assert!(!dir.join("out.sg1.mend-part").exists());
+            assert_eq!(std::fs::read(&p).unwrap(), bytes, "input untouched");
+        };
+        // Over budget in star 3.
+        let (h, _, _) = crate::locate_header(&pack[spans[3].0..spans[3].1]).unwrap();
+        let mut over = pack.clone();
+        for s in 0..=(h.n - h.k) as usize {
+            smash_shard(&mut over, spans[3].0, spans[3].1, s);
+        }
+        check(&over, "chunk star 3");
+        // Length framing.
+        let mut fr = pack.clone();
+        fr[spans[2].0 - 8..spans[2].0].copy_from_slice(&(1u64 << 40).to_le_bytes());
+        check(&fr, "framing damaged at star 2");
+        // Trailer.
+        let mut tr = pack.clone();
+        let n = tr.len();
+        tr[n - 32 * spans.len() - 8] = b'X';
+        check(&tr, "facet trailer");
+        // Swapped equal-length stars → facet mismatch.
+        let (a0, a1) = spans[0];
+        let (b0, b1) = spans[1];
+        assert_eq!(a1 - a0, b1 - b0);
+        let mut sw = pack.clone();
+        let first = pack[a0..a1].to_vec();
+        sw[a0..a1].copy_from_slice(&pack[b0..b1]);
+        sw[b0..b1].copy_from_slice(&first);
+        check(&sw, "does not match the pack facet");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

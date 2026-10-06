@@ -24,6 +24,8 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 Large files become a **work pack** (many marks in one file, 4 MiB chunks). Same commands.
 
+`./sigil mend big.sg1 -o big.sg1` heals a whole work pack in one go: every torn 4 MiB chunk star is rebuilt, each star's true-name is checked against the pack's facet list, and the file is replaced atomically (temp + rename). No passphrase or identity needed; Warded and `--to` packs mend as-is. The pack's own head, chunk-length framing and facet trailer aren't RS-coded, so damage there (or a chunk past its mode's repair budget) is refused with the star named, and nothing is written.
+
 **Boot disk (live USB)**
 
 Firmware cannot boot a `.sg1`. The stick stays a normal live USB (GRUB + kernel + initrd). Wrap `live/filesystem.squashfs` (Debian/Parrot) or `casper/filesystem.squashfs` (Ubuntu) as a Seal. Initrd Scrys it; if the squashfs was chewed it De-scribes, then the live image mounts. If too damaged, it stops — Sigil will not guess.

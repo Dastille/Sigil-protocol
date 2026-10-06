@@ -282,7 +282,7 @@ pub fn mend_bytes(file: &[u8]) -> Result<Vec<u8>> {
 pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     if file.len() >= 4 && &file[0..4] == b"SGWK" {
         return Err(crate::Error::Msg(
-            "this is a work pack of many marks. Mend each star.sg1.".into(),
+            "this is a work pack of many marks; use `sigil mend` on the file (work::mend_pack_path)".into(),
         ));
     }
     let (h, prefix, _) = locate_header(file)?;
