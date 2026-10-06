@@ -91,6 +91,16 @@ A star is one `.sg1`. A constellation is a named list of stars, kept as a folder
 ./sigil constellation add ./Taxes ./receipt.jpg --rsync user@nas:/backup/Taxes/
 ```
 
+Encrypt-to constellations: `--to` on `constellation add` encrypts every new star **and** the card to those recipients (with `--pass` too, either opens). Reading the list back needs `--identity` (or the passphrase): later `add`s, `constellation scry`, `constellation atlas`, and `de-scribe` (folder, card, or `.sga` bag). Give the same `--to` set on every add — an add to an encrypt-to card without `--to` is refused rather than rewriting the card in the clear. `add --to … --wormhole` bags straight from the list it just wrote, so a sender who doesn't hold a recipient key can still send. Stars and the atlas bag stay byte-for-byte as minted; a missing named star still refuses.
+
+```
+./sigil constellation add ./Taxes ./tax-2025.pdf --to alice.pub --to bob.pub
+./sigil constellation add ./Taxes ./notes.txt --to alice.pub --to bob.pub --identity alice.sgk
+./sigil constellation scry ./Taxes --identity bob.sgk
+./sigil constellation atlas ./Taxes --identity alice.sgk
+./sigil de-scribe --identity bob.sgk -o ./restored ./Taxes/Taxes.sga
+```
+
 ```
 
 **One file vs pieces**

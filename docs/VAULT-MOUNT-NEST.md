@@ -154,7 +154,7 @@ What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart h
 
 Dirty re-seal: pass `--to` / `--pass` on `vault commit --from-export` the same way as ordinary commit. The `.sigil-dirty` sidecar never stores secrets.
 
-**Deferred:** `--identity` on **constellation** packs is not wired yet — de-scribe member `.sg1`s directly. PGP import is on main (`sigil import-pgp`, see [PGP-IMPORT.md](PGP-IMPORT.md)); any imported `.sgk` / `.pub` works with every `--identity` / `--to` shown here. Passkey-protected identities (`sigil identity protect --passkey`, see [PASSKEY.md](PASSKEY.md)) work with every `--identity` shown here.
+Constellations take `--to` on `constellation add` (stars + card) and `--identity` on `constellation add` / `scry` / `atlas` and on `de-scribe` of a constellation folder, card, or `.sga` atlas bag — see the Sigil README. PGP import is on main (`sigil import-pgp`, see [PGP-IMPORT.md](PGP-IMPORT.md)); any imported `.sgk` / `.pub` works with every `--identity` / `--to` shown here. Passkey-protected identities (`sigil identity protect --passkey`, see [PASSKEY.md](PASSKEY.md)) work with every `--identity` shown here.
 
 ## Limits (current)
 
@@ -163,7 +163,7 @@ Dirty re-seal: pass `--to` / `--pass` on `vault commit --from-export` the same w
 - Folder vault restore mends torn inner stars in an SGDR version — small classic members **and** the 4 MiB chunk stars of large-file WORK/SGWK members — then sets `mended` and rewrites the version seal (atomic temp + rename, only after the restored tree matches the chart true-name). Healed chunk stars must keep their SGFC facet true-name. Same layout and size; plain seals unaffected. Not RS-coded, so refused rather than guessed: the outer SGDR framing and a WORK member's head / per-star length framing. A chunk star beyond its mode's budget fails the restore with the member and star named, and the seal is left untouched.
 - FUSE: read-only; writable needs `--export-dir`.
 - Nested seals: mount shows one layer; `sigil path` walks deeper.
-- Constellation `--identity`: deferred.
+- Constellation encrypt-to: give the same `--to` set on every `add` (an encrypt-to card refuses an add without `--to`); stars minted earlier keep their original recipients. Top-level `sigil scry` of a locked card points at `sigil constellation scry --identity/--pass`.
 - Format policy: new `.sg1` features stay additive/opt-in at Inscribe; plain seals stay readable forever — no layout fork.
 
 ## Related
