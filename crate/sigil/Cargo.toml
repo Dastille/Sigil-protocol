@@ -13,7 +13,7 @@ lab = ["dep:eframe", "dep:rfd"]
 mds-cauchy = []
 # Real FIDO2 security keys (CTAP2 HID) for passkey-protected identities.
 # Off by default; Linux needs libudev headers + pkg-config to build. See docs/PASSKEY.md.
-passkey = ["dep:ctap-hid-fido2", "dep:rpassword"]
+passkey = ["dep:ctap-hid-fido2"]
 
 [[bin]]
 name = "sigil-lab"
@@ -38,7 +38,9 @@ thiserror = "1"
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 zeroize = "1"
 ctap-hid-fido2 = { version = "3.6", optional = true }
-rpassword = { version = "7", optional = true }
+rpassword = "7"
+aes = "0.8"
+cfb-mode = "0.8"
 eframe = { version = "0.31", optional = true }
 rfd = { version = "0.15", optional = true }
 
