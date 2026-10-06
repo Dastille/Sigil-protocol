@@ -78,10 +78,10 @@ pub use vault::{
 pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_path_to, inscribe_stars_dir,
-    inscribe_stars_dir_to, is_work_pack, overture_report, payload_name, read_facet_digests,
+    inscribe_stars_dir_to, is_work_pack, mend_pack_path, overture_report, payload_name, read_facet_digests,
     scry_facets, scry_path, suggested_output_name, unseal_path, unseal_path_keys, unseal_range,
     unseal_range_keys, unseal_star_at, unseal_star_at_keys, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
-    OVERTURE, WORK_MAGIC,
+    PackMendReport, OVERTURE, WORK_MAGIC,
 };
 pub use show::run_showing;
 pub use mount::{
