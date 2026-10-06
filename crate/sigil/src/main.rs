@@ -47,7 +47,7 @@ enum Cmd {
         /// USB/file key (Talisman). Hex of its hash becomes the Ward. Instead of --pass.
         #[arg(long)]
         talisman: Option<PathBuf>,
-        /// Encrypt-to recipient: .pub / .sgk / hex X25519 pk (repeatable). Implies encrypted.
+        /// Encrypt-to recipient: .pub / .sgk / OpenPGP cv25519 .asc / hex X25519 pk (repeatable). Implies encrypted.
         /// Alone is enough; with --pass, either passphrase OR matching --identity opens.
         #[arg(long = "to")]
         to: Vec<String>,
@@ -271,6 +271,19 @@ enum Cmd {
         /// Force modern ECC identity even if defaults change later.
         #[arg(long = "ecc", default_value_t = true)]
         ecc: bool,
+    },
+    /// Import an OpenPGP Curve25519 key (Ed25519 primary + cv25519 subkey).
+    /// Public key → .pub for --to. Unprotected secret key + -o → .sgk for --identity.
+    #[command(name = "import-pgp", visible_alias = "pgp-import")]
+    ImportPgp {
+        /// Armored (.asc) or binary OpenPGP key export
+        input: PathBuf,
+        /// Write the secret identity here (.sgk v2); needs an unprotected secret export
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Write the public half here (default: <output>.pub, else <input>.pub)
+        #[arg(long = "pub-out")]
+        pub_out: Option<PathBuf>,
     },
     /// Sign a mark (writes file.sg1.sig). Alias: attest.
     #[command(visible_alias = "attest")]
@@ -1380,6 +1393,46 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("public → {}  (encrypt-to: --to {})", pub_path.display(), pub_path.display());
                 println!("attest seed is inside .sgk; sign with --key {}", output.display());
             }
+        }
+        Cmd::ImportPgp {
+            input,
+            output,
+            pub_out,
+        } => {
+            let raw = fs::read(&input)?;
+            let imp = sigil::pgp::import(&raw)?;
+            let pub_path = pub_out.unwrap_or_else(|| {
+                let base = output.as_ref().unwrap_or(&input);
+                let mut p = base.with_extension("").into_os_string();
+                p.push(".pub");
+                PathBuf::from(p)
+            });
+            if let Some(out) = &output {
+                let Some(id) = imp.secret.as_ref() else {
+                    return Err(format!(
+                        "no secret identity written: {}",
+                        sigil::pgp::secret_unavailable_reason(&raw)
+                    )
+                    .into());
+                };
+                id.write(out)?;
+                println!("identity → {}  (.sgk v2, owner-only)", out.display());
+            } else if imp.had_secret_packets {
+                println!("note: secret packets ignored (public only); pass -o me.sgk to import them");
+            }
+            imp.public.write(&pub_path)?;
+            println!(
+                "pgp {}  {}",
+                hex::encode_upper(imp.primary_fpr),
+                imp.user_id.as_deref().unwrap_or("(no verified user id)")
+            );
+            println!("encrypt subkey {}", hex::encode_upper(imp.subkey_fpr));
+            println!(
+                "public → {}  x25519 {}  (encrypt-to: --to {})",
+                pub_path.display(),
+                hex32(&imp.public.x25519_pk),
+                pub_path.display()
+            );
         }
         Cmd::Sign { input, key } => {
             let dest = attest(&input, &key)?;

@@ -16,6 +16,7 @@ mod mount;
 mod nest;
 mod open;
 mod pieces;
+pub mod pgp;
 mod rs;
 mod show;
 mod vault;

@@ -21,6 +21,10 @@ pub const ID_MAGIC: [u8; 4] = *b"SGIK";
 pub const PUB_MAGIC: [u8; 4] = *b"SGIP";
 pub const SGTO_MAGIC: [u8; 4] = *b"SGTO";
 pub const ID_VERSION: u8 = 1;
+/// .sgk v2: raw keys (no HKDF master), e.g. imported from OpenPGP. Old builds refuse it cleanly.
+pub const ID_VERSION_RAW: u8 = 2;
+const ID_FLAG_PGP: u8 = 1;
+const ID_SIZE_RAW: usize = ID_HEADER + 32 + 32 + 20; // x25519 sk + ed25519 seed + pgp fpr
 pub const SGTO_VERSION: u8 = 1;
 
 const ID_HEADER: usize = 8; // magic + ver + flags + pad
@@ -35,9 +39,12 @@ const FLAG_HAS_PASS_WRAP: u8 = 1;
 /// Secret identity: X25519 decrypt + Ed25519 attest seed (HKDF-split from master).
 #[derive(Clone)]
 pub struct Identity {
+    /// HKDF master for native identities; all-zero for raw (imported) ones.
     pub master: [u8; 32],
     pub x25519_sk: [u8; 32],
     pub ed25519_seed: [u8; 32],
+    /// Set for identities imported from OpenPGP (v4 primary fingerprint). Written as .sgk v2.
+    pub pgp_fpr: Option<[u8; 20]>,
 }
 
 /// Public half for --to.
@@ -60,7 +67,18 @@ impl Identity {
             master,
             x25519_sk: x_sk,
             ed25519_seed: ed_seed,
+            pgp_fpr: None,
         })
+    }
+
+    /// Raw key pair (no master), e.g. from `sigil import-pgp`.
+    pub fn from_raw(x25519_sk: [u8; 32], ed25519_seed: [u8; 32], pgp_fpr: Option<[u8; 20]>) -> Self {
+        Self {
+            master: [0u8; 32],
+            x25519_sk,
+            ed25519_seed,
+            pgp_fpr,
+        }
     }
 
     pub fn public(&self) -> PublicIdentity {
@@ -74,15 +92,24 @@ impl Identity {
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
-        let mut buf = Vec::with_capacity(ID_SIZE);
+        let mut buf = Vec::with_capacity(ID_SIZE_RAW);
         buf.extend_from_slice(&ID_MAGIC);
-        buf.push(ID_VERSION);
-        buf.push(0); // flags
-        buf.push(0);
-        buf.push(0);
-        buf.extend_from_slice(&self.master);
-        std::fs::write(path, &buf).map_err(|e| Error::Msg(e.to_string()))?;
-        Ok(())
+        if let Some(fpr) = self.pgp_fpr {
+            buf.push(ID_VERSION_RAW);
+            buf.push(ID_FLAG_PGP);
+            buf.push(0);
+            buf.push(0);
+            buf.extend_from_slice(&self.x25519_sk);
+            buf.extend_from_slice(&self.ed25519_seed);
+            buf.extend_from_slice(&fpr);
+        } else {
+            buf.push(ID_VERSION);
+            buf.push(0); // flags
+            buf.push(0);
+            buf.push(0);
+            buf.extend_from_slice(&self.master);
+        }
+        write_secret_file(path, &buf)
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -129,7 +156,32 @@ fn split_master(master: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
     Ok((x, e))
 }
 
+/// Secret key files are created owner-only (0600) on unix.
+fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(|e| Error::Msg(e.to_string()))?;
+    f.write_all(buf).map_err(|e| Error::Msg(e.to_string()))?;
+    Ok(())
+}
+
 fn parse_identity(b: &[u8]) -> Result<Identity> {
+    if b.len() >= ID_SIZE_RAW && b[0..4] == ID_MAGIC && b[4] == ID_VERSION_RAW {
+        let mut x = [0u8; 32];
+        let mut e = [0u8; 32];
+        let mut fpr = [0u8; 20];
+        x.copy_from_slice(&b[ID_HEADER..ID_HEADER + 32]);
+        e.copy_from_slice(&b[ID_HEADER + 32..ID_HEADER + 64]);
+        fpr.copy_from_slice(&b[ID_HEADER + 64..ID_HEADER + 84]);
+        let pgp = if b[5] & ID_FLAG_PGP != 0 { Some(fpr) } else { None };
+        return Ok(Identity::from_raw(x, e, pgp));
+    }
     if b.len() >= ID_SIZE && b[0..4] == ID_MAGIC {
         if b[4] != ID_VERSION {
             return Err(Error::Msg(format!("unsupported .sgk version {}", b[4])));
@@ -187,8 +239,12 @@ fn parse_public(b: &[u8]) -> Result<PublicIdentity> {
     if b.len() >= ID_SIZE && b[0..4] == ID_MAGIC {
         return Ok(parse_identity(b)?.public());
     }
+    // OpenPGP Curve25519 public key (armored or binary): use its cv25519 subkey.
+    if crate::pgp::looks_like_pgp(b) {
+        return Ok(crate::pgp::import(b)?.public);
+    }
     Err(Error::Msg(
-        "not a recipient public key (.pub / .sgk / 32-byte / hex)".into(),
+        "not a recipient public key (.pub / .sgk / OpenPGP cv25519 / 32-byte / hex)".into(),
     ))
 }
 
@@ -505,6 +561,29 @@ mod tests {
         assert_eq!(id.public().x25519_pk, pk.x25519_pk);
         let loaded = PublicIdentity::load(&pub_path).unwrap();
         assert_eq!(loaded.x25519_pk, pk.x25519_pk);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn raw_identity_v2_roundtrip_owner_only() {
+        let dir = std::env::temp_dir().join(format!("sigil-id2-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("pgp.sgk");
+        let base = Identity::generate().unwrap();
+        let id = Identity::from_raw(base.x25519_sk, base.ed25519_seed, Some([7u8; 20]));
+        id.write(&path).unwrap();
+        let b = std::fs::read(&path).unwrap();
+        assert_eq!(b[4], ID_VERSION_RAW);
+        let back = Identity::load(&path).unwrap();
+        assert_eq!(back.pgp_fpr, Some([7u8; 20]));
+        assert_eq!(back.public().x25519_pk, base.public().x25519_pk);
+        assert_eq!(back.public().ed25519_pk, base.public().ed25519_pk);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

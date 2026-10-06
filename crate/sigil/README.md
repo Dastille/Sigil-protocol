@@ -177,7 +177,7 @@ Modern identity (default `sigil keygen`): `.sgk` holds a 32-byte master; X25519 
 ./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
 ```
 
-Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, pieces, and vault track/commit/restore. Passkeys/WebAuthn and PGP import are roadmap follow-ups.
+Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, pieces, and vault track/commit/restore. OpenPGP Curve25519 keys import with `sigil import-pgp` (public → `.pub`, unprotected secret → `.sgk` v2; `--to friend.asc` also works directly); see `docs/PGP-IMPORT.md`. Passkeys/WebAuthn are a roadmap follow-up.
 
 **Mount (FUSE read-only / export-dir)**
 
