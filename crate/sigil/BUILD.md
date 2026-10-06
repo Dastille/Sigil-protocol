@@ -18,6 +18,10 @@ No extra libraries for the default build. Optional `--features passkey` (FIDO2 s
 
 Tag **v1.0** on GitHub when you push `Dastille/Sigil-protocol` (this sandbox cannot log into your GitHub).
 
+**CI**
+
+Every push and PR to `main` runs `.github/workflows/ci.yml`: `cargo build --locked --all-targets` + `cargo test --locked` (lib + integration tests), plus a second job that builds `--features passkey` headless (libudev-dev) and runs the passkey tests against the software authenticator. Cargo deps and `target/` are cached. Tagged releases still use `release.yml`.
+
 **Mount / FUSE (Linux)**
 
 `sigil mount` links `fuser` on Unix. Runtime needs `/dev/fuse` and `fusermount3` (`fuse3` package). If the environment forbids FUSE (common in containers), use `--export-dir` instead — same read-only view, seal untouched.
