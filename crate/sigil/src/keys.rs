@@ -91,7 +91,8 @@ impl Identity {
         }
     }
 
-    pub fn write(&self, path: &Path) -> Result<()> {
+    /// Plain `.sgk` encoding (v1 native, v2 raw/imported).
+    pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(ID_SIZE_RAW);
         buf.extend_from_slice(&ID_MAGIC);
         if let Some(fpr) = self.pgp_fpr {
@@ -109,11 +110,34 @@ impl Identity {
             buf.push(0);
             buf.extend_from_slice(&self.master);
         }
+        buf
+    }
+
+    pub fn write(&self, path: &Path) -> Result<()> {
+        let buf = zeroize::Zeroizing::new(self.to_bytes());
         write_secret_file(path, &buf)
     }
 
+    /// Load a plain `.sgk`, or a passkey-protected one (`SGKW`) by asking the authenticator.
     pub fn load(path: &Path) -> Result<Self> {
-        let b = std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?;
+        let b = zeroize::Zeroizing::new(
+            std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?,
+        );
+        if crate::passkey::is_wrapped(&b) {
+            return crate::passkey::unlock_bytes(&b)
+                .map_err(|e| Error::Msg(format!("{}: {e}", path.display())));
+        }
+        parse_identity(&b)
+    }
+
+    /// Load with an explicit authenticator (tests, or callers that pick a device).
+    pub fn load_with(path: &Path, auth: &mut dyn crate::passkey::Authenticator) -> Result<Self> {
+        let b = zeroize::Zeroizing::new(
+            std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?,
+        );
+        if crate::passkey::is_wrapped(&b) {
+            return crate::passkey::Wrapped::parse(&b)?.unlock(auth);
+        }
         parse_identity(&b)
     }
 }
@@ -157,7 +181,7 @@ fn split_master(master: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
 }
 
 /// Secret key files are created owner-only (0600) on unix.
-fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
+pub(crate) fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -171,7 +195,7 @@ fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn parse_identity(b: &[u8]) -> Result<Identity> {
+pub(crate) fn parse_identity(b: &[u8]) -> Result<Identity> {
     if b.len() >= ID_SIZE_RAW && b[0..4] == ID_MAGIC && b[4] == ID_VERSION_RAW {
         let mut x = [0u8; 32];
         let mut e = [0u8; 32];
@@ -234,6 +258,10 @@ fn parse_public(b: &[u8]) -> Result<PublicIdentity> {
             x25519_pk: x,
             ed25519_pk: [0u8; 32],
         });
+    }
+    // Passkey-protected .sgk: public keys sit in the clear header (no touch needed).
+    if crate::passkey::is_wrapped(b) {
+        return Ok(crate::passkey::Wrapped::parse(b)?.public);
     }
     // .sgk secret → derive public
     if b.len() >= ID_SIZE && b[0..4] == ID_MAGIC {

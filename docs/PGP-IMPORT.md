@@ -44,6 +44,8 @@ shred -u "$d/k.asc"; rmdir "$d"
 
 Imported identities are written as **`.sgk` v2** (`SGIK`, version 2, flag bit 0 = from OpenPGP): the raw X25519 scalar, the Ed25519 seed, and the 20-byte v4 primary fingerprint, 92 bytes total, created owner-only (0600). Native `sigil keygen` identities stay `.sgk` v1 (HKDF master), and builds from before this change refuse v2 with "unsupported .sgk version 2" instead of misreading it. Public halves are ordinary `.pub` v1 files, readable by every build.
 
+To keep the imported secret off disk in the clear, lock it to a security key right after import: `sigil identity protect me.sgk --in-place --passkey` (see [PASSKEY.md](PASSKEY.md)).
+
 ## Not in this slice
 
-Passkey/WebAuthn unlock of a `.sgk`, decrypting passphrase-protected PGP secrets, v6 keys, and producing OpenPGP messages (Sigil still uses its own `SGTO` envelope; GnuPG cannot open a `.sg1`).
+Decrypting passphrase-protected PGP secrets, v6 keys, and producing OpenPGP messages (Sigil still uses its own `SGTO` envelope; GnuPG cannot open a `.sg1`).
