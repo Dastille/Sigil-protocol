@@ -36,7 +36,8 @@ pub use attest::{attest, keygen as attest_keygen, talisman_pass, verify_attestat
 pub use boot::{copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, mend_boot, mend_scan, prepare_boot, BootFind, BootOutcome};
 pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
-    pack_atlas, scry_constellation, unseal_constellation, AddOpts, AddReport,
+    pack_atlas, pack_atlas_chart, pack_atlas_keys, scry_chart, scry_constellation, scry_constellation_keys, unseal_constellation,
+    unseal_constellation_keys, AddOpts, AddReport, Chart,
 };
 pub use folder::{inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry};
 pub use nest::{

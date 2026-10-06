@@ -4,10 +4,10 @@ use sigil::{
     backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd,
     inscribe_dir_to, inscribe_path_to, inscribe_stars_dir_to, install_hooks, is_constellation_input,
     is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_scan,
-    overture_report, pack_atlas, path_extract_keys, path_walk_keys, prepare_boot, resolve_recipient,
+    overture_report, path_extract_keys, path_walk_keys, prepare_boot, resolve_recipient,
     run_bakeoff, run_mount_keys, run_open_keys, run_showing, scry_constellation, scry_dir, scry_path,
     scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
-    unseal_constellation, place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
+    place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, umount_path,
     vessel_present, write_vessel, AddOpts,
     vault_format_retention, vault_format_status, vault_format_versions, vault_get_retention,
@@ -653,12 +653,27 @@ enum SkyCmd {
         rclone: Option<String>,
         #[arg(long)]
         wormhole: bool,
+        /// Encrypt-to recipient for new stars and the card: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable).
+        /// Give the same set on every add; an encrypt-to card refuses an add without --to.
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Identity (.sgk) that opens an existing encrypt-to card (repeatable).
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
     /// Pack the card and every star into one atlas (.sga) so they cannot scatter.
     Atlas {
         sky: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Passphrase of a warded card (the card is read to find every star)
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens an encrypt-to card (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
     Scry {
         sky: PathBuf,
@@ -666,6 +681,9 @@ enum SkyCmd {
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens an encrypt-to card (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
 }
 
@@ -1151,12 +1169,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 )?;
                 println!("de-scribed {n} files → {}", output.display());
             } else if is_constellation_input(&input) {
-                if !identities.is_empty() {
-                    return Err(
-                        "--identity on constellation packs is not wired yet; de-scribe member .sg1s directly".into(),
-                    );
-                }
-                let n = unseal_constellation(&input, &output, pass.as_deref(), &companions, &only)?;
+                let n = sigil::unseal_constellation_keys(
+                    &input, &output, pass.as_deref(), &companions, &only, &identities,
+                )?;
                 println!("de-scribed {n} files → {}", output.display());
             } else {
                 if !only.is_empty() {
@@ -1170,7 +1185,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Verify { input } | Cmd::Scry { input } => {
             if is_constellation_input(&input) {
-                println!("{}", scry_constellation(&input, None)?);
+                let text = scry_constellation(&input, None).map_err(|e| {
+                    format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
+                })?;
+                println!("{text}");
             } else if is_dir_pack(&input) {
                 println!("{}", scry_dir(&input)?);
             } else {
@@ -2003,10 +2021,14 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             rsync,
             rclone,
             wormhole,
+            to,
+            identity,
         } => {
             let geas = binds(&bind)?;
             let pass = resolve_pass(pass, talisman)?;
             let cov = covenant.unwrap_or_default();
+            let recipients = load_recipients(&to)?;
+            let identities = load_identities(&identity)?;
             let report = add_to_constellation(
                 &sky,
                 &input,
@@ -2018,6 +2040,8 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                     geas: &geas,
                     chunk,
                     as_name: as_name.as_deref(),
+                    recipients: &recipients,
+                    identities: &identities,
                 },
             )?;
             println!(
@@ -2029,7 +2053,16 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                 report.replaced,
                 report.bytes_new
             );
-            println!("{}", scry_constellation(&sky, pass.as_deref())?);
+            if !recipients.is_empty() {
+                println!(
+                    "encrypt-to {} recipient{} (new stars + card)",
+                    recipients.len(),
+                    if recipients.len() == 1 { "" } else { "s" }
+                );
+            }
+            if let Some(chart) = report.chart.as_ref() {
+                println!("{}", sigil::scry_chart(&sky, chart));
+            }
             if rsync.is_some() || rclone.is_some() {
                 let src = sky.to_str().ok_or("path")?;
                 if let Some(dest) = rsync {
@@ -2045,11 +2078,14 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                     "{}.sga",
                     sky.file_name().and_then(|s| s.to_str()).unwrap_or("constellation")
                 ));
-                pack_atlas(&sky, &bag)?;
+                let chart = report.chart.as_ref().ok_or("constellation list missing after add")?;
+                sigil::pack_atlas_chart(&sky, chart, &bag)?;
                 dispatch(&bag, &None, &None, true, false)?;
             }
         }
-        SkyCmd::Atlas { sky, output } => {
+        SkyCmd::Atlas { sky, output, pass, talisman, identity } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
             let dest = output.unwrap_or_else(|| {
                 let stem = sky
                     .file_name()
@@ -2057,12 +2093,13 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or("constellation");
                 sky.join(format!("{stem}.sga"))
             });
-            let n = pack_atlas(&sky, &dest)?;
+            let n = sigil::pack_atlas_keys(&sky, &dest, pass.as_deref(), &identities)?;
             println!("atlas {n} files → {}", dest.display());
         }
-        SkyCmd::Scry { sky, pass, talisman } => {
+        SkyCmd::Scry { sky, pass, talisman, identity } => {
             let pass = resolve_pass(pass, talisman)?;
-            println!("{}", scry_constellation(&sky, pass.as_deref())?);
+            let identities = load_identities(&identity)?;
+            println!("{}", sigil::scry_constellation_keys(&sky, pass.as_deref(), &identities)?);
         }
     }
     Ok(())
