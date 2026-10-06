@@ -54,6 +54,15 @@ pub struct PublicIdentity {
     pub ed25519_pk: [u8; 32],
 }
 
+impl Drop for Identity {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.master.zeroize();
+        self.x25519_sk.zeroize();
+        self.ed25519_seed.zeroize();
+    }
+}
+
 impl Identity {
     pub fn generate() -> Result<Self> {
         let mut master = [0u8; 32];

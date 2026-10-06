@@ -8,8 +8,13 @@
 //!
 //! Every subkey we pick must carry a binding signature (0x18) that verifies
 //! against the primary; verified revocations (0x20 primary, 0x28 subkey) and
-//! expired keys are refused. Secret import needs an unprotected secret key
-//! (S2K usage 0); the recovered scalars are checked against the public points.
+//! expired keys are refused. Secret import takes an unprotected secret key
+//! (S2K usage 0) or a passphrase-protected one (usage 254, or legacy 255): the
+//! standard OpenPGP string-to-key (simple / salted / iterated+salted over
+//! SHA-1/SHA-2) derives an AES-128/192/256 key, the material is decrypted with
+//! AES in OpenPGP CFB mode (RFC 4880 §5.5.3 / RFC 9580 §5.5.3), and the SHA-1
+//! (254) or 16-bit (255) check must match. Recovered scalars are always checked
+//! against the public points. AEAD protection (usage 253) is not supported yet.
 //!
 //! This touches key files only. Seal (.sg1) bytes and SGTO are unchanged.
 
@@ -19,6 +24,7 @@ use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
+use zeroize::Zeroizing;
 
 const OID_ED25519: &[u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0xDA, 0x47, 0x0F, 0x01];
 const OID_CV25519: &[u8] = &[0x2B, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01];
@@ -73,13 +79,29 @@ pub fn looks_like_pgp(b: &[u8]) -> bool {
 }
 
 pub fn import(input: &[u8]) -> Result<PgpImport> {
-    let data = dearmor(input)?;
+    import_with_passphrase(input, None)
+}
+
+/// Like [`import`], decrypting passphrase-protected secret keys with `passphrase`.
+/// A wrong passphrase is an error (never a silent public-only import).
+pub fn import_with_passphrase(input: &[u8], passphrase: Option<&[u8]>) -> Result<PgpImport> {
+    let data = Zeroizing::new(dearmor(input)?);
     let pkts = packets(&data)?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    select(&pkts, now)
+    select(&pkts, now, passphrase)
+}
+
+/// True when the file holds secret key packets protected by a passphrase.
+pub fn secret_is_protected(input: &[u8]) -> bool {
+    let Ok(data) = dearmor(input) else { return false };
+    let Ok(pkts) = packets(&data) else { return false };
+    pkts.iter().any(|p| {
+        (p.tag == TAG_SECRET_KEY || p.tag == TAG_SECRET_SUBKEY)
+            && parse_key(p.tag, p.body, None).map_or(false, |k| k.protected)
+    })
 }
 
 // ---------------------------------------------------------------- armor
@@ -332,7 +354,7 @@ impl Key {
     }
 }
 
-fn parse_key(tag: u8, body: &[u8]) -> Result<Key> {
+fn parse_key(tag: u8, body: &[u8], passphrase: Option<&[u8]>) -> Result<Key> {
     let mut r = Reader { b: body, p: 0 };
     let ver = r.u8()?;
     if ver != 4 {
@@ -381,8 +403,23 @@ fn parse_key(tag: u8, body: &[u8]) -> Result<Key> {
     let mut protected = false;
     if is_secret_packet && kind != Kind::Other {
         let usage = r.u8()?;
-        if usage != 0 {
+        if usage == 254 || usage == 255 {
+            match passphrase {
+                None => protected = true,
+                Some(pass) => {
+                    secret = decrypt_secret(usage, &mut r, body, pass, kind, algo, &public)?;
+                }
+            }
+        } else if usage != 0 {
             protected = true;
+            if passphrase.is_some() {
+                return Err(err(if usage == 253 {
+                    "AEAD-protected secret keys (RFC 9580 S2K usage 253) aren't supported yet; \
+                     export with GnuPG (it writes usage 254)"
+                } else {
+                    "pre-RFC 2440 secret key protection isn't supported; re-export with a current GnuPG"
+                }));
+            }
         } else {
             let start = r.p;
             let raw: [u8; 32] = match algo {
@@ -407,6 +444,177 @@ fn parse_key(tag: u8, body: &[u8]) -> Result<Key> {
         secret,
         protected,
     })
+}
+
+// ---------------------------------------------------------------- S2K / CFB
+
+const HASH_SHA1: u8 = 2;
+const HASH_SHA256: u8 = 8;
+const HASH_SHA384: u8 = 9;
+const HASH_SHA512: u8 = 10;
+const HASH_SHA224: u8 = 11;
+
+enum S2k {
+    Simple { hash: u8 },
+    Salted { hash: u8, salt: [u8; 8] },
+    Iterated { hash: u8, salt: [u8; 8], count: usize },
+    /// GnuPG extension 101: no secret here (stub / smartcard).
+    GnuStub,
+}
+
+fn parse_s2k(r: &mut Reader<'_>) -> Result<S2k> {
+    let t = r.u8()?;
+    match t {
+        0 => Ok(S2k::Simple { hash: r.u8()? }),
+        1 => {
+            let hash = r.u8()?;
+            Ok(S2k::Salted { hash, salt: r.take(8)?.try_into().unwrap() })
+        }
+        3 => {
+            let hash = r.u8()?;
+            let salt = r.take(8)?.try_into().unwrap();
+            let c = r.u8()? as usize;
+            let count = (16 + (c & 15)) << ((c >> 4) + 6);
+            Ok(S2k::Iterated { hash, salt, count })
+        }
+        101 => {
+            let _hash = r.u8()?;
+            if r.take(3)? != b"GNU" {
+                return Err(err("unknown GnuPG S2K extension"));
+            }
+            Ok(S2k::GnuStub)
+        }
+        4 => Err(err("Argon2 S2K is only valid with AEAD protection (usage 253), not supported yet")),
+        t => Err(err(format!("unsupported S2K type {t}"))),
+    }
+}
+
+fn hasher(algo: u8) -> Result<Box<dyn sha2::digest::DynDigest>> {
+    Ok(match algo {
+        HASH_SHA1 => Box::new(Sha1::new()),
+        HASH_SHA224 => Box::new(Sha224::new()),
+        HASH_SHA256 => Box::new(Sha256::new()),
+        HASH_SHA384 => Box::new(Sha384::new()),
+        HASH_SHA512 => Box::new(Sha512::new()),
+        a => return Err(err(format!("S2K hash algorithm {a} not supported (SHA-1/SHA-2 only)"))),
+    })
+}
+
+/// OpenPGP string-to-key (RFC 4880 §3.7.1 / RFC 9580 §3.7.1). When the key is longer
+/// than one digest, context `i` is preloaded with `i` zero octets.
+fn s2k_derive(s2k: &S2k, pass: &[u8], key_len: usize) -> Result<Zeroizing<Vec<u8>>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(key_len + 64));
+    let mut i = 0usize;
+    while out.len() < key_len {
+        let (hash, salt, count) = match s2k {
+            S2k::Simple { hash } => (*hash, None, None),
+            S2k::Salted { hash, salt } => (*hash, Some(salt), None),
+            S2k::Iterated { hash, salt, count } => (*hash, Some(salt), Some(*count)),
+            S2k::GnuStub => return Err(err("no secret material (GnuPG stub)")),
+        };
+        let mut h = hasher(hash)?;
+        h.update(&vec![0u8; i]);
+        let mut sp = Zeroizing::new(Vec::with_capacity(8 + pass.len()));
+        if let Some(salt) = salt {
+            sp.extend_from_slice(salt);
+        }
+        sp.extend_from_slice(pass);
+        match count {
+            None => h.update(&sp),
+            Some(count) => {
+                // Hash `count` octets of the repeating salt||pass stream (at least one copy).
+                let total = count.max(sp.len());
+                if sp.is_empty() {
+                    return Err(err("empty S2K input"));
+                }
+                let reps = (65536 / sp.len()).max(1);
+                let mut block = Zeroizing::new(Vec::with_capacity(reps * sp.len()));
+                for _ in 0..reps {
+                    block.extend_from_slice(&sp);
+                }
+                let mut left = total;
+                while left >= block.len() {
+                    h.update(&block);
+                    left -= block.len();
+                }
+                h.update(&block[..left]);
+            }
+        }
+        let d = Zeroizing::new(h.finalize().into_vec());
+        out.extend_from_slice(&d);
+        i += 1;
+    }
+    out.truncate(key_len);
+    Ok(out)
+}
+
+fn cfb_decrypt(sym: u8, key: &[u8], iv: &[u8], buf: &mut [u8]) -> Result<()> {
+    use cfb_mode::cipher::{AsyncStreamCipher, KeyIvInit};
+    let bad = |_| err("bad AES key/IV length");
+    match sym {
+        7 => cfb_mode::Decryptor::<aes::Aes128>::new_from_slices(key, iv).map_err(bad)?.decrypt(buf),
+        8 => cfb_mode::Decryptor::<aes::Aes192>::new_from_slices(key, iv).map_err(bad)?.decrypt(buf),
+        9 => cfb_mode::Decryptor::<aes::Aes256>::new_from_slices(key, iv).map_err(bad)?.decrypt(buf),
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+/// Decrypt S2K usage 254 / 255 secret material and return the recovered scalar.
+fn decrypt_secret(
+    usage: u8,
+    r: &mut Reader<'_>,
+    body: &[u8],
+    pass: &[u8],
+    kind: Kind,
+    algo: u8,
+    public: &[u8; 32],
+) -> Result<Option<[u8; 32]>> {
+    let sym = r.u8()?;
+    let s2k = parse_s2k(r)?;
+    if matches!(s2k, S2k::GnuStub) {
+        return Ok(None); // secret lives elsewhere (smartcard / --export-secret-subkeys stub)
+    }
+    let key_len = match sym {
+        7 => 16,
+        8 => 24,
+        9 => 32,
+        a => {
+            return Err(err(format!(
+                "secret key cipher {a} not supported (AES only); re-export with a current GnuPG"
+            )))
+        }
+    };
+    let iv = r.take(16)?;
+    let mut pt = Zeroizing::new(body[r.p..].to_vec());
+    r.p = body.len();
+    let key = s2k_derive(&s2k, pass, key_len)?;
+    cfb_decrypt(sym, &key, iv, &mut pt)?;
+    let wrong = || err("wrong passphrase (or damaged secret key)");
+    let check_len = if usage == 254 { 20 } else { 2 };
+    if pt.len() < check_len {
+        return Err(wrong());
+    }
+    let (material, check) = pt.split_at(pt.len() - check_len);
+    let ok = if usage == 254 {
+        let d: [u8; 20] = Sha1::digest(material).into();
+        d[..] == *check
+    } else {
+        let sum = material.iter().fold(0u16, |a, &b| a.wrapping_add(b as u16));
+        sum.to_be_bytes()[..] == *check
+    };
+    if !ok {
+        return Err(wrong());
+    }
+    let mut m = Reader { b: material, p: 0 };
+    let raw: Zeroizing<[u8; 32]> = Zeroizing::new(match algo {
+        ALGO_X25519 | ALGO_ED25519 => m.take(32).map_err(|_| wrong())?.try_into().unwrap(),
+        _ => left_pad32(m.mpi().map_err(|_| wrong())?)?,
+    });
+    if m.p != material.len() {
+        return Err(wrong());
+    }
+    recover_secret(kind, algo, *raw, public).map(Some)
 }
 
 /// Turn the stored secret into Sigil's native form and prove it matches the public point.
@@ -563,12 +771,12 @@ fn expired(key_created: u32, kexp: Option<u32>, now: u64) -> bool {
 
 // ---------------------------------------------------------------- selection
 
-fn select(pkts: &[Packet<'_>], now: u64) -> Result<PgpImport> {
+fn select(pkts: &[Packet<'_>], now: u64, passphrase: Option<&[u8]>) -> Result<PgpImport> {
     let first = pkts.first().ok_or_else(|| err("empty key file"))?;
     if first.tag != TAG_PUBLIC_KEY && first.tag != TAG_SECRET_KEY {
         return Err(err("file does not start with a primary key packet"));
     }
-    let primary = parse_key(first.tag, first.body)?;
+    let primary = parse_key(first.tag, first.body, passphrase)?;
     if primary.kind != Kind::Ed25519 {
         return Err(err(format!(
             "primary key algorithm {} is not Ed25519; Sigil imports Curve25519 keys only \
@@ -604,7 +812,7 @@ fn select(pkts: &[Packet<'_>], now: u64) -> Result<PgpImport> {
                 ctx = Ctx::Uid(pre, String::from_utf8_lossy(pkt.body).into_owned());
             }
             TAG_PUBLIC_SUBKEY | TAG_SECRET_SUBKEY => {
-                let k = parse_key(pkt.tag, pkt.body)?;
+                let k = parse_key(pkt.tag, pkt.body, passphrase)?;
                 subs.push((k, false, false, None, None));
                 ctx = Ctx::Sub(subs.len() - 1);
             }
@@ -716,11 +924,10 @@ pub fn secret_unavailable_reason(input: &[u8]) -> String {
     for p in &pkts {
         if p.tag == TAG_SECRET_KEY || p.tag == TAG_SECRET_SUBKEY {
             any_secret = true;
-            if let Ok(k) = parse_key(p.tag, p.body) {
+            if let Ok(k) = parse_key(p.tag, p.body, None) {
                 if k.protected {
-                    return "secret key is passphrase-protected; export an unprotected copy \
-                            to a private temp dir (or clear the passphrase on a throwaway copy) \
-                            and import that"
+                    return "secret key is passphrase-protected; give its passphrase \
+                            (prompt, --passphrase-file, or SIGIL_PGP_PASSPHRASE)"
                         .into();
                 }
             }
@@ -778,6 +985,7 @@ mod tests {
         let l = import(LOCKED).unwrap();
         assert!(l.secret.is_none() && l.had_secret_packets);
         assert!(secret_unavailable_reason(LOCKED).contains("passphrase-protected"));
+        assert!(secret_unavailable_reason(LOCKED).contains("--passphrase-file"));
     }
 
     #[test]
@@ -826,4 +1034,90 @@ mod tests {
         assert!(expired(100, Some(50), 10_000));
         assert!(!expired(100, Some(50_000), 10_000));
     }
+
+    const PGPY256: &[u8] = include_bytes!("../tests/fixtures/pgp/pgpy256-sec.asc");
+
+    #[test]
+    fn gpg_protected_secret_decrypts_with_passphrase() {
+        // GnuPG 2.4 export: iterated+salted SHA-1, AES-128 CFB, SHA-1 check (usage 254).
+        let p = import(LOCKED).unwrap();
+        assert!(secret_is_protected(LOCKED) && !secret_is_protected(SEC_ASC));
+        let s = import_with_passphrase(LOCKED, Some(b"hunter2")).unwrap();
+        assert_eq!(hex::encode_upper(s.primary_fpr), "D72741DA96202F19169094EE7E85B88D75D629D3");
+        let id = s.secret.expect("decrypted secret");
+        assert_eq!(id.public().x25519_pk, p.public.x25519_pk);
+        assert_eq!(id.public().ed25519_pk, p.public.ed25519_pk);
+        let cek = [9u8; 32];
+        let salt = [4u8; 16];
+        let sgto = crate::keys::build_sgto(&cek, &[p.public.clone()], None, &salt).unwrap();
+        assert_eq!(crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap(), cek);
+    }
+
+    #[test]
+    fn independent_aes256_sha512_secret_decrypts() {
+        // Made by PGPy (AES-256, iterated+salted SHA-512), cross-checked by importing into gpg.
+        let s = import_with_passphrase(PGPY256, Some(b"pgpy pass 256")).unwrap();
+        assert_eq!(hex::encode_upper(s.primary_fpr), "5834A3244168C7852AF2388EE03B0A4A27E9BCDA");
+        assert_eq!(hex::encode_upper(s.subkey_fpr), "2E0ED3C7E41E94D70AF6D249982C8A39D81E44E6");
+        let id = s.secret.expect("decrypted secret");
+        assert_eq!(id.public().x25519_pk, s.public.x25519_pk);
+    }
+
+    #[test]
+    fn wrong_passphrase_and_damage_refused() {
+        let e = import_with_passphrase(LOCKED, Some(b"hunter3")).err().unwrap().to_string();
+        assert!(e.contains("wrong passphrase"), "{e}");
+        let e = import_with_passphrase(PGPY256, Some(b"")).err().unwrap().to_string();
+        assert!(e.contains("wrong passphrase"), "{e}");
+        // Flip the last encrypted byte of the primary secret packet: SHA-1 check fails.
+        let mut bin = dearmor(LOCKED).unwrap();
+        let end = {
+            let pkts = packets(&bin).unwrap();
+            let k = pkts.iter().find(|p| p.tag == TAG_SECRET_KEY).unwrap();
+            k.body.as_ptr() as usize - bin.as_ptr() as usize + k.body.len()
+        };
+        bin[end - 1] ^= 0x01;
+        let e = import_with_passphrase(&bin, Some(b"hunter2")).err().unwrap().to_string();
+        assert!(e.contains("wrong passphrase"), "{e}");
+    }
+
+    #[test]
+    fn s2k_count_and_checks_254_255() {
+        // RFC 4880 §3.7.1.3 coded count.
+        let mut r = Reader { b: &[3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 255], p: 0 };
+        assert!(matches!(parse_s2k(&mut r).unwrap(), S2k::Iterated { count: 65011712, .. }));
+        let mut r = Reader { b: &[3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 96], p: 0 };
+        assert!(matches!(parse_s2k(&mut r).unwrap(), S2k::Iterated { count: 65536, .. }));
+
+        use cfb_mode::cipher::{AsyncStreamCipher, KeyIvInit};
+        let seed = [0x42u8; 32];
+        let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+        let salt = [7u8; 8];
+        let spec = [3u8, HASH_SHA256, 7, 7, 7, 7, 7, 7, 7, 7, 96];
+        let s2k = S2k::Iterated { hash: HASH_SHA256, salt, count: 65536 };
+        let key = s2k_derive(&s2k, b"pw", 32).unwrap();
+        let iv = [5u8; 16];
+        for usage in [254u8, 255] {
+            let mut pt = seed.to_vec();
+            if usage == 254 {
+                pt.extend_from_slice(&Sha1::digest(seed));
+            } else {
+                let sum = seed.iter().fold(0u16, |a, &b| a.wrapping_add(b as u16));
+                pt.extend_from_slice(&sum.to_be_bytes());
+            }
+            cfb_mode::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv).unwrap().encrypt(&mut pt);
+            let mut body = vec![9u8];
+            body.extend_from_slice(&spec);
+            body.extend_from_slice(&iv);
+            body.extend_from_slice(&pt);
+            let mut r = Reader { b: &body, p: 0 };
+            let got = decrypt_secret(usage, &mut r, &body, b"pw", Kind::Ed25519, ALGO_ED25519, &public)
+                .unwrap();
+            assert_eq!(got, Some(seed));
+            let mut r = Reader { b: &body, p: 0 };
+            assert!(decrypt_secret(usage, &mut r, &body, b"px", Kind::Ed25519, ALGO_ED25519, &public)
+                .is_err());
+        }
+    }
+
 }

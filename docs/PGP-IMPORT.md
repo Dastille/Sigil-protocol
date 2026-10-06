@@ -8,7 +8,7 @@
 ./sigil inscribe --to friend.pub -o gift.sg1 movie.mkv
 ./sigil inscribe --to friend.asc -o gift.sg1 movie.mkv   # .asc works directly with --to too
 
-# your own key → identity (needs an unprotected secret export, see below)
+# your own key → identity (protected exports prompt for the passphrase, see below)
 ./sigil import-pgp my-secret.asc -o me.sgk               # also writes me.pub
 ./sigil de-scribe --identity me.sgk -o movie.mkv gift.sg1
 ./sigil sign gift.sg1 --key me.sgk                       # attest with your PGP primary key
@@ -31,14 +31,21 @@ Refused, with a clear message: RSA, DSA, ElGamal, NIST/Brainpool curves, v6 keys
 
 ## Secret keys and passphrases
 
-Passphrase-protected secret exports are **not decrypted** by Sigil (no S2K/CFB code in this slice). If the export is protected, `import-pgp -o` refuses and says so; with no `-o`, it just imports the public half. To import your own key, export it unprotected into a private temp directory, import, then delete the export:
+Passphrase-protected secret exports import directly. This is what `gpg --export-secret-keys` writes for a key that has a passphrase:
 
 ```bash
-umask 077; d=$(mktemp -d)
-gpg --export-secret-keys --armor <FPR> > "$d/k.asc"   # only unprotected if the key has no passphrase
-./sigil import-pgp "$d/k.asc" -o me.sgk
-shred -u "$d/k.asc"; rmdir "$d"
+gpg --export-secret-keys --armor <FPR> > me-sec.asc        # stays encrypted; no temp plaintext
+./sigil import-pgp me-sec.asc -o me.sgk                    # prompts (no echo)
+./sigil import-pgp me-sec.asc -o me.sgk --passphrase-file ~/.secrets/pgp-pass   # first line of the file
+SIGIL_PGP_PASSPHRASE=… ./sigil import-pgp me-sec.asc -o me.sgk                 # scripts / CI
+./sigil import-pgp me-sec.asc -o me.sgk --passkey          # straight into a passkey-locked .sgk
 ```
+
+How it decrypts (standard OpenPGP, no custom crypto): S2K usage **254** (or legacy **255**) → string-to-key **simple / salted / iterated+salted** over SHA-1, SHA-224/256/384/512 → AES-128/192/256 key → OpenPGP **CFB** decryption of the secret material (RustCrypto `aes` + `cfb-mode`) → the **SHA-1** check (254) or 16-bit checksum (255) must match → the recovered scalars must re-derive the exact public points before anything is written. A wrong passphrase is an error, never a silent public-only import. The passphrase is never printed or logged; passphrase, derived key, decrypted material and the in-memory identity are held in zeroizing buffers and wiped on drop.
+
+Tested against a GnuPG 2.4 export (AES-128, iterated SHA-1) and an independent PGPy export (AES-256, iterated SHA-512) that GnuPG imports.
+
+Not decrypted (clear refusal): RFC 9580 **AEAD** protection (usage 253, incl. Argon2 S2K), non-AES ciphers (CAST5/3DES/…), pre-RFC 2440 protection, and GnuPG stubs (`--export-secret-subkeys` / smartcard keys have no secret to import).
 
 ## File format
 
@@ -48,4 +55,4 @@ To keep the imported secret off disk in the clear, lock it to a security key rig
 
 ## Not in this slice
 
-Decrypting passphrase-protected PGP secrets, v6 keys, and producing OpenPGP messages (Sigil still uses its own `SGTO` envelope; GnuPG cannot open a `.sg1`).
+AEAD-protected (usage 253) secrets, v6 keys, and producing OpenPGP messages (Sigil still uses its own `SGTO` envelope; GnuPG cannot open a `.sg1`).

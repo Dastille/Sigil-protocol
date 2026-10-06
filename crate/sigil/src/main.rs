@@ -301,6 +301,13 @@ enum Cmd {
         /// Write the public half here (default: <output>.pub, else <input>.pub)
         #[arg(long = "pub-out")]
         pub_out: Option<PathBuf>,
+        /// Read the secret key's passphrase from the first line of this file
+        /// (else $SIGIL_PGP_PASSPHRASE, else a no-echo prompt). Never logged.
+        #[arg(long = "passphrase-file", requires = "output")]
+        passphrase_file: Option<PathBuf>,
+        /// Lock the imported identity to a FIDO2 passkey (plain secret never written).
+        #[arg(long, requires = "output")]
+        passkey: bool,
     },
     /// Sign a mark (writes file.sg1.sig). Alias: attest.
     #[command(visible_alias = "attest")]
@@ -706,6 +713,24 @@ fn resolve_pass(
         return Ok(Some(talisman_pass(&p)?));
     }
     Ok(pass)
+}
+
+/// PGP secret passphrase: --passphrase-file (first line), $SIGIL_PGP_PASSPHRASE, or prompt.
+fn pgp_passphrase(file: Option<&Path>) -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
+    if let Some(f) = file {
+        let raw = zeroize::Zeroizing::new(fs::read(f)?);
+        let line = raw.split(|&b| b == b'\n').next().unwrap_or(&[]);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        return Ok(zeroize::Zeroizing::new(
+            String::from_utf8(line.to_vec()).map_err(|_| "passphrase file is not UTF-8")?,
+        ));
+    }
+    if let Ok(v) = std::env::var("SIGIL_PGP_PASSPHRASE") {
+        return Ok(zeroize::Zeroizing::new(v));
+    }
+    Ok(zeroize::Zeroizing::new(rpassword::prompt_password(
+        "OpenPGP secret key passphrase: ",
+    )?))
 }
 
 fn load_identities(paths: &[PathBuf]) -> Result<Vec<Identity>, Box<dyn std::error::Error>> {
@@ -1504,9 +1529,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             pub_out,
+            passphrase_file,
+            passkey,
         } => {
-            let raw = fs::read(&input)?;
-            let imp = sigil::pgp::import(&raw)?;
+            let raw = zeroize::Zeroizing::new(fs::read(&input)?);
+            let mut imp = sigil::pgp::import(&raw)?;
+            if output.is_some() && imp.secret.is_none() && sigil::pgp::secret_is_protected(&raw) {
+                let pass = pgp_passphrase(passphrase_file.as_deref())?;
+                imp = sigil::pgp::import_with_passphrase(&raw, Some(pass.as_bytes()))?;
+            }
             let pub_path = pub_out.unwrap_or_else(|| {
                 let base = output.as_ref().unwrap_or(&input);
                 let mut p = base.with_extension("").into_os_string();
@@ -1521,8 +1552,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     )
                     .into());
                 };
-                id.write(out)?;
-                println!("identity → {}  (.sgk v2, owner-only)", out.display());
+                if passkey {
+                    let mut auth = sigil::passkey::default_authenticator()?;
+                    let w = sigil::passkey::Wrapped::protect(
+                        id,
+                        auth.as_mut(),
+                        sigil::passkey::DEFAULT_RP_ID,
+                        true,
+                    )?;
+                    w.write(out)?;
+                    println!("identity → {}  (passkey-protected; add a backup: sigil identity add-passkey {})", out.display(), out.display());
+                } else {
+                    id.write(out)?;
+                    println!("identity → {}  (.sgk v2, owner-only)", out.display());
+                }
             } else if imp.had_secret_packets {
                 println!("note: secret packets ignored (public only); pass -o me.sgk to import them");
             }
