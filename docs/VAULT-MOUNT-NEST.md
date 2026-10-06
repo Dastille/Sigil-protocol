@@ -154,7 +154,7 @@ What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart h
 
 Dirty re-seal: pass `--to` / `--pass` on `vault commit --from-export` the same way as ordinary commit. The `.sigil-dirty` sidecar never stores secrets.
 
-**Deferred:** `--identity` on **constellation** packs is not wired yet — de-scribe member `.sg1`s directly. Passkeys/WebAuthn and PGP import remain roadmap follow-ons (not part of this glue).
+**Deferred:** `--identity` on **constellation** packs is not wired yet — de-scribe member `.sg1`s directly. PGP import is on main (`sigil import-pgp`, see [PGP-IMPORT.md](PGP-IMPORT.md)); any imported `.sgk` / `.pub` works with every `--identity` / `--to` shown here. Passkeys/WebAuthn remain a roadmap follow-on.
 
 ## Limits (current)
 
