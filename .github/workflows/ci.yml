@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    name: build + test (default features)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+      - name: build
+        run: cargo build --locked --all-targets
+      - name: test (lib + integration)
+        run: cargo test --locked
+
+  passkey:
+    name: build + test (--features passkey, headless)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v4
+      - name: libudev headers for hidapi
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: passkey
+      # No security key on the runner: this proves the real CTAP backend compiles;
+      # passkey logic itself is exercised through the software test authenticator.
+      - name: build
+        run: cargo build --locked --features passkey --all-targets
+      - name: test passkey paths
+        run: cargo test --locked --features passkey passkey
