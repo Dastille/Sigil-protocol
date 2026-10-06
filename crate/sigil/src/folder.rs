@@ -191,16 +191,17 @@ pub fn unseal_dir_only_keys(
     Ok(got)
 }
 
-/// Parse an SGDR pack, unseal each wanted entry into `dest`, and mend classic
-/// (non-WORK) inner stars that fail to unseal within Seal mend budget.
+/// Parse an SGDR pack, unseal each wanted entry into `dest`, and mend inner stars
+/// (classic `.sg1` members and the chunk stars of WORK/SGWK members) that fail to
+/// unseal or still show damage.
 ///
 /// Returns `(files_written, healed_pack)`. `healed_pack` is `Some` when at least
-/// one classic star was mended; the outer SGDR container is rewritten with healed
+/// one star (classic or WORK chunk) was mended; the outer SGDR container is rewritten with healed
 /// star bytes (same layout — the pack itself is not RS-coded). Vault
 /// [`crate::vault::restore_ex`] persists that pack over the version seal path.
 ///
-/// WORK/SGWK large-file members are **not** mended in this slice: a torn WORK
-/// star returns a clear error. Small classic `.sg1` stars are mended.
+/// WORK/SGWK large-file members are mended star-by-star (each chunk star is a
+/// full `.sg1`) via [`crate::work::mend_pack_to`]; their SGWK framing is kept.
 pub fn unseal_dir_mend_keys(
     input: &Path,
     dest: &Path,
@@ -225,29 +226,37 @@ pub fn unseal_dir_mend_keys(
         let want = wanted(&rel, only);
         if want {
             if star.starts_with(&crate::work::WORK_MAGIC) {
-                // WORK/SGWK: not mended in this slice — try ordinary unseal only.
+                // WORK/SGWK large-file member: mend torn chunk stars, keep framing.
                 let out_path = dest.join(&rel);
                 if let Some(parent) = out_path.parent() {
                     fs::create_dir_all(parent).map_err(io)?;
                 }
-                let tmp = out_path.with_extension("sgwk");
-                fs::write(&tmp, &star).map_err(io)?;
-                match crate::work::unseal_path_keys(
-                    &tmp,
-                    &out_path,
-                    pass_for(&rel, pass, wards).as_deref(),
+                let file_pass = pass_for(&rel, pass, wards);
+                let mut w = std::io::BufWriter::new(fs::File::create(&out_path).map_err(io)?);
+                let res = crate::work::mend_pack_to(
+                    &star,
+                    &mut w,
+                    file_pass.as_deref(),
                     companions,
                     identities,
-                ) {
-                    Ok(_) => {
-                        let _ = fs::remove_file(&tmp);
-                    }
+                )
+                .and_then(|m| {
+                    std::io::Write::flush(&mut w).map_err(io)?;
+                    Ok(m)
+                });
+                let m = match res {
+                    Ok(m) => m,
                     Err(e) => {
-                        let _ = fs::remove_file(&tmp);
+                        drop(w);
+                        let _ = fs::remove_file(&out_path);
                         return Err(crate::Error::Msg(format!(
-                            "WORK/SGWK member '{rel}' failed to unseal and is not mended in this slice: {e}"
+                            "large-file member '{rel}' could not be restored: {e}"
                         )));
                     }
+                };
+                if let Some(healed) = m.healed {
+                    star = healed;
+                    any_mended = true;
                 }
                 got += 1;
             } else {
@@ -257,23 +266,27 @@ pub fn unseal_dir_mend_keys(
                 // (Outer SGDR container is not RS-coded.)
                 let opened = unseal_ex_keys(&star, file_pass.as_deref(), companions, identities);
                 let plain = match opened {
-                    Ok(p) if !classic_star_torn(&star) => p,
-                    _ => {
-                        let healed = crate::pieces::mend_bytes(&star).map_err(|e| {
-                            crate::Error::Msg(format!(
+                    Ok(p) if !crate::work::star_torn(&star) => p,
+                    opened => match crate::pieces::mend_bytes(&star) {
+                        Ok(healed) => {
+                            let p = unseal_ex_keys(
+                                &healed,
+                                file_pass.as_deref(),
+                                companions,
+                                identities,
+                            )?;
+                            star = healed;
+                            any_mended = true;
+                            p
+                        }
+                        // Opened within budget but couldn't be re-sealed clean: keep as-is.
+                        Err(_) if opened.is_ok() => opened.unwrap(),
+                        Err(e) => {
+                            return Err(crate::Error::Msg(format!(
                                 "classic star '{rel}' failed to unseal/verify and could not be mended: {e}"
-                            ))
-                        })?;
-                        let p = unseal_ex_keys(
-                            &healed,
-                            file_pass.as_deref(),
-                            companions,
-                            identities,
-                        )?;
-                        star = healed;
-                        any_mended = true;
-                        p
-                    }
+                            )))
+                        }
+                    },
                 };
                 let out_path = dest.join(&rel);
                 if let Some(parent) = out_path.parent() {
@@ -352,13 +365,6 @@ fn encode_sgdr(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-
-fn classic_star_torn(star: &[u8]) -> bool {
-    match crate::verify(star) {
-        Ok((_, merkle_ok, _, _, _)) => !merkle_ok,
-        Err(_) => true,
-    }
-}
 
 fn pass_for(rel: &str, default: Option<&str>, wards: &[(String, String)]) -> Option<String> {
     for (p, w) in wards {

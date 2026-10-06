@@ -1284,12 +1284,18 @@ pub fn restore_ex(
     // Mend + persist whenever unseal fails, or verify shows a damaged mark.
     let seal_bytes = match unseal_ex_keys(&raw, pass, &[], identities) {
         Ok(_) if !mark_torn(&raw) => raw,
-        Ok(_) | Err(_) => {
-            let healed = mend_bytes(&raw)?;
-            mended = true;
-            fs::write(&seal_path, &healed).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            healed
-        }
+        opened => match mend_bytes(&raw) {
+            Ok(healed) => {
+                // Persist only a healed mark that opens; atomic so a crash can't tear v{n}.
+                unseal_ex_keys(&healed, pass, &[], identities)?;
+                write_seal_atomic(&seal_path, &healed)?;
+                mended = true;
+                healed
+            }
+            // Opened within budget but couldn't be re-sealed clean: restore from it as-is.
+            Err(_) if opened.is_ok() => raw,
+            Err(e) => return Err(e),
+        },
     };
     let plain = unseal_ex_keys(&seal_bytes, pass, &[], identities)?;
     let digest = sha256(&plain);
@@ -1352,15 +1358,10 @@ fn restore_tree(
             .unwrap_or(0)
     ));
     let result = (|| -> Result<([u8; 32], u64, bool)> {
-        // Mend classic inner stars (outer SGDR is not RS-coded); persist healed pack.
+        // WORK/SGWK members heal chunk-by-chunk. Persist the healed pack only after
+        // the restored tree matches the chart true-name, and atomically.
         let (_n, healed) =
             unseal_dir_mend_keys(seal_path, &stage, pass, &[], &[], wards, identities)?;
-        let mended = if let Some(pack) = healed {
-            fs::write(seal_path, &pack).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            true
-        } else {
-            false
-        };
         let (digest, size, _n) = tree_digest(&stage)?;
         if digest != entry.digest {
             return Err(crate::Error::Msg(format!(
@@ -1368,6 +1369,12 @@ fn restore_tree(
                 entry.n
             )));
         }
+        let mended = if let Some(pack) = healed {
+            write_seal_atomic(seal_path, &pack)?;
+            true
+        } else {
+            false
+        };
         sync_tree(&stage, live)?;
         Ok((digest, size, mended))
     })();
@@ -1382,12 +1389,22 @@ fn restore_tree(
     })
 }
 
-/// True when a classic `.sg1` still opens within mend budget but shards/Merkle are damaged.
+/// True when a classic `.sg1` still opens within mend budget but shards/Merkle
+/// (or its primary header) are damaged.
 fn mark_torn(raw: &[u8]) -> bool {
-    match crate::verify(raw) {
-        Ok((_, merkle_ok, _, _, _)) => !merkle_ok,
-        Err(_) => true,
-    }
+    crate::work::star_torn(raw)
+}
+
+/// Replace a version seal via temp file + rename (never a half-written v{n}).
+fn write_seal_atomic(seal_path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut tmp = seal_path.as_os_str().to_os_string();
+    tmp.push(".mend-part");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, bytes).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    fs::rename(&tmp, seal_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        crate::Error::Msg(e.to_string())
+    })
 }
 
 /// Drop old version seals, keeping the newest `keep` (and always the tip).
@@ -1805,6 +1822,143 @@ mod tests {
                 ("sub/c.txt".into(), b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()),
             ]
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// (rel, star_start, star_end) for each SGDR member.
+    fn sgdr_members(pack: &[u8]) -> Vec<(String, usize, usize)> {
+        assert_eq!(&pack[0..4], b"SGDR");
+        let n = u32::from_le_bytes(pack[5..9].try_into().unwrap());
+        let mut off = 9usize;
+        let mut v = Vec::new();
+        for _ in 0..n {
+            let nlen = u16::from_le_bytes(pack[off..off + 2].try_into().unwrap()) as usize;
+            off += 2;
+            let name = String::from_utf8(pack[off..off + nlen].to_vec()).unwrap();
+            off += nlen;
+            let slen = u64::from_le_bytes(pack[off..off + 8].try_into().unwrap()) as usize;
+            off += 8;
+            v.push((name, off, off + slen));
+            off += slen;
+        }
+        v
+    }
+
+    /// (start, end) of WORK chunk stars, absolute in `pack`, for a member at `m0..m1`.
+    fn work_star_spans(pack: &[u8], m0: usize, m1: usize) -> Vec<(usize, usize)> {
+        let member = &pack[m0..m1];
+        assert_eq!(&member[0..4], b"SGWK");
+        // head: magic4 ver1 chunk4 orig8 nlen1 name stars4 [overture4 if v2]
+        let nlen = member[17] as usize;
+        let mut off = 18 + nlen;
+        let stars = u32::from_le_bytes(member[off..off + 4].try_into().unwrap());
+        off += 4;
+        if member[4] == 2 {
+            off += 4;
+        }
+        let mut v = Vec::new();
+        for _ in 0..stars {
+            let len = u64::from_le_bytes(member[off..off + 8].try_into().unwrap()) as usize;
+            off += 8;
+            v.push((m0 + off, m0 + off + len));
+            off += len;
+        }
+        v
+    }
+
+    fn smash(pack: &mut [u8], a: usize, b: usize, shard: usize) {
+        let (h, prefix, _) = locate_header(&pack[a..b]).unwrap();
+        let stride = crate::header::shard_stride(&h);
+        let s = a + prefix + shard * stride;
+        pack[s..s + stride].fill(0);
+        pack[s] = 3;
+    }
+
+    fn pseudo(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn folder_restore_mends_torn_work_member_chunks() {
+        let dir = tmpdir("fold-work-mend");
+        let live = dir.join("media");
+        // > DEFAULT_CHUNK (4 MiB) → WORK/SGWK member with 2 chunk stars.
+        let big = pseudo(DEFAULT_CHUNK as usize + 300 * 1024, 7);
+        let small = b"small-classic-member-0123456789abcdef".to_vec();
+        write_tree(&live, &[("big.bin", &big), ("notes/small.txt", &small)]);
+        let id = Identity::generate().unwrap();
+        track_ex(&live, Mode::Reflection, None, &[id.public()], &[]).unwrap();
+        let v1 = vault_dir_for(&live).join("v1.sg1");
+        let clean = fs::read(&v1).unwrap();
+        let members = sgdr_members(&clean);
+        let (_, b0, b1) = members.iter().find(|(n, _, _)| n == "big.bin").unwrap().clone();
+        let (_, s0, s1) = members.iter().find(|(n, _, _)| n == "notes/small.txt").unwrap().clone();
+        let stars = work_star_spans(&clean, b0, b1);
+        assert!(stars.len() >= 2, "expected a multi-chunk WORK member");
+
+        let mut torn = clean.clone();
+        smash(&mut torn, stars[0].0, stars[0].1, 0); // chunk 0: one shard
+        smash(&mut torn, stars[1].0, stars[1].1, 1); // chunk 1: another shard
+        smash(&mut torn, s0, s1, 0); // classic member too
+        fs::write(&v1, &torn).unwrap();
+
+        fs::remove_dir_all(&live).unwrap();
+        let ids = [id.clone()];
+        assert!(restore(&live, Some(1), None, &[]).is_err(), "encrypt-to needs the identity");
+        assert_eq!(fs::read(&v1).unwrap(), torn, "failed restore must not rewrite the seal");
+        let r = restore(&live, Some(1), None, &ids).unwrap();
+        assert!(r.mended, "WORK chunk mend should report mended");
+        assert_eq!(
+            tree_map(&live),
+            vec![("big.bin".into(), big.clone()), ("notes/small.txt".into(), small.clone())]
+        );
+        // Version seal healed in place: same size/layout, every star clean.
+        let healed = fs::read(&v1).unwrap();
+        assert_eq!(healed.len(), clean.len());
+        for (a, b) in work_star_spans(&healed, b0, b1) {
+            assert!(!crate::work::star_torn(&healed[a..b]));
+        }
+        assert!(!crate::work::star_torn(&healed[s0..s1]));
+        assert!(!vault_dir_for(&live).join("v1.sg1.mend-part").exists());
+        // Second restore is clean (no mend), and the healed pack opens directly.
+        fs::remove_dir_all(&live).unwrap();
+        let r2 = restore(&live, Some(1), None, &ids).unwrap();
+        assert!(!r2.mended);
+        let open = dir.join("open");
+        unseal_dir_only_keys(&v1, &open, None, &[], &[], &[], &ids).unwrap();
+        assert_eq!(fs::read(open.join("big.bin")).unwrap(), big);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn folder_restore_refuses_unmendable_work_member_without_rewrite() {
+        let dir = tmpdir("fold-work-refuse");
+        let live = dir.join("media");
+        let big = pseudo(DEFAULT_CHUNK as usize + 100 * 1024, 11);
+        write_tree(&live, &[("big.bin", &big)]);
+        track(&live, Mode::Reflection, None, &[]).unwrap();
+        let v1 = vault_dir_for(&live).join("v1.sg1");
+        let mut torn = fs::read(&v1).unwrap();
+        let (_, b0, b1) = sgdr_members(&torn)[0].clone();
+        let stars = work_star_spans(&torn, b0, b1);
+        let (h, _, _) = locate_header(&torn[stars[1].0..stars[1].1]).unwrap();
+        for s in 0..=(h.n - h.k) as usize {
+            smash(&mut torn, stars[1].0, stars[1].1, s);
+        }
+        fs::write(&v1, &torn).unwrap();
+        fs::remove_dir_all(&live).unwrap();
+        let e = restore(&live, Some(1), None, &[]).err().unwrap().to_string();
+        assert!(e.contains("big.bin") && e.contains("star 1"), "{e}");
+        assert_eq!(fs::read(&v1).unwrap(), torn);
+        assert!(!live.exists() || tree_map(&live).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
