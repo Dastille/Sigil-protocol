@@ -93,6 +93,8 @@ pub use vault::{
     commit_ex as vault_commit_ex, commit_from_export_ex as vault_commit_from_export_ex,
     restore_ex as vault_restore_ex, track_ex as vault_track_ex, tree_digest as vault_tree_digest,
     ChartKind as VaultChartKind,
+    format_recipients as vault_format_recipients, get_recipients as vault_get_recipients,
+    set_recipients as vault_set_recipients,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
