@@ -14,6 +14,7 @@ use sigil::{
     vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
     vault_set_retention, vault_status, BootOutcome, VaultRetention,
     vault_commit_ex, vault_commit_from_export_ex, vault_restore_ex, vault_track_ex,
+    vault_format_recipients, vault_get_recipients, vault_set_recipients,
     CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
@@ -545,6 +546,18 @@ enum VaultCmd {
         /// Light retention: allow dropping seals without --cold (discards history)
         #[arg(long = "force-drop")]
         force_drop: bool,
+    },
+    /// Show or set remembered encrypt-to recipients (public keys in CHART).
+    /// `vault commit` reuses them when no --to is given; --to on commit replaces them.
+    Recipients {
+        /// Live file / folder or its `.sgv` chart dir
+        path: PathBuf,
+        /// Replace the remembered set (.pub / .sgk / OpenPGP / hex pk); repeatable
+        #[arg(long = "to", conflicts_with = "clear")]
+        to: Vec<String>,
+        /// Forget all recipients: future versions are NOT encrypt-to (old seals unchanged)
+        #[arg(long)]
+        clear: bool,
     },
     /// Show or set chart retention (full = keep all; light = keep newest N hot).
     Retention {
@@ -1853,12 +1866,16 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(note) = &report.note {
                 println!("note: {note}");
             }
-            if !recipients.is_empty() && !report.skipped {
-                println!(
-                    "encrypt-to {} recipient{}",
-                    recipients.len(),
-                    if recipients.len() == 1 { "" } else { "s" }
-                );
+            if !report.skipped {
+                let effective = vault_get_recipients(&status_path)?;
+                if !effective.is_empty() {
+                    println!(
+                        "encrypt-to {} recipient{}{}",
+                        effective.len(),
+                        if effective.len() == 1 { "" } else { "s" },
+                        if recipients.is_empty() { " (remembered)" } else { " (now remembered)" }
+                    );
+                }
             }
             // Explicit --keep, or chart light policy: prune after a real commit.
             if !report.skipped {
@@ -1942,6 +1959,16 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 p.kept, p.tip, removed, where_cold
             );
             print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+        }
+        VaultCmd::Recipients { path, to, clear } => {
+            if clear {
+                vault_set_recipients(&path, &[])?;
+                println!("vault recipients cleared — future versions are not encrypt-to (existing seals unchanged)");
+            } else if !to.is_empty() {
+                let rs = load_recipients(&to)?;
+                vault_set_recipients(&path, &rs)?;
+            }
+            print!("{}", vault_format_recipients(&vault_get_recipients(&path)?));
         }
         VaultCmd::Retention {
             path,

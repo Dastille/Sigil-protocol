@@ -93,7 +93,7 @@ mkdir -p /tmp/sigil-dirty
 - `vault commit ./photos` seals the live dir; `--from-export DIR` seals the export tree (the `.sigil-dirty` sidecar is ignored). Unchanged tree → skipped unless `--force`.
 - After a from-export commit the live dir is **synced** (adds / edits / deletes) only if it was clean (matched a hot version) or missing. If it had its own uncommitted edits it is left untouched and commit prints a `note:`; use `vault restore --force` to take the tip.
 - `vault restore` mirrors a version into the live dir (unpacks to a staging dir, verifies the tree true-name, then syncs). It refuses to drop edits that match no hot version unless `--force`. Dotfiles in the live dir are never touched.
-- Secrets are not remembered: pass the same `--pass` / `--ward` / `--to` on commit as on track (the sidecar never stores them). Mount the export with `--identity` / `--pass` / `--ward` to read protected entries.
+- Secrets are not remembered: pass the same `--pass` / `--ward` on commit as on track (the sidecar never stores them). Encrypt-to recipients (public keys) **are** remembered in `CHART` — see [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md). Mount the export with `--identity` / `--pass` / `--ward` to read protected entries.
 - Light retention archives pruned folder versions as a plain `vN.sg1` copy + `ARCHIVE` note (kit place is single-star only).
 - A bare SGDR (not vault-tracked) `--writable` export cannot `--from-export`; `vault track` the folder, or pack the edited tree with `sigil inscribe EXPORT -o new.sg1`.
 
@@ -141,6 +141,7 @@ What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart h
 # Track / commit with recipients (and optional passphrase)
 ./sigil vault track ./notes.txt --to alice.pub
 ./sigil vault commit ./notes.txt --pass house --to alice.pub --to bob.pub
+./sigil vault commit ./notes.txt --pass house   # reuses alice + bob (remembered)
 # either passphrase OR any matching identity unwraps the CEK
 
 # Restore / mount / path / open with identity
@@ -152,7 +153,9 @@ What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart h
 ./sigil de-scribe --identity alice.sgk -o notes.txt secret.sg1
 ```
 
-Dirty re-seal: pass `--to` / `--pass` on `vault commit --from-export` the same way as ordinary commit. The `.sigil-dirty` sidecar never stores secrets.
+Remembered recipients: a vault tracked or committed with `--to` keeps those public keys in its `CHART`, and later commits (ordinary and `--from-export`) reuse them when `--to` is omitted; `--to` on commit replaces the set, and `sigil vault recipients PATH [--to …|--clear]` shows or changes it. See [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md).
+
+Dirty re-seal: pass `--pass` on `vault commit --from-export` the same way as ordinary commit (`--to` is optional once remembered). The `.sigil-dirty` sidecar never stores secrets.
 
 Constellations take `--to` on `constellation add` (stars + card) and `--identity` on `constellation add` / `scry` / `atlas` and on `de-scribe` of a constellation folder, card, or `.sga` atlas bag — see the Sigil README. PGP import is on main (`sigil import-pgp`, see [PGP-IMPORT.md](PGP-IMPORT.md)); any imported `.sgk` / `.pub` works with every `--identity` / `--to` shown here. Passkey-protected identities (`sigil identity protect --passkey`, see [PASSKEY.md](PASSKEY.md)) work with every `--identity` shown here.
 

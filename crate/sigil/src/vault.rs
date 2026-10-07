@@ -15,6 +15,11 @@
 //! is unchanged. Tip model: the chart's tip seal is the durable truth; the
 //! live directory (or a `--writable` export tree) is a working copy that
 //! commit reads from and restore writes to. See `docs/VAULT-MOUNT-NEST.md`.
+//!
+//! Remembered recipients: `track --to` / `commit --to` write additive `to=<x25519>.<ed25519>`
+//! CHART lines (public keys only). Later commits — including `commit --from-export` — reuse
+//! them when no `--to` is given, so an encrypt-to vault never silently goes plain. See
+//! `docs/VAULT-RECIPIENTS.md`.
 
 use crate::folder::{inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_mend_keys, unseal_dir_only_keys};
 use crate::header::locate_header;
@@ -132,6 +137,12 @@ pub struct Chart {
     pub retention: RetentionPolicy,
     /// `single` (default; no CHART line) or `folder` (`kind=folder`).
     pub kind: ChartKind,
+    /// Remembered encrypt-to recipients (`to=` lines). New versions are sealed to
+    /// these when commit gets no explicit `--to`. Empty = none remembered (plain charts
+    /// stay byte-identical). Public keys only — never secrets or passphrases.
+    pub recipients: Vec<PublicIdentity>,
+    /// `to=-`: owner explicitly chose plain (non encrypt-to) future versions.
+    pub plain_ok: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -426,6 +437,13 @@ fn write_chart(chart: &Chart) -> Result<()> {
             body.push_str(&format!("retention=light\nkeep={keep}\n"));
         }
     }
+    // Additive: only vaults that use encrypt-to carry `to=` lines.
+    for r in &chart.recipients {
+        body.push_str(&format!("to={}\n", recipient_token(r)));
+    }
+    if chart.recipients.is_empty() && chart.plain_ok {
+        body.push_str("to=-\n");
+    }
     for v in &chart.versions {
         body.push_str(&format!(
             "version={} seal={} digest={} size={} time={}\n",
@@ -450,6 +468,8 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
     let mut retention_kind: Option<String> = None;
     let mut retention_keep: Option<u32> = None;
     let mut kind = ChartKind::Single;
+    let mut recipients: Vec<PublicIdentity> = Vec::new();
+    let mut plain_ok = false;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -470,6 +490,15 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
                 "folder" => ChartKind::Folder,
                 _ => ChartKind::Single,
             };
+        } else if let Some(rest) = line.strip_prefix("to=") {
+            if rest.trim() == "-" {
+                plain_ok = true;
+            } else {
+                let r = parse_recipient_token(rest.trim())?;
+                if !recipients.iter().any(|x| x.x25519_pk == r.x25519_pk) {
+                    recipients.push(r);
+                }
+            }
         } else if let Some(rest) = line.strip_prefix("retention=") {
             retention_kind = Some(rest.trim().to_ascii_lowercase());
         } else if let Some(rest) = line.strip_prefix("keep=") {
@@ -581,7 +610,82 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
         versions,
         retention,
         kind,
+        plain_ok: plain_ok && recipients.is_empty(),
+        recipients,
     })
+}
+
+/// CHART token for one recipient: `<x25519 hex>.<ed25519 hex>` (public halves only).
+fn recipient_token(r: &PublicIdentity) -> String {
+    format!("{}.{}", hex::encode(r.x25519_pk), hex::encode(r.ed25519_pk))
+}
+
+fn parse_recipient_token(s: &str) -> Result<PublicIdentity> {
+    let (x, e) = s.split_once('.').unwrap_or((s, ""));
+    let x = parse_hex32(x).map_err(|_| crate::Error::Msg(format!("bad CHART to= recipient: {s}")))?;
+    let e = if e.is_empty() {
+        [0u8; 32]
+    } else {
+        parse_hex32(e).map_err(|_| crate::Error::Msg(format!("bad CHART to= recipient: {s}")))?
+    };
+    Ok(PublicIdentity {
+        x25519_pk: x,
+        ed25519_pk: e,
+    })
+}
+
+fn dedup_recipients(rs: &[PublicIdentity]) -> Vec<PublicIdentity> {
+    let mut out: Vec<PublicIdentity> = Vec::new();
+    for r in rs {
+        if !out.iter().any(|x| x.x25519_pk == r.x25519_pk) {
+            out.push(r.clone());
+        }
+    }
+    out
+}
+
+/// True when a single-file seal carries an SGTO block with at least one X25519 wrap.
+fn seal_is_encrypt_to(raw: &[u8]) -> bool {
+    let Ok((h, _, _)) = locate_header(raw) else {
+        return false;
+    };
+    if !h.encrypted() {
+        return false;
+    }
+    match crate::header::sgto_slice(&h, raw) {
+        Some(b) if b.len() > 6 => (b[5] as usize) > (b[6] & 1) as usize,
+        _ => false,
+    }
+}
+
+/// Recipients a new version should be sealed to.
+///
+/// Explicit `--to` wins and replaces the remembered set. Otherwise the remembered set
+/// is reused. Legacy guard: a chart with nothing remembered whose single-file tip is
+/// encrypt-to refuses to commit plain unless the owner ran `vault recipients --clear`.
+fn effective_recipients(chart: &Chart, explicit: &[PublicIdentity]) -> Result<Vec<PublicIdentity>> {
+    if !explicit.is_empty() {
+        return Ok(dedup_recipients(explicit));
+    }
+    if !chart.recipients.is_empty() || chart.plain_ok {
+        return Ok(chart.recipients.clone());
+    }
+    if chart.kind == ChartKind::Single {
+        if let Ok(e) = entry_by_n(chart, chart.tip) {
+            if let Ok(raw) = fs::read(chart.vault_dir.join(&e.seal)) {
+                if seal_is_encrypt_to(&raw) {
+                    return Err(crate::Error::Msg(format!(
+                        "tip v{} is encrypt-to but this chart has no remembered recipients \
+                         (tracked before remembered --to). Pass --to again once (it will be \
+                         remembered), or `sigil vault recipients {} --clear` to go plain on purpose",
+                        chart.tip,
+                        chart.live.display()
+                    )));
+                }
+            }
+        }
+    }
+    Ok(Vec::new())
 }
 
 fn entry_by_n<'a>(chart: &'a Chart, n: u32) -> Result<&'a VersionEntry> {
@@ -680,6 +784,8 @@ pub fn track_ex(
         }],
         retention: RetentionPolicy::Full,
         kind: ChartKind::Single,
+        recipients: dedup_recipients(recipients),
+        plain_ok: false,
     };
     write_chart(&chart)?;
     Ok(TrackReport {
@@ -725,6 +831,8 @@ fn track_dir(
         }],
         retention: RetentionPolicy::Full,
         kind: ChartKind::Folder,
+        recipients: dedup_recipients(recipients),
+        plain_ok: false,
     };
     write_chart(&chart)?;
     Ok(TrackReport {
@@ -984,9 +1092,14 @@ fn commit_bytes(
             });
         }
     }
+    let recipients = effective_recipients(&chart, recipients)?;
     let next = chart.versions.iter().map(|v| v.n).max().unwrap_or(0) + 1;
     let name = payload_name(live);
-    let sg1 = seal_version(data, mode, pass, &name, recipients)?;
+    let sg1 = seal_version(data, mode, pass, &name, &recipients)?;
+    if !recipients.is_empty() {
+        chart.plain_ok = false;
+    }
+    chart.recipients = recipients;
     let seal_file = seal_name(next);
     fs::write(vault_dir.join(&seal_file), &sg1).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let size = data.len() as u64;
@@ -1039,9 +1152,14 @@ fn commit_tree(
             });
         }
     }
+    let recipients = effective_recipients(&chart, recipients)?;
     let next = chart.versions.iter().map(|v| v.n).max().unwrap_or(0) + 1;
     let seal_file = seal_name(next);
-    seal_tree_version(src, &vault_dir.join(&seal_file), mode, pass, recipients, wards)?;
+    seal_tree_version(src, &vault_dir.join(&seal_file), mode, pass, &recipients, wards)?;
+    if !recipients.is_empty() {
+        chart.plain_ok = false;
+    }
+    chart.recipients = recipients;
     chart.versions.push(VersionEntry {
         n: next,
         seal: seal_file,
@@ -1558,6 +1676,55 @@ pub fn set_retention(path: &Path, policy: RetentionPolicy) -> Result<RetentionPo
     chart.retention = policy;
     write_chart(&chart)?;
     Ok(policy)
+}
+
+/// Remembered encrypt-to recipients for a vault (public keys only).
+pub fn get_recipients(path: &Path) -> Result<Vec<PublicIdentity>> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    if !vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "not tracked (no {}). Run `sigil vault track` first.",
+            vault_dir.display()
+        )));
+    }
+    Ok(load_chart(&vault_dir)?.recipients)
+}
+
+/// Replace remembered recipients (empty `recipients` = `--clear`: future versions go
+/// plain on purpose). Existing version seals are never rewritten.
+pub fn set_recipients(path: &Path, recipients: &[PublicIdentity]) -> Result<Vec<PublicIdentity>> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    if !vault_dir.join(CHART_NAME).is_file() {
+        return Err(crate::Error::Msg(format!(
+            "not tracked (no {}). Run `sigil vault track` first.",
+            vault_dir.display()
+        )));
+    }
+    let mut chart = load_chart(&vault_dir)?;
+    chart.recipients = dedup_recipients(recipients);
+    chart.plain_ok = chart.recipients.is_empty();
+    write_chart(&chart)?;
+    Ok(chart.recipients)
+}
+
+/// One line per recipient: short hint (as in SGTO) + X25519 public key.
+pub fn format_recipients(rs: &[PublicIdentity]) -> String {
+    if rs.is_empty() {
+        return "encrypt-to: none remembered (new versions are not encrypt-to)\n".into();
+    }
+    let mut out = format!(
+        "encrypt-to: {} remembered recipient{}\n",
+        rs.len(),
+        if rs.len() == 1 { "" } else { "s" }
+    );
+    for r in rs {
+        out.push_str(&format!(
+            "  hint={}  x25519={}\n",
+            hex::encode(r.hint()),
+            hex::encode(r.x25519_pk)
+        ));
+    }
+    out
 }
 
 pub fn format_retention(policy: RetentionPolicy) -> String {

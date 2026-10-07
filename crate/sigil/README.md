@@ -216,7 +216,7 @@ mkdir -p /tmp/sigil-dirty
 ./sigil mount ./notes.txt ./view --vault --export-dir /tmp/sigil-dirty --writable
 # edit files under /tmp/sigil-dirty …
 ./sigil vault commit --from-export /tmp/sigil-dirty
-# optional: --to alice.pub  --keep 5  --force
+# optional: --to alice.pub  --keep 5  --force   (--to is remembered by the vault)
 
 # Folder vault: same flow, each version is an SGDR pack
 ./sigil vault track ./photos
@@ -228,6 +228,8 @@ mkdir -p /tmp/sigil-dirty
 Nested `.sg1` entries in an SGDR pack appear as files (further nest-walk is optional; use `sigil path`). Folder vault tip model, sync rules, and `--ward` / `--force`: [docs/VAULT-MOUNT-NEST.md](../../docs/VAULT-MOUNT-NEST.md#folder-vaults--sgdr-dirty-re-seal).
 
 Composed vault + mount + nest recipes: [docs/VAULT-MOUNT-NEST.md](../../docs/VAULT-MOUNT-NEST.md).
+
+Encrypt-to vaults remember their recipients (public keys in `CHART`): `vault commit` without `--to` stays encrypt-to, `--to` replaces the set, and `sigil vault recipients PATH [--to …|--clear]` shows or changes it. Details: [docs/VAULT-RECIPIENTS.md](../../docs/VAULT-RECIPIENTS.md).
 
 **Vault (version tip + retention)**
 
