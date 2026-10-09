@@ -290,13 +290,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: IdentityCmd,
     },
-    /// Import an OpenPGP Curve25519 key (Ed25519 primary + cv25519 subkey).
-    /// Public key → .pub for --to. Unprotected secret key + -o → .sgk for --identity.
+    /// Import an OpenPGP Curve25519 key (Ed25519 primary + cv25519/X25519 subkey; v4 or RFC 9580 v6).
+    /// Public key → .pub for --to. Secret key (plain, CFB, or AEAD/Argon2-protected) + -o → .sgk for --identity.
     #[command(name = "import-pgp", visible_alias = "pgp-import")]
     ImportPgp {
         /// Armored (.asc) or binary OpenPGP key export
         input: PathBuf,
-        /// Write the secret identity here (.sgk v2); needs an unprotected secret export
+        /// Write the secret identity here (.sgk v2); needs a secret export (asks for its passphrase if protected)
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Write the public half here (default: <output>.pub, else <input>.pub)
@@ -1602,11 +1602,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
             imp.public.write(&pub_path)?;
             println!(
-                "pgp {}  {}",
-                hex::encode_upper(imp.primary_fpr),
-                imp.user_id.as_deref().unwrap_or("(no verified user id)")
+                "pgp {}  {}{}",
+                hex::encode_upper(&imp.primary_fpr),
+                imp.user_id.as_deref().unwrap_or("(no verified user id)"),
+                if imp.key_version == 6 { "  (OpenPGP v6)" } else { "" }
             );
-            println!("encrypt subkey {}", hex::encode_upper(imp.subkey_fpr));
+            println!("encrypt subkey {}", hex::encode_upper(&imp.subkey_fpr));
             println!(
                 "public → {}  x25519 {}  (encrypt-to: --to {})",
                 pub_path.display(),

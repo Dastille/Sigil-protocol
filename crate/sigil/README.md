@@ -189,7 +189,7 @@ Modern identity (default `sigil keygen`): `.sgk` holds a 32-byte master; X25519 
 ./sigil de-scribe --identity alice.sgk -o file.bin secret.sg1
 ```
 
-Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, pieces, and vault track/commit/restore. OpenPGP Curve25519 keys import with `sigil import-pgp` (public → `.pub`, secret — passphrase-protected or not — → `.sgk` v2; `--to friend.asc` also works directly); see `docs/PGP-IMPORT.md`. Lock an identity to a FIDO2 security key with `sigil keygen --passkey` / `sigil identity protect --passkey` (build with `--features passkey`); `--identity` then unlocks with a touch + PIN. See `docs/PASSKEY.md`.
+Recipient envelopes live in an `SGTO` companion block after the Keystone maps (no header flag bit). Passphrase-only seals (`--pass` / `--talisman` / `--ward`) are unchanged. `--identity` / `--to` are wired through mount, path, open, folder packs, CDC, pieces, and vault track/commit/restore. OpenPGP Curve25519 keys import with `sigil import-pgp` — v4 and RFC 9580 v6 keys; public → `.pub`, secret (unprotected, CFB, or RFC 9580 AEAD OCB/GCM/EAX with Argon2) → `.sgk` v2; `--to friend.asc` also works directly; see `docs/PGP-IMPORT.md`. Lock an identity to a FIDO2 security key with `sigil keygen --passkey` / `sigil identity protect --passkey` (build with `--features passkey`); `--identity` then unlocks with a touch + PIN. See `docs/PASSKEY.md`.
 
 **Mount (FUSE read-only / export-dir)**
 
