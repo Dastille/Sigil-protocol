@@ -100,6 +100,8 @@ pub fn is_constellation_dir(path: &Path) -> bool {
 }
 
 pub fn is_constellation_input(path: &Path) -> bool {
+    let resolved = crate::container::sky_for_read(path);
+    let path = resolved.as_path();
     is_constellation_dir(path) || is_atlas_file(path) || is_constellation_mark(path)
 }
 
@@ -127,8 +129,11 @@ pub fn star_file_name(list_path: &str) -> String {
 }
 
 fn default_title(dir: &Path) -> String {
-    dir.file_name()
+    dir.components()
+        .as_path()
+        .file_name()
         .and_then(|s| s.to_str())
+        .map(crate::container::strip_suffix)
         .filter(|s| !s.is_empty())
         .unwrap_or("constellation")
         .to_string()
@@ -477,6 +482,8 @@ pub fn load_chart_keys(
     pass: Option<&str>,
     identities: &[Identity],
 ) -> Result<(Chart, PathBuf)> {
+    let resolved = crate::container::sky_for_read(input);
+    let input = resolved.as_path();
     if input.is_dir() {
         let card = find_card(input).ok_or_else(|| err("no constellation card in this folder"))?;
         let chart = load_chart_from_mark(&card, pass, identities)?;
@@ -497,6 +504,25 @@ pub fn load_chart_keys(
 
 fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], PathBuf> {
     let mut map = HashMap::new();
+    // Container layout: `stars/ab/<fp>.sg1` (and `stars/by-name/*`). File name is a hint only;
+    // the digest is read from each star's header like the flat layout.
+    let stars = dir.join(crate::container::STARS_DIR);
+    if stars.is_dir() {
+        let mut shards: Vec<_> = fs::read_dir(&stars).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        shards.sort();
+        for shard in shards.into_iter().filter(|p| p.is_dir()) {
+            let mut files: Vec<_> = fs::read_dir(&shard).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+            files.sort();
+            for p in files {
+                if p.extension().and_then(|x| x.to_str()) != Some("sg1") || !p.is_file() {
+                    continue;
+                }
+                if let Some(d) = peek_digest(&p) {
+                    map.entry(d).or_insert(p);
+                }
+            }
+        }
+    }
     let rd = match fs::read_dir(dir) {
         Ok(r) => r,
         Err(_) => return map,
@@ -559,9 +585,24 @@ fn find_member_star(
     if let Some(p) = by_digest.get(&member.digest) {
         return Some(p.clone());
     }
+    let sharded = crate::container::star_path(dir, &member.digest);
+    if sharded.is_file() {
+        return Some(sharded);
+    }
     let named = dir.join(star_file_name(&member.name));
     if named.is_file() {
         return Some(named);
+    }
+    let fp_named = dir.join(format!("{}.sg1", &hex32(&member.digest)[..12]));
+    if fp_named.is_file() && !is_constellation_mark(&fp_named) {
+        return Some(fp_named);
+    }
+    let by_name = dir
+        .join(crate::container::STARS_DIR)
+        .join(crate::container::BY_NAME_DIR)
+        .join(star_file_name(&member.name));
+    if by_name.is_file() {
+        return Some(by_name);
     }
     None
 }
@@ -580,6 +621,13 @@ fn missing_stars(dir: &Path, chart: &Chart, card: Option<&Path>) -> Vec<String> 
     missing
 }
 
+/// Stars listed on the card but not found in `dir` (for `sigil tidy` verification).
+pub fn missing_in(dir: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Vec<String>> {
+    let card = find_card(dir).ok_or_else(|| err("no constellation card in this folder"))?;
+    let chart = load_chart_from_mark(&card, pass, identities)?;
+    Ok(missing_stars(dir, &chart, Some(&card)))
+}
+
 fn refuse_missing(missing: &[String]) -> Result<()> {
     if missing.is_empty() {
         return Ok(());
@@ -594,7 +642,14 @@ pub fn add_to_constellation(sky: &Path, input: &Path, opts: AddOpts<'_>) -> Resu
     if !input.exists() {
         return Err(err(format!("not found: {}", input.display())));
     }
-    fs::create_dir_all(sky).map_err(io)?;
+    // New constellations get the tidy container (`SKY.sigil/`); old flat folders stay flat.
+    let sky_owned = crate::container::sky_for_add(sky);
+    let sky = sky_owned.as_path();
+    if crate::container::new_sky_is_container(sky) {
+        crate::container::ensure(sky, "constellation", &default_title(sky))?;
+    } else {
+        fs::create_dir_all(sky).map_err(io)?;
+    }
     let title = opts
         .title
         .map(|s| s.trim())
@@ -728,6 +783,29 @@ fn mint_or_reuse(
     if let Some(p) = by_digest.get(&digest) {
         return Ok(p.clone());
     }
+    if crate::container::is_container(sky) {
+        let dest = crate::container::star_path(sky, &digest);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(io)?;
+        }
+        if !dest.exists() || peek_digest(&dest) != Some(digest) && !crate::work::is_work_pack(&dest) {
+            crate::work::inscribe_path_to(
+                file,
+                &dest,
+                opts.mode,
+                opts.pass,
+                opts.covenant,
+                opts.geas,
+                opts.chunk,
+                None,
+                crate::DEFAULT_PIECE,
+                crate::work::DEFAULT_OVERTURE_MB,
+                None,
+                opts.recipients,
+            )?;
+        }
+        return Ok(dest);
+    }
     let mut dest = sky.join(star_file_name(list_name));
     if dest.file_name() == Some(std::ffi::OsStr::new(&card_name(&default_title(sky))))
         || is_constellation_mark(&dest)
@@ -766,6 +844,8 @@ pub fn scry_constellation_keys(
     pass: Option<&str>,
     identities: &[Identity],
 ) -> Result<String> {
+    let resolved = crate::container::sky_for_read(input);
+    let input = resolved.as_path();
     let (chart, dir) = load_chart_keys(input, pass, identities)?;
     let card = if input.is_dir() {
         find_card(input)
@@ -848,6 +928,8 @@ pub fn unseal_constellation_keys(
     only: &[String],
     identities: &[Identity],
 ) -> Result<u32> {
+    let resolved = crate::container::sky_for_read(input);
+    let input = resolved.as_path();
     if is_atlas_file(input) {
         return unseal_atlas(input, dest, pass, companions, only, identities);
     }
@@ -949,11 +1031,19 @@ pub fn pack_atlas_chart(sky: &Path, chart: &Chart, output: &Path) -> Result<u32>
     let mut seen = HashMap::new();
     for m in &chart.members {
         if let Some(p) = find_member_star(&dir, m, &by_digest) {
-            let name = p
+            let mut name = p
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("star.sg1")
                 .to_string();
+            // Container stars travel under their old flat name so any sigil (old or new)
+            // finds them in the bag, work packs included.
+            if p.starts_with(dir.join(crate::container::STARS_DIR)) {
+                name = star_file_name(&m.name);
+                if name == card_name(&chart.title) {
+                    name = format!("{}.sg1", &hex32(&m.digest)[..12]);
+                }
+            }
             if seen.insert(m.digest, ()).is_none() {
                 files.push((name, p));
             }
@@ -1129,6 +1219,14 @@ fn extract_atlas(input: &Path, dest: &Path) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Old flat layout: an existing non-empty folder stays flat on add (no container).
+    fn legacy_sky(root: &Path, name: &str) -> PathBuf {
+        let sky = root.join(name);
+        fs::create_dir_all(&sky).unwrap();
+        fs::write(sky.join(".flat"), b"").unwrap();
+        sky
+    }
     use crate::sha256;
 
     fn scratch(tag: &str) -> PathBuf {
@@ -1148,7 +1246,7 @@ mod tests {
     #[test]
     fn add_unique_link_skip_and_restore() {
         let root = scratch("add");
-        let sky = root.join("Taxes");
+        let sky = legacy_sky(&root, "Taxes");
         let a = root.join("tax-2025.pdf");
         let b = root.join("notes.txt");
         let copy = root.join("copy.pdf");
@@ -1196,7 +1294,7 @@ mod tests {
     #[test]
     fn missing_star_refuses() {
         let root = scratch("miss");
-        let sky = root.join("Taxes");
+        let sky = legacy_sky(&root, "Taxes");
         let a = root.join("a.txt");
         let b = root.join("b.txt");
         fs::write(&a, b"alpha").unwrap();
@@ -1224,7 +1322,7 @@ mod tests {
     #[test]
     fn atlas_roundtrip() {
         let root = scratch("atlas");
-        let sky = root.join("Taxes");
+        let sky = legacy_sky(&root, "Taxes");
         let a = root.join("a.txt");
         fs::write(&a, b"alpha-file").unwrap();
         add_to_constellation(
@@ -1250,7 +1348,7 @@ mod tests {
     #[test]
     fn replace_same_path_new_bytes() {
         let root = scratch("rep");
-        let sky = root.join("Taxes");
+        let sky = legacy_sky(&root, "Taxes");
         let a = root.join("notes.txt");
         fs::write(&a, b"v1").unwrap();
         let opts = AddOpts {
@@ -1287,7 +1385,7 @@ mod tests {
     #[test]
     fn encrypt_to_constellation_add_scry_restore() {
         let root = scratch("to");
-        let sky = root.join("Vault");
+        let sky = legacy_sky(&root, "Vault");
         let alice = Identity::generate().unwrap();
         let bob = Identity::generate().unwrap();
         let eve = Identity::generate().unwrap();
@@ -1359,7 +1457,7 @@ mod tests {
     #[test]
     fn encrypt_to_atlas_bag_and_missing_star_refusal() {
         let root = scratch("to-atlas");
-        let sky = root.join("Bag");
+        let sky = legacy_sky(&root, "Bag");
         let alice = Identity::generate().unwrap();
         let to = [alice.public()];
         let a = root.join("a.txt");
@@ -1422,7 +1520,7 @@ mod tests {
         let a = root.join("a.txt");
         fs::write(&a, b"warded alpha").unwrap();
         // Passphrase-only constellation: atlas used to read the card with no pass.
-        let sky = root.join("W");
+        let sky = legacy_sky(&root, "W");
         add_to_constellation(&sky, &a, AddOpts { title: Some("W"), pass: Some("pw"), ..AddOpts::default() })
             .unwrap();
         let bag = root.join("w.sga");

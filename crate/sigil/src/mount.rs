@@ -439,7 +439,7 @@ fn resolve_seal(input: &Path, prefer_vault: bool) -> Result<PathBuf> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("");
-    if name.ends_with(VAULT_SUFFIX) || prefer_vault {
+    if name.ends_with(VAULT_SUFFIX) || prefer_vault || (input.is_dir() && input.join(vault::CHART_NAME).is_file()) {
         let (seal, _tip) = vault::tip_seal_path(input)?;
         return Ok(seal);
     }
@@ -1110,7 +1110,7 @@ mod tests {
         assert_eq!(fs::read(&live).unwrap(), b"v2-edited");
         assert_eq!(vault::status(&live).unwrap().tip, 2);
         // Durable tip seal advanced; v1 immutable still there
-        assert!(vault::vault_dir_for(&live).join("v1.sg1").is_file());
+        assert!(vault::version_seal_path(&live, 1).unwrap().is_file());
         assert_ne!(crate::sha256_path(&vault::tip_seal_path(&live).unwrap().0).unwrap(), before);
         let _ = fs::remove_dir_all(&d);
     }
