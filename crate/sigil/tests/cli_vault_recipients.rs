@@ -34,7 +34,7 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 fn chart(dir: &Path, live: &str) -> String {
-    fs::read_to_string(dir.join(format!("{live}.sgv/CHART"))).unwrap()
+    fs::read_to_string(dir.join(format!("{live}.sigil/CHART"))).unwrap()
 }
 
 #[test]
@@ -123,7 +123,7 @@ fn plain_vault_chart_unchanged_and_legacy_guard() {
         .filter(|l| !l.starts_with("to="))
         .map(|l| format!("{l}\n"))
         .collect();
-    fs::write(dir.join("old.txt.sgv/CHART"), stripped).unwrap();
+    fs::write(dir.join("old.txt.sigil/CHART"), stripped).unwrap();
     fs::write(dir.join("old.txt"), b"o2").unwrap();
     let e = fails(sigil(&dir, &["vault", "commit", "old.txt"]));
     assert!(e.contains("encrypt-to") && e.contains("--to"), "{e}");

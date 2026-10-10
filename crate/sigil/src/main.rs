@@ -323,6 +323,23 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BootCmd,
     },
+    /// Move an old-layout vault (`x.sgv/`) or flat constellation folder into a tidy
+    /// `name.sigil/` container. Copies, verifies fingerprints, then removes the old files.
+    Tidy {
+        /// Vault live path / `.sgv` chart dir, or constellation folder
+        path: PathBuf,
+        /// Show what would move; change nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Optional: open the card to also check no star goes missing
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens an encrypt-to card (repeatable; optional)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+    },
     /// Named list of stars. Add unique files; rsync the folder; atlas to carry the bag.
     Constellation {
         #[command(subcommand)]
@@ -1621,6 +1638,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
+        Cmd::Tidy { path, dry_run, pass, talisman, identity } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let report = sigil::container::tidy(
+                &path,
+                &sigil::container::TidyOpts {
+                    dry_run,
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                    fault: None,
+                },
+            )?;
+            print!("{}", report.render());
+        }
         Cmd::Kit { cmd } => run_kit(cmd)?,
         Cmd::Path {
             input,
@@ -2057,6 +2088,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             let cov = covenant.unwrap_or_default();
             let recipients = load_recipients(&to)?;
             let identities = load_identities(&identity)?;
+            let sky = sigil::container::sky_for_add(&sky);
             let report = add_to_constellation(
                 &sky,
                 &input,
@@ -2104,7 +2136,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             if wormhole {
                 let bag = sky.join(format!(
                     "{}.sga",
-                    sky.file_name().and_then(|s| s.to_str()).unwrap_or("constellation")
+                    sky.file_name().and_then(|s| s.to_str()).map(sigil::container::strip_suffix).unwrap_or("constellation")
                 ));
                 let chart = report.chart.as_ref().ok_or("constellation list missing after add")?;
                 sigil::pack_atlas_chart(&sky, chart, &bag)?;
@@ -2114,10 +2146,12 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
         SkyCmd::Atlas { sky, output, pass, talisman, identity } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
+            let sky = sigil::container::sky_for_read(&sky);
             let dest = output.unwrap_or_else(|| {
                 let stem = sky
                     .file_name()
                     .and_then(|s| s.to_str())
+                    .map(sigil::container::strip_suffix)
                     .unwrap_or("constellation");
                 sky.join(format!("{stem}.sga"))
             });
