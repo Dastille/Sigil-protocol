@@ -48,6 +48,9 @@ pub enum GcKind {
     StaleStaging,
     /// Shard folder left empty.
     EmptyDir,
+    /// Key ring shard holding records of segments that are gone, merged away or shredded
+    /// (segment-keys logs): the records are destroyed, the shard is rewritten without them.
+    DeadKey,
 }
 
 impl GcKind {
@@ -62,6 +65,7 @@ impl GcKind {
             GcKind::Temp => "temp file",
             GcKind::StaleStaging => "stale staging",
             GcKind::EmptyDir => "empty folder",
+            GcKind::DeadKey => "dead key(s)",
         }
     }
 }
@@ -288,6 +292,34 @@ fn gc_log(dir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
             ExtraKind::Unknown => rep.left.push(x.path),
         }
     }
+    // Key records nothing needs any more (crypto-shred leftovers, deleted / merged segments,
+    // crashed appends). Removing a record is a ring rewrite, not a file delete.
+    if log.segkeys {
+        match crate::seglog::dead_keys(&log, &gate) {
+            Ok(dead) if !dead.is_empty() => {
+                let mut shards: std::collections::BTreeMap<u64, Vec<u64>> = std::collections::BTreeMap::new();
+                for s in &dead {
+                    shards.entry(crate::seglog::keyring_shard_of(*s)).or_default().push(*s);
+                }
+                let first = rep.items.len();
+                for (shard, seqs) in &shards {
+                    rep.items.push(GcItem { kind: GcKind::DeadKey, path: crate::seglog::keyring_shard_path(dir, *shard), bytes: 0, removed: false });
+                    rep.notes.push(format!(
+                        "dead key record(s) for segment(s) {} in keys/{shard:04}.sg1",
+                        crate::seglog::fmt_ranges(&crate::seglog::compress(seqs))
+                    ));
+                }
+                if opts.apply {
+                    match crate::seglog::reclaim_dead_keys(&log) {
+                        Ok(_) => rep.items[first..].iter_mut().for_each(|i| i.removed = true),
+                        Err(e) => rep.notes.push(format!("could not destroy dead key records: {e}")),
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => rep.notes.push(e.to_string()),
+        }
+    }
     finish(&mut rep);
     Ok(rep)
 }
@@ -301,6 +333,9 @@ fn finish(rep: &mut GcReport) {
     order.sort_by_key(|&i| matches!(rep.items[i].kind, GcKind::EmptyDir | GcKind::StaleStaging));
     for i in order {
         let it = &mut rep.items[i];
+        if it.kind == GcKind::DeadKey {
+            continue; // already handled by the log's own key ring code
+        }
         let r = match it.kind {
             GcKind::StaleStaging => fs::remove_dir_all(&it.path),
             GcKind::EmptyDir => fs::remove_dir(&it.path),

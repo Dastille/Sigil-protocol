@@ -282,7 +282,7 @@ fn newer_log_format_is_refused_by_every_command() {
     let c = sample(&d, 3);
     ok(&d, &["log", "tombstone", "ev", "--seq", "1"]);
     let m = manifest(&c);
-    fs::write(c.join("CONTAINER"), m.replace("log=2", "log=3")).unwrap();
+    fs::write(c.join("CONTAINER"), m.replace("log=2", "log=9")).unwrap();
     for args in [
         vec!["log", "ls", "ev"],
         vec!["log", "read", "ev"],

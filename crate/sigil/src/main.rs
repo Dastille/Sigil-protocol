@@ -740,6 +740,10 @@ enum LogCmd {
         /// Identity (.sgk) whose Ed25519 key signs HEAD; pinned in the manifest. Omit for an unsigned log
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Opt in to per-segment keys (crypto-shredding): every segment is sealed under its own key, kept
+        /// in a small key ring wrapped to the --pass / --to given at each append. The log becomes `log=3`
+        #[arg(long = "segment-keys")]
+        segment_keys: bool,
     },
     /// Seal FILE (or `-` for stdin) as the next immutable segment and extend the chain.
     Append {
@@ -752,7 +756,8 @@ enum LogCmd {
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
-        /// Encrypt-to recipient for this segment: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable)
+        /// Encrypt-to recipient for this segment: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable).
+        /// In a --segment-keys log they wrap the segment's own key instead
         #[arg(long = "to")]
         to: Vec<String>,
         /// Signing identity (.sgk); required exactly when the log was created with --identity
@@ -815,6 +820,27 @@ enum LogCmd {
     /// Mark segments as deleted (chain-covered, permanent). Reads honour it at once; the bytes are
     /// erased by `log compact --apply` (or `gc --apply`). The log becomes `log=2`.
     Tombstone {
+        path: PathBuf,
+        /// One segment
+        #[arg(long, conflicts_with_all = ["from", "to"], required_unless_present_any = ["from", "to"])]
+        seq: Option<u64>,
+        /// First segment of a range (needs --to)
+        #[arg(long, requires = "to")]
+        from: Option<u64>,
+        /// Last segment of a range (needs --from)
+        #[arg(long, requires = "from")]
+        to: Option<u64>,
+        /// Why (free text, kept in the INDEX; do not put secrets here)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Signing identity (.sgk); required exactly when the log was created with --identity
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
+    /// Crypto-shred segments of a `--segment-keys` log: record it in the INDEX, destroy the segment's
+    /// key and unlink its ciphertext. Needs no key. Anchors and verify keep working; the data cannot
+    /// be recovered from this log afterwards (copies of the key or of the old files are out of reach)
+    Shred {
         path: PathBuf,
         /// One segment
         #[arg(long, conflicts_with_all = ["from", "to"], required_unless_present_any = ["from", "to"])]
@@ -2438,16 +2464,17 @@ fn parse_anchor(spec: &str) -> Result<(u64, [u8; 32]), Box<dyn std::error::Error
 fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
     use sigil::seglog;
     match cmd {
-        LogCmd::Init { path, identity } => {
+        LogCmd::Init { path, identity, segment_keys } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
-            let log = seglog::init(&path, id.as_ref())?;
+            let log = seglog::init_with(&path, id.as_ref(), segment_keys)?;
             println!(
-                "log {}  created ({})",
+                "log {}  created ({}{})",
                 log.dir.display(),
                 match &log.signer {
                     Some(pk) => format!("signed; signer {}", hex::encode(pk)),
                     None => "unsigned: HEAD is a checksum, not a signature (use --identity for authenticity)".to_string(),
-                }
+                },
+                if segment_keys { "; per-segment keys: append with --pass and/or --to to wrap each segment's key, then `sigil log shred` can destroy it" } else { "" }
             );
         }
         LogCmd::Append { path, input, mode, pass, talisman, to, identity } => {
@@ -2536,7 +2563,17 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                             "container, {} segment(s){}{}",
                             c.segments,
                             if c.signed { ", signed" } else { "" },
-                            if c.format >= 2 { format!(", log=2: {} deleted, {} compaction(s)", c.deleted, c.compactions) } else { String::new() }
+                            if c.format >= 2 {
+                                format!(
+                                    ", log={}: {} deleted, {} compaction(s){}",
+                                    c.format,
+                                    c.deleted,
+                                    c.compactions,
+                                    if c.segkeys { format!(", per-segment keys, {} shredded", c.shredded) } else { String::new() }
+                                )
+                            } else {
+                                String::new()
+                            }
                         ),
                         container_version: c.container_version,
                         findings: c.findings,
@@ -2578,6 +2615,31 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
             println!("  reads and `log ls` honour it now; {} byte(s) stay on disk until `sigil log compact --apply` (or `gc --apply`)", r.pending_bytes);
         }
+        LogCmd::Shred { path, seq, from, to, reason, identity } => {
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let target = match (seq, from, to) {
+                (Some(s), _, _) => seglog::TombTarget::Seq(s),
+                (None, Some(a), Some(b)) => seglog::TombTarget::Range(a, b),
+                _ => return Err("give --seq N, or --from A --to B".into()),
+            };
+            let r = seglog::shred(&path, target, reason.as_deref(), id.as_ref())?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "shred {}: crypto-shredded segment(s) {}{}  head {}:{}{}",
+                r.entry,
+                seglog::fmt_ranges(&seglog::compress(&r.shredded)),
+                if r.already.is_empty() { String::new() } else { format!(" ({} already shredded, skipped)", r.already.len()) },
+                r.entry,
+                hex::encode(r.root),
+                if r.signed { "  (signed)" } else { "" }
+            );
+            println!(
+                "  {} key record(s) destroyed, {} ciphertext file(s) unlinked; the INDEX entries and every pinned anchor still verify.\n  Copies of the key or of the old files (backups, snapshots, an exported key ring) are not reached: see docs/SEGMENT-LOG.md",
+                r.keys_destroyed, r.files_removed
+            );
+        }
         LogCmd::Compact { path, keep_last, older_than, range, apply, target_size, mode, pass, talisman, identity, seal_pass, to, allow_decrypt } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
@@ -2617,13 +2679,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 r.mended.len(),
                 if r.mended.is_empty() { String::new() } else { format!(" ({})", r.mended.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")) }
             );
+            if !r.keys_mended.is_empty() {
+                println!("  key ring shard(s) healed: {}", r.keys_mended.iter().map(|s| format!("{s:04}")).collect::<Vec<_>>().join(", "));
+            }
+            for (s, m) in &r.keys_unrecoverable {
+                println!("  key ring shard {s:04}: cannot be healed: {m}");
+            }
             for s in &r.missing {
                 println!("  segment {s}: file missing (restore from a copy)");
             }
             for (s, m) in &r.unrecoverable {
                 println!("  segment {s}: cannot be healed: {m}");
             }
-            if !r.missing.is_empty() || !r.unrecoverable.is_empty() {
+            if !r.missing.is_empty() || !r.unrecoverable.is_empty() || !r.keys_unrecoverable.is_empty() {
                 std::process::exit(2);
             }
         }

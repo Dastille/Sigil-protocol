@@ -13,6 +13,11 @@
 //! (`op=tomb`: delete markers; `op=compact`: merged replacement segments). A log that never uses
 //! them stays `log=1` and byte-compatible with slice 1; the first one flips the manifest to `log=2`.
 //!
+//! Slice 3 adds opt-in **per-segment keys** (`init --segment-keys`, `log=3`): every segment is sealed
+//! under its own random key, the keys live (wrapped to the log's recipients / passphrase) in a small
+//! sharded key ring (`keys/NNNN.sg1`), and `sigil log shred` destroys a key so the ciphertext stays
+//! unreadable while the INDEX, Merkle root and anchors verify exactly as before (`keyring.rs`).
+//!
 //! Each `append` seals one batch as a normal `.sg1` star (so ECC, `sigil mend`, passphrase
 //! and encrypt-to all work unchanged), then appends a chained INDEX line, then rewrites HEAD.
 //! The `.sg1` byte layout is untouched; a log is only folder structure plus two small text
@@ -32,14 +37,17 @@ use crate::{hex32, sha256, Mode, Result};
 
 pub const KIND: &str = "log";
 /// Highest log format this sigil understands. `log=1` = segments only (slice 1);
-/// `log=2` = the INDEX may also hold tombstone / compaction entries (slice 2).
-pub const LOG_FORMAT: u32 = 2;
+/// `log=2` = the INDEX may also hold tombstone / compaction entries (slice 2);
+/// `log=3` = per-segment keys (`segkeys=1`, a `keys/` key ring, shred entries) (slice 3).
+pub const LOG_FORMAT: u32 = 3;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
 pub const HEAD_FILE: &str = "HEAD";
 pub const LOCK_FILE: &str = "LOG.lock";
 pub const SEGMENTS_DIR: &str = "segments";
+/// Key ring folder of a log made with `init --segment-keys` (`keys/0000.sg1`, one star per 1000 segments).
+pub const KEYS_DIR: &str = "keys";
 const INDEX_MAGIC: &str = "sigil-log-index=1";
 const HEAD_MAGIC: &str = "sigil-log-head=1";
 const SEGMENTS_PER_FOLDER: u64 = 1000;
@@ -68,8 +76,10 @@ pub struct Log {
     pub id: String,
     /// Ed25519 public key pinned at `init --identity` (every HEAD must be signed by it).
     pub signer: Option<[u8; 32]>,
-    /// Manifest `log=N` (1 until the first tombstone / compaction entry).
+    /// Manifest `log=N` (1 until the first tombstone / compaction entry; 3 for a segment-keys log).
     pub format: u32,
+    /// `segkeys=1`: every segment is sealed under its own key, kept in the key ring (slice 3).
+    pub segkeys: bool,
 }
 
 /// True when `path` (or `path.sigil`) is a log container.
@@ -116,7 +126,15 @@ impl Log {
             Some(h) => Some(parse_hex32(h).ok_or_else(|| err("bad signer= in manifest"))?),
             None => None,
         };
-        Ok(Log { dir: dir.to_path_buf(), name: m.name, id, signer, format: fmt })
+        let segkeys = match m.extra.get("segkeys").map(|v| v.trim()) {
+            None => false,
+            Some("1") => true,
+            Some(other) => return Err(err(format!("bad segkeys={other} in manifest"))),
+        };
+        if segkeys && fmt < 3 {
+            return Err(err("segment log manifest has segkeys=1 but log<3"));
+        }
+        Ok(Log { dir: dir.to_path_buf(), name: m.name, id, signer, format: fmt, segkeys })
     }
 
     pub fn segment_path(&self, seq: u64) -> PathBuf {
@@ -150,7 +168,9 @@ pub enum Op {
     /// A sealed batch (slice-1 line; no `op=` key).
     Seg,
     /// `op=tomb`: marks earlier segments (by their seq) as deleted. No segment file.
-    Tomb { del: Vec<(u64, u64)>, reason: Option<String> },
+    /// `shred`: a crypto-shred (`shred=1`, segment-keys logs only): the key of every named
+    /// segment's file is destroyed, so its data is unrecoverable, not just hidden.
+    Tomb { del: Vec<(u64, u64)>, reason: Option<String>, shred: bool },
     /// `op=compact`: a merged replacement segment holding the plain bytes of the earlier
     /// segments `of` (ascending seq, concatenated). Original entries stay in the INDEX.
     Compact { of: Vec<(u64, u64)> },
@@ -178,13 +198,18 @@ impl Entry {
         self.body
             .split_whitespace()
             .filter_map(|t| t.split_once('=').map(|(k, _)| k))
-            .filter(|k| !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of"))
+            .filter(|k| !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of" | "shred"))
             .collect()
     }
 
     /// True for a tombstone / compaction line (needs `log=2`).
     pub fn is_meta(&self) -> bool {
         !matches!(self.op, Op::Seg)
+    }
+
+    /// True for a crypto-shred line (needs `log=3`).
+    pub fn is_shred(&self) -> bool {
+        matches!(self.op, Op::Tomb { shred: true, .. })
     }
 }
 
@@ -294,6 +319,10 @@ pub struct State {
     moved: std::collections::BTreeMap<u64, u64>,
     /// compaction entry seq → its members (ascending)
     members: std::collections::BTreeMap<u64, Vec<u64>>,
+    /// member seq → seq of the shred entry that destroyed the key of the file holding it
+    shredded: std::collections::BTreeMap<u64, u64>,
+    /// file-holding entries whose key a shred entry destroyed
+    shred_holders: std::collections::BTreeSet<u64>,
 }
 
 impl State {
@@ -318,7 +347,7 @@ impl State {
                 self.kinds.push(K::Seg);
                 self.sizes.push(e.size);
             }
-            Op::Tomb { del, .. } => {
+            Op::Tomb { del, shred, .. } => {
                 for &(a, b) in del {
                     if b >= e.seq {
                         return Err(("index-tombstone", format!("seq {}: tombstone names seq {b}, which is not earlier", e.seq)));
@@ -327,13 +356,40 @@ impl State {
                         if self.kinds[s as usize - 1] != K::Seg {
                             return Err(("index-tombstone", format!("seq {}: tombstone names seq {s}, which is not a segment entry", e.seq)));
                         }
-                        if self.deleted.contains_key(&s) {
+                        if *shred {
+                            // an earlier plain tombstone may be hardened into a shred, a shred is final
+                            if self.shredded.contains_key(&s) {
+                                return Err(("index-shred", format!("seq {}: seq {s} was already shredded", e.seq)));
+                            }
+                        } else if self.deleted.contains_key(&s) {
                             return Err(("index-tombstone", format!("seq {}: seq {s} was already deleted", e.seq)));
                         }
                     }
                 }
-                for s in expand(del) {
-                    self.deleted.insert(s, e.seq);
+                let named = expand(del);
+                if *shred {
+                    // One key seals a whole file. A compaction segment's key cannot be destroyed for
+                    // some of its batches only: every live batch in the file must be named.
+                    let holders: std::collections::BTreeSet<u64> = named.iter().map(|s| self.holder_of(*s)).collect();
+                    for &h in &holders {
+                        if let Some(m) = self.live_members(h).into_iter().find(|m| !named.contains(m)) {
+                            return Err((
+                                "index-shred",
+                                format!("seq {}: shred of the file of entry {h} leaves live batch {m} unnamed (they share one key)", e.seq),
+                            ));
+                        }
+                    }
+                    for &h in &holders {
+                        self.shred_holders.insert(h);
+                        let held: Vec<u64> = self.members_of(h).into_iter().filter(|m| self.holder_of(*m) == h).collect();
+                        for m in held {
+                            self.shredded.entry(m).or_insert(e.seq);
+                            self.deleted.entry(m).or_insert(e.seq);
+                        }
+                    }
+                }
+                for s in named {
+                    self.deleted.entry(s).or_insert(e.seq);
                 }
                 self.kinds.push(K::Tomb);
                 self.sizes.push(0);
@@ -390,6 +446,24 @@ impl State {
     /// The tombstone entry that deleted segment `seq`.
     pub fn deleted_by(&self, seq: u64) -> Option<u64> {
         self.deleted.get(&seq).copied()
+    }
+
+    /// The shred entry that destroyed the key protecting segment `seq`'s bytes.
+    pub fn shredded_by(&self, seq: u64) -> Option<u64> {
+        self.shredded.get(&seq).copied()
+    }
+
+    pub fn is_shredded(&self, seq: u64) -> bool {
+        self.shredded.contains_key(&seq)
+    }
+
+    /// True when the key of the file held by entry `h` was destroyed by a shred entry.
+    pub fn key_shredded(&self, h: u64) -> bool {
+        self.shred_holders.contains(&h)
+    }
+
+    pub fn shred_count(&self) -> usize {
+        self.shredded.len()
     }
 
     /// Seq of the entry whose file physically holds segment `seq`'s bytes.
@@ -512,7 +586,12 @@ fn parse_line(line: &str, want_seq: u64, prev: &[u8; 32]) -> std::result::Result
                 Some(r) => Some(dec_reason(r).ok_or_else(|| bad("reason="))?),
                 None => None,
             };
-            (0, [0u8; 32], Op::Tomb { del, reason })
+            let shred = match kv.get("shred").copied() {
+                None => false,
+                Some("1") => true,
+                Some(_) => return Err(bad("shred= (must be 1)")),
+            };
+            (0, [0u8; 32], Op::Tomb { del, reason, shred })
         }
         Some("compact") => {
             let size = kv.get("size").and_then(|v| v.parse::<u64>().ok());
@@ -688,6 +767,19 @@ fn read_index(log: &Log) -> Result<ParsedIndex> {
     let mut idx = parse_index(&String::from_utf8_lossy(&text), &log.genesis());
     // A tombstone / compaction line under a `log=1` manifest cannot come from a sigil that
     // follows the format (the manifest is upgraded first): treat it as damage, not as data.
+    if !log.segkeys {
+        if let Some(i) = idx.entries.iter().position(|e| e.is_shred()) {
+            idx.entries.truncate(i);
+            idx.state = State::build(&idx.entries);
+            if idx.error.is_none() {
+                idx.error = Some((
+                    i + 2,
+                    "log-format",
+                    format!("INDEX has a shred entry at seq {} but this log has no per-segment keys (segkeys=1 is missing)", i + 1),
+                ));
+            }
+        }
+    }
     if log.format < 2 {
         if let Some(i) = idx.entries.iter().position(|e| e.is_meta()) {
             idx.entries.truncate(i);
@@ -749,7 +841,12 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
 }
 
 mod compact;
+mod keyring;
+mod shred;
 pub use compact::*;
+pub use shred::*;
+pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
+use keyring::RingCache;
 
 // ---------------------------------------------------------------------------
 // init / append
@@ -766,6 +863,11 @@ pub fn dir_for_init(path: &Path) -> PathBuf {
 
 /// Create an empty log. `sign` pins an Ed25519 signer: every later append must use the same key.
 pub fn init(path: &Path, sign: Option<&Identity>) -> Result<Log> {
+    init_with(path, sign, false)
+}
+
+/// Like `init`; `segment_keys` opts into per-segment keys (slice 3, makes the log `log=3`).
+pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Result<Log> {
     let dir = dir_for_init(path);
     if dir.exists() && fs::read_dir(&dir).map(|mut r| r.next().is_some()).unwrap_or(true) {
         return Err(err(format!("{} already exists and is not empty; refusing", dir.display())));
@@ -778,14 +880,21 @@ pub fn init(path: &Path, sign: Option<&Identity>) -> Result<Log> {
     getrandom::getrandom(&mut raw).map_err(|e| err(e.to_string()))?;
     let id = hex::encode(raw);
     fs::create_dir_all(dir.join(SEGMENTS_DIR)).map_err(io)?;
+    let format = if segment_keys { 3 } else { LOG_BASE_FORMAT };
+    if segment_keys {
+        fs::create_dir_all(dir.join(KEYS_DIR)).map_err(io)?;
+    }
     let mut m = container::Manifest::new(KIND, &name);
-    m.extra.insert("log".into(), LOG_BASE_FORMAT.to_string());
+    m.extra.insert("log".into(), format.to_string());
+    if segment_keys {
+        m.extra.insert("segkeys".into(), "1".into());
+    }
     m.extra.insert("log-id".into(), id.clone());
     let signer = sign.map(|i| SigningKey::from_bytes(&i.ed25519_seed).verifying_key().to_bytes());
     if let Some(pk) = &signer {
         m.extra.insert("signer".into(), hex32(pk));
     }
-    let log = Log { dir: dir.clone(), name, id, signer, format: LOG_BASE_FORMAT };
+    let log = Log { dir: dir.clone(), name, id, signer, format, segkeys: segment_keys };
     write_atomic(&dir.join(INDEX_FILE), format!("{INDEX_MAGIC}\n").as_bytes())?;
     write_atomic(&dir.join(HEAD_FILE), make_head(&log, &[], sign).render().as_bytes())?;
     // The manifest goes last: only a complete log is recognised as a container.
@@ -955,21 +1064,51 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
     let n = idx.entries.len();
     let seq = n as u64 + 1;
     let sha = sha256(data);
-    let sealed = crate::seal_kn_to(
-        data,
-        opts.mode,
-        opts.pass,
-        &format!("segment-{seq}"),
-        false,
-        "",
-        &[],
-        None,
-        crate::DEFAULT_PIECE,
-        opts.recipients,
-    )?;
-    // 1. segment (atomic; replaces an unindexed leftover from a crash at the same seq)
+    // Per-segment keys: the segment is sealed to its own fresh key; --pass / --to only wrap that
+    // key into the key ring. Without them there would be nowhere to keep it, so refuse first.
+    let own_key = if log.segkeys {
+        if opts.pass.filter(|p| !p.is_empty()).is_none() && opts.recipients.is_empty() {
+            return Err(err(
+                "this log has per-segment keys: give --pass and/or --to so the segment key can be wrapped and kept in the key ring",
+            ));
+        }
+        Some(keyring::new_key()?)
+    } else {
+        None
+    };
+    let sealed = match &own_key {
+        Some((_, id)) => crate::seal_kn_to(
+            data,
+            opts.mode,
+            None,
+            &format!("segment-{seq}"),
+            false,
+            "",
+            &[],
+            None,
+            crate::DEFAULT_PIECE,
+            &[id.public()],
+        )?,
+        None => crate::seal_kn_to(
+            data,
+            opts.mode,
+            opts.pass,
+            &format!("segment-{seq}"),
+            false,
+            "",
+            &[],
+            None,
+            crate::DEFAULT_PIECE,
+            opts.recipients,
+        )?,
+    };
+    // 1. segment (atomic; replaces an unindexed leftover from a crash at the same seq), then its key
+    //    (a record without an INDEX line is an orphan `gc` reclaims; the next append replaces it)
     let seg = log.segment_path(seq);
     write_atomic(&seg, &sealed)?;
+    if let Some((m, _)) = &own_key {
+        keyring::put(&log, seq, m, opts.pass, opts.recipients)?;
+    }
     // 2. INDEX line, 3. HEAD
     let t = now();
     let body = format!("seq={seq} t={t} size={} sha={}", data.len(), hex32(&sha));
@@ -1049,13 +1188,15 @@ impl Listing {
                 None => "unsigned".to_string(),
             }
         );
-        if st.tomb_count() + st.compact_count() > 0 {
+        if self.log.segkeys || st.tomb_count() + st.compact_count() > 0 {
             s.push_str(&format!(
-                "  [log={}: {} deleted, {} tombstone(s), {} compaction(s)]",
+                "  [log={}:{} {} deleted, {} tombstone(s), {} compaction(s){}]",
                 self.log.format,
+                if self.log.segkeys { " per-segment keys," } else { "" },
                 st.deleted_count(),
                 st.tomb_count(),
-                st.compact_count()
+                st.compact_count(),
+                if self.log.segkeys { format!(", {} shredded", st.shred_count()) } else { String::new() }
             ));
         }
         s.push('\n');
@@ -1068,6 +1209,11 @@ impl Listing {
             let file = if *p { "ok" } else { "MISSING" };
             let what = match &e.op {
                 Op::Seg => match st.deleted_by(e.seq) {
+                    _ if st.is_shredded(e.seq) => format!(
+                        "SHREDDED (entry #{}) — key destroyed, unrecoverable{}",
+                        st.shredded_by(e.seq).unwrap_or(0),
+                        if *p { "; ciphertext still on disk, `sigil gc --apply` erases it" } else { "" }
+                    ),
                     Some(t) => format!(
                         "DELETED (tombstone #{t}){}",
                         if st.holder_of(e.seq) == e.seq && *p { " — file still on disk, erase with `log compact --apply`" } else { "" }
@@ -1075,8 +1221,9 @@ impl Listing {
                     None if st.holder_of(e.seq) != e.seq => format!("in #{}", st.holder_of(e.seq)),
                     None => file.to_string(),
                 },
-                Op::Tomb { del, reason } => format!(
-                    "tombstone: deletes {}{}",
+                Op::Tomb { del, reason, shred } => format!(
+                    "{}: deletes {}{}",
+                    if *shred { "crypto-shred" } else { "tombstone" },
                     fmt_ranges(del),
                     reason.as_ref().map(|r| format!("  reason: {r:?}")).unwrap_or_default()
                 ),
@@ -1097,7 +1244,7 @@ impl Listing {
             .iter()
             .enumerate()
             .filter(|(_, p)| **p)
-            .map(|(i, _)| st.deleted_members(i as u64 + 1).iter().map(|m| st.size_of(*m)).sum::<u64>())
+            .map(|(i, _)| st.deleted_members(i as u64 + 1).iter().filter(|m| !st.is_shredded(**m)).map(|m| st.size_of(*m)).sum::<u64>())
             .sum();
         if pend > 0 {
             s.push_str(&format!("{pend} byte(s) of deleted data are still on disk: `sigil log compact --apply` erases them\n"));
@@ -1113,16 +1260,23 @@ pub struct ReadOpts<'a> {
 
 /// Plain bytes of one segment file (a plain segment or a compaction segment), checked against
 /// the INDEX (hash and size). Also reports whether keys were needed to open it.
-fn read_holder(log: &Log, e: &Entry, opts: &ReadOpts<'_>) -> Result<(Vec<u8>, bool)> {
+fn read_holder(log: &Log, ring: &mut RingCache, e: &Entry, opts: &ReadOpts<'_>) -> Result<(Vec<u8>, bool)> {
     let p = log.segment_path(e.seq);
     let file = fs::read(&p).map_err(|er| err(format!("segment {} unreadable: {er}", e.seq)))?;
-    // Try without keys first: it tells whether the segment is protected at all.
-    let (plain, keyed) = match crate::unseal_ex_keys(&file, None, &[], &[]) {
-        Ok(p) => (p, false),
-        Err(_) => (
-            crate::unseal_ex_keys(&file, opts.pass, &[], opts.identities).map_err(|er| err(format!("segment {}: {er}", e.seq)))?,
-            true,
-        ),
+    let (plain, keyed) = if log.segkeys {
+        // every segment of such a log has its own key, wrapped in the key ring
+        let id = ring.identity(e.seq, opts.pass, opts.identities)?;
+        let plain = crate::unseal_ex_keys(&file, None, &[], &[id]).map_err(|er| err(format!("segment {}: {er}", e.seq)))?;
+        (plain, true)
+    } else {
+        // Try without keys first: it tells whether the segment is protected at all.
+        match crate::unseal_ex_keys(&file, None, &[], &[]) {
+            Ok(p) => (p, false),
+            Err(_) => (
+                crate::unseal_ex_keys(&file, opts.pass, &[], opts.identities).map_err(|er| err(format!("segment {}: {er}", e.seq)))?,
+                true,
+            ),
+        }
     };
     if sha256(&plain) != e.sha || plain.len() as u64 != e.size {
         return Err(err(format!("segment {} does not match the index (substituted or altered)", e.seq)));
@@ -1132,7 +1286,7 @@ fn read_holder(log: &Log, e: &Entry, opts: &ReadOpts<'_>) -> Result<(Vec<u8>, bo
 
 /// Plain bytes of one segment, checked against the INDEX (hash and size).
 pub fn read_segment(log: &Log, e: &Entry, opts: &ReadOpts<'_>) -> Result<Vec<u8>> {
-    read_holder(log, e, opts).map(|(p, _)| p)
+    read_holder(log, &mut RingCache::new(log), e, opts).map(|(p, _)| p)
 }
 
 /// Cuts one original segment out of whichever file holds it, with a one-file cache.
@@ -1142,25 +1296,26 @@ struct Reader<'a> {
     state: &'a State,
     opts: &'a ReadOpts<'a>,
     cache: Option<(u64, Vec<u8>)>,
+    ring: RingCache,
     /// A source that needed keys was opened.
     keyed_seen: bool,
 }
 
 impl<'a> Reader<'a> {
     fn new(log: &'a Log, entries: &'a [Entry], state: &'a State, opts: &'a ReadOpts<'a>) -> Self {
-        Reader { log, entries, state, opts, cache: None, keyed_seen: false }
+        Reader { log, entries, state, opts, cache: None, ring: RingCache::new(log), keyed_seen: false }
     }
 
     fn member(&mut self, seq: u64) -> Result<Vec<u8>> {
         let h = self.state.holder_of(seq);
         let e = &self.entries[seq as usize - 1];
         if h == seq {
-            let (p, k) = read_holder(self.log, e, self.opts)?;
+            let (p, k) = read_holder(self.log, &mut self.ring, e, self.opts)?;
             self.keyed_seen |= k;
             return Ok(p);
         }
         if self.cache.as_ref().map(|c| c.0) != Some(h) {
-            let (p, k) = read_holder(self.log, &self.entries[h as usize - 1], self.opts)?;
+            let (p, k) = read_holder(self.log, &mut self.ring, &self.entries[h as usize - 1], self.opts)?;
             self.keyed_seen |= k;
             self.cache = Some((h, p));
         }
@@ -1200,6 +1355,13 @@ pub struct ReadOut {
 }
 
 fn deleted_msg(entries: &[Entry], st: &State, seq: u64) -> String {
+    if let Some(t) = st.shredded_by(seq) {
+        let reason = match entries.get(t as usize - 1).map(|e| &e.op) {
+            Some(Op::Tomb { reason: Some(r), .. }) => format!(" (reason: {r})"),
+            _ => String::new(),
+        };
+        return format!("segment {seq} was crypto-shredded by entry #{t}{reason}; its key is destroyed and its data cannot be recovered");
+    }
     let t = st.deleted_by(seq).unwrap_or(0);
     let reason = match entries.get(t as usize - 1).map(|e| &e.op) {
         Some(Op::Tomb { reason: Some(r), .. }) => format!(" (reason: {r})"),
@@ -1395,6 +1557,10 @@ pub struct CheckReport {
     pub compactions: usize,
     /// `log=N` of the manifest.
     pub format: u32,
+    /// The log was made with `init --segment-keys`.
+    pub segkeys: bool,
+    /// Segments whose key a shred entry destroyed.
+    pub shredded: usize,
 }
 
 /// Full integrity check: manifest, INDEX chain, HEAD (+signature), every segment, strays.
@@ -1434,6 +1600,17 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     rep.deleted = st.deleted_count();
     rep.tombstones = st.tomb_count();
     rep.compactions = st.compact_count();
+    rep.segkeys = log.segkeys;
+    rep.shredded = st.shred_count();
+    if st.shred_count() > 0 {
+        rep.findings.push(fnd(
+            Severity::Info,
+            "shreds",
+            "INDEX",
+            format!("{} segment(s) crypto-shredded: their keys are destroyed, the entries (and every anchor) still verify", st.shred_count()),
+            None,
+        ));
+    }
     if st.tomb_count() > 0 {
         rep.findings.push(fnd(
             Severity::Info,
@@ -1455,6 +1632,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     // Only entries the HEAD vouches for may declare a file dead; everything beyond is assumed live.
     let st_t = State::build(&entries[..trusted]);
     let keyed = opts.pass.is_some() || !opts.identities.is_empty();
+    let mut ring = RingCache::new(&log);
     for e in &entries {
         if st.is_tomb(e.seq) {
             continue;
@@ -1464,6 +1642,16 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
         let slot = if e.seq as usize > trusted { Slot::Needed } else { st_t.slot(e.seq) };
         if slot != Slot::Needed {
             if let Ok(md) = fs::metadata(&p) {
+                if slot == Slot::DeadDeleted && st_t.key_shredded(e.seq) {
+                    rep.findings.push(fnd(
+                        Severity::Info,
+                        "shredded-segment",
+                        subject,
+                        format!("segment {} is crypto-shredded; its unreadable ciphertext ({} bytes) is still on disk", e.seq, md.len()),
+                        Some("sigil gc --apply erases the file"),
+                    ));
+                    continue;
+                }
                 let (code, msg, hint) = if slot == Slot::DeadDeleted {
                     (
                         "deleted-segment",
@@ -1527,7 +1715,12 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             }
         }
         if keyed {
-            match crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities) {
+            let opened = if log.segkeys {
+                ring.identity(e.seq, opts.pass, opts.identities).and_then(|id| crate::unseal_ex_keys(&bytes, None, &[], &[id]))
+            } else {
+                crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities)
+            };
+            match opened {
                 Ok(plain) if sha256(&plain) == e.sha && plain.len() as u64 == e.size => {
                     // a compaction segment must also cut back into exactly the original batches
                     if st.is_compact(e.seq) {
@@ -1547,6 +1740,9 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             }
         }
     }
+    if log.segkeys {
+        check_keys(&log, &entries, &st, &st_t, trusted, opts, &mut rep);
+    }
     // Strays.
     let extras = scan_extras(&log, &entries, trusted, opts.temp_age_secs);
     for x in &extras {
@@ -1559,6 +1755,78 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
         }
     }
     Ok(rep)
+}
+
+/// Key ring checks of a segment-keys log (needs no key): every needed segment has its record, no
+/// record outlives its segment, a shred is complete, the shards are healthy.
+fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: usize, opts: &CheckOpts<'_>, rep: &mut CheckReport) {
+    let scan = keyring::scan(log);
+    let mut present = std::collections::BTreeSet::new();
+    let mut unreadable = std::collections::BTreeSet::new();
+    for (shard, r) in &scan {
+        let rel = format!("{KEYS_DIR}/{shard:04}.sg1");
+        match r {
+            Ok(set) => {
+                present.extend(set.iter().copied());
+                if !opts.quick {
+                    if let Ok(bytes) = fs::read(keyring::shard_path(&log.dir, *shard)) {
+                        match health_bytes(&bytes) {
+                            Health::Ok => {}
+                            Health::Mendable(m) => rep.findings.push(fnd(Severity::Warn, "bit-rot", rel, format!("{m} — repairable"), Some("sigil log mend PATH"))),
+                            Health::Damaged(m) => rep.findings.push(fnd(Severity::Error, "bit-rot-unrecoverable", rel, m, Some("restore the key ring shard from a copy"))),
+                        }
+                    }
+                }
+            }
+            Err(m) => {
+                unreadable.insert(*shard);
+                rep.findings.push(fnd(Severity::Error, "keyring-damaged", rel, m.clone(), Some("sigil log mend PATH, or restore the shard from a copy; its segments cannot be opened meanwhile")));
+            }
+        }
+    }
+    for e in entries {
+        if st.is_tomb(e.seq) {
+            continue;
+        }
+        let needed = e.seq as usize > trusted || st_t.slot(e.seq) == Slot::Needed;
+        let has = present.contains(&e.seq);
+        if needed && !has && !unreadable.contains(&keyring::shard_of(e.seq)) {
+            rep.findings.push(fnd(
+                Severity::Error,
+                "key-missing",
+                format!("{KEYS_DIR}/{:04}.sg1", keyring::shard_of(e.seq)),
+                format!("segment {} has no key in the key ring: it cannot be opened", e.seq),
+                Some("restore the key ring from a copy; a destroyed key cannot be recreated"),
+            ));
+        } else if !needed && has {
+            if st_t.key_shredded(e.seq) {
+                rep.findings.push(fnd(
+                    Severity::Warn,
+                    "shred-key-present",
+                    format!("{KEYS_DIR}/{:04}.sg1", keyring::shard_of(e.seq)),
+                    format!("segment {} is recorded as shredded but its key is still in the ring (an interrupted shred)", e.seq),
+                    Some("sigil gc --apply destroys it"),
+                ));
+            } else {
+                rep.findings.push(fnd(
+                    Severity::Warn,
+                    "dead-key",
+                    format!("{KEYS_DIR}/{:04}.sg1", keyring::shard_of(e.seq)),
+                    format!("the key of segment {} is still in the ring though the segment is deleted or merged away", e.seq),
+                    Some("sigil gc --apply (or log compact --apply) destroys it"),
+                ));
+            }
+        }
+    }
+    for seq in present.iter().filter(|s| **s as usize > entries.len() || st.is_tomb(**s)) {
+        rep.findings.push(fnd(
+            Severity::Warn,
+            "orphan-key",
+            format!("{KEYS_DIR}/{:04}.sg1", keyring::shard_of(*seq)),
+            format!("key record {seq} belongs to no INDEX entry: a crashed append or compaction"),
+            Some("sigil gc --apply"),
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1629,7 +1897,7 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
         if matches!(n.as_str(), container::CONTAINER_FILE | INDEX_FILE | HEAD_FILE) {
             continue;
         }
-        if p.is_dir() && n == SEGMENTS_DIR {
+        if p.is_dir() && (n == SEGMENTS_DIR || (n == KEYS_DIR && log.segkeys)) {
             continue;
         }
         if p.is_file() && (n.ends_with(".part") || n == LOCK_FILE) {
@@ -1639,6 +1907,18 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
             continue;
         }
         out.push(Extra { bytes: 0, path: p, kind: ExtraKind::Unknown });
+    }
+    if log.segkeys {
+        for p in sorted(&log.dir.join(KEYS_DIR)) {
+            let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if n.ends_with(".part") && p.is_file() {
+                if old_enough(&p, temp_age) {
+                    out.push(Extra { bytes: sz(&p), path: p, kind: ExtraKind::Temp });
+                }
+            } else if keyring::shard_of_file(&p).is_none() || !p.is_file() {
+                out.push(Extra { bytes: 0, path: p, kind: ExtraKind::Unknown });
+            }
+        }
     }
     for shard in sorted(&log.dir.join(SEGMENTS_DIR)) {
         if !shard.is_dir() {
@@ -1718,6 +1998,36 @@ pub(crate) fn gc_gate(log: &Log) -> Result<GcGate> {
     Ok(GcGate { entries: idx.entries, trusted, kept })
 }
 
+/// Key records nothing needs any more: beyond the INDEX (crashed append / compaction), or of a
+/// segment the HEAD-vouched entries declare deleted, merged away or shredded. Records of entries
+/// the HEAD does not cover yet are always kept.
+pub(crate) fn dead_keys(log: &Log, gate: &GcGate) -> Result<Vec<u64>> {
+    let mut dead = Vec::new();
+    let st_t = State::build(&gate.entries[..gate.trusted]);
+    for (shard, r) in keyring::scan(log) {
+        let set = r.map_err(|m| err(format!("key ring shard {shard:04} is unreadable ({m}); keys were not examined")))?;
+        for s in set {
+            let beyond = s as usize > gate.entries.len();
+            if beyond || (s as usize <= gate.trusted && st_t.slot(s) != Slot::Needed) {
+                dead.push(s);
+            }
+        }
+    }
+    Ok(dead)
+}
+
+/// Destroy the dead key records (see `dead_keys`) under the log lock, with a fresh look at the
+/// INDEX, so an append in flight can never lose its brand-new key to a concurrent `gc`.
+pub(crate) fn reclaim_dead_keys(log: &Log) -> Result<Vec<u64>> {
+    if !log.segkeys {
+        return Ok(Vec::new());
+    }
+    let _guard = lock(log)?;
+    let gate = gc_gate(log)?;
+    let dead = dead_keys(log, &gate)?;
+    keyring::destroy(log, &dead)
+}
+
 // ---------------------------------------------------------------------------
 // mend
 // ---------------------------------------------------------------------------
@@ -1729,6 +2039,10 @@ pub struct MendReport {
     pub mended: Vec<u64>,
     pub missing: Vec<u64>,
     pub unrecoverable: Vec<(u64, String)>,
+    /// Key ring shards healed in place (segment-keys logs).
+    pub keys_mended: Vec<u64>,
+    /// Key ring shards ECC cannot heal.
+    pub keys_unrecoverable: Vec<(u64, String)>,
 }
 
 /// Heal every repairable segment in place (atomic replace). Never changes the INDEX / HEAD:
@@ -1767,6 +2081,11 @@ pub fn mend(path: &Path) -> Result<MendReport> {
                 Err(er) => rep.unrecoverable.push((e.seq, er.to_string())),
             },
         }
+    }
+    if log.segkeys {
+        let (m, b) = keyring::mend_shards(&log)?;
+        rep.keys_mended = m;
+        rep.keys_unrecoverable = b;
     }
     Ok(rep)
 }
@@ -1913,9 +2232,55 @@ mod tests {
     }
 
     #[test]
+    fn shred_lines_fold_into_state_and_invalid_ones_are_rejected() {
+        let g = sha256(b"g");
+        let sh = hex32(&sha256(b"abc"));
+        let s = |n: u64| format!("seq={n} t=5 size=3 sha={sh}");
+        let (s1, s2, s3) = (s(1), s(2), s(3));
+        // a shred is a tombstone with shred=1: deleted AND key destroyed
+        let t4 = "seq=4 t=6 op=tomb del=2 shred=1 reason=gdpr";
+        let p = parse_index(&chained(&g, &[&s1, &s2, &s3, t4]), &g);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let st = &p.state;
+        assert!(p.entries[3].is_shred() && p.entries[3].extra_keys().is_empty());
+        assert_eq!((st.deleted_by(2), st.shredded_by(2), st.is_shredded(1)), (Some(4), Some(4), false));
+        assert!(st.key_shredded(2) && !st.key_shredded(1));
+        assert_eq!((st.slot(2), st.slot(1), st.shred_count(), st.deleted_count()), (Slot::DeadDeleted, Slot::Needed, 1, 1));
+        // a plain tombstone may be hardened into a shred; a shred is final
+        let t4p = "seq=4 t=6 op=tomb del=2";
+        let p = parse_index(&chained(&g, &[&s1, &s2, &s3, t4p, "seq=5 t=7 op=tomb del=2 shred=1"]), &g);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!((p.state.deleted_by(2), p.state.shredded_by(2)), (Some(4), Some(5)));
+        for (bodies, code) in [
+            (vec![t4, "seq=5 t=7 op=tomb del=2 shred=1"], "index-shred"),
+            (vec![t4, "seq=5 t=7 op=tomb del=2"], "index-tombstone"),
+            (vec!["seq=4 t=6 op=tomb del=2 shred=0"], "index-line"),
+            (vec!["seq=4 t=6 op=tomb del=4 shred=1"], "index-tombstone"),
+        ] {
+            let mut all = vec![s1.as_str(), s2.as_str(), s3.as_str()];
+            all.extend(bodies.iter().copied());
+            let e = parse_index(&chained(&g, &all), &g).error.unwrap_or_else(|| panic!("{bodies:?} accepted"));
+            assert_eq!(e.1, code, "{bodies:?}: {e:?}");
+        }
+        // one key per file: a compaction segment's batches can only be shredded together
+        let c4 = format!("seq=4 t=6 size=6 sha={sh} op=compact of=1-2");
+        let part = parse_index(&chained(&g, &[&s1, &s2, &s3, &c4, "seq=5 t=7 op=tomb del=1 shred=1"]), &g);
+        assert_eq!(part.error.unwrap().1, "index-shred");
+        let all = parse_index(&chained(&g, &[&s1, &s2, &s3, &c4, "seq=5 t=7 op=tomb del=1-2 shred=1"]), &g);
+        assert!(all.error.is_none(), "{:?}", all.error);
+        assert!(all.state.key_shredded(4) && all.state.is_shredded(1) && all.state.is_shredded(2) && !all.state.is_shredded(3));
+        assert_eq!(all.state.slot(4), Slot::DeadDeleted);
+        // an already-deleted sibling does not have to be named again, but it is shredded with the file
+        let t5 = "seq=5 t=7 op=tomb del=1";
+        let sib = parse_index(&chained(&g, &[&s1, &s2, &s3, &c4, t5, "seq=6 t=8 op=tomb del=2 shred=1"]), &g);
+        assert!(sib.error.is_none(), "{:?}", sib.error);
+        assert!(sib.state.is_shredded(1) && sib.state.is_shredded(2));
+    }
+
+    #[test]
     fn head_roundtrip_and_signature() {
         let id = Identity::generate().unwrap();
-        let log = Log { dir: PathBuf::new(), name: "x".into(), id: "ab".repeat(16), signer: None, format: 1 };
+        let log = Log { dir: PathBuf::new(), name: "x".into(), id: "ab".repeat(16), signer: None, format: 1, segkeys: false };
         let h = make_head(&log, &[], Some(&id));
         let back = Head::parse(&h.render()).unwrap();
         assert_eq!(back, h);
