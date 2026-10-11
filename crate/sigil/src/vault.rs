@@ -1646,23 +1646,101 @@ pub fn prune_with(
         }
     }
     let mut kept_entries = Vec::new();
+    let mut gone_files = Vec::new();
     for (i, v) in chart.versions.iter().enumerate() {
         if i < cutoff && v.n != tip {
-            let p = seal_path_in(&chart.vault_dir, &v.seal);
-            let _ = fs::remove_file(&p);
+            gone_files.push(seal_path_in(&chart.vault_dir, &v.seal));
             removed.push(v.n);
         } else {
             kept_entries.push(v.clone());
         }
     }
     chart.versions = kept_entries;
+    // Chart first, files after: a crash leaves an orphan seal (`sigil gc` reclaims it),
+    // never a chart entry whose seal is gone.
     write_chart(&chart)?;
+    for p in gone_files {
+        let _ = fs::remove_file(&p);
+    }
     Ok(PruneReport {
         removed,
         kept: chart.versions.len() as u32,
         tip,
         cold_dir: cold_owned,
     })
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoveVersionReport {
+    pub removed: u32,
+    pub tip: u32,
+    /// Versions still in the chart afterwards.
+    pub remaining: u32,
+    /// Where the seal was archived first (if it was).
+    pub cold_dir: Option<PathBuf>,
+    pub dry_run: bool,
+}
+
+/// `<container>/cold` for a vault that lives in a `name.sigil/` container.
+pub fn cold_here(path: &Path) -> Result<PathBuf> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    if !is_container_vault_dir(&vault_dir) {
+        return Err(crate::Error::Msg(
+            "--cold-here needs a tidy container (run `sigil tidy` first) or pass --cold DIR".into(),
+        ));
+    }
+    Ok(vault_dir.join(crate::container::COLD_DIR))
+}
+
+/// Remove one named version from the chart and delete its seal.
+///
+/// Policy: the **tip** can never be removed (commit a newer version first), nor the only
+/// version. Under **light** retention the seal must go to a cold kit (`cold`) first, or be
+/// discarded on purpose with `force_drop`; under **full** retention an explicit remove is
+/// allowed (add `cold` to archive anyway). The chart is rewritten before the seal file is
+/// deleted, so a crash leaves an orphan for `sigil gc`, never a dangling chart entry.
+pub fn remove_version(
+    path: &Path,
+    n: u32,
+    cold: Option<&Path>,
+    force_drop: bool,
+    dry_run: bool,
+) -> Result<RemoveVersionReport> {
+    let (_live, vault_dir) = resolve_paths(path)?;
+    let mut chart = load_chart(&vault_dir)?;
+    let entry = entry_by_n(&chart, n)?.clone();
+    if n == chart.tip {
+        return Err(crate::Error::Msg(format!(
+            "v{n} is the tip and cannot be removed; commit a newer version first"
+        )));
+    }
+    if chart.versions.len() <= 1 {
+        return Err(crate::Error::Msg("refusing to remove the only version".into()));
+    }
+    if matches!(chart.retention, RetentionPolicy::Light { .. }) && cold.is_none() && !force_drop {
+        return Err(crate::Error::Msg(
+            "light retention: removing a version needs --cold DIR (or --cold-here) to keep a cold kit, or --force-drop to discard it"
+                .into(),
+        ));
+    }
+    let report = RemoveVersionReport {
+        removed: n,
+        tip: chart.tip,
+        remaining: chart.versions.len() as u32 - 1,
+        cold_dir: cold.map(|p| p.to_path_buf()),
+        dry_run,
+    };
+    if dry_run {
+        return Ok(report);
+    }
+    if let Some(cold_root) = cold {
+        fs::create_dir_all(cold_root).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        cold_archive_version(&chart.vault_dir, &entry, cold_root)?;
+    }
+    chart.versions.retain(|v| v.n != n);
+    write_chart(&chart)?;
+    let _ = fs::remove_file(seal_path_in(&chart.vault_dir, &entry.seal));
+    Ok(report)
 }
 
 /// Place a version seal into `cold_root/vN/` via kit place when safe; else copy the `.sg1`.

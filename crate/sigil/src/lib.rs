@@ -16,6 +16,7 @@ mod mount;
 mod nest;
 mod open;
 pub mod container;
+pub mod gc;
 pub mod passkey;
 mod pieces;
 pub mod pgp;
@@ -38,7 +39,8 @@ pub use boot::{copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, 
 pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
     pack_atlas, pack_atlas_chart, pack_atlas_keys, scry_chart, scry_constellation, scry_constellation_keys, unseal_constellation,
-    unseal_constellation_keys, AddOpts, AddReport, Chart,
+    remove_members as constellation_remove, unseal_constellation_keys, AddOpts, AddReport, Chart,
+    RemoveOpts as ConstellationRemoveOpts, RemoveReport as ConstellationRemoveReport,
 };
 pub use folder::{inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry};
 pub use nest::{
@@ -95,7 +97,8 @@ pub use vault::{
     restore_ex as vault_restore_ex, track_ex as vault_track_ex, tree_digest as vault_tree_digest,
     ChartKind as VaultChartKind,
     format_recipients as vault_format_recipients, get_recipients as vault_get_recipients,
-    set_recipients as vault_set_recipients,
+    set_recipients as vault_set_recipients, cold_here as vault_cold_here,
+    remove_version as vault_remove_version, RemoveVersionReport as VaultRemoveVersionReport,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;

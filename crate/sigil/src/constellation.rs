@@ -114,7 +114,7 @@ fn peek_header(path: &Path) -> Result<(crate::Header, Vec<u8>)> {
     Ok((h, buf))
 }
 
-fn peek_digest(path: &Path) -> Option<[u8; 32]> {
+pub(crate) fn peek_digest(path: &Path) -> Option<[u8; 32]> {
     if crate::work::is_work_pack(path) {
         return None;
     }
@@ -128,7 +128,7 @@ pub fn star_file_name(list_path: &str) -> String {
     format!("{}.sg1", safe.replace('/', "__"))
 }
 
-fn default_title(dir: &Path) -> String {
+pub(crate) fn default_title(dir: &Path) -> String {
     dir.components()
         .as_path()
         .file_name()
@@ -469,7 +469,7 @@ fn unseal_card(data: &[u8], pass: Option<&str>, identities: &[Identity]) -> Resu
     })
 }
 
-fn load_chart_from_mark(path: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Chart> {
+pub(crate) fn load_chart_from_mark(path: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Chart> {
     let data = fs::read(path).map_err(io)?;
     let plain = unseal_card(&data, pass, identities)?;
     unpack_chart(&plain)
@@ -502,7 +502,7 @@ pub fn load_chart_keys(
     Err(err("not a constellation (folder, card .sg1, or atlas .sga)"))
 }
 
-fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], PathBuf> {
+pub(crate) fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], PathBuf> {
     let mut map = HashMap::new();
     // Container layout: `stars/ab/<fp>.sg1` (and `stars/by-name/*`). File name is a hint only;
     // the digest is read from each star's header like the flat layout.
@@ -574,7 +574,7 @@ fn member_from_star(path: &Path, list_name: &str, digest: [u8; 32]) -> Result<Me
     })
 }
 
-fn find_member_star(
+pub(crate) fn find_member_star(
     dir: &Path,
     member: &Member,
     by_digest: &HashMap<[u8; 32], PathBuf>,
@@ -769,6 +769,124 @@ pub fn add_to_constellation(sky: &Path, input: &Path, opts: AddOpts<'_>) -> Resu
         write_card(sky, &chart, opts.pass, opts.recipients)?;
     }
     report.chart = Some(chart);
+    Ok(report)
+}
+
+/// Options for [`remove_members`].
+#[derive(Clone, Default)]
+pub struct RemoveOpts<'a> {
+    pub pass: Option<&'a str>,
+    /// Encrypt-to recipients the rewritten card must keep (same set as on `add`).
+    pub recipients: &'a [PublicIdentity],
+    /// Identities that open an encrypt-to card.
+    pub identities: &'a [Identity],
+    /// Leave star files on disk even when nothing on the list needs them any more.
+    pub keep_stars: bool,
+    /// Report what would happen; change nothing.
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RemoveReport {
+    /// List names taken off the card.
+    pub removed: Vec<String>,
+    /// Star files deleted because no remaining name needs them (would-be when dry run).
+    pub stars_freed: Vec<PathBuf>,
+    /// Remaining list size.
+    pub remaining: usize,
+    pub dry_run: bool,
+}
+
+/// Take names off a constellation's list (and free stars nothing else needs).
+///
+/// A name ending in `/` removes everything under that folder. The card is rewritten
+/// atomically *first*; star files go afterwards, so a crash leaves at worst an orphan
+/// star that `sigil gc` reclaims — never a list entry without its star. A star shared
+/// by another name (same bytes) is kept. Removing the last name is refused.
+pub fn remove_members(sky: &Path, names: &[String], opts: RemoveOpts<'_>) -> Result<RemoveReport> {
+    let sky_owned = crate::container::sky_for_read(sky);
+    let sky = sky_owned.as_path();
+    let card = find_card(sky).ok_or_else(|| err("not a constellation folder (no card)"))?;
+    if names.is_empty() {
+        return Err(err("give at least one name to remove"));
+    }
+    if opts.recipients.is_empty() && card_is_encrypt_to(&card) {
+        return Err(err(
+            "this constellation's card is encrypt-to; pass the same --to recipients (and --identity to open the card) when removing",
+        ));
+    }
+    let mut chart = load_chart_from_mark(&card, opts.pass, opts.identities)?;
+    let mut drop_idx = std::collections::BTreeSet::new();
+    for want in names {
+        let want = want.replace('\\', "/");
+        let hits: Vec<usize> = chart
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                if want.ends_with('/') {
+                    m.name.starts_with(&want)
+                } else {
+                    m.name == want
+                }
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if hits.is_empty() {
+            return Err(err(format!("not on the list: {want}")));
+        }
+        drop_idx.extend(hits);
+    }
+    if drop_idx.len() >= chart.members.len() {
+        return Err(err(
+            "that would empty the list; delete the whole constellation folder instead",
+        ));
+    }
+    let dropped: Vec<Member> = drop_idx.iter().map(|&i| chart.members[i].clone()).collect();
+    let remaining: Vec<Member> = chart
+        .members
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop_idx.contains(i))
+        .map(|(_, m)| m.clone())
+        .collect();
+    let by_digest = index_stars(sky, Some(&card));
+    let mut freed = Vec::new();
+    for m in &dropped {
+        if remaining.iter().any(|r| r.digest == m.digest) {
+            continue;
+        }
+        if let Some(p) = find_member_star(sky, m, &by_digest) {
+            let ok = crate::work::is_work_pack(&p) || peek_digest(&p) == Some(m.digest);
+            if ok && !is_constellation_mark(&p) && !freed.contains(&p) {
+                freed.push(p);
+            }
+        }
+    }
+    let report = RemoveReport {
+        removed: dropped.iter().map(|m| m.name.clone()).collect(),
+        stars_freed: if opts.keep_stars { Vec::new() } else { freed.clone() },
+        remaining: remaining.len(),
+        dry_run: opts.dry_run,
+    };
+    if opts.dry_run {
+        return Ok(report);
+    }
+    chart.members = remaining;
+    write_card(sky, &chart, opts.pass, opts.recipients)?;
+    if !opts.keep_stars {
+        for p in &freed {
+            let _ = fs::remove_file(p);
+            if let Some(parent) = p.parent() {
+                // Drop an emptied shard folder (`stars/ab/`), never the container itself.
+                if parent.file_name().map(|n| n.len() == 2).unwrap_or(false)
+                    && parent.parent().map(|g| g.ends_with(crate::container::STARS_DIR)).unwrap_or(false)
+                {
+                    let _ = fs::remove_dir(parent);
+                }
+            }
+        }
+    }
     Ok(report)
 }
 
