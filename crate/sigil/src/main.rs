@@ -775,6 +775,9 @@ enum LogCmd {
         to: Option<u64>,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// In a range, fail on a deleted segment instead of skipping it
+        #[arg(long)]
+        strict: bool,
         #[arg(long)]
         pass: Option<String>,
         #[arg(long)]
@@ -809,6 +812,65 @@ enum LogCmd {
     },
     /// Heal repairable segments in place (ECC); INDEX and HEAD never change.
     Mend { path: PathBuf },
+    /// Mark segments as deleted (chain-covered, permanent). Reads honour it at once; the bytes are
+    /// erased by `log compact --apply` (or `gc --apply`). The log becomes `log=2`.
+    Tombstone {
+        path: PathBuf,
+        /// One segment
+        #[arg(long, conflicts_with_all = ["from", "to"], required_unless_present_any = ["from", "to"])]
+        seq: Option<u64>,
+        /// First segment of a range (needs --to)
+        #[arg(long, requires = "to")]
+        from: Option<u64>,
+        /// Last segment of a range (needs --from)
+        #[arg(long, requires = "from")]
+        to: Option<u64>,
+        /// Why (free text, kept in the INDEX; do not put secrets here)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Signing identity (.sgk); required exactly when the log was created with --identity
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
+    /// Merge live segments into fewer, larger ones and erase the files of deleted / merged-away
+    /// segments. Dry run unless --apply. The INDEX keeps every old entry, so pinned anchors still verify.
+    Compact {
+        path: PathBuf,
+        /// Leave the newest N batches alone
+        #[arg(long = "keep-last")]
+        keep_last: Option<u64>,
+        /// Only merge batches appended at least this long ago (e.g. 30d, 12h, 90m, 3600)
+        #[arg(long = "older-than")]
+        older_than: Option<String>,
+        /// Only merge batches with original seq in A-B
+        #[arg(long)]
+        range: Option<String>,
+        /// Do it (default: only show the plan)
+        #[arg(long)]
+        apply: bool,
+        /// Stop growing a merged segment at about this many plain bytes
+        #[arg(long = "target-size", default_value_t = 64 << 20)]
+        target_size: u64,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        /// Passphrase that opens the source segments
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens encrypt-to segments; for a signed log also the signing key (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Passphrase for the merged segments
+        #[arg(long = "seal-pass")]
+        seal_pass: Option<String>,
+        /// Encrypt-to recipient for the merged segments (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Allow merging encrypted batches into an unencrypted segment
+        #[arg(long = "allow-decrypt")]
+        allow_decrypt: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2349,6 +2411,21 @@ fn parse_signer(spec: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
     b.try_into().map_err(|_| "--signer hex must be 32 bytes (64 hex chars)".into())
 }
 
+/// `90`, `45s`, `30m`, `12h`, `7d`, `2w` → seconds.
+fn parse_duration_secs(spec: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    let t = spec.trim();
+    let (num, mult) = match t.chars().last() {
+        Some('s') => (&t[..t.len() - 1], 1),
+        Some('m') => (&t[..t.len() - 1], 60),
+        Some('h') => (&t[..t.len() - 1], 3600),
+        Some('d') => (&t[..t.len() - 1], 86400),
+        Some('w') => (&t[..t.len() - 1], 7 * 86400),
+        _ => (t, 1),
+    };
+    let n: u64 = num.trim().parse().map_err(|_| format!("bad duration {spec:?}: use e.g. 90, 30m, 12h, 7d, 2w"))?;
+    Ok(n.saturating_mul(mult))
+}
+
 fn parse_anchor(spec: &str) -> Result<(u64, [u8; 32]), Box<dyn std::error::Error>> {
     let (n, r) = spec.split_once(':').ok_or("--anchor needs SEQ:ROOT (as printed by `sigil log ls`)")?;
     let root: [u8; 32] = hex::decode(r.trim())
@@ -2405,7 +2482,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         LogCmd::Ls { path } => print!("{}", seglog::list(&path)?.render()),
-        LogCmd::Read { path, seq, from, to, output, pass, talisman, identity } => {
+        LogCmd::Read { path, seq, from, to, output, strict, pass, talisman, identity } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let n = seglog::list(&path)?.entries.len() as u64;
@@ -2416,7 +2493,22 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             if n == 0 {
                 return Err("the log is empty".into());
             }
-            let parts = seglog::read_range(&path, a, b, &seglog::ReadOpts { pass: pass.as_deref(), identities: &identities })?;
+            let mode = if seq.is_some() {
+                seglog::ReadMode::Single
+            } else if strict {
+                seglog::ReadMode::Strict
+            } else {
+                seglog::ReadMode::SkipDeleted
+            };
+            let got = seglog::read_range(&path, a, b, &seglog::ReadOpts { pass: pass.as_deref(), identities: &identities }, mode)?;
+            if !got.skipped_deleted.is_empty() {
+                eprintln!(
+                    "note: skipped {} deleted segment(s): {}",
+                    got.skipped_deleted.len(),
+                    seglog::fmt_ranges(&seglog::compress(&got.skipped_deleted))
+                );
+            }
+            let parts = got.parts;
             let mut out: Box<dyn std::io::Write> = match &output {
                 Some(p) => Box::new(fs::File::create(p)?),
                 None => Box::new(std::io::stdout().lock()),
@@ -2440,7 +2532,12 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     let r = sigil::doctor::DoctorReport {
                         kind: "log".into(),
                         root: dir,
-                        layout: format!("container, {} segment(s){}", c.entries, if c.signed { ", signed" } else { "" }),
+                        layout: format!(
+                            "container, {} segment(s){}{}",
+                            c.segments,
+                            if c.signed { ", signed" } else { "" },
+                            if c.format >= 2 { format!(", log=2: {} deleted, {} compaction(s)", c.deleted, c.compactions) } else { String::new() }
+                        ),
                         container_version: c.container_version,
                         findings: c.findings,
                         verified: c.verified,
@@ -2458,6 +2555,59 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(3);
                 }
             }
+        }
+        LogCmd::Tombstone { path, seq, from, to, reason, identity } => {
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let target = match (seq, from, to) {
+                (Some(s), _, _) => seglog::TombTarget::Seq(s),
+                (None, Some(a), Some(b)) => seglog::TombTarget::Range(a, b),
+                _ => return Err("give --seq N, or --from A --to B".into()),
+            };
+            let r = seglog::tombstone(&path, target, reason.as_deref(), id.as_ref())?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "tombstone {}: deleted segment(s) {}{}  head {}:{}{}",
+                r.entry,
+                seglog::fmt_ranges(&seglog::compress(&r.deleted)),
+                if r.already.is_empty() { String::new() } else { format!(" ({} already deleted, skipped)", r.already.len()) },
+                r.entry,
+                hex::encode(r.root),
+                if r.signed { "  (signed)" } else { "" }
+            );
+            println!("  reads and `log ls` honour it now; {} byte(s) stay on disk until `sigil log compact --apply` (or `gc --apply`)", r.pending_bytes);
+        }
+        LogCmd::Compact { path, keep_last, older_than, range, apply, target_size, mode, pass, talisman, identity, seal_pass, to, allow_decrypt } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let recipients = load_recipients(&to)?;
+            let older = older_than.as_deref().map(parse_duration_secs).transpose()?;
+            let range = match range.as_deref() {
+                Some(r) => {
+                    let (a, b) = r.split_once('-').ok_or("--range needs A-B")?;
+                    Some((a.trim().parse::<u64>()?, b.trim().parse::<u64>()?))
+                }
+                None => None,
+            };
+            let rep = seglog::compact(
+                &path,
+                &seglog::CompactOpts {
+                    keep_last,
+                    older_than_secs: older,
+                    range,
+                    apply,
+                    target_size,
+                    mode: mode.into(),
+                    seal_pass: seal_pass.as_deref(),
+                    recipients: &recipients,
+                    allow_decrypt,
+                    read: seglog::ReadOpts { pass: pass.as_deref(), identities: &identities },
+                    ..Default::default()
+                },
+            )?;
+            let dir = seglog::Log::open(&path).map(|l| l.dir).unwrap_or(path.clone());
+            print!("{}", rep.render(&dir));
         }
         LogCmd::Mend { path } => {
             let r = seglog::mend(&path)?;

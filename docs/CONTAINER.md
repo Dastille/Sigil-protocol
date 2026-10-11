@@ -220,14 +220,16 @@ sigil mount Sky mnt --export-dir out  [--pass … | --identity key.sgk]
 
 ## Segment logs (`kind=log`)
 
-A third container kind: `events.sigil/` with `CONTAINER` (`kind=log`, `log=1`, `log-id=…`),
+A third container kind: `events.sigil/` with `CONTAINER` (`kind=log`, `log=1` or `2`, `log-id=…`),
 `INDEX`, `HEAD` and `segments/NNNN/<seq>.sg1`. Same container format 1 (extra manifest keys only).
 `sigil gc` and `sigil doctor` understand it: gc removes only unindexed leftovers of a crashed
-append and temp files, never a segment the INDEX lists. Full design in
+append, files the INDEX itself declares dead (tombstoned or merged away, `log=2`), and temp files,
+never a segment that is still needed. `log=2` appears only once a log gains a tombstone or
+compaction; older sigils refuse it clearly. Full design in
 [SEGMENT-LOG.md](SEGMENT-LOG.md).
 
 ## Status
 
 Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
-Segment-log mode: slice 1 shipped (see SEGMENT-LOG.md). A later container-format bump (if ever needed) is
+Segment-log mode: slices 1–2 shipped (append / verify / mend; tombstones + compaction; see SEGMENT-LOG.md). A later container-format bump (if ever needed) is
 handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.
