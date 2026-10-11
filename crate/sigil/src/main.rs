@@ -1798,6 +1798,42 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let wards = parse_wards(&ward)?;
             let mut steps = into;
             steps.extend(segments);
+            // Containers: list / address members by their own names (`Sky.sigil`, `notes.txt.sigil`).
+            let mut input = input;
+            if !input.is_file() {
+                if let Some(sky) = sigil::names::sky_dir(&input) {
+                    let entries = sigil::names::sky_entries(&sky, pass.as_deref(), &identities)?;
+                    let first = steps.first().map(|s| s.trim().trim_start_matches("./").to_string());
+                    match first.as_deref().and_then(|f| entries.iter().find(|e| e.name == f)) {
+                        Some(e) => {
+                            input = e.star.clone().ok_or_else(|| format!("star for {} is missing (see `sigil doctor`)", e.name))?;
+                            steps.remove(0);
+                        }
+                        None => {
+                            let prefix = first.unwrap_or_default();
+                            if !prefix.is_empty() && !entries.iter().any(|e| e.name.starts_with(&prefix)) {
+                                return Err(format!("nothing named {prefix:?} on the list").into());
+                            }
+                            print!("{}", sigil::names::render_sky(&sky, &entries, &prefix));
+                            return Ok(());
+                        }
+                    }
+                } else if let Some(vdir) = sigil::names::vault_dir(&input) {
+                    match steps.first().map(|s| sigil::names::parse_version_ref(s)) {
+                        None => {
+                            print!("{}", sigil::names::render_vault(&vdir)?);
+                            return Ok(());
+                        }
+                        Some(Some(n)) => {
+                            input = sigil::names::version_seal(&vdir, n)?;
+                            steps.remove(0);
+                        }
+                        Some(None) => {
+                            return Err(format!("{:?} is not a version (try v1, @2, or notes.txt@v3)", steps[0]).into());
+                        }
+                    }
+                }
+            }
             let view = path_walk_keys(&input, &steps, pass.as_deref(), &wards, depth, &identities)?;
             println!("{}", view.format());
             if let Some(dest) = output {

@@ -246,6 +246,7 @@ Track a live file or folder; each commit adds an immutable `vN.sg1` under `<live
 ./sigil vault remove ./notes.txt --version 2   # one old version (never the tip)
 ./sigil gc ./notes.txt                         # report orphans/temp files; add --apply to delete
 ./sigil doctor ./notes.txt                     # read-only health check (exit 0/1/2); --json, --fix
+./sigil ls ./notes.txt.sigil                   # versions as notes.txt@v1 …; `ls Sky` lists a constellation by name
 ./sigil constellation remove Sky docs/a.txt    # take a name off the list, free its star
 ```
 

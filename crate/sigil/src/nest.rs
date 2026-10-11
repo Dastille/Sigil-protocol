@@ -278,11 +278,14 @@ pub fn path_walk_keys(
     check_depth(into.len(), max_depth)?;
 
     let root_bytes = fs::read(mark).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let root_label = mark
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("mark")
-        .to_string();
+    // Inside a `name.sigil/` container, show the owner's name (list name / `notes@v3`) instead
+    // of the fingerprint file name.
+    let root_label = crate::names::friendly_label(mark, pass, identities).unwrap_or_else(|| {
+        mark.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("mark")
+            .to_string()
+    });
 
     let mut seen = Vec::new();
     push_seen(&mut seen, mark_id(&root_bytes))?;
