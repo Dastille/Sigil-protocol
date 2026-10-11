@@ -22,6 +22,7 @@ pub mod names;
 pub mod passkey;
 mod pieces;
 pub mod pgp;
+pub mod seglog;
 mod rs;
 mod show;
 mod vault;

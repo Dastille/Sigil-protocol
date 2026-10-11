@@ -390,6 +390,12 @@ enum Cmd {
         #[arg(long = "temp-age", default_value_t = sigil::gc::DEFAULT_TEMP_AGE_SECS)]
         temp_age: u64,
     },
+    /// Append-only segment log: each append seals one batch as an immutable segment star,
+    /// chained in a Merkle/hash-chained INDEX (optionally Ed25519-signed). Lives in `name.sigil/`.
+    Log {
+        #[command(subcommand)]
+        cmd: LogCmd,
+    },
     /// Named list of stars. Add unique files; rsync the folder; atlas to carry the bag.
     Constellation {
         #[command(subcommand)]
@@ -724,6 +730,85 @@ enum BootCmd {
         #[arg(default_value = "/usr")]
         prefix: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum LogCmd {
+    /// Create an empty log container (`PATH` or `PATH.sigil`). With --identity every append must be signed by that key.
+    Init {
+        path: PathBuf,
+        /// Identity (.sgk) whose Ed25519 key signs HEAD; pinned in the manifest. Omit for an unsigned log
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
+    /// Seal FILE (or `-` for stdin) as the next immutable segment and extend the chain.
+    Append {
+        path: PathBuf,
+        /// File to append, or `-` for stdin
+        input: String,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Encrypt-to recipient for this segment: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Signing identity (.sgk); required exactly when the log was created with --identity
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
+    /// List segments (from the INDEX; reads no segment bytes).
+    Ls { path: PathBuf },
+    /// Write segment bytes (checked against the INDEX) to stdout or -o. Default: all, in order.
+    Read {
+        path: PathBuf,
+        /// One segment
+        #[arg(long, conflicts_with_all = ["from", "to"])]
+        seq: Option<u64>,
+        /// First segment (1-based, inclusive)
+        #[arg(long)]
+        from: Option<u64>,
+        /// Last segment (inclusive)
+        #[arg(long)]
+        to: Option<u64>,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens encrypt-to segments (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+    },
+    /// Check INDEX chain, HEAD (+signature), every segment's ECC and true-name. Needs no keys;
+    /// with --pass / --identity it also unseals each segment. Exit 0 ok, 1 warnings, 2 problems.
+    Verify {
+        path: PathBuf,
+        /// Skip bit-level ECC verification (existence + header digest only)
+        #[arg(long)]
+        quick: bool,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Require HEAD signed by this key: 64-hex Ed25519 public key, or a .pub / .sgk file
+        #[arg(long)]
+        signer: Option<String>,
+        /// Pinned `SEQ:ROOT` (printed by `log ls`); fails if the log was rolled back or rewritten (repeatable)
+        #[arg(long)]
+        anchor: Vec<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "temp-age", default_value_t = sigil::gc::DEFAULT_TEMP_AGE_SECS)]
+        temp_age: u64,
+    },
+    /// Heal repairable segments in place (ECC); INDEX and HEAD never change.
+    Mend { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -1737,6 +1822,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
+        Cmd::Log { cmd } => run_log(cmd)?,
         Cmd::Tidy { path, dry_run, pass, talisman, identity } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
@@ -1800,6 +1886,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             steps.extend(segments);
             // Containers: list / address members by their own names (`Sky.sigil`, `notes.txt.sigil`).
             let mut input = input;
+            if !input.is_file() && sigil::seglog::is_log(&input) {
+                print!("{}", sigil::seglog::list(&input)?.render());
+                return Ok(());
+            }
             if !input.is_file() {
                 if let Some(sky) = sigil::names::sky_dir(&input) {
                     let entries = sigil::names::sky_entries(&sky, pass.as_deref(), &identities)?;
@@ -2241,6 +2331,151 @@ fn run_kit(cmd: KitCmd) -> Result<(), Box<dyn std::error::Error>> {
             let n = healed.len();
             fs::write(&output, &healed)?;
             println!("kit mend {n} bytes → {}", output.display());
+        }
+    }
+    Ok(())
+}
+
+/// `--signer`: 64-hex Ed25519 public key, or a .pub / .sgk file.
+fn parse_signer(spec: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let p = Path::new(spec);
+    if p.is_file() {
+        if let Ok(pk) = sigil::PublicIdentity::load(p) {
+            return Ok(pk.ed25519_pk);
+        }
+        return Ok(Identity::load(p)?.public().ed25519_pk);
+    }
+    let b = hex::decode(spec.trim()).map_err(|_| format!("--signer: not a file and not hex: {spec}"))?;
+    b.try_into().map_err(|_| "--signer hex must be 32 bytes (64 hex chars)".into())
+}
+
+fn parse_anchor(spec: &str) -> Result<(u64, [u8; 32]), Box<dyn std::error::Error>> {
+    let (n, r) = spec.split_once(':').ok_or("--anchor needs SEQ:ROOT (as printed by `sigil log ls`)")?;
+    let root: [u8; 32] = hex::decode(r.trim())
+        .map_err(|_| "--anchor ROOT is not hex")?
+        .try_into()
+        .map_err(|_| "--anchor ROOT must be 32 bytes (64 hex chars)")?;
+    Ok((n.trim().parse()?, root))
+}
+
+fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
+    use sigil::seglog;
+    match cmd {
+        LogCmd::Init { path, identity } => {
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let log = seglog::init(&path, id.as_ref())?;
+            println!(
+                "log {}  created ({})",
+                log.dir.display(),
+                match &log.signer {
+                    Some(pk) => format!("signed; signer {}", hex::encode(pk)),
+                    None => "unsigned: HEAD is a checksum, not a signature (use --identity for authenticity)".to_string(),
+                }
+            );
+        }
+        LogCmd::Append { path, input, mode, pass, talisman, to, identity } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let recipients = load_recipients(&to)?;
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let data = if input == "-" {
+                use std::io::Read;
+                let mut b = Vec::new();
+                std::io::stdin().lock().read_to_end(&mut b)?;
+                b
+            } else {
+                fs::read(&input)?
+            };
+            let r = seglog::append(
+                &path,
+                &data,
+                &seglog::AppendOpts { mode: mode.into(), pass: pass.as_deref(), recipients: &recipients, identity: id.as_ref() },
+            )?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "segment {}  {} bytes → {} sealed  sha256 {}…  head {}:{}{}",
+                r.seq,
+                r.size,
+                r.sealed_bytes,
+                &hex::encode(r.sha)[..16],
+                r.seq,
+                hex::encode(r.root),
+                if r.signed { "  (signed)" } else { "" }
+            );
+        }
+        LogCmd::Ls { path } => print!("{}", seglog::list(&path)?.render()),
+        LogCmd::Read { path, seq, from, to, output, pass, talisman, identity } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let n = seglog::list(&path)?.entries.len() as u64;
+            let (a, b) = match seq {
+                Some(s) => (s, s),
+                None => (from.unwrap_or(1), to.unwrap_or(n)),
+            };
+            if n == 0 {
+                return Err("the log is empty".into());
+            }
+            let parts = seglog::read_range(&path, a, b, &seglog::ReadOpts { pass: pass.as_deref(), identities: &identities })?;
+            let mut out: Box<dyn std::io::Write> = match &output {
+                Some(p) => Box::new(fs::File::create(p)?),
+                None => Box::new(std::io::stdout().lock()),
+            };
+            for (_, bytes) in parts {
+                out.write_all(&bytes)?;
+            }
+            out.flush()?;
+        }
+        LogCmd::Verify { path, quick, pass, talisman, identity, signer, anchor, json, temp_age } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let signer = signer.as_deref().map(parse_signer).transpose()?;
+            let anchors = anchor.iter().map(|a| parse_anchor(a)).collect::<Result<Vec<_>, _>>()?;
+            match seglog::check(
+                &path,
+                &seglog::CheckOpts { pass: pass.as_deref(), identities: &identities, quick, signer, anchors: &anchors, temp_age_secs: temp_age },
+            ) {
+                Ok(c) => {
+                    let dir = sigil::seglog::Log::open(&path).map(|l| l.dir).unwrap_or(path.clone());
+                    let r = sigil::doctor::DoctorReport {
+                        kind: "log".into(),
+                        root: dir,
+                        layout: format!("container, {} segment(s){}", c.entries, if c.signed { ", signed" } else { "" }),
+                        container_version: c.container_version,
+                        findings: c.findings,
+                        verified: c.verified,
+                        fixed: Vec::new(),
+                    };
+                    if json {
+                        print!("{}", r.to_json());
+                    } else {
+                        print!("{}", r.render_as("log verify"));
+                    }
+                    std::process::exit(r.exit_code());
+                }
+                Err(e) => {
+                    eprintln!("sigil log verify: {e}");
+                    std::process::exit(3);
+                }
+            }
+        }
+        LogCmd::Mend { path } => {
+            let r = seglog::mend(&path)?;
+            println!(
+                "log mend: checked {} segment(s), healed {}{}",
+                r.checked,
+                r.mended.len(),
+                if r.mended.is_empty() { String::new() } else { format!(" ({})", r.mended.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")) }
+            );
+            for s in &r.missing {
+                println!("  segment {s}: file missing (restore from a copy)");
+            }
+            for (s, m) in &r.unrecoverable {
+                println!("  segment {s}: cannot be healed: {m}");
+            }
+            if !r.missing.is_empty() || !r.unrecoverable.is_empty() {
+                std::process::exit(2);
+            }
         }
     }
     Ok(())

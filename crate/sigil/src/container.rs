@@ -139,7 +139,14 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest> {
 pub fn ensure(dir: &Path, kind: &str, name: &str) -> Result<()> {
     fs::create_dir_all(dir).map_err(|e| err(e.to_string()))?;
     if is_container(dir) {
-        read_manifest(dir)?;
+        let m = read_manifest(dir)?;
+        if m.kind != kind {
+            return Err(err(format!(
+                "{} is a {} container, not a {kind}; refusing to mix them",
+                dir.display(),
+                m.kind
+            )));
+        }
         return Ok(());
     }
     write_manifest(dir, &Manifest::new(kind, name))

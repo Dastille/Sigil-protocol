@@ -32,6 +32,8 @@ fn err(s: impl Into<String>) -> crate::Error {
 pub enum GcKind {
     /// Star on disk that no list entry needs.
     OrphanStar,
+    /// Segment file beyond a segment log's INDEX (crashed append), old enough to be sure.
+    OrphanSegment,
     /// `vN.sg1` that the CHART does not list.
     OrphanVersion,
     /// Second byte-identical copy of a star whose canonical sharded copy exists.
@@ -48,6 +50,7 @@ impl GcKind {
     pub fn label(self) -> &'static str {
         match self {
             GcKind::OrphanStar => "orphan star",
+            GcKind::OrphanSegment => "orphan segment",
             GcKind::OrphanVersion => "orphan version",
             GcKind::DuplicateStar => "duplicate star",
             GcKind::Temp => "temp file",
@@ -205,10 +208,19 @@ pub(crate) enum Target {
     Vault(PathBuf),
     /// Constellation folder (container or old flat).
     Sky(PathBuf),
+    /// Segment log container (`kind=log`).
+    Log(PathBuf),
 }
 
 pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
     let path = path.components().as_path().to_path_buf();
+    for cand in [path.clone(), container::with_suffix(&path)] {
+        if container::is_container(&cand)
+            && container::read_manifest(&cand).map(|m| m.kind == crate::seglog::KIND).unwrap_or(false)
+        {
+            return Ok(Target::Log(cand));
+        }
+    }
     let sky = container::sky_for_read(&path);
     let is_sky_container = container::is_container(&sky)
         && container::read_manifest(&sky).map(|m| m.kind == "constellation").unwrap_or(false);
@@ -238,7 +250,36 @@ pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     })? {
         Target::Vault(v) => gc_vault(&v, opts),
         Target::Sky(s) => gc_sky(&s, opts),
+        Target::Log(l) => gc_log(&l, opts),
     }
+}
+
+/// Segment log: only segments *beyond* the INDEX (a crashed append) and old enough can go,
+/// plus abandoned temp files and emptied shard folders. A live segment (seq ≤ INDEX length)
+/// is never even a candidate; a damaged INDEX or a HEAD ahead of the INDEX stops gc entirely.
+fn gc_log(dir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
+    use crate::seglog::ExtraKind;
+    let log = crate::seglog::Log::open(dir)?;
+    let live = crate::seglog::gc_gate(&log)?;
+    let mut rep = GcReport {
+        kind: "log".into(),
+        root: dir.to_path_buf(),
+        layout: "container".into(),
+        apply: opts.apply,
+        kept: live as usize,
+        ..Default::default()
+    };
+    for x in crate::seglog::scan_extras(&log, live, opts.temp_age_secs) {
+        match x.kind {
+            ExtraKind::Orphan => rep.items.push(GcItem { kind: GcKind::OrphanSegment, path: x.path, bytes: x.bytes, removed: false }),
+            ExtraKind::Temp => rep.items.push(GcItem { kind: GcKind::Temp, path: x.path, bytes: x.bytes, removed: false }),
+            ExtraKind::EmptyDir => rep.items.push(GcItem { kind: GcKind::EmptyDir, path: x.path, bytes: 0, removed: false }),
+            ExtraKind::Recent => rep.notes.push(format!("recent unindexed segment kept (append may be running): {}", x.path.display())),
+            ExtraKind::Unknown => rep.left.push(x.path),
+        }
+    }
+    finish(&mut rep);
+    Ok(rep)
 }
 
 fn finish(rep: &mut GcReport) {
