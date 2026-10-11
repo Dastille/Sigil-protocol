@@ -34,6 +34,10 @@ pub enum GcKind {
     OrphanStar,
     /// Segment file beyond a segment log's INDEX (crashed append), old enough to be sure.
     OrphanSegment,
+    /// Segment file of a log entry that a tombstone deleted (erasure still pending).
+    DeletedSegment,
+    /// Segment file whose batches were merged into a later compaction segment.
+    SupersededSegment,
     /// `vN.sg1` that the CHART does not list.
     OrphanVersion,
     /// Second byte-identical copy of a star whose canonical sharded copy exists.
@@ -51,6 +55,8 @@ impl GcKind {
         match self {
             GcKind::OrphanStar => "orphan star",
             GcKind::OrphanSegment => "orphan segment",
+            GcKind::DeletedSegment => "deleted segment",
+            GcKind::SupersededSegment => "superseded seg.",
             GcKind::OrphanVersion => "orphan version",
             GcKind::DuplicateStar => "duplicate star",
             GcKind::Temp => "temp file",
@@ -255,24 +261,28 @@ pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
 }
 
 /// Segment log: only segments *beyond* the INDEX (a crashed append) and old enough can go,
-/// plus abandoned temp files and emptied shard folders. A live segment (seq ≤ INDEX length)
-/// is never even a candidate; a damaged INDEX or a HEAD ahead of the INDEX stops gc entirely.
+/// plus segment files the INDEX itself declares dead (deleted by a tombstone, or merged into a
+/// compaction segment, judged only from entries the HEAD vouches for), abandoned temp files and
+/// emptied shard folders. A segment that is still needed is never even a candidate; a damaged
+/// INDEX or a HEAD ahead of the INDEX stops gc entirely.
 fn gc_log(dir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     use crate::seglog::ExtraKind;
     let log = crate::seglog::Log::open(dir)?;
-    let live = crate::seglog::gc_gate(&log)?;
+    let gate = crate::seglog::gc_gate(&log)?;
     let mut rep = GcReport {
         kind: "log".into(),
         root: dir.to_path_buf(),
         layout: "container".into(),
         apply: opts.apply,
-        kept: live as usize,
+        kept: gate.kept,
         ..Default::default()
     };
-    for x in crate::seglog::scan_extras(&log, live, opts.temp_age_secs) {
+    for x in crate::seglog::scan_extras(&log, &gate.entries, gate.trusted, opts.temp_age_secs) {
         match x.kind {
             ExtraKind::Orphan => rep.items.push(GcItem { kind: GcKind::OrphanSegment, path: x.path, bytes: x.bytes, removed: false }),
             ExtraKind::Temp => rep.items.push(GcItem { kind: GcKind::Temp, path: x.path, bytes: x.bytes, removed: false }),
+            ExtraKind::Stale(crate::seglog::Slot::DeadDeleted) => rep.items.push(GcItem { kind: GcKind::DeletedSegment, path: x.path, bytes: x.bytes, removed: false }),
+            ExtraKind::Stale(_) => rep.items.push(GcItem { kind: GcKind::SupersededSegment, path: x.path, bytes: x.bytes, removed: false }),
             ExtraKind::EmptyDir => rep.items.push(GcItem { kind: GcKind::EmptyDir, path: x.path, bytes: 0, removed: false }),
             ExtraKind::Recent => rep.notes.push(format!("recent unindexed segment kept (append may be running): {}", x.path.display())),
             ExtraKind::Unknown => rep.left.push(x.path),
