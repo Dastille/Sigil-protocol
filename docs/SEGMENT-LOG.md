@@ -1,9 +1,10 @@
 # Segment log (`sigil log …`)
 
-Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support) and
-**slice 2 shipped** (tombstones + compaction, `log=2`). Approved 2026-10-06 as a general-purpose
-mode (not tied to any one application); built after the tidy-container track. Per-segment keys /
-crypto-shredding, nested hierarchical cards and a log mount view are **deferred** (see the end).
+Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
+**slice 2 shipped** (tombstones + compaction, `log=2`) and **slice 3 shipped** (opt-in per-segment
+keys and crypto-shredding, `log=3`). Approved 2026-10-06 as a general-purpose mode (not tied to
+any one application); built after the tidy-container track. Nested hierarchical cards and a log
+mount view are **deferred** (see the end).
 
 A segment log is an **append-only, tamper-evident sequence of sealed batches**. Each
 `sigil log append` seals one blob of bytes — a day of events, a chunk of a journal, a
@@ -15,10 +16,13 @@ and the container format stays `sigil-container=1` (a log is just `kind=log` plu
 manifest keys). A sigil without log support does not recognise the kind (its `gc` / `doctor` refuse it as "not a vault or constellation"); upgrade rather than point older tools at a log.
 
 **Log format versions.** `log=1` (slice 1) = segment entries only. `log=2` (slice 2) = the INDEX
-may also hold tombstone and compaction entries. A log **stays `log=1`, byte-for-byte compatible
-with slice 1, until it first gains a tombstone or compaction entry**; only then does the manifest
-become `log=2`. A sigil that only knows `log=1` refuses a `log=2` log with
-"segment log format 2 is newer than this sigil understands; upgrade sigil" (it never gets as far as
+may also hold tombstone and compaction entries. `log=3` (slice 3) = the log has per-segment keys
+(`segkeys=1`, a `keys/` key ring, and the INDEX may hold shred entries). A log **stays `log=1`,
+byte-for-byte compatible with slice 1, until it first gains a tombstone or compaction entry** (then
+`log=2`); only `sigil log init --segment-keys` ever creates `log=3`, from its first byte: a log
+that does not opt in never becomes `log=3`, never grows a `keys/` folder and never gets a `segkeys`
+manifest key. A sigil that only knows an older format refuses a newer log with
+"segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
 
 ## Layout
@@ -32,6 +36,7 @@ events.sigil/                       one container per log
   segments/0000/0000000001.sg1      segment 1 … 1000 per shard folder (seq / 1000)
   segments/0000/0000000002.sg1
   segments/0001/0000001000.sg1
+  keys/0000.sg1                     only with `init --segment-keys` (log=3): the key ring, 1000 keys per shard
 ```
 
 * A **segment** is a normal star made by the normal seal path: ECC (Glyph / Reflection / Seal
@@ -50,6 +55,7 @@ events.sigil/                       one container per log
 seq=7 t=1760000000 size=4096 sha=<64 hex> chain=<64 hex>                       segment entry (no op=)
 seq=8 t=1760000050 op=tomb del=2,4-5 reason=user%20request chain=<64 hex>      tombstone (log=2)
 seq=9 t=1760000090 size=…  sha=<64 hex> op=compact of=1,3,6-7 chain=<64 hex>   compaction (log=2)
+seq=10 t=1760000120 op=tomb del=3 shred=1 reason=gdpr chain=<64 hex>               crypto-shred (log=3)
 ```
 
 | Field   | Meaning |
@@ -60,6 +66,7 @@ seq=9 t=1760000090 size=…  sha=<64 hex> op=compact of=1,3,6-7 chain=<64 hex>  
 | `sha`   | SHA-256 of the **plain** bytes — the star's true-name, readable from its header without any key |
 | `op`    | absent = segment; `tomb` = tombstone; `compact` = compaction. Any other value is an error ("upgrade sigil") |
 | `del`   | tombstone: the deleted segment seqs as ascending ranges (`2,4-5`) |
+| `shred` | tombstone, optional, only `1`: this is a crypto-shred — the key of the named segments' file was destroyed (needs `segkeys=1`; in any other log it is a `log-format` error) |
 | `reason`| tombstone, optional: free text, `%XX`-escaped so the value stays one token. The INDEX is not secret: no secrets in reasons |
 | `of`    | compaction: the original segment seqs whose plain bytes were concatenated (ascending) into this entry's segment |
 | `chain` | `SHA-256("sigil-log-entry-v1\0" ‖ previous chain ‖ line text before " chain=")` |
@@ -107,13 +114,14 @@ sigil log append events batch.json --identity me.sgk
 ## Operations
 
 ```sh
-sigil log init events [--identity me.sgk]
+sigil log init events [--identity me.sgk] [--segment-keys]
 sigil log append events FILE|-  [--mode glyph|reflection|seal] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]
 sigil log ls events                           # also: sigil ls events
 sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --identity key.sgk]…
 sigil log verify events [--quick] [--pass … | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
+sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--apply] [--target-size BYTES]
                          [--pass …|--identity …] [--seal-pass …|--to RECIPIENT]… [--mode …] [--allow-decrypt]
 sigil gc events [--apply]        # orphans of crashed appends, and files the INDEX declares dead
@@ -253,8 +261,8 @@ hierarchical-cards work, not here.
 tombstoned batch inside a merged segment goes when that segment is rewritten without it). That is
 file-system deletion: no overwrite, no secure wipe, and snapshots / backups / copies of the old
 files (rsync, cold kits) are untouched. Real, key-based **crypto-shredding** (each segment under its
-own key, destroy the key) is the later slice and is **not** started here. Until then, treat
-tombstone + compact as "deleted from the log and from this disk", not as forensic erasure.
+own key, destroy the key) is slice 3 (see "Per-segment keys and crypto-shredding" below). In a log **without** segment keys, treat tombstone
++ compact as "deleted from the log and from this disk", not as forensic erasure.
 
 ### Crash safety of `compact --apply`
 
@@ -291,6 +299,127 @@ that `gc` (or a rerun of `compact`) reclaims. `LOG.lock` serialises `append`, `t
   `compaction of …` rows and the bytes still pending erasure.
 * `mend` heals the segments that are still needed (merged segments included) and ignores dead files.
 
+## Per-segment keys and crypto-shredding (slice 3, `log=3`)
+
+Opt-in at `init`, never retrofitted:
+
+```sh
+sigil log init events --segment-keys [--identity me.sgk]
+sigil log append events batch.json --to alice.pub          # or --pass …, or both
+sigil log read events --identity alice.sgk
+sigil log shred events --seq 2 --reason "erasure request 42"
+```
+
+**How it works.** Every append seals the batch under its own **fresh random key** (the existing
+encrypt-to path, to an identity derived from that key — no new cipher, no new seal layout; a
+segment is still an ordinary `.sg1`). The key is then **wrapped with the existing SGTO machinery**
+(X25519 `--to` recipients and/or a `--pass` passphrase, exactly what `sigil seal --to` / `--pass`
+do) and stored in a small **key ring**, a separate member of the container:
+
+```text
+events.sigil/
+  keys/0000.sg1        a star (Reflection ECC, not encrypted) whose plain bytes are one text record
+                       per segment: seq=7 salt=<hex> wrap=<hex SGTO block>; 1000 records per shard
+```
+
+* In a `--segment-keys` log, `--pass` / `--to` on `append` and `compact` (`--seal-pass` / `--to`)
+  protect the **key**, not the segment directly. At least one of them is required (otherwise there
+  would be nowhere safe to keep the key and the append is refused before anything is written).
+  Different appends may be wrapped to different recipients; reading needs the right `--pass` /
+  `--identity` for each segment.
+* Appending needs only **public** recipients; **destroying** keys needs **no secret at all**.
+  `shred` therefore works from a machine that cannot read the data.
+* The key ring is a plain ECC star: it heals with the same Reed–Solomon budget as everything else
+  (`sigil log mend` heals shards, `verify` reports `bit-rot` in them). It holds only wrapped keys, so
+  it is safe at rest and needs no extra secrecy beyond what the wraps give.
+* The INDEX does not contain keys or key ids. `segkeys=1` in `CONTAINER` is the only marker.
+  Unknown to an older sigil → it refuses the log (`log=3` is newer), never misreads it.
+
+### `shred`
+
+`sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]`
+
+1. under `LOG.lock`, check the target (not a tombstone / compaction record, not already shredded);
+2. append one chained INDEX line `op=tomb del=… shred=1 [reason=…]` and rewrite HEAD (signed logs
+   need `--identity`, exactly like a tombstone). **This is the commit point.**
+3. destroy the segment's record in the key ring: the shard is rewritten without it (new file in
+   place first, then the old bytes are overwritten with zeros through a second hard link, then
+   removed; a crash can never leave a half-written ring);
+4. unlink the now-unreadable ciphertext file.
+
+A shred is a tombstone that is also key destruction: reads, `ls` and compaction treat it as
+deleted, and `read` says `segment N was crypto-shredded by entry #K … its key is destroyed and its
+data cannot be recovered`. An earlier plain tombstone may later be **hardened** into a shred.
+Shredding is final (there is no unshred).
+
+**Compaction segments share one key.** `compact` merges batches into one file sealed under one new
+key, so the key of one batch cannot be destroyed without the others. `shred` therefore refuses a
+batch whose file holds other live batches ("they share one key") unless all of them are named; for
+one batch use `tombstone` + `compact --apply`, which rewrites the file without it under a fresh
+key and destroys the old one. (This is checked by `verify` too: an INDEX that shreds part of a
+shared file is `index-shred`.) Merged segments of a `--segment-keys` log need `--seal-pass` or
+`--to` on `compact --apply`, for the same reason appends do.
+
+### What stays valid after a shred
+
+* **The INDEX is only appended to.** The shred is one more chained line; `verify`, the Merkle
+  root, the signed HEAD and **every anchor ever pinned still verify** (`verify --anchor`). An
+  anchor commits to what the log *said* (each batch's size and plain true-name), not to the bytes
+  being present.
+* **`verify` / `doctor`** do not call a shredded segment damaged or missing: no `segment-missing`,
+  no `segment-digest`, no `bit-rot` for it. A ciphertext file of a shredded segment that is still
+  on disk (a restored backup, an interrupted shred) is an `info` (`shredded-segment`); a key record
+  that is still in the ring although the INDEX says it was destroyed is a **warning**
+  (`shred-key-present`). Other new findings: `key-missing` (error: a live segment has no record —
+  restore the ring from a copy), `keyring-damaged` (error: shard unreadable), `dead-key`
+  (warning: key of a tombstoned / merged-away segment still there) and `orphan-key` (warning: a
+  record no INDEX entry uses, left by a crashed append or compaction).
+* **`mend`** only heals segments that are still needed (a shredded one is not touched) and the key
+  ring shards.
+* **`gc`** reclaims the ciphertext of shredded segments and **destroys dead key records** (shredded,
+  tombstoned, merged away, or beyond the INDEX after a crash). Key destruction happens under
+  `LOG.lock` with a fresh read of the INDEX, so an append in flight can never lose its brand-new
+  key, and only for entries the HEAD vouches for (a forged, unsigned INDEX line cannot make `gc`
+  destroy a key).
+* **`compact --apply`** drops shredded and tombstoned batches from the merged files, deletes the old
+  files and **destroys the old files' key records** together with them (a new file gets a new key).
+* Crash order of `shred`: INDEX line → HEAD → key destroyed → file unlinked. A crash after the INDEX
+  line leaves a record the entry says is dead (`shred-key-present`); `sigil gc --apply` finishes
+  the shred. Nothing is ever *less* shredded than the INDEX claims without `verify` saying so.
+
+### What crypto-shredding does and does not guarantee
+
+Be precise about what you are buying:
+
+* **It guarantees** that, from this log's files alone and after `shred`, no key for the segment
+  exists any more, so the remaining ciphertext (if any is left by a copy) cannot be decrypted by
+  anyone who does not hold a key copy — including you. The INDEX keeps its hash and size, so you
+  can still prove a batch of that size and true-name existed and was shredded.
+* **It does not reach copies.** Anything that copied the key ring **or** the ciphertext **before**
+  the shred (backups, snapshots, rsync mirrors, cold kits, cloud sync, an exported `keys/`) still
+  has them; a copy of the *old key ring shard plus* a copy of the old segment file decrypts the
+  batch for whoever holds the recipient key or passphrase. sigil cannot erase what it cannot see.
+  Shred only works end to end if no copy of the key survives, so decide up front which copies of
+  the ring exist: keep `keys/` out of backups of data you may need to shred (or back it up only to
+  places you can also shred).
+* **The scrub of the ring is best effort.** sigil overwrites the old shard with zeros after
+  replacing it, but journaling and copy-on-write file systems, SSD wear levelling, RAID, snapshots
+  and swap can keep old bytes. Real assurance needs an encrypted disk whose key you can destroy, or
+  recipient keys you control (destroying the *recipient's* private key or passphrase is the
+  strongest shred of all and works on copies too).
+* **It does not hide metadata.** The INDEX still shows that a segment existed, when, its size and
+  the true-name (hash) of the plain bytes; do not shred low-entropy secrets and expect the hash to
+  protect them (anyone can still confirm a guess).
+* **Wrapped recipients matter.** A key wrapped to a passphrase is only as strong as the
+  passphrase, and a key wrapped to alice.pub opens for anyone who ever held alice.sgk — shredding
+  does not revoke that for copies made earlier.
+* **A shred is an authority.** In an unsigned log anyone with file access can append a forged
+  shred line (it hides data from reads but, being unvouched by HEAD, `gc` will not destroy a key on
+  its say-so). Sign the log (`--identity`) if shred authority matters.
+* Nothing about `.sg1` changed: a segment taken out of the log is a normal encrypt-to star; if you
+  hold the key ring record and the recipient key you can open it with ordinary tools, and a
+  `log=1` / `log=2` log or plain `.sg1` has none of this and is untouched.
+
 ## Invariants
 
 1. A segment, once appended, is never modified except by ECC repair that preserves its plain bytes.
@@ -304,6 +433,10 @@ that `gc` (or a rerun of `compact`) reclaims. `LOG.lock` serialises `append`, `t
    that line is written.
 4. Absence of `kind=log` / `log=` means "not a segment log"; a log is invisible to older readers.
 5. Plain `.sg1` stars, constellations and vaults are untouched by this feature.
+6. Per-segment keys are opt-in at `init` (`log=3`, `segkeys=1`); a log without them is byte-identical
+   to what slice 1 / 2 write and never grows a `keys/` folder. A key record is destroyed only after
+   the INDEX line that says so is committed and covered by HEAD, and never while a needed segment
+   (or an entry HEAD does not cover yet) depends on it.
 
 ## Threat model
 
@@ -317,7 +450,11 @@ that `gc` (or a rerun of `compact`) reclaims. `LOG.lock` serialises `append`, `t
 | Append a forged tombstone / compaction line (valid chain, no key) to a signed log | HEAD does not cover it (`head-lag`); gc / compact never delete a file on its say-so; the key holder's next operation would re-cover it (inspect `log ls` after a `head-lag`) |
 | A compaction entry that lies about its content (merged bytes ≠ members) | keyed `verify` / `read` compare each member's `sha` with its original entry (`segment-content`); keyless verify only proves the merged star matches the entry. In a signed log the compaction is the signer's attestation |
 | Compaction silently decrypting encrypted batches | refused unless `--seal-pass` / `--to` (or explicit `--allow-decrypt`) |
-| Expecting erasure to defeat backups / forensics | not promised: file unlink only, copies untouched; crypto-shredding (per-segment keys) is the later slice |
+| Expecting erasure to defeat backups / forensics | not promised: file unlink only, copies untouched; `--segment-keys` + `shred` destroys the key here, but copies of the key ring or of the recipient's key still decrypt copies of the ciphertext (see above) |
+| `shred` interrupted after its INDEX line | `shred-key-present` warning; reads already refuse the segment; `gc --apply` destroys the key |
+| Forged `shred=1` line in an unsigned / unvouched INDEX | hides data from reads like any forged tombstone; HEAD does not cover it, so `gc` / `compact` destroy no key on its say-so |
+| Key ring record lost or altered | that segment cannot be opened (`key-missing` / `segment-unseal`); a wrong key can never make wrong plaintext verify — the true-name is in the chain |
+| Key ring shard bit rot | ECC star: healed by `mend`; beyond the budget → `bit-rot-unrecoverable` (restore from a copy of the ring) |
 | Rewrite INDEX **and** HEAD consistently, **unsigned** log | **not detectable** from the log alone — an unsigned HEAD is a checksum. Use `--anchor SEQ:ROOT` pins kept elsewhere, or sign |
 | Same, **signed** log, attacker lacks the key | HEAD signature fails (`head-signature`) |
 | Roll back to an older, validly signed INDEX+HEAD pair | **not detectable** without an external pin; `--anchor` (or any copy of a newer HEAD) catches it |
@@ -340,13 +477,13 @@ in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
 ## Deferred (later slices)
 
-Done in slice 2: tombstones + compaction (above). Still deferred:
+Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
+(above). Still deferred:
 
-* **Per-segment keys / crypto-shredding**: each segment under its own key, wrapped for the log's
-  recipients, so destroying a key makes that segment unreadable while the chain still verifies.
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Adding or rotating a signer after `init`; signed *inclusion proofs* for a single entry.
 * Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX.
 * `sigil mount` view of a log (one file per segment, honouring tombstones) and `tidy` migration from ad-hoc segment folders.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
+* Re-wrapping the key ring to new recipients / rotating a recipient (today: `compact` re-seals live batches under new keys wrapped to the new recipients), shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).

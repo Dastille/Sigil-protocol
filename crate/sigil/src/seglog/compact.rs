@@ -201,6 +201,8 @@ pub struct CompactReport {
     pub bytes_before: u64,
     pub bytes_after: u64,
     pub removed: usize,
+    /// Key ring records destroyed with the old files (segment-keys logs).
+    pub keys_destroyed: usize,
     pub root: Option<[u8; 32]>,
 }
 
@@ -235,9 +237,10 @@ impl CompactReport {
         }
         if self.apply {
             s.push_str(&format!(
-                "compacted: {} new segment(s), {} old file(s) erased, {} → {} sealed bytes{}\n",
+                "compacted: {} new segment(s), {} old file(s) erased{}, {} → {} sealed bytes{}\n",
                 self.groups.len(),
                 self.removed,
+                if self.keys_destroyed > 0 { format!(", {} key record(s) destroyed", self.keys_destroyed) } else { String::new() },
                 self.bytes_before,
                 self.bytes_after,
                 self.root.map(|r| format!("; new anchor {}", hex32(&r))).unwrap_or_default()
@@ -425,6 +428,7 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     let entries = loaded.index.entries.clone();
     let st = loaded.index.state.clone();
     let mut written: Vec<PathBuf> = Vec::new();
+    let mut new_keys: Vec<u64> = Vec::new();
     let mut bodies: Vec<String> = Vec::new();
     let built = (|| -> Result<()> {
         let mut rd = Reader::new(&log, &entries, &st, &opts.read);
@@ -434,28 +438,43 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             for m in &g.members {
                 plain.extend_from_slice(&rd.member(*m)?);
             }
-            if rd.keyed_seen && opts.seal_pass.is_none() && opts.recipients.is_empty() && !opts.allow_decrypt {
+            if log.segkeys && opts.seal_pass.filter(|p| !p.is_empty()).is_none() && opts.recipients.is_empty() {
+                return Err(err(format!(
+                    "this log has per-segment keys: give --seal-pass and/or --to so the key of merged segment {} can be wrapped and kept in the key ring",
+                    g.new_seq
+                )));
+            }
+            if !log.segkeys && rd.keyed_seen && opts.seal_pass.is_none() && opts.recipients.is_empty() && !opts.allow_decrypt {
                 return Err(err(format!(
                     "merging into segment {} would store encrypted batches in the clear; give --seal-pass or --to for the merged segment, or --allow-decrypt",
                     g.new_seq
                 )));
             }
             let sha = sha256(&plain);
-            let sealed = crate::seal_kn_to(
-                &plain,
-                opts.mode,
-                opts.seal_pass,
-                &format!("compact-{}", g.new_seq),
-                false,
-                "",
-                &[],
-                None,
-                crate::DEFAULT_PIECE,
-                opts.recipients,
-            )?;
+            // a merged segment gets its own fresh key (wrapped into the ring), like any append
+            let own_key = if log.segkeys { Some(keyring::new_key()?) } else { None };
+            let sealed = match &own_key {
+                Some((_, id)) => crate::seal_kn_to(&plain, opts.mode, None, &format!("compact-{}", g.new_seq), false, "", &[], None, crate::DEFAULT_PIECE, &[id.public()])?,
+                None => crate::seal_kn_to(
+                    &plain,
+                    opts.mode,
+                    opts.seal_pass,
+                    &format!("compact-{}", g.new_seq),
+                    false,
+                    "",
+                    &[],
+                    None,
+                    crate::DEFAULT_PIECE,
+                    opts.recipients,
+                )?,
+            };
             let dest = log.segment_path(g.new_seq);
             write_atomic(&dest, &sealed)?;
             written.push(dest);
+            if let Some((m, _)) = &own_key {
+                new_keys.push(g.new_seq);
+                keyring::put(&log, g.new_seq, m, opts.seal_pass, opts.recipients)?;
+            }
             rep.bytes_after += sealed.len() as u64;
             bodies.push(format!(
                 "seq={} t={t_now} size={} sha={} op=compact of={}",
@@ -470,6 +489,9 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     if let Err(e) = built {
         for p in &written {
             let _ = fs::remove_file(p);
+        }
+        if !new_keys.is_empty() {
+            let _ = keyring::destroy(&log, &new_keys);
         }
         return Err(e);
     }
@@ -488,6 +510,7 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     // old files last
     let mut first = true;
     let victims: Vec<PathBuf> = rep.source_files.iter().chain(&rep.purge).map(|p| p.path.clone()).collect();
+    let dead_seqs: Vec<u64> = rep.source_files.iter().chain(&rep.purge).map(|p| p.seq).collect();
     for p in victims {
         match fs::remove_file(&p) {
             Ok(()) => rep.removed += 1,
@@ -497,6 +520,14 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
         if first {
             first = false;
             crash(opts, CrashPoint::MidDelete)?;
+        }
+    }
+    // The old keys go with the old files: nothing can open those segments any more, whatever copy
+    // of the old ciphertext survives elsewhere.
+    if log.segkeys {
+        match keyring::destroy(&log, &dead_seqs) {
+            Ok(gone) => rep.keys_destroyed = gone.len(),
+            Err(e) => rep.notes.push(format!("could not destroy old key records: {e} (`sigil gc --apply` retries)")),
         }
     }
     // emptied shard folders

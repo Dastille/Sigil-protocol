@@ -225,11 +225,12 @@ A third container kind: `events.sigil/` with `CONTAINER` (`kind=log`, `log=1` or
 `sigil gc` and `sigil doctor` understand it: gc removes only unindexed leftovers of a crashed
 append, files the INDEX itself declares dead (tombstoned or merged away, `log=2`), and temp files,
 never a segment that is still needed. `log=2` appears only once a log gains a tombstone or
-compaction; older sigils refuse it clearly. Full design in
+compaction (and `log=3` only for a log created with `init --segment-keys`, which adds a `keys/`
+key ring; gc also destroys key records nothing needs); older sigils refuse newer logs clearly. Full design in
 [SEGMENT-LOG.md](SEGMENT-LOG.md).
 
 ## Status
 
 Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
-Segment-log mode: slices 1–2 shipped (append / verify / mend; tombstones + compaction; see SEGMENT-LOG.md). A later container-format bump (if ever needed) is
+Segment-log mode: slices 1–3 shipped (append / verify / mend; tombstones + compaction; opt-in per-segment keys + crypto-shredding; see SEGMENT-LOG.md). A later container-format bump (if ever needed) is
 handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.

@@ -318,6 +318,7 @@ fn add_gc_findings(rep: &mut DoctorReport, g: &gc::GcReport, root: &Path) {
             GcKind::OrphanSegment => ("orphan-segment", format!("segment no INDEX entry uses ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
             GcKind::DeletedSegment => ("deleted-segment", format!("segment a tombstone deleted, still on disk ({} bytes)", i.bytes), Some("sigil log compact --apply (or sigil gc --apply)".into())),
             GcKind::SupersededSegment => ("superseded-segment", format!("segment merged into a compaction segment ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
+            GcKind::DeadKey => ("dead-key", "key ring record(s) of segments that are deleted, merged away or shredded".into(), Some("sigil gc --apply".into())),
             GcKind::EmptyDir => continue,
         };
         rep.findings.push(f(Severity::Warn, code, rel(root, &i.path), msg, hint));
