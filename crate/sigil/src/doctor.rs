@@ -209,7 +209,15 @@ fn health_bytes(bytes: &[u8]) -> Health {
             } else if !merkle_ok {
                 Health::Damaged("all shards present but Merkle root differs (corrupt shard data)".into())
             } else {
-                Health::Ok
+                // Every shard has one good copy, but Reflection / Seal keep redundant embers: if
+                // the repaired form differs byte-for-byte, some copy has rotted (still safe today).
+                match crate::mend_bytes(bytes) {
+                    Ok(healed) if healed != bytes => {
+                        Health::Mendable("redundant shard copies are damaged (data still intact)".into())
+                    }
+                    Ok(_) => Health::Ok,
+                    Err(e) => Health::Damaged(format!("repair pass failed: {e}")),
+                }
             }
         }
     }

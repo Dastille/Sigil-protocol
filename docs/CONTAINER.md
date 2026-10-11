@@ -151,6 +151,48 @@ gc — it will not guess what is referenced. Old flat constellation folders are 
 never reclaimed (run `sigil tidy` first); old `.sgv/` vaults only lose unlisted `vN.sg1` and
 old temp files.
 
+## `sigil doctor PATH`
+
+```sh
+sigil doctor notes.txt              # vault (live path, .sigil or .sgv) or constellation
+sigil doctor Sky --pass … | --identity key.sgk   # needed to open a warded / encrypt-to card
+sigil doctor Sky --json             # machine-readable report on stdout
+sigil doctor Sky --quick            # skip bit-level verification (existence / structure only)
+sigil doctor notes.txt --fix        # safe fixes only (below)
+```
+
+**Read-only** unless `--fix`. Prints one line per finding (`info` / `WARN` / `ERROR`, a stable
+code, the subject, and a hint of what to do), then `result: healthy | warnings | PROBLEMS`.
+
+**Exit codes:** `0` healthy (notes allowed) · `1` warnings only · `2` problems · `3` could not
+check (not a vault / constellation). Handy for a cron job.
+
+| Code | Sev. | Meaning |
+|------|------|---------|
+| `manifest`, `manifest-kind` | ERROR | `CONTAINER` unreadable, newer than this sigil ("upgrade sigil"), or wrong kind |
+| `old-layout` | WARN | `.sgv/` or flat folder; `sigil tidy` (or `--fix`) |
+| `chart`, `tip-missing`, `card-missing` | ERROR | the index itself is unreadable |
+| `seal-missing`, `star-missing` | ERROR | CHART / card lists a member whose file is gone |
+| `bit-rot` | WARN | damage within the repair budget (incl. rotted *redundant* shard copies while the data is still intact); hint: `sigil mend` |
+| `bit-rot-unrecoverable` | ERROR | not enough intact shards; restore from another copy |
+| `chart-digest` | WARN | a single-file seal's true-name differs from its CHART entry |
+| `orphan-star`, `orphan-version`, `duplicate-star`, `temp-file`, `stale-staging` | WARN | what `sigil gc` would reclaim |
+| `card-locked` | WARN | card needs `--pass` / `--identity`; list-based checks skipped (bit rot on stars is still checked) |
+| `cold-broken` | ERROR | cold kit cannot be rebuilt, or its seal is beyond repair / empty |
+| `cold-degraded` | WARN | cold kit lost some `usb-*` folders (still mendable) or holds a repairable seal |
+| `cold-missing` | WARN / info | light retention: a departed version has no kit in `cold/`. Only a warning when `cold/` is in use; otherwise a note, since an external `--cold DIR` cannot be seen |
+| `cold-stale` | info | `cold/vN/` for a version that is still hot (redundant copy; delete by hand if unwanted) |
+| `live-changed`, `live-missing` | info | vault drift notes |
+
+Bit rot is checked with the same ECC machinery as `sigil verify` / `sigil mend` — single marks,
+large-file work packs, and folder (SGDR) packs member by member — and nothing is decrypted, so
+warded and encrypt-to data checks without keys.
+
+**`--fix` is deliberately narrow:** it runs `sigil tidy` on an old layout (copy → verify →
+atomic rename) and `sigil gc --apply` (orphans, duplicates, abandoned temp files). It never
+touches bit rot, missing members or cold kits — those need a human (`sigil mend`, a backup, a
+decision). The report is recomputed after the fixes and lists them as `fixed:` lines.
+
 ## Later slices (not in format 1 yet)
 
-`sigil doctor`; human-readable names in `ls` / mount.
+Human-readable names in `ls` / mount.
