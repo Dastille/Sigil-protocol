@@ -243,6 +243,9 @@ Track a live file or folder; each commit adds an immutable `vN.sg1` under `<live
 ./sigil vault restore ./notes.txt --version 2
 ./sigil vault retention ./notes.txt --light --keep 3
 ./sigil vault prune ./notes.txt --keep 3 --cold ./vault-cold/
+./sigil vault remove ./notes.txt --version 2   # one old version (never the tip)
+./sigil gc ./notes.txt                         # report orphans/temp files; add --apply to delete
+./sigil constellation remove Sky docs/a.txt    # take a name off the list, free its star
 ```
 
 Details: [docs/VAULT-RETENTION.md](../../docs/VAULT-RETENTION.md). Mount / nest / dirty export glue: [docs/VAULT-MOUNT-NEST.md](../../docs/VAULT-MOUNT-NEST.md).

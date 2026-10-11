@@ -98,7 +98,59 @@ clears it and starts over. After the rename, readers prefer the container, so a 
 during cleanup is harmless (leftover old files are just redundant). `.sg1` bytes are
 never rewritten: encrypt-to and passphrase stars / cards migrate without any key.
 
+## Real remove
+
+```sh
+sigil constellation remove Sky docs/a.txt [more names…]   # alias: rm
+sigil constellation remove Sky docs/ --dry-run            # trailing / = everything under docs/
+sigil vault remove notes.txt --version 2 [--cold DIR | --cold-here] [--force-drop] [--dry-run]
+sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the container
+```
+
+* **Constellation remove** takes names off the list. The card is rewritten atomically
+  *first*; star files go after, so a crash leaves at worst an orphan star (`sigil gc`
+  reclaims it), never a list entry without its star. A star another name still uses (same
+  bytes) is kept. `--keep-stars` leaves star files for `gc`. An encrypt-to card needs the
+  same `--to` (and `--identity` to open it) as `add`; a warded card needs `--pass`.
+  Removing the last name is refused (delete the folder instead).
+* **Vault remove** drops one version. The **tip** and the only version can never be removed.
+  Retention rules from [VAULT-RETENTION.md](VAULT-RETENTION.md) hold: under **light**
+  retention the seal must go to a cold kit (`--cold DIR` or `--cold-here`) or be discarded on
+  purpose (`--force-drop`); under **full** an explicit remove is allowed. The CHART is
+  rewritten before the seal file is deleted (same order now used by `prune`).
+* `--cold-here` = `<name>.sigil/cold/` (containers only). Cold kits land in `cold/vN/` exactly
+  as with an external `--cold DIR`.
+
+## `sigil gc PATH`
+
+```sh
+sigil gc notes.txt                  # report only (the default)
+sigil gc Sky --dry-run              # same, spelled out
+sigil gc Sky.sigil --apply          # actually delete
+sigil gc Sky --pass …|--identity key.sgk   # card must be readable (see below)
+```
+
+**Report-only unless `--apply`.** The report lists each orphan with its size, what was kept,
+what was left alone, and ends with "dry run: nothing was changed" or "reclaimed N …".
+
+Reclaims (containers):
+
+| What                         | Rule |
+|------------------------------|------|
+| orphan star                  | `stars/…` file whose fingerprint no list entry uses |
+| duplicate star               | referenced star at a non-canonical path (e.g. `stars/by-name/`) **and** a byte-identical sharded copy exists |
+| orphan version               | `versions/vN.sg1` the CHART does not list (e.g. crashed commit) |
+| temp file                    | `*.part` older than `--temp-age` seconds (default 3600) |
+| stale staging                | sibling `.tidy-<name>.sigil/` from an interrupted tidy, same age rule |
+| empty shard folder           | `stars/ab/` left with nothing in it |
+
+Never touched: anything the card / CHART references, **`cold/`** (cold kits are history you
+chose to keep), the atlas `.sga`, `CONTAINER`, and any file gc does not recognise (listed as
+"left alone"). A constellation card that cannot be opened (no `--pass` / `--identity`) stops
+gc — it will not guess what is referenced. Old flat constellation folders are reported but
+never reclaimed (run `sigil tidy` first); old `.sgv/` vaults only lose unlisted `vN.sg1` and
+old temp files.
+
 ## Later slices (not in format 1 yet)
 
-Real remove + `sigil gc`; `sigil doctor`; human-readable names in `ls` / mount; a
-default `cold/` wiring for light-retention prune.
+`sigil doctor`; human-readable names in `ls` / mount.

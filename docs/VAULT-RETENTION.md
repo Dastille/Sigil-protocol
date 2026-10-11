@@ -60,6 +60,8 @@ Chart fields (backward compatible): `retention=full` or `retention=light` plus `
 ./sigil vault prune ./notes.txt --keep 3 --force-drop
 ```
 
+`--cold-here` is shorthand for the container's own `<name>.sigil/cold/` (tidy containers only; see [CONTAINER.md](CONTAINER.md)). To drop one specific old version rather than the oldest N: `sigil vault remove ./notes.txt --version 2` (never the tip; light retention needs `--cold`/`--cold-here` or `--force-drop`). `sigil gc` never touches cold kits.
+
 Each pruned seal lands under `DIR/vN/`:
 
 - **Seal** (and Reflection when the drive budget fits): `sigil kit place` layout (`usb-*` + `KIT`) so one lost USB is still mendable.

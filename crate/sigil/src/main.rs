@@ -340,6 +340,29 @@ enum Cmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
+    /// Reclaim orphan stars / versions and abandoned temp files from a container (report-only
+    /// unless --apply). Never deletes anything the card / CHART lists, nor cold/ kits.
+    Gc {
+        /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
+        path: PathBuf,
+        /// Delete for real (default: report only)
+        #[arg(long)]
+        apply: bool,
+        /// Report only (this is already the default; kept so scripts can say so)
+        #[arg(long = "dry-run", conflicts_with = "apply")]
+        dry_run: bool,
+        /// Passphrase of a warded constellation card (gc must read the list)
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens an encrypt-to card (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Only reclaim temp files older than this many seconds (default 3600)
+        #[arg(long = "temp-age", default_value_t = sigil::gc::DEFAULT_TEMP_AGE_SECS)]
+        temp_age: u64,
+    },
     /// Named list of stars. Add unique files; rsync the folder; atlas to carry the bag.
     Constellation {
         #[command(subcommand)]
@@ -563,6 +586,30 @@ enum VaultCmd {
         /// Light retention: allow dropping seals without --cold (discards history)
         #[arg(long = "force-drop")]
         force_drop: bool,
+        /// Archive into the container's own `cold/` folder (tidy containers only)
+        #[arg(long = "cold-here", conflicts_with = "cold")]
+        cold_here: bool,
+    },
+    /// Remove one named old version (never the tip). Light retention needs --cold/--cold-here or --force-drop.
+    #[command(visible_alias = "rm")]
+    Remove {
+        /// Live file / folder or its `.sigil` / `.sgv` chart dir
+        path: PathBuf,
+        /// Version number to remove (see `vault versions`)
+        #[arg(long)]
+        version: u32,
+        /// Archive the seal under DIR/vN/ first (kit place or plain .sg1)
+        #[arg(long)]
+        cold: Option<PathBuf>,
+        /// Archive into the container's own `cold/` folder (tidy containers only)
+        #[arg(long = "cold-here", conflicts_with = "cold")]
+        cold_here: bool,
+        /// Discard without a cold kit (light retention)
+        #[arg(long = "force-drop")]
+        force_drop: bool,
+        /// Show what would happen; change nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Show or set remembered encrypt-to recipients (public keys in CHART).
     /// `vault commit` reuses them when no --to is given; --to on commit replaces them.
@@ -704,6 +751,31 @@ enum SkyCmd {
         /// Identity (.sgk) that opens an encrypt-to card (repeatable)
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
+    },
+    /// Take names off the list and free the stars nothing else needs. A trailing `/` removes a folder.
+    /// The card is rewritten first (atomically); an encrypt-to card needs the same --to as `add`.
+    #[command(visible_alias = "rm")]
+    Remove {
+        sky: PathBuf,
+        /// List name(s) to remove (`docs/a.txt`, or `docs/` for everything under it)
+        names: Vec<String>,
+        /// Passphrase of a warded card
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Encrypt-to recipient(s) the rewritten card keeps (same as on add)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Identity (.sgk) that opens an encrypt-to card (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Leave star files on disk (`sigil gc` reclaims them later)
+        #[arg(long = "keep-stars")]
+        keep_stars: bool,
+        /// Show what would be removed; change nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     Scry {
         sky: PathBuf,
@@ -1652,6 +1724,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             print!("{}", report.render());
         }
+        Cmd::Gc { path, apply, dry_run: _, pass, talisman, identity, temp_age } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let r = sigil::gc::gc(
+                &path,
+                &sigil::gc::GcOpts { apply, pass: pass.as_deref(), identities: &identities, temp_age_secs: temp_age },
+            )?;
+            print!("{}", r.render());
+        }
         Cmd::Kit { cmd } => run_kit(cmd)?,
         Cmd::Path {
             input,
@@ -1970,7 +2051,9 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             keep,
             cold,
             force_drop,
+            cold_here,
         } => {
+            let cold = if cold_here { Some(sigil::vault_cold_here(&path)?) } else { cold };
             let p = vault_prune_with(&path, keep, cold.as_deref(), force_drop)?;
             let removed = if p.removed.is_empty() {
                 "(none)".to_string()
@@ -1991,6 +2074,21 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 p.kept, p.tip, removed, where_cold
             );
             print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+        }
+        VaultCmd::Remove { path, version, cold, cold_here, force_drop, dry_run } => {
+            let cold = if cold_here { Some(sigil::vault_cold_here(&path)?) } else { cold };
+            let r = sigil::vault_remove_version(&path, version, cold.as_deref(), force_drop, dry_run)?;
+            println!(
+                "{}vault remove v{} tip=v{} remaining={}{}",
+                if r.dry_run { "dry run: would " } else { "" },
+                r.removed,
+                r.tip,
+                r.remaining,
+                r.cold_dir.as_ref().map(|d| format!("  cold={}", d.display())).unwrap_or_default()
+            );
+            if !r.dry_run {
+                print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+            }
         }
         VaultCmd::Recipients { path, to, clear } => {
             if clear {
@@ -2157,6 +2255,37 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             });
             let n = sigil::pack_atlas_keys(&sky, &dest, pass.as_deref(), &identities)?;
             println!("atlas {n} files → {}", dest.display());
+        }
+        SkyCmd::Remove { sky, names, pass, talisman, to, identity, keep_stars, dry_run } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let recipients = load_recipients(&to)?;
+            let identities = load_identities(&identity)?;
+            let r = sigil::constellation_remove(
+                &sky,
+                &names,
+                sigil::ConstellationRemoveOpts {
+                    pass: pass.as_deref(),
+                    recipients: &recipients,
+                    identities: &identities,
+                    keep_stars,
+                    dry_run,
+                },
+            )?;
+            let verb = if r.dry_run { "would remove" } else { "removed" };
+            for n in &r.removed {
+                println!("  {verb} {n}");
+            }
+            for p in &r.stars_freed {
+                println!("  {} star {}", if r.dry_run { "would delete" } else { "deleted" }, p.display());
+            }
+            println!(
+                "{}constellation {}: {} name(s) off the list, {} star file(s) freed, {} name(s) remain",
+                if r.dry_run { "dry run: " } else { "" },
+                sky.display(),
+                r.removed.len(),
+                r.stars_freed.len(),
+                r.remaining
+            );
         }
         SkyCmd::Scry { sky, pass, talisman, identity } => {
             let pass = resolve_pass(pass, talisman)?;
