@@ -199,8 +199,15 @@ fn stale_staging(root: &Path, opts: &GcOpts<'_>, rep: &mut GcReport) {
     }
 }
 
-/// Garbage-collect the vault or constellation at `path`.
-pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
+/// What a user path points at.
+pub(crate) enum Target {
+    /// Chart dir (`name.sigil/` container or `name.sgv/`).
+    Vault(PathBuf),
+    /// Constellation folder (container or old flat).
+    Sky(PathBuf),
+}
+
+pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
     let path = path.components().as_path().to_path_buf();
     let sky = container::sky_for_read(&path);
     let is_sky_container = container::is_container(&sky)
@@ -208,17 +215,30 @@ pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     if !is_sky_container {
         if let Ok((_live, vdir)) = crate::vault::resolve_paths(&path) {
             if vdir.join(crate::vault::CHART_NAME).is_file() {
-                return gc_vault(&vdir, opts);
+                return Ok(Target::Vault(vdir));
             }
         }
     }
     if sky.is_dir() && crate::constellation::find_card(&sky).is_some() {
-        return gc_sky(&sky, opts);
+        return Ok(Target::Sky(sky));
     }
     Err(err(format!(
-        "nothing to gc at {} (not a tracked vault, nor a constellation folder / container)",
+        "nothing found at {} (not a tracked vault, nor a constellation folder / container)",
         path.display()
     )))
+}
+
+/// Garbage-collect the vault or constellation at `path`.
+pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
+    match resolve_target(path).map_err(|_| {
+        err(format!(
+            "nothing to gc at {} (not a tracked vault, nor a constellation folder / container)",
+            path.display()
+        ))
+    })? {
+        Target::Vault(v) => gc_vault(&v, opts),
+        Target::Sky(s) => gc_sky(&s, opts),
+    }
 }
 
 fn finish(rep: &mut GcReport) {

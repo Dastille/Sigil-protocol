@@ -363,6 +363,33 @@ enum Cmd {
         #[arg(long = "temp-age", default_value_t = sigil::gc::DEFAULT_TEMP_AGE_SECS)]
         temp_age: u64,
     },
+    /// Read-only health check of a vault or constellation: manifest, old layout, missing
+    /// members, bit rot (ECC verify), orphans/temp files, cold kits. Exit 0 healthy, 1 warnings,
+    /// 2 problems, 3 could not check. `--fix` only tidies an old layout and runs gc --apply.
+    Doctor {
+        /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
+        path: PathBuf,
+        /// Machine-readable report on stdout
+        #[arg(long)]
+        json: bool,
+        /// Safe fixes only: `sigil tidy` an old layout, then `sigil gc --apply`. Never touches bit rot, missing members or cold kits
+        #[arg(long)]
+        fix: bool,
+        /// Skip bit-level verification (existence and structure only)
+        #[arg(long)]
+        quick: bool,
+        /// Passphrase of a warded constellation card
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens an encrypt-to card (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Only count temp files older than this many seconds as abandoned (default 3600)
+        #[arg(long = "temp-age", default_value_t = sigil::gc::DEFAULT_TEMP_AGE_SECS)]
+        temp_age: u64,
+    },
     /// Named list of stars. Add unique files; rsync the folder; atlas to carry the bag.
     Constellation {
         #[command(subcommand)]
@@ -1723,6 +1750,27 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
             print!("{}", report.render());
+        }
+        Cmd::Doctor { path, json, fix, quick, pass, talisman, identity, temp_age } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            match sigil::doctor::doctor(
+                &path,
+                &sigil::doctor::DoctorOpts { pass: pass.as_deref(), identities: &identities, quick, fix, temp_age_secs: temp_age },
+            ) {
+                Ok(r) => {
+                    if json {
+                        print!("{}", r.to_json());
+                    } else {
+                        print!("{}", r.render());
+                    }
+                    std::process::exit(r.exit_code());
+                }
+                Err(e) => {
+                    eprintln!("sigil doctor: {e}");
+                    std::process::exit(3);
+                }
+            }
         }
         Cmd::Gc { path, apply, dry_run: _, pass, talisman, identity, temp_age } => {
             let pass = resolve_pass(pass, talisman)?;
