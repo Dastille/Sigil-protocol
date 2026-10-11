@@ -16,6 +16,7 @@ mod mount;
 mod nest;
 mod open;
 pub mod container;
+pub mod doctor;
 pub mod gc;
 pub mod passkey;
 mod pieces;
