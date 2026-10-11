@@ -193,6 +193,33 @@ atomic rename) and `sigil gc --apply` (orphans, duplicates, abandoned temp files
 touches bit rot, missing members or cold kits — those need a human (`sigil mend`, a backup, a
 decision). The report is recomputed after the fixes and lists them as `fixed:` lines.
 
-## Later slices (not in format 1 yet)
+## Names, not hashes (`ls`, `mount`)
 
-Human-readable names in `ls` / mount.
+On disk a star is `stars/ab/<sha256>.sg1` and a version is `versions/vN.sg1`; that layout is
+unchanged. What *you* see goes by the names in the card / CHART:
+
+```sh
+sigil ls Sky                    # every list name, size, short fingerprint (MISSING star flagged)
+sigil ls Sky docs/              # only names under docs/
+sigil ls Sky docs/a.txt         # walk into that member (nest / breadcrumb), trail starts at docs/a.txt
+sigil ls notes.txt.sigil        # versions as  notes.txt@v1  notes.txt@v2 (tip) …
+sigil ls notes.txt.sigil v2     # walk into a version (v2, @2, 2 or notes.txt@v2)
+sigil ls Sky.sigil/stars/ab/ab12….sg1   # raw path: the breadcrumb says  docs/a.txt, not the hash
+sigil mount Sky mnt             # FUSE (read-only): the tree is the list names; stars decode on read
+sigil mount Sky mnt --export-dir out  [--pass … | --identity key.sgk]
+```
+
+* `ls` / `mount` accept the short name (`Sky`), the container (`Sky.sigil`), an old flat folder,
+  and for vaults the container, `.sgv`, or the live path once the live file is gone. A live file
+  that still exists keeps its old `ls` meaning (it walks the file itself).
+* A warded / encrypt-to card needs `--pass` / `--identity` to show names; without the key the
+  breadcrumb falls back to the file name and listing says so.
+* Constellation mount is read-only (`--writable` is refused — a constellation is a list of separate
+  stars; use `constellation add` / `remove`). Vault mounts already carry the payload name.
+* Nothing is written into the container by `ls` or `mount` (the tests compare fingerprints).
+
+## Status
+
+Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
+Next up on the roadmap: segment-log mode. A later container-format bump (if ever needed) is
+handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.

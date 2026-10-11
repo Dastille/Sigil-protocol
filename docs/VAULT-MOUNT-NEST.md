@@ -12,6 +12,8 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mar
 | **Mount** | Apps see normal paths over a tip / bare `.sg1` / SGDR pack | Seal untouched; cleartext in RAM (FUSE) or an export tree |
 | **Path / nest** | Breadcrumb walk into nested `.sg1` layers inside a pack or mark | Outer mark unchanged; optional extract to a temp path |
 
+A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CONTAINER.md](CONTAINER.md#names-not-hashes-ls-mount).
+
 `vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` marks.
 
 ## When to use which

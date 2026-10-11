@@ -25,6 +25,8 @@ enum FileSrc {
     Whole,
     /// One entry inside an SGDR folder pack (`rel` is the pack-relative path).
     Entry { rel: String },
+    /// A constellation member: the star file for one list name (`None` = star missing).
+    Member { star: Option<PathBuf> },
 }
 
 #[derive(Clone, Debug)]
@@ -74,7 +76,12 @@ impl VaultFs {
         prefer_vault: bool,
         identities: &[Identity],
     ) -> Result<Self> {
-        let seal = resolve_seal(input, prefer_vault)?;
+        let sky = if prefer_vault { None } else { crate::names::sky_dir(input) };
+        let seal = match &sky {
+            Some(d) => crate::constellation::find_card(d)
+                .ok_or_else(|| crate::Error::Msg("no constellation card".into()))?,
+            None => resolve_seal(input, prefer_vault)?,
+        };
         let mut fs = VaultFs {
             seal: seal.clone(),
             pass: pass.map(|s| s.to_string()),
@@ -98,7 +105,9 @@ impl VaultFs {
         );
         fs.by_path.insert(String::new(), 1);
 
-        if is_dir_pack(&seal) {
+        if let Some(d) = sky {
+            fs.build_constellation(&d)?;
+        } else if is_dir_pack(&seal) {
             fs.build_dir_pack()?;
         } else {
             fs.build_single()?;
@@ -278,6 +287,27 @@ impl VaultFs {
         Ok(())
     }
 
+    /// Constellation: the tree is the card's list names (`docs/a.txt`); each file decodes its
+    /// star on read. Nothing on disk changes.
+    fn build_constellation(&mut self, sky: &Path) -> Result<()> {
+        let entries = crate::names::sky_entries(sky, self.pass.as_deref(), &self.identities)?;
+        for e in entries {
+            let rel = e.name.replace('\\', "/");
+            if rel.contains("..") || Path::new(&rel).is_absolute() {
+                return Err(crate::Error::Msg(format!("refusing unsafe name on the list: {rel}")));
+            }
+            let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+            let Some((last, dirs)) = parts.split_last() else { continue };
+            let mut parent = String::new();
+            for seg in dirs {
+                self.ensure_dir(&parent, seg)?;
+                parent = if parent.is_empty() { (*seg).to_string() } else { format!("{parent}/{seg}") };
+            }
+            self.add_file(&parent, last, e.size, FileSrc::Member { star: e.star })?;
+        }
+        Ok(())
+    }
+
     fn build_dir_pack(&mut self) -> Result<()> {
         let entries = list_dir_pack(&self.seal)?;
         for e in entries {
@@ -412,6 +442,12 @@ impl VaultFs {
         };
         let data = match src {
             FileSrc::Whole => decode_whole(&self.seal, self.pass.as_deref(), &self.identities)?,
+            FileSrc::Member { star } => {
+                let star = star.ok_or_else(|| {
+                    crate::Error::Msg(format!("star for {} is missing (see `sigil doctor`)", node.name))
+                })?;
+                decode_whole(&star, self.pass.as_deref(), &self.identities)?
+            }
             FileSrc::Entry { rel } => {
                 let star = read_dir_entry_star(&self.seal, &rel)?;
                 let file_pass = pass_for(&rel, self.pass.as_deref(), &self.wards);
@@ -867,7 +903,17 @@ pub fn run_mount_keys(
             "--writable requires --export-dir (FUSE stays read-only this slice)".into(),
         ));
     }
-    let seal_path = resolve_seal(input, prefer_vault)?;
+    let sky = if prefer_vault { None } else { crate::names::sky_dir(input) };
+    if sky.is_some() && writable {
+        return Err(crate::Error::Msg(
+            "--writable is for vault versions; a constellation is a list of separate stars (use `constellation add` / `remove`)".into(),
+        ));
+    }
+    let seal_path = match &sky {
+        Some(d) => crate::constellation::find_card(d)
+            .ok_or_else(|| crate::Error::Msg("no constellation card".into()))?,
+        None => resolve_seal(input, prefer_vault)?,
+    };
     let before = sha_of(&seal_path)?;
     let fs = VaultFs::open_keys(input, pass, wards, prefer_vault, identities)?;
     if let Some(dest) = export {
