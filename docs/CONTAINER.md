@@ -218,8 +218,16 @@ sigil mount Sky mnt --export-dir out  [--pass … | --identity key.sgk]
   stars; use `constellation add` / `remove`). Vault mounts already carry the payload name.
 * Nothing is written into the container by `ls` or `mount` (the tests compare fingerprints).
 
+## Segment logs (`kind=log`)
+
+A third container kind: `events.sigil/` with `CONTAINER` (`kind=log`, `log=1`, `log-id=…`),
+`INDEX`, `HEAD` and `segments/NNNN/<seq>.sg1`. Same container format 1 (extra manifest keys only).
+`sigil gc` and `sigil doctor` understand it: gc removes only unindexed leftovers of a crashed
+append and temp files, never a segment the INDEX lists. Full design in
+[SEGMENT-LOG.md](SEGMENT-LOG.md).
+
 ## Status
 
 Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
-Next up on the roadmap: segment-log mode. A later container-format bump (if ever needed) is
+Segment-log mode: slice 1 shipped (see SEGMENT-LOG.md). A later container-format bump (if ever needed) is
 handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.

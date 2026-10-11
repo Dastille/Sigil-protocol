@@ -79,8 +79,13 @@ impl DoctorReport {
     }
 
     pub fn render(&self) -> String {
+        self.render_as("doctor")
+    }
+
+    /// Same report under another command name (`sigil log verify`).
+    pub fn render_as(&self, cmd: &str) -> String {
         let mut s = format!(
-            "doctor {} ({}, {}{})\n",
+            "{cmd} {} ({}, {}{})\n",
             self.root.display(),
             self.kind,
             self.layout,
@@ -186,7 +191,7 @@ fn f(sev: Severity, code: &'static str, subject: impl Into<String>, msg: impl In
 
 /// Outcome of verifying one seal / star.
 #[derive(Debug)]
-enum Health {
+pub(crate) enum Health {
     Ok,
     /// Damaged but within the repair budget.
     Mendable(String),
@@ -194,7 +199,7 @@ enum Health {
     Damaged(String),
 }
 
-fn health_bytes(bytes: &[u8]) -> Health {
+pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
     match crate::verify(bytes) {
         Err(e) => Health::Damaged(format!("not readable as a mark: {e}")),
         Ok((h, merkle_ok, live, k, recovered)) => {
@@ -310,6 +315,7 @@ fn add_gc_findings(rep: &mut DoctorReport, g: &gc::GcReport, root: &Path) {
             GcKind::DuplicateStar => ("duplicate-star", format!("redundant copy of a star ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
             GcKind::Temp => ("temp-file", "abandoned temp file".into(), Some("sigil gc --apply".into())),
             GcKind::StaleStaging => ("stale-staging", "interrupted `sigil tidy` staging folder".into(), Some("sigil gc --apply".into())),
+            GcKind::OrphanSegment => ("orphan-segment", format!("segment no INDEX entry uses ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
             GcKind::EmptyDir => continue,
         };
         rep.findings.push(f(Severity::Warn, code, rel(root, &i.path), msg, hint));
@@ -393,7 +399,31 @@ fn analyze(path: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     match gc::resolve_target(path)? {
         Target::Vault(v) => analyze_vault(&v, opts),
         Target::Sky(s) => analyze_sky(&s, opts),
+        Target::Log(l) => analyze_log(&l, opts),
     }
+}
+
+fn analyze_log(dir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
+    let c = crate::seglog::check(
+        dir,
+        &crate::seglog::CheckOpts {
+            pass: opts.pass,
+            identities: opts.identities,
+            quick: opts.quick,
+            signer: None,
+            anchors: &[],
+            temp_age_secs: opts.temp_age_secs,
+        },
+    )?;
+    Ok(DoctorReport {
+        kind: "log".into(),
+        root: dir.to_path_buf(),
+        layout: "container".into(),
+        container_version: c.container_version,
+        findings: c.findings,
+        verified: c.verified,
+        fixed: Vec::new(),
+    })
 }
 
 fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
