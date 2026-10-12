@@ -1,9 +1,11 @@
-//! Mount of a `.sg1` / SGDR pack (or vault tip) so apps see normal paths.
+//! Mount of a `.sg1` / SGDR pack, vault tip, or segment log so apps see normal paths.
 //!
 //! Durable seals stay intact: cleartext lives only in RAM (FUSE) or an export
 //! directory. Use `--export-dir --writable` for a dirty cleartext tree, then
 //! `sigil vault commit --from-export` to re-seal as a new vault version.
-//! FUSE remains read-only this slice.
+//! FUSE remains read-only. Segment logs (`kind=log`) mount read-only as one file
+//! per live segment (tombstones omitted; compaction members keep their original
+//! seq names); always available via `--export-dir`.
 
 use crate::folder::{is_dir_pack, list_dir_pack, read_dir_entry_star, DirEntry};
 use crate::vault::{self, VAULT_SUFFIX};
@@ -27,6 +29,8 @@ enum FileSrc {
     Entry { rel: String },
     /// A constellation member: the star file for one list name (`None` = star missing).
     Member { star: Option<PathBuf> },
+    /// One live segment of a `kind=log` container (plain bytes; may sit inside a compaction holder).
+    LogSeg { seq: u64 },
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +50,8 @@ struct Node {
 /// In-memory VFS over a durable `.sg1` (never written).
 pub struct VaultFs {
     seal: PathBuf,
+    /// Set when this VFS is a segment-log view (`kind=log`); `seal` is then the log directory.
+    log_dir: Option<PathBuf>,
     pass: Option<String>,
     wards: Vec<(String, String)>,
     identities: Vec<Identity>,
@@ -84,6 +90,7 @@ impl VaultFs {
         };
         let mut fs = VaultFs {
             seal: seal.clone(),
+            log_dir: None,
             pass: pass.map(|s| s.to_string()),
             wards: wards.to_vec(),
             identities: identities.to_vec(),
@@ -113,6 +120,57 @@ impl VaultFs {
             fs.build_single()?;
         }
         Ok(fs)
+    }
+
+    /// Open a `kind=log` container: one file per live segment (tombstones absent).
+    /// Filenames are zero-padded seqs (`0000000007`), matching on-disk segment basenames without `.sg1`.
+    /// Compaction members stay addressable under their original seq (same as `log read --seq`).
+    pub fn open_log(
+        input: &Path,
+        pass: Option<&str>,
+        identities: &[Identity],
+    ) -> Result<Self> {
+        let listing = crate::seglog::list(input)?;
+        let log_dir = listing.log.dir.clone();
+        let mut fs = VaultFs {
+            seal: log_dir.clone(),
+            log_dir: Some(log_dir),
+            pass: pass.map(|s| s.to_string()),
+            wards: Vec::new(),
+            identities: identities.to_vec(),
+            nodes: HashMap::new(),
+            by_path: HashMap::new(),
+            next_ino: 2,
+            cache: Mutex::new(HashMap::new()),
+            uid: current_uid(),
+            gid: current_gid(),
+        };
+        fs.nodes.insert(
+            1,
+            Node {
+                name: String::new(),
+                parent: 1,
+                kind: NodeKind::Dir,
+                children: Vec::new(),
+            },
+        );
+        fs.by_path.insert(String::new(), 1);
+        for e in &listing.entries {
+            if !listing.state.is_seg(e.seq) {
+                continue;
+            }
+            if listing.state.deleted_by(e.seq).is_some() {
+                continue;
+            }
+            let name = crate::seglog::mount_name(e.seq);
+            fs.add_file("", &name, e.size, FileSrc::LogSeg { seq: e.seq })?;
+        }
+        Ok(fs)
+    }
+
+    /// True when this VFS is a segment-log view.
+    pub fn is_log(&self) -> bool {
+        self.log_dir.is_some()
     }
 
     pub fn seal_path(&self) -> &Path {
@@ -452,6 +510,29 @@ impl VaultFs {
                 let star = read_dir_entry_star(&self.seal, &rel)?;
                 let file_pass = pass_for(&rel, self.pass.as_deref(), &self.wards);
                 decode_star(&star, file_pass.as_deref(), &self.identities)?
+            }
+            FileSrc::LogSeg { seq } => {
+                let dir = self.log_dir.as_ref().ok_or_else(|| {
+                    crate::Error::Msg("internal: LogSeg without log_dir".into())
+                })?;
+                let opts = crate::seglog::ReadOpts {
+                    pass: self.pass.as_deref(),
+                    identities: &self.identities,
+                };
+                let out = crate::seglog::read_range(
+                    dir,
+                    seq,
+                    seq,
+                    &opts,
+                    crate::seglog::ReadMode::Single,
+                )?;
+                out.parts
+                    .into_iter()
+                    .next()
+                    .map(|(_, b)| b)
+                    .ok_or_else(|| {
+                        crate::Error::Msg(format!("segment {seq} produced no bytes"))
+                    })?
             }
         };
         let arc = Arc::new(data);
@@ -903,6 +984,10 @@ pub fn run_mount_keys(
             "--writable requires --export-dir (FUSE stays read-only this slice)".into(),
         ));
     }
+    // Segment log: one file per live segment (always read-only).
+    if crate::seglog::is_log(input) {
+        return run_log_mount(input, mountpoint, pass, export, identities, writable, prefer_vault);
+    }
     let sky = if prefer_vault { None } else { crate::names::sky_dir(input) };
     if sky.is_some() && writable {
         return Err(crate::Error::Msg(
@@ -962,6 +1047,63 @@ pub fn run_mount_keys(
         );
     } else {
         println!("unmounted; seal unchanged");
+    }
+    Ok(())
+}
+
+fn run_log_mount(
+    input: &Path,
+    mountpoint: &Path,
+    pass: Option<&str>,
+    export: Option<&Path>,
+    identities: &[Identity],
+    writable: bool,
+    prefer_vault: bool,
+) -> Result<()> {
+    if writable {
+        return Err(crate::Error::Msg(
+            "--writable is for vault versions; a segment log mount is always read-only (use `sigil log append`)".into(),
+        ));
+    }
+    if prefer_vault {
+        return Err(crate::Error::Msg(
+            "--vault does not apply to a segment log".into(),
+        ));
+    }
+    let log = crate::seglog::Log::open(input)?;
+    let index_path = log.dir.join(crate::seglog::INDEX_FILE);
+    let before = sha_of(&index_path)?;
+    let fs = VaultFs::open_log(input, pass, identities)?;
+    if let Some(dest) = export {
+        let n = fs.export_dir(dest)?;
+        let after = sha_of(&index_path)?;
+        if before != after {
+            return Err(crate::Error::Msg(
+                "log INDEX changed during export — this should never happen".into(),
+            ));
+        }
+        println!(
+            "exported {n} live segment(s) → {}  (log intact, read-only view)",
+            dest.display()
+        );
+        println!("source {}", fs.seal_path().display());
+        return Ok(());
+    }
+    println!(
+        "mounting log {} → {} (read-only FUSE; one file per live segment; Ctrl-C or `sigil umount` to leave)",
+        fs.seal_path().display(),
+        mountpoint.display()
+    );
+    let dir = fs.seal_path().to_path_buf();
+    mount_fuse(fs, mountpoint)?;
+    let after = sha_of(&index_path)?;
+    if before != after {
+        let _ = writeln!(
+            io::stderr(),
+            "warning: log INDEX digest changed while mounted (unexpected)"
+        );
+    } else {
+        println!("unmounted; log unchanged ({})", dir.display());
     }
     Ok(())
 }
@@ -1177,6 +1319,128 @@ mod tests {
             let mode = fs::metadata(dest.join("x.bin")).unwrap().permissions().mode();
             assert_eq!(mode & 0o222, 0);
         }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn log_mount_lists_live_segments_and_export() {
+        let d = tmp("log-basic");
+        let log_path = d.join("ev");
+        crate::seglog::init(&log_path, None).unwrap();
+        for i in 1..=3u64 {
+            crate::seglog::append(
+                &log_path,
+                format!("batch {i}\n").as_bytes(),
+                &crate::seglog::AppendOpts::default(),
+            )
+            .unwrap();
+        }
+        let index = d.join("ev.sigil").join(crate::seglog::INDEX_FILE);
+        let before = crate::sha256_path(&index).unwrap();
+        let vfs = VaultFs::open_log(&log_path, None, &[]).unwrap();
+        assert!(vfs.is_log());
+        let listing = vfs.list_dir("").unwrap();
+        let names: Vec<_> = listing.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(names, vec!["0000000001", "0000000002", "0000000003"]);
+        assert_eq!(&vfs.read_file("0000000002").unwrap()[..], b"batch 2\n");
+        let dest = d.join("view");
+        let n = vfs.export_dir(&dest).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(fs::read(dest.join("0000000001")).unwrap(), b"batch 1\n");
+        assert_eq!(crate::sha256_path(&index).unwrap(), before);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn log_mount_honours_tombstones_and_compaction() {
+        let d = tmp("log-tomb");
+        let log_path = d.join("ev");
+        crate::seglog::init(&log_path, None).unwrap();
+        for i in 1..=4u64 {
+            crate::seglog::append(
+                &log_path,
+                format!("batch {i}\n").as_bytes(),
+                &crate::seglog::AppendOpts::default(),
+            )
+            .unwrap();
+        }
+        crate::seglog::tombstone(
+            &log_path,
+            crate::seglog::TombTarget::Seq(2),
+            Some("gone"),
+            None,
+        )
+        .unwrap();
+        let mut copts = crate::seglog::CompactOpts::default();
+        copts.apply = true;
+        crate::seglog::compact(&log_path, &copts).unwrap();
+        let vfs = VaultFs::open_log(&log_path, None, &[]).unwrap();
+        let listing = vfs.list_dir("").unwrap();
+        let names: Vec<_> = listing.iter().map(|e| e.0.clone()).collect();
+        // seq 2 deleted; live batches still under original seq names
+        assert!(!names.iter().any(|n| n == "0000000002"));
+        assert!(names.contains(&"0000000001".to_string()));
+        assert!(names.contains(&"0000000003".to_string()));
+        assert!(names.contains(&"0000000004".to_string()));
+        assert_eq!(&vfs.read_file("0000000003").unwrap()[..], b"batch 3\n");
+        assert_eq!(&vfs.read_file("0000000001").unwrap()[..], b"batch 1\n");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn log_mount_needs_pass_for_sealed_segments() {
+        let d = tmp("log-pass");
+        let log_path = d.join("ev");
+        crate::seglog::init(&log_path, None).unwrap();
+        let mut opts = crate::seglog::AppendOpts::default();
+        opts.pass = Some("house");
+        crate::seglog::append(&log_path, b"secret-batch\n", &opts).unwrap();
+        let vfs = VaultFs::open_log(&log_path, None, &[]).unwrap();
+        assert!(vfs.list_dir("").unwrap().iter().any(|e| e.0 == "0000000001"));
+        assert!(vfs.read_file("0000000001").is_err());
+        let vfs = VaultFs::open_log(&log_path, Some("house"), &[]).unwrap();
+        assert_eq!(&vfs.read_file("0000000001").unwrap()[..], b"secret-batch\n");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn log_mount_writable_refused() {
+        let d = tmp("log-ro");
+        let log_path = d.join("ev");
+        crate::seglog::init(&log_path, None).unwrap();
+        crate::seglog::append(
+            &log_path,
+            b"x\n",
+            &crate::seglog::AppendOpts::default(),
+        )
+        .unwrap();
+        let dest = d.join("view");
+        let err = run_mount_keys(
+            &log_path,
+            &d.join("mnt"),
+            None,
+            &[],
+            false,
+            Some(&dest),
+            &[],
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("--writable"), "{err}");
+        // read-only export still works
+        run_mount_keys(
+            &log_path,
+            &d.join("mnt"),
+            None,
+            &[],
+            false,
+            Some(&dest),
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(fs::read(dest.join("0000000001")).unwrap(), b"x\n");
         let _ = fs::remove_dir_all(&d);
     }
 

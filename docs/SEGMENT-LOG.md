@@ -1,10 +1,11 @@
 # Segment log (`sigil log …`)
 
 Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
-**slice 2 shipped** (tombstones + compaction, `log=2`) and **slice 3 shipped** (opt-in per-segment
-keys and crypto-shredding, `log=3`). Approved 2026-10-06 as a general-purpose mode (not tied to
-any one application); built after the tidy-container track. Nested hierarchical cards and a log
-mount view are **deferred** (see the end).
+**slice 2 shipped** (tombstones + compaction, `log=2`), **slice 3 shipped** (opt-in per-segment
+keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
+`kind=log` container). Approved 2026-10-06 as a general-purpose mode (not tied to any one
+application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
+(see the end).
 
 A segment log is an **append-only, tamper-evident sequence of sealed batches**. Each
 `sigil log append` seals one blob of bytes — a day of events, a chunk of a journal, a
@@ -126,6 +127,7 @@ sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--app
                          [--pass …|--identity …] [--seal-pass …|--to RECIPIENT]… [--mode …] [--allow-decrypt]
 sigil gc events [--apply]        # orphans of crashed appends, and files the INDEX declares dead
 sigil doctor events              # same checks as verify, plus the shared exit codes
+sigil mount events ./view [--export-dir DIR] [--pass … | --identity key.sgk]…
 ```
 
 `PATH` may be `events` or `events.sigil`. `append` accepts `-` for stdin. `log read` skips
@@ -475,15 +477,46 @@ A batch is sealed in memory in one piece in this slice; very large single batche
 (work-pack chunking for segments is deferred). INDEX is ~170 bytes per entry; `append` re-reads it
 in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
+## Mount (read-only view of a log)
+
+`sigil mount` (and `--export-dir`) of a `kind=log` container shows **one file per live segment**.
+Same keys as `log read`: `--pass` / `--identity` unwrap sealed batches (and per-segment key rings);
+missing keys fail with a clear error when a file is opened (or when export materializes it).
+
+```sh
+# No FUSE needed (CI / box): materialize a read-only tree
+sigil mount events ./view --export-dir /tmp/log-view
+ls /tmp/log-view
+# → 0000000001  0000000003  0000000006 …   (zero-padded seq; matches on-disk basename without .sg1)
+
+# FUSE when /dev/fuse + fusermount3 are available (same path as vault mount)
+mkdir -p ./view
+sigil mount events ./view
+# …
+sigil umount ./view
+```
+
+* **Tombstones / shreds**: deleted segments are **absent** from the tree (same as a range `log read`
+  that skips them). There is no stub or tombstone file.
+* **Compaction**: original seqs stay addressable under their own names; the compaction entry itself
+  is not a file. Opening `0000000003` cuts that batch out of its holder, exactly like
+  `sigil log read events --seq 3`.
+* **Read-only**: `--writable` is refused (append with `sigil log append`; never rewrite the log
+  through mount). Plain `.sg1` and non-log mounts are unchanged.
+* **Naming**: `{seq:010}` (e.g. `0000000007`) — human-readable, stable, and consistent with the
+  `segments/NNNN/NNNNNNNNNN.sg1` layout. No extension: the cleartext is the batch bytes, not a star.
+
+See also [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) for FUSE vs `--export-dir` on vaults and packs.
+
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Still deferred:
+(above). Done: `sigil mount` view of a log. Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Adding or rotating a signer after `init`; signed *inclusion proofs* for a single entry.
 * Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX.
-* `sigil mount` view of a log (one file per segment, honouring tombstones) and `tidy` migration from ad-hoc segment folders.
+* `tidy` migration from ad-hoc segment folders into a `kind=log` container.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Re-wrapping the key ring to new recipients / rotating a recipient (today: `compact` re-seals live batches under new keys wrapped to the new recipients), shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).

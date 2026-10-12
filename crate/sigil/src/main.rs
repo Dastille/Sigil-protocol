@@ -438,11 +438,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VaultCmd,
     },
-    /// FUSE mount (read-only) or export-dir of a .sg1 / SGDR pack (or vault tip). Alias: fuse.
-    /// Durable seal is never rewritten. Use --export-dir --writable for a dirty cleartext tree.
+    /// FUSE mount (read-only) or export-dir of a .sg1 / SGDR pack, vault tip, or segment log. Alias: fuse.
+    /// Durable seal / log is never rewritten. Use --export-dir --writable for a dirty cleartext vault tree.
+    /// A `kind=log` container mounts as one file per live segment (tombstones omitted).
     #[command(visible_alias = "fuse")]
     Mount {
-        /// .sg1 / SGDR pack, or a vault live path / `.sgv` chart (with --vault)
+        /// .sg1 / SGDR pack, vault live path / `.sgv` (with --vault), or segment log (`events` / `events.sigil`)
         input: PathBuf,
         /// Empty directory mountpoint (ignored with --export-dir)
         mountpoint: PathBuf,

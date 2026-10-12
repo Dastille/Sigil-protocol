@@ -154,6 +154,12 @@ pub fn segment_path(dir: &Path, seq: u64) -> PathBuf {
         .join(format!("{seq:010}.sg1"))
 }
 
+/// Filename shown by `sigil mount` / `--export-dir` for a live segment: zero-padded seq,
+/// matching the on-disk basename without `.sg1` (e.g. `0000000007`).
+pub fn mount_name(seq: u64) -> String {
+    format!("{seq:010}")
+}
+
 fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     hex::decode(s.trim()).ok()?.try_into().ok()
 }
