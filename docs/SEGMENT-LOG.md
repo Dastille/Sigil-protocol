@@ -3,7 +3,7 @@
 Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
 **slice 2 shipped** (tombstones + compaction, `log=2`), **slice 3 shipped** (opt-in per-segment
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
-`kind=log` container). Approved 2026-10-06 as a general-purpose mode (not tied to any one
+`kind=log` container), and **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log). Approved 2026-10-06 as a general-purpose mode (not tied to any one
 application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
 (see the end).
 
@@ -121,6 +121,7 @@ sigil log ls events                           # also: sigil ls events
 sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --identity key.sgk]…
 sigil log verify events [--quick] [--pass … | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
+sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--apply] [--target-size BYTES]
@@ -422,6 +423,47 @@ Be precise about what you are buying:
   hold the key ring record and the recipient key you can open it with ordinary tools, and a
   `log=1` / `log=2` log or plain `.sg1` has none of this and is untouched.
 
+## Adopting a pile of stars (`sigil log adopt`)
+
+Before there was a log mode, the natural way to keep batches was a folder of loose stars
+(`daily/2026-10-01.sg1`, `daily/2026-10-02.sg1`, …). `adopt` tidies such a pile into a log:
+
+```sh
+sigil log init daily                       # or an existing log; --identity to sign it
+sigil log adopt daily daily-old/ --dry-run # plan: order, sizes, what would be skipped
+sigil log adopt daily daily-old/           # adopt, then remove the originals
+sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given; keep originals
+```
+
+* **Byte-for-byte.** A star is copied as it is: never unsealed, re-sealed or decrypted. The INDEX
+  needs only the plain size and the true-name, and both are in every star's header, so adoption
+  needs **no keys** and each segment keeps its own ECC mode and protection (`--pass`, `--to`).
+  Read or verify it later with the key that opened the original. The segment's header still
+  carries the original file name (only visible to `unseal`; mounts name segments by seq).
+* **Order.** A folder gives its `*.sg1` children (not recursive) in natural name order, so
+  `day-2` comes before `day-10` and ISO dates sort by date. Other files are counted and left alone.
+  Files named on the command line keep the given order. `t=` is the adoption time (informational,
+  as for every entry).
+* **Checks.** A file that is not a star, or whose ECC check finds damage, is **left in place** and
+  listed (exit code 1); a repairable one says to run `sigil mend FILE` first. Folders that are
+  already sigil containers, and stars inside one, are refused (adopt is for loose stars).
+* **Crash-safe order:** segments written as unindexed files (each read back) → INDEX lines
+  appended in one write (the commit point) → HEAD → originals removed last. Before the commit a
+  crash leaves only unindexed leftovers (`gc` reclaims them, the next append overwrites them).
+* **Idempotent.** Each adopted line carries an additive `src=<SHA-256 of the star file>` key. It
+  is ordinary chain-covered data, older sigils ignore it, and the line stays a `log=1` segment line
+  (adopting never raises the log format). A re-run recognises sources whose exact bytes were
+  already adopted ("already segment N") and only removes them, so a run that stopped between the
+  commit and the cleanup is finished by running it again. The same path named twice counts once.
+  If those exact bytes were adopted and later **tombstoned**, the file is left in place: deleted
+  data is never re-added behind your back, and your copy is not removed.
+* **Not for `--segment-keys` logs.** There every segment must be sealed under its own key (that is
+  what makes shredding work), so a ready-made star cannot be adopted as is; unseal it and
+  `sigil log append` the bytes. A signed log needs `--identity` as for `append`.
+* `compact` later re-seals adopted batches like any other, so it needs keys that open every
+  adopted star it merges (locked stars from different passphrases: give a key for each, or leave
+  them out of the compaction range).
+
 ## Invariants
 
 1. A segment, once appended, is never modified except by ECC repair that preserves its plain bytes.
@@ -511,12 +553,11 @@ See also [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) for FUSE vs `--export-dir` o
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Done: `sigil mount` view of a log. Still deferred:
+(above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars. Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Adding or rotating a signer after `init`; signed *inclusion proofs* for a single entry.
 * Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX.
-* `tidy` migration from ad-hoc segment folders into a `kind=log` container.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Re-wrapping the key ring to new recipients / rotating a recipient (today: `compact` re-seals live batches under new keys wrapped to the new recipients), shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).

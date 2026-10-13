@@ -204,7 +204,7 @@ impl Entry {
         self.body
             .split_whitespace()
             .filter_map(|t| t.split_once('=').map(|(k, _)| k))
-            .filter(|k| !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of" | "shred"))
+            .filter(|k| !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of" | "shred" | "src"))
             .collect()
     }
 
@@ -846,9 +846,11 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
     Some(fs::read_to_string(&p).map_err(io).and_then(|t| Head::parse(&t)))
 }
 
+mod adopt;
 mod compact;
 mod keyring;
 mod shred;
+pub use adopt::*;
 pub use compact::*;
 pub use shred::*;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
