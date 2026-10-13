@@ -818,6 +818,25 @@ enum LogCmd {
     },
     /// Heal repairable segments in place (ECC); INDEX and HEAD never change.
     Mend { path: PathBuf },
+    /// Tidy loose `.sg1` stars (files, or a folder of them in natural name order) into this log as
+    /// new segments, byte-for-byte: nothing is unsealed, so no keys are needed and each star keeps
+    /// its own ECC and protection. Originals are removed once committed (unless --keep). Re-running
+    /// is safe: stars already adopted are recognised and not appended twice.
+    Adopt {
+        path: PathBuf,
+        /// Stars and/or folders of `*.sg1` (a folder is not searched recursively)
+        #[arg(required = true)]
+        sources: Vec<PathBuf>,
+        /// Signing identity (.sgk); required exactly when the log was created with --identity
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// Leave the original files in place
+        #[arg(long)]
+        keep: bool,
+        /// Show the plan, change nothing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
     /// Mark segments as deleted (chain-covered, permanent). Reads honour it at once; the bytes are
     /// erased by `log compact --apply` (or `gc --apply`). The log becomes `log=2`.
     Tombstone {
@@ -2671,6 +2690,17 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             let dir = seglog::Log::open(&path).map(|l| l.dir).unwrap_or(path.clone());
             print!("{}", rep.render(&dir));
+        }
+        LogCmd::Adopt { path, sources, identity, keep, dry_run } => {
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let r = seglog::adopt(&path, &sources, &seglog::AdoptOpts { identity: id.as_ref(), keep, dry_run })?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            print!("{}", r.render());
+            if !r.skipped.is_empty() {
+                std::process::exit(1);
+            }
         }
         LogCmd::Mend { path } => {
             let r = seglog::mend(&path)?;
