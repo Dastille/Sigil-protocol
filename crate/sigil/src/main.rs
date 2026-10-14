@@ -818,6 +818,35 @@ enum LogCmd {
     },
     /// Heal repairable segments in place (ECC); INDEX and HEAD never change.
     Mend { path: PathBuf },
+    /// Write a receipt that one entry is in this log: its INDEX line plus a Merkle path to the
+    /// anchor root (and the HEAD signature on a signed log). Anyone can check it offline with
+    /// `sigil log check-proof`, without the log and without keys.
+    Prove {
+        path: PathBuf,
+        /// The entry to prove (any INDEX entry: segment, compaction or tombstone)
+        #[arg(long)]
+        seq: u64,
+        /// Prove against the root over the first N entries (an anchor you pinned earlier) instead
+        /// of the current HEAD; signed only when N is the HEAD
+        #[arg(long)]
+        at: Option<u64>,
+        /// Write the proof here (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Check a proof from `log prove` offline. Exit 0 when it verifies, 2 when it does not.
+    CheckProof {
+        proof: PathBuf,
+        /// Also require that this file is exactly the entry's plain bytes (e.g. the batch you appended)
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Require it signed by this key: 64-hex Ed25519 public key, or a .pub / .sgk file
+        #[arg(long)]
+        signer: Option<String>,
+        /// Require it to be against this pinned `SEQ:ROOT`
+        #[arg(long)]
+        anchor: Option<String>,
+    },
     /// Tidy loose `.sg1` stars (files, or a folder of them in natural name order) into this log as
     /// new segments, byte-for-byte: nothing is unsealed, so no keys are needed and each star keeps
     /// its own ECC and protection. Originals are removed once committed (unless --keep). Re-running
@@ -2700,6 +2729,44 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             print!("{}", r.render());
             if !r.skipped.is_empty() {
                 std::process::exit(1);
+            }
+        }
+        LogCmd::Prove { path, seq, at, output } => {
+            let p = seglog::prove(&path, seq, at)?;
+            let text = p.render();
+            match output {
+                Some(o) => {
+                    fs::write(&o, &text)?;
+                    eprintln!(
+                        "proof of entry {seq} against {}:{} ({}) written to {}",
+                        p.size,
+                        hex::encode(p.root),
+                        if p.head.is_some() { "signed" } else { "unsigned" },
+                        o.display()
+                    );
+                }
+                None => print!("{text}"),
+            }
+        }
+        LogCmd::CheckProof { proof, file, signer, anchor } => {
+            let text = fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
+            let opts = seglog::ProofCheckOpts {
+                signer: signer.as_deref().map(parse_signer).transpose()?,
+                anchor: anchor.as_deref().map(parse_anchor).transpose()?,
+                file: match &file {
+                    Some(f) => {
+                        let b = fs::read(f).map_err(|e| format!("read {}: {e}", f.display()))?;
+                        Some((sigil::sha256(&b), b.len() as u64))
+                    }
+                    None => None,
+                },
+            };
+            match seglog::Proof::parse(&text).and_then(|p| seglog::check_proof(&p, &opts)) {
+                Ok(c) => print!("{}", c.render()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
             }
         }
         LogCmd::Mend { path } => {

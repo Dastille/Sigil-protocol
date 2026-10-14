@@ -849,9 +849,11 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
 mod adopt;
 mod compact;
 mod keyring;
+mod proof;
 mod shred;
 pub use adopt::*;
 pub use compact::*;
+pub use proof::*;
 pub use shred::*;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
 use keyring::RingCache;
