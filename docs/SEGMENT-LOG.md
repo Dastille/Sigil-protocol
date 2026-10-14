@@ -3,7 +3,8 @@
 Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
 **slice 2 shipped** (tombstones + compaction, `log=2`), **slice 3 shipped** (opt-in per-segment
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
-`kind=log` container), and **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log). Approved 2026-10-06 as a general-purpose mode (not tied to any one
+`kind=log` container), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
+shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log). Approved 2026-10-06 as a general-purpose mode (not tied to any one
 application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
 (see the end).
 
@@ -124,6 +125,8 @@ sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
+sigil log prove events --seq N [--at M] [-o receipt.proof]   # receipt: this entry is in the log
+sigil log check-proof receipt.proof [--file BATCH] [--signer KEY] [--anchor SEQ:ROOT]   # offline, no log, no keys
 sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--apply] [--target-size BYTES]
                          [--pass …|--identity …] [--seal-pass …|--to RECIPIENT]… [--mode …] [--allow-decrypt]
 sigil gc events [--apply]        # orphans of crashed appends, and files the INDEX declares dead
@@ -519,6 +522,60 @@ A batch is sealed in memory in one piece in this slice; very large single batche
 (work-pack chunking for segments is deferred). INDEX is ~170 bytes per entry; `append` re-reads it
 in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
+## Inclusion proofs (`sigil log prove` / `sigil log check-proof`)
+
+A **receipt** that one INDEX entry is part of a log, which anyone can check offline: without the
+log, without its segments and without any key. Typical use: you appended a batch to someone's log
+(or they to yours) and want proof it is in there, at that position, under that root, that does not
+depend on trusting whoever hands you the log later.
+
+```sh
+sigil log prove events --seq 7 -o day7.proof              # against the current HEAD (signed if the log is)
+sigil log check-proof day7.proof --file day7.json --signer owner.pub
+sigil log prove events --seq 3 --at 7 -o old.proof        # against an anchor 7:ROOT pinned earlier
+sigil log check-proof old.proof --anchor 7:<ROOT>
+```
+
+A proof is a small text file (`sigil-log-proof=1`; about 0.4 KB unsigned or 0.7 KB signed, plus 65 bytes per
+tree level, so about 1.8 KB for a signed proof in a log of 100,000 entries):
+
+| Field | Meaning |
+|-------|---------|
+| `log` | the log-id (the genesis hash and the HEAD signature both bind it) |
+| `name` | informational only |
+| `entry` | the entry's full INDEX line, `chain=` included |
+| `prev` | chain hash of the entry before it (for seq 1: must be the log's genesis hash) |
+| `size`, `root` | the Merkle root over the first `size` entries: exactly the `SEQ:ROOT` anchor `log ls` prints |
+| `path` | sibling hashes from the entry's chain hash up to `root`, comma-separated (levels where the node is the odd last one pair with themselves and add none) |
+| `head-chain`, `head-t`, `signer`, `sig` | only when `size` is the HEAD of a signed log: the HEAD's own fields, so its Ed25519 signature can be checked |
+
+What `check-proof` verifies, in order: the line's `chain=` equals `SHA-256("sigil-log-entry-v1\0" ‖
+prev ‖ line before " chain=")` (so the line is exactly what was appended); the path leads from that
+hash at position `seq` to `root` with the right number of steps for `size`; if signed, the HEAD
+signature over `id`, `size`, `head-chain`, `root`, `head-t` verifies. Options add requirements:
+`--signer KEY` (must be signed by that key), `--anchor SEQ:ROOT` (must be against exactly that
+pinned anchor), `--file F` (F must be the entry's plain bytes: SHA-256 and length; for a compaction
+entry that is the concatenation of the merged batches). Exit 0 = verifies, 2 = it does not (the
+message says which check failed).
+
+* **What it proves.** "Entry *N* with exactly this content is the *N*-th entry of the log whose first
+  `size` entries have this root." Each line names its own `seq` and the chain covers it, so an entry
+  cannot be passed off at another position (the duplicate-last-leaf padding of the Merkle tree
+  cannot be abused for a fake extra leaf).
+* **What it does not prove.** That the entry was not tombstoned or shredded *after* `size` (a
+  receipt is a point-in-time statement; deletions are later entries, provable with their own
+  receipt). Nor that the root is "the" log: an **unsigned** proof is only as strong as the root you
+  compare it with, so check it with `--anchor` against an anchor you pinned, or use a signed log and
+  `--signer`. Inclusion of one log state in a later one (consistency proofs) is deferred.
+* **Any entry type.** Segments, compaction entries and tombstones (a deletion receipt) all prove.
+  Tombstones and compaction never rewrite the INDEX, so a receipt cut before them keeps verifying
+  against its anchor, and `prove --at M` regenerates it at any later time.
+* **Which root.** Default: the HEAD the log vouches for (the same rule as gc: a signed log needs a
+  HEAD signed by the pinned key, else `prove` refuses). `--at M` proves against the first `M` entries
+  regardless of HEAD; it is signed only when `M` is the HEAD's seq. A damaged INDEX refuses (`log
+  verify` first).
+* **Additive.** Nothing is written to the log; no format change, no manifest bump.
+
 ## Mount (read-only view of a log)
 
 `sigil mount` (and `--export-dir`) of a `kind=log` container shows **one file per live segment**.
@@ -553,10 +610,11 @@ See also [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) for FUSE vs `--export-dir` o
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars. Still deferred:
+(above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
+(`log prove` / `log check-proof`). Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
-* Adding or rotating a signer after `init`; signed *inclusion proofs* for a single entry.
+* Adding or rotating a signer after `init`; *consistency proofs* (this anchor is a prefix of that one) without the full INDEX.
 * Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
