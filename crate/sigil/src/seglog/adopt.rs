@@ -238,7 +238,9 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         }
         (idx, Vec::new())
     } else {
-        prepare_write(&log)?
+        let (idx, notes) = prepare_write(&log)?;
+        signer_gate_at(&log, &idx.entries, opts.identity)?;
+        (idx, notes)
     };
     rep.notes = notes;
 

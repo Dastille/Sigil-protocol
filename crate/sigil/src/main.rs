@@ -805,7 +805,8 @@ enum LogCmd {
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
-        /// Require HEAD signed by this key: 64-hex Ed25519 public key, or a .pub / .sgk file
+        /// Require HEAD signed by this key, or by a key it handed the log over to (`log rotate-signer`):
+        /// 64-hex Ed25519 public key, or a .pub / .sgk file
         #[arg(long)]
         signer: Option<String>,
         /// Pinned `SEQ:ROOT` (printed by `log ls`); fails if the log was rolled back or rewritten (repeatable)
@@ -840,12 +841,26 @@ enum LogCmd {
         /// Also require that this file is exactly the entry's plain bytes (e.g. the batch you appended)
         #[arg(long)]
         file: Option<PathBuf>,
-        /// Require it signed by this key: 64-hex Ed25519 public key, or a .pub / .sgk file
+        /// Require it signed by this key, or by a key it handed the log over to (the proof carries the
+        /// handovers): 64-hex Ed25519 public key, or a .pub / .sgk file
         #[arg(long)]
         signer: Option<String>,
         /// Require it to be against this pinned `SEQ:ROOT`
         #[arg(long)]
         anchor: Option<String>,
+    },
+    /// Hand a signed log over to a new signing key. The current signer (--identity) appends a
+    /// handover entry naming the new key, signed with its own key; from the next write on, HEAD must
+    /// be signed by the new key. Earlier HEADs, anchors and proofs stay valid; `verify --signer` and
+    /// `check-proof --signer` accept any key of the chain. The log becomes `log=4`.
+    RotateSigner {
+        path: PathBuf,
+        /// The current signer's identity (.sgk)
+        #[arg(long)]
+        identity: PathBuf,
+        /// The new signer's public key: 64-hex Ed25519 key, or a .pub / .sgk file (only its public half is used)
+        #[arg(long = "new")]
+        new: String,
     },
     /// Tidy loose `.sg1` stars (files, or a folder of them in natural name order) into this log as
     /// new segments, byte-for-byte: nothing is unsealed, so no keys are needed and each star keeps
@@ -2611,7 +2626,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                         layout: format!(
                             "container, {} segment(s){}{}",
                             c.segments,
-                            if c.signed { ", signed" } else { "" },
+                            if c.signed {
+                                if c.handovers > 0 {
+                                    format!(", signed (signer handed over {}×)", c.handovers)
+                                } else {
+                                    ", signed".to_string()
+                                }
+                            } else {
+                                String::new()
+                            },
                             if c.format >= 2 {
                                 format!(
                                     ", log={}: {} deleted, {} compaction(s){}",
@@ -2730,6 +2753,26 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             if !r.skipped.is_empty() {
                 std::process::exit(1);
             }
+        }
+        LogCmd::RotateSigner { path, identity, new } => {
+            let id = Identity::load(&identity)?;
+            let new = parse_signer(&new).map_err(|e| e.to_string().replace("--signer", "--new"))?;
+            let r = seglog::rotate_signer(&path, &id, new)?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "signer handover {}: {}… → {}…  head {}:{}  (signed by the outgoing key)",
+                r.entry,
+                &hex::encode(r.from)[..16],
+                &hex::encode(r.to)[..16],
+                r.entry,
+                hex::encode(r.root)
+            );
+            println!(
+                "  from the next write on, sign with the new key (--identity NEW.sgk); earlier HEADs, anchors and proofs stay valid.\n  verify --signer / check-proof --signer accept any key of the chain ({} handover(s) so far)",
+                r.handovers
+            );
         }
         LogCmd::Prove { path, seq, at, output } => {
             let p = seglog::prove(&path, seq, at)?;
