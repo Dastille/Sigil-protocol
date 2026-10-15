@@ -4,7 +4,8 @@ Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support
 **slice 2 shipped** (tombstones + compaction, `log=2`), **slice 3 shipped** (opt-in per-segment
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
 `kind=log` container), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
-shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log). Approved 2026-10-06 as a general-purpose mode (not tied to any one
+shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log), and **signer
+rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key). Approved 2026-10-06 as a general-purpose mode (not tied to any one
 application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
 (see the end).
 
@@ -23,7 +24,10 @@ may also hold tombstone and compaction entries. `log=3` (slice 3) = the log has 
 byte-for-byte compatible with slice 1, until it first gains a tombstone or compaction entry** (then
 `log=2`); only `sigil log init --segment-keys` ever creates `log=3`, from its first byte: a log
 that does not opt in never becomes `log=3`, never grows a `keys/` folder and never gets a `segkeys`
-manifest key. A sigil that only knows an older format refuses a newer log with
+manifest key. `log=4` = the INDEX may also hold **signer handover** entries (`op=signer`); a log is
+raised to `log=4` only by its first `sigil log rotate-signer` (manifest first), whatever it was
+before (a `--segment-keys` log keeps `segkeys=1`). A log that is never rotated never becomes `log=4`.
+A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
 
@@ -32,7 +36,7 @@ misreading entries as "missing segments").
 ```text
 events.sigil/                       one container per log
   CONTAINER                         sigil-container=1  kind=log  name=events
-                                    log=1 (or 2, see below)  log-id=<32 hex>  [signer=<64 hex Ed25519 key>]
+                                    log=1 (2, 3 or 4, see below)  log-id=<32 hex>  [signer=<64 hex Ed25519 key>]
   INDEX                             sigil-log-index=1, then one chained line per segment
   HEAD                              sigil-log-head=1: latest seq, chain, Merkle root [, signature]
   segments/0000/0000000001.sg1      segment 1 … 1000 per shard folder (seq / 1000)
@@ -58,6 +62,7 @@ seq=7 t=1760000000 size=4096 sha=<64 hex> chain=<64 hex>                       s
 seq=8 t=1760000050 op=tomb del=2,4-5 reason=user%20request chain=<64 hex>      tombstone (log=2)
 seq=9 t=1760000090 size=…  sha=<64 hex> op=compact of=1,3,6-7 chain=<64 hex>   compaction (log=2)
 seq=10 t=1760000120 op=tomb del=3 shred=1 reason=gdpr chain=<64 hex>               crypto-shred (log=3)
+seq=11 t=1760000200 op=signer from=<64 hex> to=<64 hex> sig=<128 hex> chain=<64 hex>   signer handover (log=4)
 ```
 
 | Field   | Meaning |
@@ -66,11 +71,12 @@ seq=10 t=1760000120 op=tomb del=3 shred=1 reason=gdpr chain=<64 hex>            
 | `t`     | unix seconds at append (informational; not trusted for ordering) |
 | `size`  | plain length in bytes (segment / compaction entries) |
 | `sha`   | SHA-256 of the **plain** bytes — the star's true-name, readable from its header without any key |
-| `op`    | absent = segment; `tomb` = tombstone; `compact` = compaction. Any other value is an error ("upgrade sigil") |
+| `op`    | absent = segment; `tomb` = tombstone; `compact` = compaction; `signer` = signer handover. Any other value is an error ("upgrade sigil") |
 | `del`   | tombstone: the deleted segment seqs as ascending ranges (`2,4-5`) |
 | `shred` | tombstone, optional, only `1`: this is a crypto-shred — the key of the named segments' file was destroyed (needs `segkeys=1`; in any other log it is a `log-format` error) |
 | `reason`| tombstone, optional: free text, `%XX`-escaped so the value stays one token. The INDEX is not secret: no secrets in reasons |
 | `of`    | compaction: the original segment seqs whose plain bytes were concatenated (ascending) into this entry's segment |
+| `from`, `to`, `sig` | signer handover: the outgoing and the new Ed25519 key, and `from`'s signature over `"sigil-log-signer-v1\nid=<log-id>\nseq=<this seq>\nfrom=<hex>\nto=<hex>\n"` |
 | `chain` | `SHA-256("sigil-log-entry-v1\0" ‖ previous chain ‖ line text before " chain=")` |
 
 The first "previous chain" is `SHA-256("sigil-log-genesis-v1\0" ‖ log-id)`, so an INDEX cannot be
@@ -110,7 +116,9 @@ sigil log append events batch.json --identity me.sgk
 * Reuses the existing `.sgk` identity (Ed25519 half; same key `sigil sign` uses). Passkey-protected
   identities unlock as usual.
 * Signing is chosen at `init` and pinned. A signed log refuses an append without the key (or with
-  another key); an unsigned log refuses a signing key. (Adding a signer later = deferred.)
+  another key); an unsigned log refuses a signing key. The key can later be **handed over** to a
+  new one with `sigil log rotate-signer` (see "Signer rotation"); adding a signer to an unsigned log
+  is still deferred.
 * The signature binds the log-id, so it cannot be replayed on another log.
 
 ## Operations
@@ -125,6 +133,7 @@ sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
+sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
 sigil log prove events --seq N [--at M] [-o receipt.proof]   # receipt: this entry is in the log
 sigil log check-proof receipt.proof [--file BATCH] [--signer KEY] [--anchor SEQ:ROOT]   # offline, no log, no keys
 sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--apply] [--target-size BYTES]
@@ -484,6 +493,9 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
    to what slice 1 / 2 write and never grows a `keys/` folder. A key record is destroyed only after
    the INDEX line that says so is committed and covered by HEAD, and never while a needed segment
    (or an entry HEAD does not cover yet) depends on it.
+7. Signer handovers are opt-in by use (`log=4` from the first one); a log that is never rotated is
+   byte-identical to what earlier slices write. The manifest pin never changes; a HEAD covering
+   entries `1..n` must be signed by the key the handovers with seq < `n` lead to from the pin.
 
 ## Threat model
 
@@ -505,7 +517,9 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
 | Rewrite INDEX **and** HEAD consistently, **unsigned** log | **not detectable** from the log alone — an unsigned HEAD is a checksum. Use `--anchor SEQ:ROOT` pins kept elsewhere, or sign |
 | Same, **signed** log, attacker lacks the key | HEAD signature fails (`head-signature`) |
 | Roll back to an older, validly signed INDEX+HEAD pair | **not detectable** without an external pin; `--anchor` (or any copy of a newer HEAD) catches it |
-| Signer key stolen | attacker can extend or re-sign; out of scope (rotate by starting a new log; key rotation deferred) |
+| Signer key stolen | attacker can extend or re-sign (or hand the log over to their own key); out of scope. Rotate with `log rotate-signer` while the key is still yours, and keep anchors elsewhere |
+| Forged signer handover (valid chain, not signed by the signer in effect; or no signature; or replayed from another seq / log) | `index-signer` / `index-line` error; writers, `gc`, `read` refuse; `check-proof` rejects a forged `handover-N` |
+| HEAD signed by a retired key after its handover | `head-signer` error (HEAD must be signed by the signer for its position) |
 | Attacker with segment write access and the plain data | can replace a segment only by a star with the same true-name = same plain bytes |
 | Confidentiality | per segment via `--pass` / `--to`; INDEX leaks sequence, time, sizes and plain true-names (hashes of the batches). Do not use it for low-entropy secrets you cannot afford to have confirmed by guessing. Hiding that metadata = deferred |
 | Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, cold kit) of the container |
@@ -548,12 +562,14 @@ tree level, so about 1.8 KB for a signed proof in a log of 100,000 entries):
 | `size`, `root` | the Merkle root over the first `size` entries: exactly the `SEQ:ROOT` anchor `log ls` prints |
 | `path` | sibling hashes from the entry's chain hash up to `root`, comma-separated (levels where the node is the odd last one pair with themselves and add none) |
 | `head-chain`, `head-t`, `signer`, `sig` | only when `size` is the HEAD of a signed log: the HEAD's own fields, so its Ed25519 signature can be checked |
+| `handover-1`, `handover-2`, … | only in a signed proof whose log was rotated before `size`: the full INDEX lines of those signer handovers, oldest first (see "Signer rotation") |
 
 What `check-proof` verifies, in order: the line's `chain=` equals `SHA-256("sigil-log-entry-v1\0" ‖
 prev ‖ line before " chain=")` (so the line is exactly what was appended); the path leads from that
 hash at position `seq` to `root` with the right number of steps for `size`; if signed, the HEAD
 signature over `id`, `size`, `head-chain`, `root`, `head-t` verifies. Options add requirements:
-`--signer KEY` (must be signed by that key), `--anchor SEQ:ROOT` (must be against exactly that
+`--signer KEY` (must be signed by that key, or by a key it handed the log over to: the proof's
+`handover-N` lines must each verify under the outgoing key and lead from KEY to the HEAD's signer), `--anchor SEQ:ROOT` (must be against exactly that
 pinned anchor), `--file F` (F must be the entry's plain bytes: SHA-256 and length; for a compaction
 entry that is the concatenation of the merged batches). Exit 0 = verifies, 2 = it does not (the
 message says which check failed).
@@ -575,6 +591,55 @@ message says which check failed).
   regardless of HEAD; it is signed only when `M` is the HEAD's seq. A damaged INDEX refuses (`log
   verify` first).
 * **Additive.** Nothing is written to the log; no format change, no manifest bump.
+
+## Signer rotation (`sigil log rotate-signer`, `log=4`)
+
+A signed log is pinned to one Ed25519 key at `init`. To retire that key (a new machine, a new
+owner, a key you suspect is exposed), its holder **hands the log over** to a new key:
+
+```sh
+sigil log rotate-signer events --identity old.sgk --new new.pub   # only the new PUBLIC key is needed
+sigil log append events day9.json --identity new.sgk              # from now on: the new key
+sigil log verify events --signer old.pub                          # still fine: old → new is a signed chain
+sigil log verify events --signer new.pub
+```
+
+* **The handover entry.** `rotate-signer` appends one chain-covered INDEX line
+  `op=signer from=<old> to=<new> sig=<…>`, where `sig` is the **outgoing** key's Ed25519 signature
+  over the log-id, the entry's own seq and both keys (so it cannot be replayed into another log or at
+  another position), and re-signs HEAD with the outgoing key. It holds no segment file.
+* **Who signs which HEAD.** The HEAD covering the handover entry itself is the outgoing key's (the
+  last thing it vouches for); every HEAD covering a later entry must be signed by the new key. Rotating
+  again (new → newer) appends another handover; the chain can be as long as needed.
+* **The pin stays.** `CONTAINER`'s `signer=` remains the key pinned at `init`: it is the root of the
+  chain. The current signer is found by following the handovers from it (`log ls` shows each one and
+  `signer handed over N time(s)`; `verify` notes `signer-handovers`).
+* **Verification.** `verify` / `read` / `gc` / `prove` check that every handover is from the signer
+  in effect at that point and that its signature verifies; a **forged** handover (signed by anyone
+  else), one **without** a signature, one in an **unsigned** log, or one under a manifest older than
+  `log=4` is an INDEX error (`index-signer`, `index-line`, `log-format`) and writers refuse the log.
+  Editing a handover breaks the chain (`index-chain`) like any other entry. HEAD must be signed by
+  the signer for its position (`head-signer`). `verify --signer KEY` accepts KEY if it is HEAD's
+  signer **or any earlier key of the chain**: pin the key you trust (e.g. the original) and the
+  handovers are followed from it.
+* **Writers follow the current signer.** `append`, `tombstone`, `shred`, `compact --apply`, `adopt` and
+  the next `rotate-signer` need the current signer's `--identity`; the old key is refused ("not this
+  log's current signer"), checked again under `LOG.lock`.
+* **Earlier state stays valid.** Nothing is rewritten: every pinned anchor, every older HEAD and
+  every receipt cut before the handover keeps verifying (an old receipt under the old key). A receipt
+  cut after it carries the handover lines (`handover-N=`), so `check-proof --signer old.pub` follows
+  the chain offline; `check-proof --signer new.pub` works too.
+* **Crash order:** manifest raised to `log=4` → INDEX line (the commit point; the handover is valid
+  on its own because it carries the old key's signature) → HEAD. A crash before HEAD leaves a
+  `head-lag`; the new key's next write re-covers it.
+* **Refused:** an unsigned log (there is no signer to hand over), `--identity` that is not the current
+  signer, `--new` equal to the current signer, or a `--new` that is not a valid Ed25519 public key
+  (not canonical, or of small order).
+* **What it does not do.** A handover is the outgoing key's own statement: if that key was **stolen**,
+  the thief can hand the log over too (or sign a rival history). Rotate *before* a key is lost, and
+  keep anchors / receipts elsewhere so a rival history is caught. A retired key keeps verifying what
+  it signed while it was the signer; it is not "revoked". Adding a signer to an unsigned log is not
+  supported (it would be a claim anyone with file access could make).
 
 ## Mount (read-only view of a log)
 
@@ -611,10 +676,10 @@ See also [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) for FUSE vs `--export-dir` o
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`). Still deferred:
+(`log prove` / `log check-proof`); signer rotation (`log rotate-signer`). Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
-* Adding or rotating a signer after `init`; *consistency proofs* (this anchor is a prefix of that one) without the full INDEX.
+* Adding a signer to an unsigned log after `init`; *consistency proofs* (this anchor is a prefix of that one) without the full INDEX.
 * Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).

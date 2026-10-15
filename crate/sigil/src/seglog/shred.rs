@@ -43,6 +43,7 @@ pub fn shred(path: &Path, target: TombTarget, reason: Option<&str>, identity: Op
     }
     let _guard = lock(&log)?;
     let (idx, notes) = prepare_write(&log)?;
+    signer_gate_at(&log, &idx.entries, identity)?;
     let n = idx.entries.len() as u64;
     let st = &idx.state;
     let (from, to) = match target {
@@ -61,6 +62,8 @@ pub fn shred(path: &Path, target: TombTarget, reason: Option<&str>, identity: Op
             if let TombTarget::Seq(_) = target {
                 return Err(err(if st.is_tomb(s) {
                     format!("entry {s} is a tombstone record, not a segment")
+                } else if st.is_signer(s) {
+                    format!("entry {s} is a signer handover record, not a segment")
                 } else {
                     format!("entry {s} is a compaction record; shred the original segments it covers (see `sigil log ls`)")
                 }));

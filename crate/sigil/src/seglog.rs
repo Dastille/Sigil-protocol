@@ -18,6 +18,11 @@
 //! sharded key ring (`keys/NNNN.sg1`), and `sigil log shred` destroys a key so the ciphertext stays
 //! unreadable while the INDEX, Merkle root and anchors verify exactly as before (`keyring.rs`).
 //!
+//! Signer rotation (`log=4`, opt-in by use): `sigil log rotate-signer` appends one chain-covered
+//! `op=signer` entry in which the outgoing signer hands the log over to a new Ed25519 key, signed
+//! with its own key (`rotate.rs`). Verification follows the chain of handovers from the key pinned at
+//! `init`; a log that is never rotated stays at its format, byte for byte.
+//!
 //! Each `append` seals one batch as a normal `.sg1` star (so ECC, `sigil mend`, passphrase
 //! and encrypt-to all work unchanged), then appends a chained INDEX line, then rewrites HEAD.
 //! The `.sg1` byte layout is untouched; a log is only folder structure plus two small text
@@ -38,8 +43,9 @@ use crate::{hex32, sha256, Mode, Result};
 pub const KIND: &str = "log";
 /// Highest log format this sigil understands. `log=1` = segments only (slice 1);
 /// `log=2` = the INDEX may also hold tombstone / compaction entries (slice 2);
-/// `log=3` = per-segment keys (`segkeys=1`, a `keys/` key ring, shred entries) (slice 3).
-pub const LOG_FORMAT: u32 = 3;
+/// `log=3` = per-segment keys (`segkeys=1`, a `keys/` key ring, shred entries) (slice 3);
+/// `log=4` = the INDEX may also hold signer handover entries (`op=signer`, `log rotate-signer`).
+pub const LOG_FORMAT: u32 = 4;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
@@ -74,7 +80,8 @@ pub struct Log {
     pub dir: PathBuf,
     pub name: String,
     pub id: String,
-    /// Ed25519 public key pinned at `init --identity` (every HEAD must be signed by it).
+    /// Ed25519 public key pinned at `init --identity`: the first signer. Handover entries in the
+    /// INDEX (`op=signer`) pass the authority on; see `signer_for`.
     pub signer: Option<[u8; 32]>,
     /// Manifest `log=N` (1 until the first tombstone / compaction entry; 3 for a segment-keys log).
     pub format: u32,
@@ -164,6 +171,10 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     hex::decode(s.trim()).ok()?.try_into().ok()
 }
 
+fn parse_hex64(s: &str) -> Option<[u8; 64]> {
+    hex::decode(s.trim()).ok()?.try_into().ok()
+}
+
 // ---------------------------------------------------------------------------
 // INDEX + HEAD
 // ---------------------------------------------------------------------------
@@ -180,6 +191,10 @@ pub enum Op {
     /// `op=compact`: a merged replacement segment holding the plain bytes of the earlier
     /// segments `of` (ascending seq, concatenated). Original entries stay in the INDEX.
     Compact { of: Vec<(u64, u64)> },
+    /// `op=signer` (log=4): the signer in effect hands the log over to `to`. `sig` is `from`'s
+    /// Ed25519 signature over the handover statement (`handover_message`). No segment file. The
+    /// HEAD covering this entry is still signed by `from`; every later HEAD by `to`.
+    Signer { from: [u8; 32], to: [u8; 32], sig: [u8; 64] },
 }
 
 /// One INDEX line.
@@ -204,7 +219,9 @@ impl Entry {
         self.body
             .split_whitespace()
             .filter_map(|t| t.split_once('=').map(|(k, _)| k))
-            .filter(|k| !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of" | "shred" | "src"))
+            .filter(|k| {
+                !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of" | "shred" | "src" | "from" | "to" | "sig")
+            })
             .collect()
     }
 
@@ -216,6 +233,16 @@ impl Entry {
     /// True for a crypto-shred line (needs `log=3`).
     pub fn is_shred(&self) -> bool {
         matches!(self.op, Op::Tomb { shred: true, .. })
+    }
+
+    /// True for a signer handover line (needs `log=4`).
+    pub fn is_handover(&self) -> bool {
+        matches!(self.op, Op::Signer { .. })
+    }
+
+    /// The entry owns a segment file (a segment or a compaction segment; not a record).
+    pub fn has_file(&self) -> bool {
+        matches!(self.op, Op::Seg | Op::Compact { .. })
     }
 }
 
@@ -297,6 +324,7 @@ enum K {
     Seg,
     Tomb,
     Compact,
+    Signer,
 }
 
 /// What a segment file's slot means once the whole INDEX is folded.
@@ -329,6 +357,8 @@ pub struct State {
     shredded: std::collections::BTreeMap<u64, u64>,
     /// file-holding entries whose key a shred entry destroyed
     shred_holders: std::collections::BTreeSet<u64>,
+    /// signer handover entries: (seq, from, to), ascending
+    handovers: Vec<(u64, [u8; 32], [u8; 32])>,
 }
 
 impl State {
@@ -425,6 +455,16 @@ impl State {
                 self.kinds.push(K::Compact);
                 self.sizes.push(e.size);
             }
+            Op::Signer { from, to, .. } => {
+                // Who may hand over (the signer in effect) is checked against the log's pin and the
+                // signature in `read_index`; structurally a handover only has to name a new key.
+                if from == to {
+                    return Err(("index-signer", format!("seq {}: signer handover to the same key", e.seq)));
+                }
+                self.handovers.push((e.seq, *from, *to));
+                self.kinds.push(K::Signer);
+                self.sizes.push(0);
+            }
         }
         Ok(())
     }
@@ -447,6 +487,21 @@ impl State {
 
     pub fn is_compact(&self, seq: u64) -> bool {
         seq >= 1 && self.kinds.get(seq as usize - 1) == Some(&K::Compact)
+    }
+
+    /// Entry `seq` is a signer handover record.
+    pub fn is_signer(&self, seq: u64) -> bool {
+        seq >= 1 && self.kinds.get(seq as usize - 1) == Some(&K::Signer)
+    }
+
+    /// Entry `seq` owns a segment file (segment or compaction entry; not a tombstone / handover record).
+    pub fn has_file(&self, seq: u64) -> bool {
+        seq >= 1 && matches!(self.kinds.get(seq as usize - 1), Some(K::Seg | K::Compact))
+    }
+
+    /// Signer handover entries `(seq, from, to)`, ascending.
+    pub fn handovers(&self) -> &[(u64, [u8; 32], [u8; 32])] {
+        &self.handovers
     }
 
     /// The tombstone entry that deleted segment `seq`.
@@ -498,7 +553,7 @@ impl State {
 
     pub fn slot(&self, h: u64) -> Slot {
         match self.kinds.get((h as usize).wrapping_sub(1)) {
-            None | Some(K::Tomb) => Slot::NoFile,
+            None | Some(K::Tomb) | Some(K::Signer) => Slot::NoFile,
             Some(_) => {
                 if !self.live_members(h).is_empty() {
                     Slot::Needed
@@ -605,6 +660,15 @@ fn parse_line(line: &str, want_seq: u64, prev: &[u8; 32]) -> std::result::Result
             let of = kv.get("of").and_then(|v| parse_ranges(v));
             let (Some(size), Some(sha), Some(of)) = (size, sha, of) else { return Err(bad("size/sha/of")) };
             (size, sha, Op::Compact { of })
+        }
+        Some("signer") => {
+            let from = kv.get("from").and_then(|v| parse_hex32(v));
+            let to = kv.get("to").and_then(|v| parse_hex32(v));
+            let sig = kv.get("sig").and_then(|v| parse_hex64(v));
+            let (Some(from), Some(to), Some(sig)) = (from, to, sig) else {
+                return Err(bad("from/to/sig= (an unsigned handover is not a handover)"));
+            };
+            (0, [0u8; 32], Op::Signer { from, to, sig })
         }
         Some(other) => {
             return Err(("index-op", format!("entry type op={other} is not known to this sigil; upgrade sigil")));
@@ -768,9 +832,85 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     fs::rename(&part, path).map_err(io)
 }
 
+/// What the outgoing signer signs in a handover entry: bound to the log, the entry's position and
+/// both keys, so it cannot be replayed into another log or at another seq.
+pub(crate) fn handover_message(id: &str, seq: u64, from: &[u8; 32], to: &[u8; 32]) -> Vec<u8> {
+    format!("sigil-log-signer-v1\nid={id}\nseq={seq}\nfrom={}\nto={}\n", hex32(from), hex32(to)).into_bytes()
+}
+
+/// `sig` is `from`'s valid signature over the handover statement.
+pub(crate) fn handover_sig_ok(id: &str, seq: u64, from: &[u8; 32], to: &[u8; 32], sig: &[u8; 64]) -> bool {
+    match VerifyingKey::from_bytes(from) {
+        Ok(vk) => vk.verify(&handover_message(id, seq, from, to), &Signature::from_bytes(sig)).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// The first handover that is not valid in this log: the log is unsigned, it is not from the signer
+/// in effect at that point, or its signature does not verify. `(index into entries, message)`.
+fn handover_problem(log: &Log, entries: &[Entry]) -> Option<(usize, String)> {
+    let mut cur = log.signer;
+    for (i, e) in entries.iter().enumerate() {
+        let Op::Signer { from, to, sig } = &e.op else { continue };
+        let Some(c) = cur else {
+            return Some((i, format!("seq {}: signer handover in a log that was created unsigned (no signer pinned at init)", e.seq)));
+        };
+        if *from != c {
+            return Some((
+                i,
+                format!("seq {}: handover is from {}… but the signer at that point is {}…", e.seq, &hex32(from)[..16], &hex32(&c)[..16]),
+            ));
+        }
+        if !handover_sig_ok(&log.id, e.seq, from, to, sig) {
+            return Some((i, format!("seq {}: handover signature does not verify (forged, or copied from another log / position)", e.seq)));
+        }
+        cur = Some(*to);
+    }
+    None
+}
+
+/// The chain of signers in force for a HEAD that covers the first `n` entries: the key pinned at
+/// `init`, then the new key of every handover with seq < `n` (a handover's own entry is still
+/// vouched for by the outgoing key). Empty for an unsigned log. Assumes the entries passed
+/// `read_index` (handovers validated).
+pub(crate) fn signer_chain(log: &Log, entries: &[Entry], n: usize) -> Vec<[u8; 32]> {
+    let Some(pin) = log.signer else { return Vec::new() };
+    let mut chain = vec![pin];
+    for e in entries.iter().take_while(|e| (e.seq as usize) < n) {
+        if let Op::Signer { to, .. } = &e.op {
+            chain.push(*to);
+        }
+    }
+    chain
+}
+
+/// The key that must sign a HEAD covering the first `n` entries (`n = entries.len() + 1`: the
+/// signer of the next write).
+pub(crate) fn signer_for(log: &Log, entries: &[Entry], n: usize) -> Option<[u8; 32]> {
+    signer_chain(log, entries, n).last().copied()
+}
+
 fn read_index(log: &Log) -> Result<ParsedIndex> {
     let text = fs::read(log.dir.join(INDEX_FILE)).map_err(|e| err(format!("read INDEX: {e}")))?;
     let mut idx = parse_index(&String::from_utf8_lossy(&text), &log.genesis());
+    // A handover under a manifest older than log=4 cannot come from a sigil that follows the format
+    // (the manifest is raised first); a handover that is not the signer's own is damage, not data.
+    if log.format < 4 {
+        if let Some(i) = idx.entries.iter().position(|e| e.is_handover()) {
+            idx.entries.truncate(i);
+            idx.state = State::build(&idx.entries);
+            if idx.error.is_none() {
+                idx.error = Some((i + 2, "log-format", format!("INDEX has a signer handover at seq {} but the manifest says log={}", i + 1, log.format)));
+            }
+        }
+    }
+    if let Some((i, msg)) = handover_problem(log, &idx.entries) {
+        idx.entries.truncate(i);
+        idx.state = State::build(&idx.entries);
+        if idx.error.is_none() {
+            idx.error = Some((i + 2, "index-signer", msg));
+        }
+    }
     // A tombstone / compaction line under a `log=1` manifest cannot come from a sigil that
     // follows the format (the manifest is upgraded first): treat it as damage, not as data.
     if !log.segkeys {
@@ -826,8 +966,8 @@ fn trusted_len(log: &Log, idx: &ParsedIndex) -> usize {
             if !chain_ok || root_of(&idx.entries[..hs]) != h.root {
                 return 0;
             }
-            if let Some(pin) = log.signer {
-                if h.signer != Some(pin) || h.signature_ok(&log.id) != Some(true) {
+            if let Some(want) = signer_for(log, &idx.entries, hs) {
+                if h.signer != Some(want) || h.signature_ok(&log.id) != Some(true) {
                     return 0;
                 }
             } else if h.signature_ok(&log.id) == Some(false) {
@@ -850,10 +990,12 @@ mod adopt;
 mod compact;
 mod keyring;
 mod proof;
+mod rotate;
 mod shred;
 pub use adopt::*;
 pub use compact::*;
 pub use proof::*;
+pub use rotate::*;
 pub use shred::*;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
 use keyring::RingCache;
@@ -961,14 +1103,34 @@ pub struct AppendReport {
     pub notes: Vec<String>,
 }
 
-/// A signed log needs its own key, an unsigned log refuses one.
+/// A signed log needs its current signer's key, an unsigned log refuses one. Early check (before
+/// the lock); writers repeat it with `signer_gate_at` on the INDEX they read under the lock.
 fn signer_gate(log: &Log, identity: Option<&Identity>) -> Result<()> {
-    match (&log.signer, identity) {
+    if log.signer.is_some() && identity.is_some() {
+        match read_index(log) {
+            Ok(idx) if idx.error.is_none() => return signer_gate_at(log, &idx.entries, identity),
+            // a damaged INDEX: the writer's `prepare_write` refuses it with the real reason
+            _ => return Ok(()),
+        }
+    }
+    signer_gate_at(log, &[], identity)
+}
+
+/// `signer_gate` against these INDEX entries: the key must be the signer of the next write.
+fn signer_gate_at(log: &Log, entries: &[Entry], identity: Option<&Identity>) -> Result<()> {
+    let current = signer_for(log, entries, entries.len() + 1);
+    match (current, identity) {
         (Some(_), None) => Err(err("this log is signed: give the signing key with --identity KEY.sgk")),
         (None, Some(_)) => Err(err("this log was created unsigned (no --identity at init); appends cannot sign it")),
         (Some(pk), Some(id)) => {
-            if SigningKey::from_bytes(&id.ed25519_seed).verifying_key().to_bytes() != *pk {
-                return Err(err("--identity is not the key this log is pinned to"));
+            if SigningKey::from_bytes(&id.ed25519_seed).verifying_key().to_bytes() != pk {
+                if Some(pk) == log.signer {
+                    return Err(err("--identity is not the key this log is pinned to"));
+                }
+                return Err(err(format!(
+                    "--identity is not this log's current signer {}… (the signing key was handed over; see `sigil log ls`)",
+                    &hex32(&pk)[..16]
+                )));
             }
             Ok(())
         }
@@ -1015,13 +1177,19 @@ fn prepare_write(log: &Log) -> Result<(ParsedIndex, Vec<String>)> {
 /// Raise the manifest to `log=2` (idempotent). Must happen **before** the first tombstone /
 /// compaction line is written, so an older sigil refuses the log instead of misreading it.
 fn upgrade_manifest(log: &mut Log) -> Result<()> {
-    if log.format >= 2 {
+    raise_format(log, 2)
+}
+
+/// Raise the manifest to `log=to` (no-op when it is already there or newer). Manifest first,
+/// before the first line that needs it.
+fn raise_format(log: &mut Log, to: u32) -> Result<()> {
+    if log.format >= to {
         return Ok(());
     }
     let mut m = container::read_manifest(&log.dir)?;
-    m.extra.insert("log".into(), "2".into());
+    m.extra.insert("log".into(), to.to_string());
     container::write_manifest(&log.dir, &m)?;
-    log.format = 2;
+    log.format = to;
     Ok(())
 }
 
@@ -1071,6 +1239,7 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
     signer_gate(&log, opts.identity)?;
     let _guard = lock(&log)?;
     let (idx, notes) = prepare_write(&log)?;
+    signer_gate_at(&log, &idx.entries, opts.identity)?;
     let n = idx.entries.len();
     let seq = n as u64 + 1;
     let sha = sha256(data);
@@ -1156,15 +1325,9 @@ pub fn list(path: &Path) -> Result<Listing> {
     if let Some((line, _, msg)) = &idx.error {
         return Err(err(format!("INDEX is damaged at line {line}: {msg} (run `sigil log verify`)")));
     }
-    let present = idx.entries.iter().map(|e| !e.is_meta_tomb() && log.segment_path(e.seq).is_file()).collect();
+    let present = idx.entries.iter().map(|e| e.has_file() && log.segment_path(e.seq).is_file()).collect();
     let head = read_head(&log).and_then(|h| h.ok());
     Ok(Listing { log, entries: idx.entries, state: idx.state, head, present })
-}
-
-impl Entry {
-    fn is_meta_tomb(&self) -> bool {
-        matches!(self.op, Op::Tomb { .. })
-    }
 }
 
 /// ISO-8601 UTC from unix seconds (no external time crate).
@@ -1209,11 +1372,14 @@ impl Listing {
                 if self.log.segkeys { format!(", {} shredded", st.shred_count()) } else { String::new() }
             ));
         }
+        if !st.handovers().is_empty() {
+            s.push_str(&format!("  [log={}: signer handed over {} time(s)]", self.log.format, st.handovers().len()));
+        }
         s.push('\n');
         s.push_str("  seq  time (UTC)            size        sha256            segment\n");
         for (e, p) in self.entries.iter().zip(&self.present) {
             let (size, sha) = match e.op {
-                Op::Tomb { .. } => ("-".to_string(), "-".to_string()),
+                Op::Tomb { .. } | Op::Signer { .. } => ("-".to_string(), "-".to_string()),
                 _ => (e.size.to_string(), format!("{}…", &hex32(&e.sha)[..16])),
             };
             let file = if *p { "ok" } else { "MISSING" };
@@ -1242,6 +1408,11 @@ impl Listing {
                     _ if *p => format!("superseded (compaction of {}) — file still on disk", fmt_ranges(of)),
                     _ => format!("superseded (compaction of {})", fmt_ranges(of)),
                 },
+                Op::Signer { from, to, .. } => format!(
+                    "signer handover: {}… → {}…  (signed by the outgoing key; later HEADs by the new one)",
+                    &hex32(from)[..16],
+                    &hex32(to)[..16]
+                ),
             };
             s.push_str(&format!("  {:<4} {}  {:<10}  {:<17}  {}\n", e.seq, iso_utc(e.time), size, sha, what));
         }
@@ -1405,6 +1576,8 @@ pub fn read_range(path: &Path, from: u64, to: u64, opts: &ReadOpts<'_>, mode: Re
             if mode == ReadMode::Single {
                 return Err(err(if st.is_tomb(seq) {
                     format!("entry {seq} is a tombstone record, not data (see `sigil log ls`)")
+                } else if st.is_signer(seq) {
+                    format!("entry {seq} is a signer handover record, not data (see `sigil log ls`)")
                 } else {
                     format!("entry {seq} is a compaction record; read the original segments it covers (see `sigil log ls`)")
                 }));
@@ -1432,7 +1605,8 @@ pub struct CheckOpts<'a> {
     pub identities: &'a [Identity],
     /// Skip the bit-level ECC check of every segment (existence + header digest only).
     pub quick: bool,
-    /// Require HEAD signed by this Ed25519 key (in addition to the manifest pin).
+    /// Require HEAD signed by this Ed25519 key, or by a key it handed the log over to (in
+    /// addition to the manifest pin and its handovers).
     pub signer: Option<[u8; 32]>,
     /// `(seq, root)` pins: the Merkle root of the first `seq` entries must equal `root`.
     pub anchors: &'a [(u64, [u8; 32])],
@@ -1529,15 +1703,35 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
                 ));
             }
         }
-        match (h.signature_ok(&log.id), h.signer, log.signer) {
+        let chain = signer_chain(log, &index.entries, (h.seq as usize).min(index.entries.len()));
+        let expect = chain.last().copied();
+        match (h.signature_ok(&log.id), h.signer, expect) {
             (Some(false), _, _) => findings.push(fnd(Severity::Error, "head-signature", HEAD_FILE, "HEAD signature does not verify (altered, or from another log)", None)),
-            (_, Some(pk), Some(pin)) if pk != pin => findings.push(fnd(Severity::Error, "head-signer", HEAD_FILE, "HEAD is signed by a different key than the one pinned at init", None)),
+            (_, Some(pk), Some(want)) if pk != want && h.seq <= n => findings.push(fnd(
+                Severity::Error,
+                "head-signer",
+                HEAD_FILE,
+                if chain.len() > 1 {
+                    format!("HEAD is signed by a different key than the log's signer at seq {} ({}…, after {} handover(s))", h.seq, &hex32(&want)[..16], chain.len() - 1)
+                } else {
+                    "HEAD is signed by a different key than the one pinned at init".to_string()
+                },
+                None,
+            )),
             (None, _, Some(_)) => findings.push(fnd(Severity::Error, "head-unsigned", HEAD_FILE, "this log pins a signer but HEAD is not signed (signature stripped?)", None)),
             _ => {}
         }
         if let Some(want) = opts.signer {
-            if h.signer != Some(want) {
-                findings.push(fnd(Severity::Error, "head-signer", HEAD_FILE, format!("HEAD is not signed by the expected key {}", &hex32(&want)[..16]), None));
+            // the expected key signed HEAD itself, or HEAD's signer holds the log through handovers from it
+            let via_chain = h.signer.is_some() && h.signer == expect && chain.contains(&want);
+            if h.signer != Some(want) && !via_chain {
+                findings.push(fnd(
+                    Severity::Error,
+                    "head-signer",
+                    HEAD_FILE,
+                    format!("HEAD is not signed by the expected key {}, nor by a key it handed the log over to", &hex32(&want)[..16]),
+                    None,
+                ));
             }
         }
     }
@@ -1571,6 +1765,8 @@ pub struct CheckReport {
     pub segkeys: bool,
     /// Segments whose key a shred entry destroyed.
     pub shredded: usize,
+    /// Signer handover entries (`log rotate-signer`).
+    pub handovers: usize,
 }
 
 /// Full integrity check: manifest, INDEX chain, HEAD (+signature), every segment, strays.
@@ -1612,6 +1808,21 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     rep.compactions = st.compact_count();
     rep.segkeys = log.segkeys;
     rep.shredded = st.shred_count();
+    rep.handovers = st.handovers().len();
+    if let (Some(pin), Some(&(_, _, last))) = (log.signer, st.handovers().last()) {
+        rep.findings.push(fnd(
+            Severity::Info,
+            "signer-handovers",
+            "INDEX",
+            format!(
+                "signer handed over {} time(s): {}… → {}… (each handover signed by the outgoing key; earlier HEADs, anchors and proofs stay valid)",
+                st.handovers().len(),
+                &hex32(&pin)[..16],
+                &hex32(&last)[..16]
+            ),
+            None,
+        ));
+    }
     if st.shred_count() > 0 {
         rep.findings.push(fnd(
             Severity::Info,
@@ -1644,7 +1855,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     let keyed = opts.pass.is_some() || !opts.identities.is_empty();
     let mut ring = RingCache::new(&log);
     for e in &entries {
-        if st.is_tomb(e.seq) {
+        if !st.has_file(e.seq) {
             continue;
         }
         let p = log.segment_path(e.seq);
@@ -1795,7 +2006,7 @@ fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: u
         }
     }
     for e in entries {
-        if st.is_tomb(e.seq) {
+        if !st.has_file(e.seq) {
             continue;
         }
         let needed = e.seq as usize > trusted || st_t.slot(e.seq) == Slot::Needed;
@@ -1828,7 +2039,7 @@ fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: u
             }
         }
     }
-    for seq in present.iter().filter(|s| **s as usize > entries.len() || st.is_tomb(**s)) {
+    for seq in present.iter().filter(|s| **s as usize > entries.len() || !st.has_file(**s)) {
         rep.findings.push(fnd(
             Severity::Warn,
             "orphan-key",
@@ -1948,7 +2159,7 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
                 continue;
             }
             match seg_seq(p) {
-                Some(s) if s >= 1 && s <= entries && !st_all.is_tomb(s) => {
+                Some(s) if s >= 1 && s <= entries && st_all.has_file(s) => {
                     if (s as usize) <= trusted && !matches!(st_t.slot(s), Slot::Needed) {
                         out.push(Extra { bytes: sz(p), path: p.clone(), kind: ExtraKind::Stale(st_t.slot(s)) });
                     } else {
@@ -2003,7 +2214,7 @@ pub(crate) fn gc_gate(log: &Log) -> Result<GcGate> {
     let trusted = trusted_len(log, &idx);
     let st = State::build(&idx.entries[..trusted]);
     let kept = (1..=idx.entries.len() as u64)
-        .filter(|s| (*s as usize) > trusted && !idx.state.is_tomb(*s) || st.slot(*s) == Slot::Needed)
+        .filter(|s| (*s as usize) > trusted && idx.state.has_file(*s) || st.slot(*s) == Slot::Needed)
         .count();
     Ok(GcGate { entries: idx.entries, trusted, kept })
 }
@@ -2066,7 +2277,7 @@ pub fn mend(path: &Path) -> Result<MendReport> {
     let mut rep = MendReport::default();
     for e in &idx.entries {
         // tombstones have no file; deleted / merged-away segments are not worth healing
-        if idx.state.is_tomb(e.seq) || idx.state.slot(e.seq) != Slot::Needed {
+        if !idx.state.has_file(e.seq) || idx.state.slot(e.seq) != Slot::Needed {
             continue;
         }
         let p = log.segment_path(e.seq);
@@ -2297,5 +2508,143 @@ mod tests {
         assert_eq!(back.signature_ok(&log.id), Some(true));
         assert_eq!(back.signature_ok("another-log-id"), Some(false), "signature is bound to the log id");
         assert_eq!(make_head(&log, &[], None).signature_ok(&log.id), None);
+    }
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sigil-rotate-unit-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn pk(i: &Identity) -> [u8; 32] {
+        SigningKey::from_bytes(&i.ed25519_seed).verifying_key().to_bytes()
+    }
+
+    /// Append a hand-made line with a valid chain hash (what someone with file access can do).
+    fn push_line(log: &Log, body: &str) {
+        let p = log.dir.join(INDEX_FILE);
+        let text = fs::read_to_string(&p).unwrap();
+        let prev = parse_index(&text, &log.genesis()).entries.last().map(|e| e.chain).unwrap_or_else(|| log.genesis());
+        fs::write(&p, format!("{text}{body} chain={}\n", hex32(&chain_hash(&prev, body)))).unwrap();
+    }
+
+    fn handover_body(log: &Log, seq: u64, by: &Identity, from: &[u8; 32], to: &[u8; 32]) -> String {
+        let sig = SigningKey::from_bytes(&by.ed25519_seed).sign(&handover_message(&log.id, seq, from, to)).to_bytes();
+        format!("seq={seq} t=9 op=signer from={} to={} sig={}", hex32(from), hex32(to), hex::encode(sig))
+    }
+
+    fn codes(path: &Path, signer: Option<[u8; 32]>) -> Vec<&'static str> {
+        let rep = check(path, &CheckOpts { signer, ..Default::default() }).unwrap();
+        rep.findings.iter().filter(|f| f.severity == Severity::Error).map(|f| f.code).collect()
+    }
+
+    fn signed_append(path: &Path, data: &[u8], id: &Identity) -> Result<AppendReport> {
+        append(path, data, &AppendOpts { identity: Some(id), mode: Mode::Glyph, ..Default::default() })
+    }
+
+    #[test]
+    fn signer_rotation_follows_the_chain_of_handovers() {
+        let (a, b, c) = (Identity::generate().unwrap(), Identity::generate().unwrap(), Identity::generate().unwrap());
+        let d = tmpdir("chain");
+        let path = d.join("ev");
+        init(&path, Some(&a)).unwrap();
+        signed_append(&path, b"one", &a).unwrap();
+        signed_append(&path, b"two", &a).unwrap();
+        assert_eq!(Log::open(&path).unwrap().format, 1, "a log that is never rotated keeps its format");
+        let r = rotate_signer(&path, &a, pk(&b)).unwrap();
+        assert_eq!((r.entry, r.from, r.to, r.handovers), (3, pk(&a), pk(&b), 1));
+        let log = Log::open(&path).unwrap();
+        assert_eq!((log.format, log.signer), (4, Some(pk(&a))), "manifest raised to log=4; signer= stays the init pin");
+        let entries = read_index(&log).unwrap().entries;
+        // the handover's own HEAD is the outgoing key's; every later one the new key's
+        assert_eq!(signer_for(&log, &entries, 3), Some(pk(&a)));
+        assert_eq!(signer_for(&log, &entries, 4), Some(pk(&b)));
+        assert_eq!(signer_chain(&log, &entries, 4), vec![pk(&a), pk(&b)]);
+        assert_eq!(read_head(&log).unwrap().unwrap().signer, Some(pk(&a)));
+        assert!(codes(&path, None).is_empty());
+        // the old key may no longer write; the new one must
+        let e = signed_append(&path, b"three", &a).unwrap_err().to_string();
+        assert!(e.contains("current signer"), "{e}");
+        assert!(rotate_signer(&path, &a, pk(&c)).is_err(), "the outgoing key cannot hand over twice");
+        signed_append(&path, b"three", &b).unwrap();
+        assert_eq!(read_head(&log).unwrap().unwrap().signer, Some(pk(&b)));
+        assert!(codes(&path, None).is_empty());
+        assert!(codes(&path, Some(pk(&a))).is_empty(), "--signer may name the init key");
+        assert!(codes(&path, Some(pk(&b))).is_empty());
+        assert_eq!(codes(&path, Some(pk(&c))), vec!["head-signer"]);
+        let rep = check(&path, &CheckOpts::default()).unwrap();
+        assert!(rep.findings.iter().any(|f| f.code == "signer-handovers") && rep.handovers == 1);
+        // a chain of two; refusals
+        assert!(rotate_signer(&path, &b, pk(&b)).unwrap_err().to_string().contains("already"));
+        for junk in [[0xffu8; 32], [0u8; 32], { let mut k = [0u8; 32]; k[0] = 1; k }] {
+            assert!(rotate_signer(&path, &b, junk).unwrap_err().to_string().contains("not a valid"), "{junk:?}");
+        }
+        rotate_signer(&path, &b, pk(&c)).unwrap();
+        signed_append(&path, b"four", &c).unwrap();
+        let entries = read_index(&log).unwrap().entries;
+        assert_eq!(signer_chain(&log, &entries, entries.len() + 1), vec![pk(&a), pk(&b), pk(&c)]);
+        assert!(codes(&path, Some(pk(&a))).is_empty() && codes(&path, Some(pk(&b))).is_empty());
+        // records hold no file: gc / doctor / mend do not miss one
+        assert!(check(&path, &CheckOpts { quick: false, ..Default::default() }).unwrap().findings.iter().all(|f| f.severity != Severity::Error));
+        assert!(mend(&path).unwrap().missing.is_empty());
+        let ls = list(&path).unwrap();
+        assert_eq!(ls.present.iter().filter(|p| **p).count(), 4);
+        assert!(ls.render().contains("signer handover:"));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn forged_misplaced_or_unsigned_handovers_are_refused() {
+        let (a, b, eve) = (Identity::generate().unwrap(), Identity::generate().unwrap(), Identity::generate().unwrap());
+        let d = tmpdir("forged");
+        let fresh = |name: &str, sign: Option<&Identity>| -> (PathBuf, Log) {
+            let p = d.join(name);
+            init(&p, sign).unwrap();
+            match sign {
+                Some(id) => signed_append(&p, b"x", id).unwrap(),
+                None => append(&p, b"x", &AppendOpts { mode: Mode::Glyph, ..Default::default() }).unwrap(),
+            };
+            let mut log = Log::open(&p).unwrap();
+            raise_format(&mut log, 4).unwrap();
+            (p, log)
+        };
+        // Eve signs a handover "from a to eve"
+        let (p, log) = fresh("eve", Some(&a));
+        push_line(&log, &handover_body(&log, 2, &eve, &pk(&a), &pk(&eve)));
+        assert!(codes(&p, None).contains(&"index-signer"));
+        assert!(signed_append(&p, b"y", &eve).is_err() && signed_append(&p, b"y", &a).is_err(), "writers refuse a damaged INDEX");
+        // Eve hands over from herself (not the signer in effect)
+        let (p, log) = fresh("notcur", Some(&a));
+        push_line(&log, &handover_body(&log, 2, &eve, &pk(&eve), &pk(&b)));
+        assert!(codes(&p, None).contains(&"index-signer"));
+        // a genuine statement, replayed at another seq
+        let (p, log) = fresh("replay", Some(&a));
+        let at5 = handover_body(&log, 5, &a, &pk(&a), &pk(&b));
+        push_line(&log, &at5.replacen("seq=5", "seq=2", 1));
+        assert!(codes(&p, None).contains(&"index-signer"));
+        // a handover in an unsigned log
+        let (p, log) = fresh("unsigned", None);
+        push_line(&log, &handover_body(&log, 2, &a, &pk(&a), &pk(&b)));
+        assert!(codes(&p, None).contains(&"index-signer"));
+        assert!(rotate_signer(&p, &a, pk(&b)).is_err());
+        // no signature at all is not a handover
+        let (p, log) = fresh("nosig", Some(&a));
+        push_line(&log, &format!("seq=2 t=9 op=signer from={} to={}", hex32(&pk(&a)), hex32(&pk(&b))));
+        assert!(codes(&p, None).contains(&"index-line"));
+        // a valid handover under a manifest older than log=4
+        let p = d.join("oldfmt");
+        init(&p, Some(&a)).unwrap();
+        signed_append(&p, b"x", &a).unwrap();
+        let log = Log::open(&p).unwrap();
+        push_line(&log, &handover_body(&log, 2, &a, &pk(&a), &pk(&b)));
+        assert!(codes(&p, None).contains(&"log-format"));
+        // the same line under log=4 is fine (head-lag only: HEAD does not cover it yet)
+        let mut log = Log::open(&p).unwrap();
+        raise_format(&mut log, 4).unwrap();
+        assert!(codes(&p, None).is_empty());
+        signed_append(&p, b"y", &b).unwrap();
+        assert!(codes(&p, Some(pk(&a))).is_empty());
+        let _ = fs::remove_dir_all(&d);
     }
 }

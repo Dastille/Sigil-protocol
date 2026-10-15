@@ -51,6 +51,7 @@ pub fn tombstone(path: &Path, target: TombTarget, reason: Option<&str>, identity
     }
     let _guard = lock(&log)?;
     let (idx, notes) = prepare_write(&log)?;
+    signer_gate_at(&log, &idx.entries, identity)?;
     let n = idx.entries.len() as u64;
     let st = &idx.state;
     let (from, to) = match target {
@@ -70,6 +71,8 @@ pub fn tombstone(path: &Path, target: TombTarget, reason: Option<&str>, identity
             if let TombTarget::Seq(_) = target {
                 return Err(err(if st.is_tomb(s) {
                     format!("entry {s} is a tombstone record, not a segment")
+                } else if st.is_signer(s) {
+                    format!("entry {s} is a signer handover record, not a segment")
                 } else {
                     format!("entry {s} is a compaction record; tombstone the original segments it covers (see `sigil log ls`)")
                 }));
@@ -380,8 +383,10 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     };
     refuse(&loaded)?;
     let mut rep = CompactReport { apply: opts.apply, rule: describe_rule(opts), ..Default::default() };
-    // the signing key, when the log is signed and we are about to write HEAD
-    let signer: Option<&Identity> = log.signer.and_then(|pk| {
+    // the signing key, when the log is signed and we are about to write HEAD (the current signer,
+    // after any handovers)
+    let current = signer_for(&log, &loaded.index.entries, loaded.index.entries.len() + 1);
+    let signer: Option<&Identity> = current.and_then(|pk| {
         opts.read.identities.iter().find(|i| SigningKey::from_bytes(&i.ed25519_seed).verifying_key().to_bytes() == pk)
     });
     let lag = loaded.trusted < loaded.index.entries.len();
