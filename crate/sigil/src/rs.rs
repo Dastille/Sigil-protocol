@@ -4,31 +4,60 @@
 use crate::gf;
 use crate::Error;
 
-fn vandermonde_inverse(xs: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-    let k = xs.len();
-    let mut m = vec![vec![0u8; k]; k];
-    for col in 0..k {
-        let mut e = vec![0u8; k];
-        e[col] = 1;
-        let c = gf::solve_vandermonde(xs, &e);
-        for row in 0..k {
-            m[row][col] = c[row];
-        }
-    }
-    Ok(m)
+// Every operation here is a fixed linear map over GF(256) applied to each byte
+// column. The map depends only on (k, n, which shards are used), so we build
+// its matrix once and then run whole shard slices through `gf::matrix_apply`
+// (table/SIMD multiply-accumulate). Field arithmetic is exact, so the bytes are
+// identical to the old per-column solve, which lives on in `rs_ref` as an oracle.
+
+/// Evaluation point for shard `index` (wraps exactly like the original code).
+fn x_of(index: usize) -> u8 {
+    (index + 1) as u8
 }
 
-fn apply_inv(inv: &[Vec<u8>], ys: &[u8]) -> Vec<u8> {
-    let k = inv.len();
-    let mut out = vec![0u8; k];
-    for row in 0..k {
-        let mut acc = 0u8;
-        for col in 0..k {
-            acc ^= gf::mul(inv[row][col], ys[col]);
+/// Row-major `rows × k` power matrix: E[i][j] = x_i^j (so E·coeffs = evaluations).
+fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
+    let mut m = vec![0u8; xs.len() * k];
+    for (i, &x) in xs.iter().enumerate() {
+        let mut p = 1u8;
+        for j in 0..k {
+            m[i * k + j] = p;
+            p = gf::mul(p, x);
         }
-        out[row] = acc;
     }
-    out
+    m
+}
+
+/// Inverse of the k×k Vandermonde matrix at `xs` (maps evaluations → coefficients).
+/// Panics on a singular system, exactly like `gf::solve_vandermonde` did.
+fn vandermonde_inverse(xs: &[u8]) -> Vec<u8> {
+    let k = xs.len();
+    gf::invert_matrix(k, &power_matrix(xs, k)).expect("singular")
+}
+
+/// Matrix mapping k data shards → shard `rows` evaluations.
+/// systematic: E(rows) · V(1..k)^-1 ; v1: E(rows).
+fn encode_matrix(k: usize, rows: &[usize], systematic: bool) -> Vec<u8> {
+    let xr: Vec<u8> = rows.iter().map(|&i| x_of(i)).collect();
+    let e = power_matrix(&xr, k);
+    if systematic {
+        let xs: Vec<u8> = (0..k).map(x_of).collect();
+        gf::matmul(&e, &vandermonde_inverse(&xs), rows.len(), k, k)
+    } else {
+        e
+    }
+}
+
+/// Matrix mapping k received symbols at `xs` → k data symbols.
+fn decode_matrix(xs: &[u8], systematic: bool) -> Vec<u8> {
+    let k = xs.len();
+    let vinv = vandermonde_inverse(xs);
+    if systematic {
+        let data_xs: Vec<u8> = (0..k).map(x_of).collect();
+        gf::matmul(&power_matrix(&data_xs, k), &vinv, k, k, k)
+    } else {
+        vinv
+    }
 }
 
 #[allow(dead_code)]
@@ -65,32 +94,38 @@ pub fn encode_shards_v1(payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
     encode_shards_ex(payload, k, n, false)
 }
 
-fn encode_shards_ex(payload: &[u8], k: usize, n: usize, systematic: bool) -> Vec<Vec<u8>> {
+fn split_padded(payload: &[u8], k: usize) -> (usize, Vec<Vec<u8>>) {
     let shard_len = (payload.len().div_ceil(k)).max(1);
-    let mut padded = vec![0u8; shard_len * k];
-    padded[..payload.len()].copy_from_slice(payload);
-    let mut shards = vec![vec![0u8; shard_len]; n];
-    let mut col = vec![0u8; k];
-    for s in 0..shard_len {
-        for i in 0..k {
-            col[i] = padded[i * shard_len + s];
-        }
-        if systematic {
-            let xs: Vec<u8> = (0..k).map(|i| (i + 1) as u8).collect();
-            let coeffs = gf::solve_vandermonde(&xs, &col);
-            for i in 0..k {
-                shards[i][s] = col[i];
-            }
-            for i in k..n {
-                shards[i][s] = gf::eval_poly(&coeffs, (i + 1) as u8);
-            }
-        } else {
-            for i in 0..n {
-                shards[i][s] = gf::eval_poly(&col, (i + 1) as u8);
-            }
-        }
+    let data = (0..k)
+        .map(|i| {
+            let mut v = vec![0u8; shard_len];
+            let a = (i * shard_len).min(payload.len());
+            let b = ((i + 1) * shard_len).min(payload.len());
+            v[..b - a].copy_from_slice(&payload[a..b]);
+            v
+        })
+        .collect();
+    (shard_len, data)
+}
+
+fn encode_shards_ex(payload: &[u8], k: usize, n: usize, systematic: bool) -> Vec<Vec<u8>> {
+    let (shard_len, data) = split_padded(payload, k);
+    let rows: Vec<usize> = if systematic { (k..n).collect() } else { (0..n).collect() };
+    let m = encode_matrix(k, &rows, systematic);
+    let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
+    let mut computed = vec![vec![0u8; shard_len]; rows.len()];
+    {
+        let mut outs: Vec<&mut [u8]> = computed.iter_mut().map(|v| v.as_mut_slice()).collect();
+        gf::matrix_apply(&m, &ins, &mut outs);
     }
-    shards
+    if systematic {
+        let mut shards = data;
+        shards.truncate(n.min(k));
+        shards.extend(computed);
+        shards
+    } else {
+        computed
+    }
 }
 
 pub fn decode_shards(
@@ -108,32 +143,36 @@ pub fn decode_shards(
 }
 
 pub fn encode_shard_index(payload: &[u8], k: usize, index: usize, systematic: bool) -> Vec<u8> {
-    encode_shard_index_ex(payload, k, index, systematic)
+    let (shard_len, data) = split_padded(payload, k);
+    if systematic && index < k {
+        return data[index].clone();
+    }
+    let m = encode_matrix(k, &[index], systematic);
+    let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
+    let mut shard = vec![0u8; shard_len];
+    gf::matrix_apply(&m, &ins, &mut [shard.as_mut_slice()]);
+    shard
 }
 
-fn encode_shard_index_ex(payload: &[u8], k: usize, index: usize, systematic: bool) -> Vec<u8> {
-    let shard_len = (payload.len().div_ceil(k)).max(1);
-    let mut padded = vec![0u8; shard_len * k];
-    padded[..payload.len()].copy_from_slice(payload);
-    if systematic && index < k {
-        return padded[index * shard_len..(index + 1) * shard_len].to_vec();
-    }
-    let x = (index + 1) as u8;
-    let mut shard = vec![0u8; shard_len];
-    let mut col = vec![0u8; k];
-    let xs: Vec<u8> = (0..k).map(|i| (i + 1) as u8).collect();
-    for s in 0..shard_len {
-        for i in 0..k {
-            col[i] = padded[i * shard_len + s];
+/// First k distinct usable evaluation points, as (x, position in `idx`).
+fn pick_live(idx: impl Iterator<Item = usize>, k: usize) -> (Vec<u8>, Vec<usize>) {
+    let mut xs = Vec::with_capacity(k);
+    let mut pos = Vec::with_capacity(k);
+    for (j, index) in idx.enumerate() {
+        if xs.len() == k {
+            break;
         }
-        if systematic {
-            let coeffs = gf::solve_vandermonde(&xs, &col);
-            shard[s] = gf::eval_poly(&coeffs, x);
-        } else {
-            shard[s] = gf::eval_poly(&col, x);
+        if index > 254 {
+            continue;
         }
+        let x = x_of(index);
+        if xs.contains(&x) {
+            continue;
+        }
+        xs.push(x);
+        pos.push(j);
     }
-    shard
+    (xs, pos)
 }
 
 /// Recover payload from any k shards, each tagged with its index (eval at index+1).
@@ -151,13 +190,13 @@ pub fn decode_indexed(
         let mut data_ok = vec![None; k];
         for (index, body) in parts {
             if *index < k && data_ok[*index].is_none() {
-                data_ok[*index] = Some(body.clone());
+                data_ok[*index] = Some(body);
             }
         }
         if data_ok.iter().all(|s| s.is_some()) {
             let mut padded = vec![0u8; shard_len * k];
             for i in 0..k {
-                let s = data_ok[i].as_ref().unwrap();
+                let s = data_ok[i].unwrap();
                 let n = s.len().min(shard_len);
                 padded[i * shard_len..i * shard_len + n].copy_from_slice(&s[..n]);
             }
@@ -165,42 +204,23 @@ pub fn decode_indexed(
             return Ok(padded);
         }
     }
-    let mut xs = Vec::with_capacity(k);
-    let mut live_idx = Vec::with_capacity(k);
-    for (j, (index, _)) in parts.iter().enumerate() {
-        if xs.len() == k {
-            break;
-        }
-        if *index > 254 {
-            continue;
-        }
-        let x = (*index + 1) as u8;
-        if xs.contains(&x) {
-            continue;
-        }
-        xs.push(x);
-        live_idx.push(j);
-    }
+    let (xs, live_idx) = pick_live(parts.iter().map(|p| p.0), k);
     if xs.len() < k {
         return Err(Error::Msg(format!("need {k} distinct pieces")));
     }
-    let inv = vandermonde_inverse(&xs)?;
+    let m = decode_matrix(&xs, systematic);
+    // Inputs longer than shard_len are cut; shorter ones read as zero (as before).
+    let ins: Vec<&[u8]> = live_idx
+        .iter()
+        .map(|&j| {
+            let b = &parts[j].1;
+            &b[..b.len().min(shard_len)]
+        })
+        .collect();
     let mut padded = vec![0u8; shard_len * k];
-    let mut ys = vec![0u8; k];
-    for s in 0..shard_len {
-        for (j, &pj) in live_idx.iter().enumerate() {
-            ys[j] = parts[pj].1.get(s).copied().unwrap_or(0);
-        }
-        let coeffs = apply_inv(&inv, &ys);
-        if systematic {
-            for i in 0..k {
-                padded[i * shard_len + s] = gf::eval_poly(&coeffs, (i + 1) as u8);
-            }
-        } else {
-            for i in 0..k {
-                padded[i * shard_len + s] = coeffs[i];
-            }
-        }
+    {
+        let mut outs: Vec<&mut [u8]> = padded.chunks_mut(shard_len.max(1)).take(k).collect();
+        gf::matrix_apply(&m, &ins, &mut outs);
     }
     padded.truncate(payload_len);
     Ok(padded)
@@ -243,44 +263,11 @@ fn shard_len_of(parts: &[SoftPart]) -> usize {
     parts.iter().map(|p| p.body.len()).max().unwrap_or(0)
 }
 
-/// Decode one column from selected parts (erasure-only).
-fn decode_column_parts(
-    parts: &[(usize, u8)],
-    k: usize,
-    systematic: bool,
-) -> Result<Vec<u8>, Error> {
-    if parts.len() < k {
-        return Err(Error::Msg(format!("need {k} live symbols")));
-    }
-    let mut xs = Vec::with_capacity(k);
-    let mut ys = Vec::with_capacity(k);
-    for &(index, sym) in parts {
-        if xs.len() == k {
-            break;
-        }
-        if index > 254 {
-            continue;
-        }
-        let x = (index + 1) as u8;
-        if xs.contains(&x) {
-            continue;
-        }
-        xs.push(x);
-        ys.push(sym);
-    }
-    if xs.len() < k {
-        return Err(Error::Msg(format!("need {k} distinct symbols")));
-    }
-    let coeffs = gf::solve_vandermonde(&xs, &ys);
-    if systematic {
-        Ok((0..k).map(|i| gf::eval_poly(&coeffs, (i + 1) as u8)).collect())
-    } else {
-        Ok(coeffs)
-    }
-}
-
 /// Stripe-aware graded decode: hard symbols preferred; soft fill gaps.
 /// `erased_soft_stripes` lists (shard_index, stripe_idx) forced to erasure.
+///
+/// The set of symbols chosen is the same for every byte of a stripe, so each
+/// stripe is one matrix × slices pass (matrices cached per chosen-index set).
 fn decode_graded_with_mask(
     parts: &[SoftPart],
     k: usize,
@@ -304,42 +291,68 @@ fn decode_graded_with_mask(
         }
     }
 
+    let mut cache: std::collections::HashMap<Vec<u8>, Vec<u8>> = Default::default();
     let mut padded = vec![0u8; shard_len * k];
-    for s in 0..shard_len {
-        let stripe = s / SOFT_STRIPE;
-        let mut hard_syms: Vec<(usize, u8)> = Vec::new();
-        let mut soft_syms: Vec<(usize, u8)> = Vec::new();
+    let mut out_rows = vec![vec![0u8; SOFT_STRIPE.min(shard_len)]; k];
+    let mut st = 0;
+    while st * SOFT_STRIPE < shard_len {
+        let a = st * SOFT_STRIPE;
+        let b = (a + SOFT_STRIPE).min(shard_len);
+        // Same selection rule as the per-column code: hard first, then soft.
+        let mut hard_sel: Vec<&SoftPart> = Vec::new();
+        let mut soft_sel: Vec<&SoftPart> = Vec::new();
         for p in parts {
             let erased = !p.hard
                 && erased_soft_stripes
                     .iter()
-                    .any(|&(si, st)| si == p.index && st == stripe);
+                    .any(|&(si, s2)| si == p.index && s2 == st);
             if erased {
                 continue;
             }
-            let sym = p.body.get(s).copied().unwrap_or(0);
             if p.hard {
-                hard_syms.push((p.index, sym));
+                hard_sel.push(p);
             } else {
-                soft_syms.push((p.index, sym));
+                soft_sel.push(p);
             }
         }
-        let mut chosen = hard_syms;
+        let mut chosen = hard_sel;
         if chosen.len() < k {
-            for sym in soft_syms {
+            for sp in soft_sel {
                 if chosen.len() >= k {
                     break;
                 }
-                if chosen.iter().any(|(i, _)| *i == sym.0) {
+                if chosen.iter().any(|c| c.index == sp.index) {
                     continue;
                 }
-                chosen.push(sym);
+                chosen.push(sp);
             }
         }
-        let col = decode_column_parts(&chosen, k, systematic)?;
-        for i in 0..k {
-            padded[i * shard_len + s] = col[i];
+        if chosen.len() < k {
+            return Err(Error::Msg(format!("need {k} live symbols")));
         }
+        let (xs, pos) = pick_live(chosen.iter().map(|c| c.index), k);
+        if xs.len() < k {
+            return Err(Error::Msg(format!("need {k} distinct symbols")));
+        }
+        let m = cache
+            .entry(xs.clone())
+            .or_insert_with(|| decode_matrix(&xs, systematic));
+        let ins: Vec<&[u8]> = pos
+            .iter()
+            .map(|&j| {
+                let body = &chosen[j].body;
+                &body[a.min(body.len())..b.min(body.len())]
+            })
+            .collect();
+        {
+            let mut outs: Vec<&mut [u8]> =
+                out_rows.iter_mut().map(|r| &mut r[..b - a]).collect();
+            gf::matrix_apply(m, &ins, &mut outs);
+        }
+        for (i, row) in out_rows.iter().enumerate() {
+            padded[i * shard_len + a..i * shard_len + b].copy_from_slice(&row[..b - a]);
+        }
+        st += 1;
     }
     padded.truncate(payload_len);
     Ok(padded)
@@ -577,5 +590,175 @@ mod tests {
         let expect = payload.clone();
         let out = decode_soft(&parts, 8, 16, payload.len(), true, |got| got == expect).unwrap();
         assert_eq!(out, payload);
+    }
+
+    // ---- Property tests: fast matrix/SIMD path vs. frozen per-column oracle ----
+
+    use crate::rs_ref;
+
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn bytes(&mut self, n: usize) -> Vec<u8> {
+            (0..n).map(|_| self.next() as u8).collect()
+        }
+    }
+
+    fn random_shape(r: &mut Rng) -> (usize, usize, usize) {
+        let k = 1 + r.below(40);
+        let n = k + r.below(41.min(256 - k));
+        let len = match r.below(4) {
+            0 => r.below(8),
+            1 => r.below(200),
+            _ => r.below(20_000),
+        };
+        (k, n, len)
+    }
+
+    #[test]
+    fn prop_encode_matches_oracle() {
+        let mut r = Rng(0x0005_1611);
+        for _ in 0..300 {
+            let (k, n, len) = random_shape(&mut r);
+            let p = r.bytes(len);
+            assert_eq!(encode_shards(&p, k, n), rs_ref::encode_shards(&p, k, n), "v2 k={k} n={n} len={len}");
+            assert_eq!(encode_shards_v1(&p, k, n), rs_ref::encode_shards_v1(&p, k, n), "v1 k={k} n={n} len={len}");
+            let idx = r.below(n);
+            for sys in [true, false] {
+                assert_eq!(
+                    encode_shard_index(&p, k, idx, sys),
+                    rs_ref::encode_shard_index(&p, k, idx, sys)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn prop_encode_matches_oracle_large_k() {
+        let mut r = Rng(77);
+        for &(k, n) in &[(127usize, 254usize), (189, 252), (200, 255), (12, 16), (15, 20)] {
+            let extra = r.below(k);
+            let p = r.bytes(k * 37 + extra);
+            assert_eq!(encode_shards(&p, k, n), rs_ref::encode_shards(&p, k, n), "k={k} n={n}");
+        }
+    }
+
+    #[test]
+    fn prop_decode_matches_oracle_random_erasures() {
+        let mut r = Rng(0xdec0de);
+        for _ in 0..300 {
+            let (k, n, len) = random_shape(&mut r);
+            let p = r.bytes(len);
+            for sys in [true, false] {
+                let shards = if sys { encode_shards(&p, k, n) } else { encode_shards_v1(&p, k, n) };
+                // random subset, random order, sometimes duplicates or extras
+                let mut idx: Vec<usize> = (0..n).collect();
+                for i in (1..idx.len()).rev() {
+                    idx.swap(i, r.below(i + 1));
+                }
+                let keep = k + r.below(n - k + 1);
+                let mut parts: Vec<(usize, Vec<u8>)> =
+                    idx[..keep].iter().map(|&i| (i, shards[i].clone())).collect();
+                if r.below(4) == 0 && !parts.is_empty() {
+                    let d = parts[0].clone();
+                    parts.insert(r.below(parts.len()), d);
+                }
+                let fast = decode_indexed(&parts, k, len, sys).unwrap();
+                let slow = rs_ref::decode_indexed(&parts, k, len, sys).unwrap();
+                assert_eq!(fast, slow, "k={k} n={n} len={len} sys={sys}");
+                assert_eq!(fast, p);
+            }
+        }
+    }
+
+    #[test]
+    fn prop_decode_garbage_matches_oracle() {
+        // Corrupt / short / long bodies: the fast path must compute the same
+        // (wrong) bytes as before so higher layers (Merkle, true-name) still reject.
+        let mut r = Rng(0xbad);
+        for _ in 0..200 {
+            let (k, n, len) = random_shape(&mut r);
+            let p = r.bytes(len);
+            let shards = encode_shards(&p, k, n);
+            let mut parts: Vec<(usize, Vec<u8>)> =
+                (0..n).rev().take(k).map(|i| (i, shards[i].clone())).collect();
+            let j = r.below(parts.len());
+            match r.below(3) {
+                0 if !parts[j].1.is_empty() => {
+                    let b = r.below(parts[j].1.len());
+                    parts[j].1[b] ^= 1 << r.below(8);
+                }
+                1 => {
+                    let l = parts[j].1.len();
+                    parts[j].1.truncate(r.below(l + 1));
+                }
+                _ => parts[j].1.extend(r.bytes(5)),
+            }
+            assert_eq!(
+                decode_indexed(&parts, k, len, true).unwrap(),
+                rs_ref::decode_indexed(&parts, k, len, true).unwrap(),
+                "k={k} n={n} len={len}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn prop_graded_matches_oracle() {
+        let mut r = Rng(0x50f7);
+        for _ in 0..60 {
+            let k = 1 + r.below(12);
+            let n = k + 1 + r.below(8);
+            let len = r.below(3 * SOFT_STRIPE * k);
+            let p = r.bytes(len);
+            let shards = encode_shards(&p, k, n);
+            let mut parts: Vec<SoftPart> = Vec::new();
+            for i in 0..n {
+                if r.below(5) == 0 {
+                    continue;
+                }
+                let mut body = shards[i].clone();
+                let hard = r.below(2) == 0;
+                if !hard && !body.is_empty() && r.below(2) == 0 {
+                    let b = r.below(body.len());
+                    body[b] ^= 0x41;
+                }
+                parts.push(SoftPart { index: i, body, hard });
+            }
+            let stripes = shard_len_of(&parts).div_ceil(SOFT_STRIPE).max(1);
+            let mut mask = Vec::new();
+            for p in &parts {
+                if !p.hard && r.below(2) == 0 {
+                    mask.push((p.index, r.below(stripes)));
+                }
+            }
+            for sys in [true, false] {
+                let fast = decode_graded_with_mask(&parts, k, len, sys, &mask);
+                let slow = rs_ref::decode_graded_with_mask(&parts, k, len, sys, &mask);
+                match (fast, slow) {
+                    (Ok(a), Ok(b)) => assert_eq!(a, b, "k={k} n={n} len={len}"),
+                    (Err(_), Err(_)) => {}
+                    (a, b) => panic!("divergence: fast={:?} slow={:?}", a.is_ok(), b.is_ok()),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decode_too_few_fails() {
+        let p = vec![9u8; 1000];
+        let shards = encode_shards(&p, 8, 12);
+        let parts: Vec<(usize, Vec<u8>)> = (0..7).map(|i| (i + 5, shards[i + 5].clone())).collect();
+        assert!(decode_indexed(&parts, 8, 1000, true).is_err());
+        let dup: Vec<(usize, Vec<u8>)> = (0..8).map(|_| (9, shards[9].clone())).collect();
+        assert!(decode_indexed(&dup, 8, 1000, true).is_err());
     }
 }

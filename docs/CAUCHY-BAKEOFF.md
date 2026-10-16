@@ -24,6 +24,8 @@ Release, scalar GF(256) tables, no SIMD. `sigil bench-mds --iters 1` on the bake
 
 Best Cauchy vs Vandermonde: **encode ≫ +15%** (order-of-magnitude; Vandermonde encode still solves per column), multi-erasure decode **~+60–190%**.
 
+> **2026-10 update:** the numbers above predate `docs/RS-FAST.md`. Vandermonde no longer solves per column and now runs at hundreds of MB/s with the same bytes on disk; both backends share the SIMD slice kernel, so the speed argument for Cauchy is mostly gone.
+
 **Recommendation: KEEP** Cauchy as opt-in. Vandermonde remains the production default (wire-compatible with existing `.sg1`). No free header flag for an MDS marker yet — Cauchy marks are experimental: Inscribe and De-scribe must both pass `--mds cauchy` (single-star `.sg1` only).
 
 ## How to remasure

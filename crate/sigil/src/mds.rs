@@ -126,15 +126,11 @@ impl MdsBackend for CauchyRs {
         for i in 0..k {
             shards[i].copy_from_slice(&padded[i * shard_len..(i + 1) * shard_len]);
         }
-        for s in 0..shard_len {
-            for row in 0..m {
-                let mut acc = 0u8;
-                let base = row * k;
-                for j in 0..k {
-                    acc ^= gf::mul(c[base + j], padded[j * shard_len + s]);
-                }
-                shards[k + row][s] = acc;
-            }
+        {
+            let (data, parity) = shards.split_at_mut(k);
+            let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
+            let mut outs: Vec<&mut [u8]> = parity[..m].iter_mut().map(|v| v.as_mut_slice()).collect();
+            gf::matrix_apply(&c, &ins, &mut outs);
         }
         shards
     }
@@ -211,20 +207,14 @@ impl MdsBackend for CauchyRs {
         }
         let inv = invert_gf_matrix(k, &a)?;
 
+        let ins: Vec<&[u8]> = live
+            .iter()
+            .map(|&(_, body)| &body[..body.len().min(shard_len)])
+            .collect();
         let mut padded = vec![0u8; shard_len * k];
-        let mut ys = vec![0u8; k];
-        for s in 0..shard_len {
-            for (row, &(_, body)) in live.iter().enumerate() {
-                ys[row] = body.get(s).copied().unwrap_or(0);
-            }
-            // data = inv * ys  (inv row-major)
-            for r in 0..k {
-                let mut acc = 0u8;
-                for c in 0..k {
-                    acc ^= gf::mul(inv[r * k + c], ys[c]);
-                }
-                padded[r * shard_len + s] = acc;
-            }
+        {
+            let mut outs: Vec<&mut [u8]> = padded.chunks_mut(shard_len.max(1)).take(k).collect();
+            gf::matrix_apply(&inv, &ins, &mut outs);
         }
         padded.truncate(payload_len);
         Ok(padded)
@@ -507,5 +497,40 @@ mod tests {
         // Always succeeds — recommendation is printed for humans.
         let _ = keep;
         assert!(!rows.is_empty());
+    }
+
+    /// Cauchy fast path vs. the original per-byte scalar formula.
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn cauchy_slices_match_scalar_oracle() {
+        let be = CauchyRs::new();
+        let mut seed = 12345u64;
+        for &(k, n, len) in &[(1usize, 2usize, 7usize), (8, 16, 5000), (12, 16, 33333), (15, 20, 1), (40, 60, 9001)] {
+            let payload: Vec<u8> = (0..len)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect();
+            let shards = be.encode(&payload, k, n);
+            let c = CauchyRs::coding_matrix(k, n).unwrap();
+            let sl = shards[0].len();
+            for row in 0..n - k {
+                for s in 0..sl {
+                    let mut acc = 0u8;
+                    for j in 0..k {
+                        acc ^= gf::mul(c[row * k + j], shards[j][s]);
+                    }
+                    assert_eq!(shards[k + row][s], acc, "k={k} n={n} row={row} s={s}");
+                }
+            }
+            let mut opt: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
+            for i in 0..(n - k).min(k) {
+                opt[i] = None;
+            }
+            assert_eq!(be.decode(&opt, k, len).unwrap(), payload);
+        }
     }
 }

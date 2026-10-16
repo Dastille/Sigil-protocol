@@ -36,7 +36,7 @@ Lab: https://dove-bloom-star-island.grok.me
 
 ## Math notes
 
-- Vandermonde RS over GF(256) is in `rs.rs` / `gf.rs` (systematic v2).
+- Vandermonde RS over GF(256) is in `rs.rs` / `gf.rs` (systematic v2). Matrix-once + SIMD slices since 2026-10 (same bytes, ~100–5000× faster): see `docs/RS-FAST.md`.
 - Cauchy RS opt-in in `mds.rs` (systematic coding matrix); not the wire default.
 - Indexed RS rain and RaptorQ are **already** the fountain/regeneration tools — not a future invention on this branch.
 - Order must stay: compress → fold → Ward (never encrypt then compress).
