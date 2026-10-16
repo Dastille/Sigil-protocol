@@ -66,3 +66,42 @@ jobs:
         run: cargo build --locked --features passkey --all-targets
       - name: test passkey paths
         run: cargo test --locked --features passkey passkey
+
+  lint:
+    name: fmt + clippy (-D warnings)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: lint
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Fails on any vulnerability advisory in Cargo.lock (all features, incl. the lab GUI).
+      # Unmaintained-crate notices (paste, ttf-parser via eframe) are reported, not fatal.
+      - name: cargo audit
+        run: cargo audit
