@@ -9,7 +9,7 @@ pub const FLOOR: usize = 64 * 1024;
 /// Media: large binaries / video — fewer, bigger stars.
 pub const MEDIA: Profile = Profile {
     name: "media",
-    min: 1 * 1024 * 1024,
+    min: 1024 * 1024,
     avg: 4 * 1024 * 1024,
     max: 8 * 1024 * 1024,
 };
@@ -18,7 +18,7 @@ pub const MEDIA: Profile = Profile {
 pub const DEDUP: Profile = Profile {
     name: "dedup",
     min: 256 * 1024,
-    avg: 1 * 1024 * 1024,
+    avg: 1024 * 1024,
     max: 4 * 1024 * 1024,
 };
 
@@ -183,7 +183,7 @@ fn bits_for(avg: usize) -> u32 {
         return 1;
     }
     // Round to nearest log2 (FastCDC / paper style).
-    let floor = (usize::BITS - 1 - avg.leading_zeros()) as u32;
+    let floor = usize::BITS - 1 - avg.leading_zeros();
     let pow = 1usize << floor;
     let to_floor = avg - pow;
     let to_ceil = (pow << 1) - avg;

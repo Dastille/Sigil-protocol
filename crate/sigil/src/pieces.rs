@@ -70,12 +70,10 @@ pub fn deluge(file: &[u8], extra: u8, dir: &Path, only_rain: bool, from: Option<
         ));
     }
     let (h, prefix, _) = locate_header(file)?;
-    if h.mode() == crate::Mode::Glyph {
-        if extra > 0 {
-            return Err(crate::Error::Msg(
-                "Glyph has no rain. Use Reflection or Seal.".into(),
-            ));
-        }
+    if h.mode() == crate::Mode::Glyph && extra > 0 {
+        return Err(crate::Error::Msg(
+            "Glyph has no rain. Use Reflection or Seal.".into(),
+        ));
     }
     let stride = shard_stride(&h);
     let map = &file[..prefix.min(file.len())];
@@ -155,28 +153,21 @@ pub fn vessel_present(dir: &Path) -> bool {
     dir.join(VESSEL).is_file()
 }
 
-fn scan(
-    dir: &Path,
-) -> Result<(
+/// (data pieces by index, k, n, true-name digest, parity pieces by index).
+type ScanResult = (
     Vec<(usize, Vec<u8>)>,
     usize,
     usize,
     Vec<u8>,
     Vec<(usize, Vec<u8>)>,
-)> {
+);
+
+fn scan(dir: &Path) -> Result<ScanResult> {
     scan_dirs(&[dir])
 }
 
 /// Collect pieces from one or more folders (e.g. cold-USB `usb-*` dirs).
-fn scan_dirs(
-    dirs: &[&Path],
-) -> Result<(
-    Vec<(usize, Vec<u8>)>,
-    usize,
-    usize,
-    Vec<u8>,
-    Vec<(usize, Vec<u8>)>,
-)> {
+fn scan_dirs(dirs: &[&Path]) -> Result<ScanResult> {
     let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut map: Option<Vec<u8>> = None;
     let mut k = 0u8;
@@ -311,12 +302,11 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     if h.mode() == crate::Mode::Glyph {
         let live = header::gather_live_shards(file, &h, prefix);
         let live_count = live.iter().filter(|s| s.is_some()).count();
-        if live.iter().any(|s| s.is_none()) {
+        let Some(shards) = live.into_iter().collect::<Option<Vec<Vec<u8>>>>() else {
             return Err(crate::Error::Msg(format!(
                 "Glyph needs all {n} shards, have {live_count}"
             )));
-        }
-        let shards: Vec<Vec<u8>> = live.into_iter().map(|s| s.expect("checked")).collect();
+        };
         return Ok((
             assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
             false,

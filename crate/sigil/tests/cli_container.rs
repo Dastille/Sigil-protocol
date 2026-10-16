@@ -382,7 +382,7 @@ fn failed_tidy_leaves_original_intact() {
                     ..Default::default()
                 },
             );
-            let msg = e.err().expect("tidy must fail").to_string();
+            let msg = e.expect_err("tidy must fail").to_string();
             if fault == TidyFault::CorruptFirstStar {
                 assert!(msg.contains("fingerprint mismatch"), "{msg}");
             }

@@ -221,9 +221,15 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
     let leaves: Vec<[u8; 32]> = entries.iter().map(|e| e.chain).collect();
     let i = (seq - 1) as usize;
     let e = &entries[i];
-    let signed = head
-        .as_ref()
-        .filter(|h| h.seq == size && h.signer.is_some() && h.sig.is_some());
+    let signed = head.as_ref().filter(|h| h.seq == size).and_then(|h| {
+        Some(ProofHead {
+            chain: h.chain,
+            time: h.time,
+            signer: h.signer?,
+            sig: h.sig?,
+        })
+    });
+    let is_signed = signed.is_some();
     Ok(Proof {
         log_id: log.id.clone(),
         name: log.name.clone(),
@@ -234,16 +240,12 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
             entries[i - 1].chain
         },
         size,
+        // Infallible: `seq` was range-checked against `size`, so `i < leaves.len()`.
         path: crate::merkle::merkle_path(&leaves, i).expect("index in range"),
         root: root_of(entries),
-        head: signed.map(|h| ProofHead {
-            chain: h.chain,
-            time: h.time,
-            signer: h.signer.unwrap(),
-            sig: h.sig.unwrap(),
-        }),
+        head: signed,
         // the handovers that bring the HEAD's signer back to the earlier ones (see `signer_chain`)
-        handovers: if signed.is_some() {
+        handovers: if is_signed {
             entries
                 .iter()
                 .filter(|e| e.is_handover() && e.seq < size)

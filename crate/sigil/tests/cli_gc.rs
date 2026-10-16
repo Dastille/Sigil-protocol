@@ -396,23 +396,20 @@ fn vault_prune_cold_here_and_old_layout_remove() {
     fs::write(dir.join("q.txt"), b"2").unwrap();
     ok(&dir, &["vault", "commit", "q.txt"]);
     ok(&dir, &["tidy", "q.txt"]); // container ...
-    assert!(
-        fails(
-            &dir,
-            &[
-                "vault",
-                "remove",
-                "q.txt",
-                "--version",
-                "1",
-                "--cold",
-                "x",
-                "--cold-here"
-            ]
-        )
-        .len()
-            > 0
-    );
+    assert!(!fails(
+        &dir,
+        &[
+            "vault",
+            "remove",
+            "q.txt",
+            "--version",
+            "1",
+            "--cold",
+            "x",
+            "--cold-here"
+        ]
+    )
+    .is_empty());
     let _ = fs::remove_dir_all(&dir);
 }
 

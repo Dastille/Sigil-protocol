@@ -3,6 +3,8 @@
 use sigil::rs_bench::{decode_indexed, encode_shards, kernel_name, reference};
 use std::time::Instant;
 
+type EncFn<'a> = dyn 'a + Fn(&[u8]) -> Vec<Vec<u8>>;
+type DecFn<'a> = dyn 'a + Fn(&[(usize, Vec<u8>)]) -> Vec<u8>;
 type Parts = Vec<(usize, Vec<u8>)>;
 
 fn main() {
@@ -23,10 +25,7 @@ fn main() {
         .collect();
     let mbs = |t: f64| len as f64 / 1e6 / t;
     let drop = (n - k).min(k);
-    let run = |name: &str,
-               enc: &dyn Fn(&[u8]) -> Vec<Vec<u8>>,
-               dec: &dyn Fn(&[(usize, Vec<u8>)]) -> Vec<u8>|
-     -> Parts {
+    let run = |name: &str, enc: &EncFn<'_>, dec: &DecFn<'_>| -> Parts {
         let t = Instant::now();
         let shards = enc(&data);
         let te = t.elapsed().as_secs_f64();

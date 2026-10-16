@@ -99,16 +99,14 @@ pub fn is_log(path: &Path) -> bool {
 
 fn resolve_dir(path: &Path) -> Option<PathBuf> {
     let path = path.components().as_path().to_path_buf();
-    for cand in [path.clone(), container::with_suffix(&path)] {
-        if container::is_container(&cand)
-            && container::read_manifest(&cand)
-                .map(|m| m.kind == KIND)
-                .unwrap_or(false)
-        {
-            return Some(cand);
-        }
-    }
-    None
+    [path.clone(), container::with_suffix(&path)]
+        .into_iter()
+        .find(|cand| {
+            container::is_container(cand)
+                && container::read_manifest(cand)
+                    .map(|m| m.kind == KIND)
+                    .unwrap_or(false)
+        })
 }
 
 impl Log {
@@ -1835,6 +1833,7 @@ impl<'a> Reader<'a> {
             self.keyed_seen |= k;
             self.cache = Some((h, p));
         }
+        // Infallible: the block above fills `cache` whenever it did not already hold `h`.
         let plain = &self.cache.as_ref().unwrap().1;
         let mut off = 0usize;
         for m in self.state.members_of(h) {

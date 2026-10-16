@@ -96,6 +96,11 @@ fn read_head<R: Read>(r: &mut R) -> Result<WorkHead> {
 
 /// Inscribe any size: one .sg1 if it fits in one chunk, else an SGWK pack.
 /// When `cdc` is set, FastCDC picks variable star boundaries (opt-in).
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn inscribe_path(
     input: &Path,
     output: &Path,
@@ -126,6 +131,11 @@ pub fn inscribe_path(
 }
 
 /// Like `inscribe_path`, with optional encrypt-to recipients on every star.
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn inscribe_path_to(
     input: &Path,
     output: &Path,
@@ -288,6 +298,11 @@ pub fn inscribe_path_to(
     Ok((orig, stars, true))
 }
 
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 fn inscribe_ranges(
     data: &[u8],
     name: &str,
@@ -418,27 +433,25 @@ pub fn read_facet_digests(input: &Path) -> Result<Vec<[u8; 32]>> {
     let head = read_head(&mut f)?;
     let n = head.stars as u64;
     let trailer = 4 + 4 + 32 * n;
-    if len >= trailer {
-        if f.seek(SeekFrom::End(-(trailer as i64))).is_ok() {
-            let mut mag = [0u8; 4];
-            if f.read_exact(&mut mag).is_ok() && mag == *b"SGFC" {
-                let mut nb = [0u8; 4];
-                if f.read_exact(&mut nb).is_ok() {
-                    let cnt = u32::from_le_bytes(nb);
-                    if cnt == head.stars {
-                        let mut out = Vec::with_capacity(cnt as usize);
-                        let mut ok = true;
-                        for _ in 0..cnt {
-                            let mut d = [0u8; 32];
-                            if f.read_exact(&mut d).is_err() {
-                                ok = false;
-                                break;
-                            }
-                            out.push(d);
+    if len >= trailer && f.seek(SeekFrom::End(-(trailer as i64))).is_ok() {
+        let mut mag = [0u8; 4];
+        if f.read_exact(&mut mag).is_ok() && mag == *b"SGFC" {
+            let mut nb = [0u8; 4];
+            if f.read_exact(&mut nb).is_ok() {
+                let cnt = u32::from_le_bytes(nb);
+                if cnt == head.stars {
+                    let mut out = Vec::with_capacity(cnt as usize);
+                    let mut ok = true;
+                    for _ in 0..cnt {
+                        let mut d = [0u8; 32];
+                        if f.read_exact(&mut d).is_err() {
+                            ok = false;
+                            break;
                         }
-                        if ok {
-                            return Ok(out);
-                        }
+                        out.push(d);
+                    }
+                    if ok {
+                        return Ok(out);
                     }
                 }
             }
@@ -516,10 +529,8 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
             .map(|(h, _, _)| h.orig_len.min(remain) as u32)
             .unwrap_or(remain.min(head.chunk_size as u64) as u32);
         let leftover = star_len as i64 - peek_n as i64;
-        if leftover > 0 {
-            if std::io::Seek::seek(&mut f, SeekFrom::Current(leftover)).is_err() {
-                break;
-            }
+        if leftover > 0 && std::io::Seek::seek(&mut f, SeekFrom::Current(leftover)).is_err() {
+            break;
         }
         loc.push(StarLoc {
             index: i,
@@ -608,6 +619,11 @@ pub fn unseal_range_keys(
 }
 
 /// Write each star as its own .sg1 in a folder (for torrent/IPFS of large work).
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn inscribe_stars_dir(
     input: &Path,
     dir: &Path,
@@ -638,6 +654,11 @@ pub fn inscribe_stars_dir(
 }
 
 /// Like `inscribe_stars_dir`, with optional encrypt-to recipients on every star.
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn inscribe_stars_dir_to(
     input: &Path,
     dir: &Path,
@@ -805,7 +826,8 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
     let head = read_head(&mut r)?;
     let head_len = r.stream_position().map_err(io)?;
     // Pass 1: framing only (lengths must tile the file, trailer must parse).
-    let mut spans = Vec::with_capacity(head.stars as usize);
+    // `stars` is untrusted; every star needs an 8-byte length, so cap the pre-allocation.
+    let mut spans = Vec::with_capacity((head.stars as usize).min((file_len / 8) as usize));
     let mut off = head_len;
     for i in 0..head.stars {
         if off + 8 > file_len {
@@ -914,6 +936,10 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
 }
 
 /// Outcome of [`mend_pack_to`].
+// `written` and `mended` are part of the report and asserted by the tests, but the only
+// in-crate caller (folder::unseal_dir_mend) needs just `healed`; keep them rather than
+// lose information callers may want.
+#[allow(dead_code)]
 pub struct WorkMend {
     /// Plaintext bytes written.
     pub written: u64,
@@ -950,7 +976,9 @@ pub fn mend_pack_to<W: Write>(
     let head = read_head(&mut cur)?;
     let head_len = cur.position() as usize;
     let mut off = head_len;
-    let mut spans: Vec<(usize, usize)> = Vec::with_capacity(head.stars as usize);
+    // `stars` is untrusted; every star needs an 8-byte length, so cap the pre-allocation.
+    let mut spans: Vec<(usize, usize)> =
+        Vec::with_capacity((head.stars as usize).min(pack.len() / 8));
     for i in 0..head.stars {
         let lb = pack.get(off..off + 8).ok_or_else(|| {
             crate::Error::Msg(format!(
@@ -1011,13 +1039,15 @@ pub fn mend_pack_to<W: Write>(
                     p
                 }
                 // Opened within budget but couldn't be re-sealed clean: keep bytes as-is.
-                Err(_) if opened.is_ok() => opened.unwrap(),
-                Err(e) => {
-                    return Err(crate::Error::Msg(format!(
-                        "star {i} of {} is too damaged to mend: {e}",
-                        head.stars
-                    )))
-                }
+                Err(e) => match opened {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return Err(crate::Error::Msg(format!(
+                            "star {i} of {} is too damaged to mend: {e}",
+                            head.stars
+                        )))
+                    }
+                },
             },
         };
         if let Some(f) = &facets {
@@ -1562,8 +1592,7 @@ mod tests {
         let check = |bytes: &[u8], want: &str| {
             std::fs::write(&p, bytes).unwrap();
             let e = mend_pack_path(&p, &out, false)
-                .err()
-                .expect("should refuse")
+                .expect_err("should refuse")
                 .to_string();
             assert!(e.contains(want), "{e}");
             assert!(!out.exists(), "no output on refusal");

@@ -570,6 +570,7 @@ impl Authenticator for SoftAuthenticator {
         } else {
             &c.cred_random_no_uv
         };
+        // Infallible: HMAC accepts keys of any length (RFC 2104); RustCrypto never errs here.
         let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("hmac key");
         mac.update(salt);
         let mut out = Zeroizing::new([0u8; 32]);

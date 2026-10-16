@@ -171,7 +171,7 @@ pub fn find_card(dir: &Path) -> Option<PathBuf> {
     Some(cards.remove(0))
 }
 
-fn walk_files(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let rd = fs::read_dir(dir).map_err(io)?;
     let mut ents: Vec<_> = rd.collect::<std::io::Result<Vec<_>>>().map_err(io)?;
     ents.sort_by_key(|e| e.file_name());
@@ -183,7 +183,7 @@ fn walk_files(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
             continue;
         }
         if p.is_dir() {
-            walk_files(&p, root, out)?;
+            walk_files(&p, out)?;
         } else if p.is_file() {
             let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
             if ext == "sg1" || ext == "sga" {
@@ -697,7 +697,7 @@ pub fn add_to_constellation(sky: &Path, input: &Path, opts: AddOpts<'_>) -> Resu
     let mut files = Vec::new();
     let names_root: PathBuf;
     if input.is_dir() {
-        walk_files(input, input, &mut files)?;
+        walk_files(input, &mut files)?;
         names_root = input.to_path_buf();
         if files.is_empty() {
             return Err(err("folder is empty"));
@@ -1110,6 +1110,11 @@ fn wanted(rel: &str, only: &[String]) -> bool {
     })
 }
 
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 fn restore_chart(
     chart: &Chart,
     dest: &Path,
@@ -1625,7 +1630,7 @@ mod tests {
             &probe,
             None,
             &[],
-            &[alice.clone()],
+            std::slice::from_ref(&alice),
         )
         .unwrap();
         assert_eq!(fs::read(&probe).unwrap(), big_bytes);
@@ -1649,7 +1654,7 @@ mod tests {
         // Scry: locked without a key, readable with either recipient.
         let e = scry_constellation(&sky, None).unwrap_err().to_string();
         assert!(e.contains("--identity"), "{e}");
-        let text = scry_constellation_keys(&sky, None, &[alice.clone()]).unwrap();
+        let text = scry_constellation_keys(&sky, None, std::slice::from_ref(&alice)).unwrap();
         assert!(
             text.contains("stars=2") && !text.contains("MISSING"),
             "{text}"
@@ -1662,7 +1667,9 @@ mod tests {
         assert!(unseal_constellation(&sky, &root.join("none"), None, &[], &[]).is_err());
         for (tag, who) in [("a", &alice), ("b", &bob)] {
             let out = root.join(format!("out-{tag}"));
-            let n = unseal_constellation_keys(&sky, &out, None, &[], &[], &[who.clone()]).unwrap();
+            let n =
+                unseal_constellation_keys(&sky, &out, None, &[], &[], std::slice::from_ref(who))
+                    .unwrap();
             assert_eq!(n, 2);
             assert_eq!(fs::read(out.join("note.txt")).unwrap(), b"secret note");
             assert_eq!(fs::read(out.join("big.bin")).unwrap(), big_bytes);
@@ -1784,7 +1791,8 @@ mod tests {
         unseal_constellation(&sky2, &o1, Some("pw2"), &[], &[]).unwrap();
         assert_eq!(fs::read(o1.join("a.txt")).unwrap(), b"warded alpha");
         let o2 = root.join("d-id");
-        unseal_constellation_keys(&sky2, &o2, None, &[], &[], &[alice.clone()]).unwrap();
+        unseal_constellation_keys(&sky2, &o2, None, &[], &[], std::slice::from_ref(&alice))
+            .unwrap();
         assert_eq!(fs::read(o2.join("a.txt")).unwrap(), b"warded alpha");
         let _ = fs::remove_dir_all(&root);
     }

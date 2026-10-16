@@ -588,7 +588,6 @@ pub fn unwrap_cek(
 }
 
 /// Offset of SGTO in a mark (right after keystone / single header).
-
 #[cfg(test)]
 mod tests {
     use super::*;

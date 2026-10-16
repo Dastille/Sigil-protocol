@@ -21,9 +21,7 @@
 //! them when no `--to` is given, so an encrypt-to vault never silently goes plain. See
 //! `docs/VAULT-RECIPIENTS.md`.
 
-use crate::folder::{
-    inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_mend_keys, unseal_dir_only_keys,
-};
+use crate::folder::{inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_mend_keys};
 use crate::header::locate_header;
 use crate::keys::{Identity, PublicIdentity};
 use crate::pieces::mend_bytes;
@@ -102,10 +100,13 @@ pub struct VersionEntry {
 /// **Full** (default): keep every version — like a Bitcoin full node.
 /// **Light**: keep only the newest `keep` versions hot; older seals should
 /// move to a cold kit (`--cold`) before leaving the chart — like a pruned node.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RetentionPolicy {
+    #[default]
     Full,
-    Light { keep: u32 },
+    Light {
+        keep: u32,
+    },
 }
 
 impl RetentionPolicy {
@@ -121,12 +122,6 @@ impl RetentionPolicy {
             RetentionPolicy::Full => None,
             RetentionPolicy::Light { keep } => Some(keep),
         }
-    }
-}
-
-impl Default for RetentionPolicy {
-    fn default() -> Self {
-        RetentionPolicy::Full
     }
 }
 
@@ -390,6 +385,8 @@ pub fn seal_path_in(vault_dir: &Path, seal: &str) -> PathBuf {
 }
 
 /// Path of version `n`'s seal for a live path / chart dir (either layout).
+/// Test-only helper: production code resolves seal paths via `seal_path_in`.
+#[cfg(test)]
 pub fn version_seal_path(path: &Path, n: u32) -> Result<PathBuf> {
     let (_l, vault_dir) = resolve_paths(path)?;
     Ok(seal_path_in(&vault_dir, &seal_name(n)))
@@ -757,7 +754,7 @@ fn effective_recipients(chart: &Chart, explicit: &[PublicIdentity]) -> Result<Ve
     Ok(Vec::new())
 }
 
-fn entry_by_n<'a>(chart: &'a Chart, n: u32) -> Result<&'a VersionEntry> {
+fn entry_by_n(chart: &Chart, n: u32) -> Result<&VersionEntry> {
     chart
         .versions
         .iter()
@@ -1195,7 +1192,7 @@ fn commit_bytes(
     }
     chart.recipients = recipients;
     let seal_file = seal_name(next);
-    fs::write(seal_path_in(&vault_dir, &seal_file), &sg1)
+    fs::write(seal_path_in(vault_dir, &seal_file), &sg1)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let size = data.len() as u64;
     chart.versions.push(VersionEntry {
@@ -1218,6 +1215,11 @@ fn commit_bytes(
 
 /// Seal directory `src` as the next folder-vault version (SGDR); tip moves.
 /// `src` is the live dir (ordinary commit) or a dirty export tree.
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 fn commit_tree(
     src: &Path,
     live: &Path,
@@ -1252,7 +1254,7 @@ fn commit_tree(
     let seal_file = seal_name(next);
     seal_tree_version(
         src,
-        &seal_path_in(&vault_dir, &seal_file),
+        &seal_path_in(vault_dir, &seal_file),
         mode,
         pass,
         &recipients,
@@ -1546,6 +1548,11 @@ pub fn restore_ex(
     })
 }
 
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 fn restore_tree(
     chart: &Chart,
     entry: &VersionEntry,
@@ -2001,6 +2008,7 @@ pub fn format_versions(chart: &Chart) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::folder::unseal_dir_only_keys;
     use crate::Mode;
 
     fn tmpdir(tag: &str) -> PathBuf {
@@ -2376,7 +2384,7 @@ mod tests {
         // Needs identity (or would need pass) to open
         assert!(crate::unseal_ex_keys(&raw, None, &[], &[]).is_err());
         assert_eq!(
-            crate::unseal_ex_keys(&raw, None, &[], &[alice.clone()]).unwrap(),
+            crate::unseal_ex_keys(&raw, None, &[], std::slice::from_ref(&alice)).unwrap(),
             b"vault-encrypt-v1"
         );
 
@@ -2385,7 +2393,13 @@ mod tests {
         assert_eq!(c.version, 2);
         let tip2 = tip_seal_path(&live).unwrap().0;
         assert_eq!(
-            crate::unseal_ex_keys(&fs::read(&tip2).unwrap(), None, &[], &[alice.clone()]).unwrap(),
+            crate::unseal_ex_keys(
+                &fs::read(&tip2).unwrap(),
+                None,
+                &[],
+                std::slice::from_ref(&alice)
+            )
+            .unwrap(),
             b"vault-encrypt-v2"
         );
 
@@ -2663,7 +2677,7 @@ mod tests {
         assert!(unseal_dir_only_keys(&v1, &dir.join("noid"), None, &[], &[], &[], &[]).is_err());
 
         let export = dir.join("dirty");
-        export_writable(&live, &export, &[alice.clone()]);
+        export_writable(&live, &export, std::slice::from_ref(&alice));
         fs::write(export.join("a.txt"), b"aaa-2").unwrap();
         let wards = vec![("p/b.txt".to_string(), "room".to_string())];
         let c = commit_from_export_ex(
@@ -2679,7 +2693,7 @@ mod tests {
         let v2 = tip_seal_path(&live).unwrap().0;
         // Identity alone opens a.txt (encrypt-to); p/b.txt needs its ward pass or identity.
         let o = dir.join("o-id");
-        unseal_dir_only_keys(&v2, &o, None, &[], &[], &[], &[alice.clone()]).unwrap();
+        unseal_dir_only_keys(&v2, &o, None, &[], &[], &[], std::slice::from_ref(&alice)).unwrap();
         assert_eq!(fs::read(o.join("a.txt")).unwrap(), b"aaa-2");
         // Passphrase path: house for a.txt, room for p/b.txt.
         let o2 = dir.join("o-pass");

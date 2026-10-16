@@ -1,4 +1,16 @@
 //! Sigil protocol v1 — same .sg1 layout as the lab.
+//!
+//! # Panic policy
+//! Input files, headers, pieces and I/O are untrusted: parsers return `Error`, never panic.
+//! The `unwrap()`/`expect()` calls left in library (non-test) code are provably infallible:
+//! - `buf[a..b].try_into().unwrap()` into a `[u8; b - a]` array: the slice was just taken with
+//!   exactly that length (bounds were checked before slicing), so the conversion cannot fail;
+//! - lookups whose presence is an internal invariant, each commented at the call site
+//!   (Vandermonde inverse on distinct points, Merkle path in range, mount inode tables,
+//!   seglog cache, HMAC key of any length, the opt-in Cauchy bake-off encoder).
+//!
+//! Mutex locks use `unwrap_or_else(PoisonError::into_inner)`: the guarded data (caches,
+//! progress stage) stays valid even if another thread panicked mid-update.
 mod attest;
 mod boot;
 mod cdc;
@@ -304,6 +316,11 @@ pub fn seal_ex(
     )
 }
 
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_kn(
     data: &[u8],
     mode: Mode,
@@ -330,6 +347,11 @@ pub fn seal_kn(
 }
 
 /// Like `seal_kn`, with optional encrypt-to recipients (`--to`).
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_kn_to(
     data: &[u8],
     mode: Mode,
@@ -358,6 +380,11 @@ pub fn seal_kn_to(
 }
 
 /// Like `seal_kn`, but encode with an explicit MDS backend (Cauchy opt-in).
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_kn_mds(
     data: &[u8],
     mode: Mode,
@@ -388,6 +415,11 @@ pub fn seal_kn_mds(
 /// Seal with optional encrypt-to recipients (`--to`). When `recipients` is non-empty,
 /// body is AES-GCM'd under a random CEK; SGTO holds X25519 wraps (and a passphrase
 /// wrap if `pass` is also set). Encrypt-to alone is enough; with both, either opens.
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_kn_mds_to(
     data: &[u8],
     mode: Mode,
@@ -1508,15 +1540,24 @@ mod tests {
         .unwrap();
         let mark = dir.join("outer.sg1");
         std::fs::write(&mark, &outer).unwrap();
-        let view = crate::path_walk_keys(&mark, &[], None, &[], 8, &[alice.clone()]).unwrap();
+        let view =
+            crate::path_walk_keys(&mark, &[], None, &[], 8, std::slice::from_ref(&alice)).unwrap();
         assert!(
             view.nest_payload,
             "outer encrypt-to mark should advertise nested payload"
         );
         // --into . unwraps outer → inner .sg1 bytes (still a seal); then identity-unseal leaf.
         let dest = dir.join("inner.sg1");
-        crate::path_extract_keys(&mark, &[".".into()], &dest, None, &[], 8, &[alice.clone()])
-            .unwrap();
+        crate::path_extract_keys(
+            &mark,
+            &[".".into()],
+            &dest,
+            None,
+            &[],
+            8,
+            std::slice::from_ref(&alice),
+        )
+        .unwrap();
         let leaf = unseal_ex_keys(&std::fs::read(&dest).unwrap(), None, &[], &[alice]).unwrap();
         assert_eq!(leaf, b"nested-clear");
         let _ = std::fs::remove_dir_all(&dir);
