@@ -152,6 +152,7 @@ Frozen layout: [`public/sigil-v1.txt`](../public/sigil-v1.txt). CLI dump: `sigil
 | [CAUCHY-BAKEOFF.md](CAUCHY-BAKEOFF.md) | Opt-in Cauchy MDS bake-off notes |
 | [FOUNTAIN-v2.md](FOUNTAIN-v2.md) | Fountain / Deluge piece experiments |
 | [SOFT-RS.md](SOFT-RS.md) | Soft Reed–Solomon lab notes |
+| [RS-FAST.md](RS-FAST.md) | How Reed–Solomon got fast without changing a byte |
 | [CDC-FastCDC.md](CDC-FastCDC.md) | Opt-in FastCDC chunking profiles |
 | [BREAKTHROUGHS.md](BREAKTHROUGHS.md) | Internal research log |
 
