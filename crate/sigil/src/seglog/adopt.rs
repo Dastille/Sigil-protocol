@@ -67,12 +67,19 @@ pub struct AdoptReport {
 
 impl AdoptReport {
     pub fn adopted(&self) -> usize {
-        self.items.iter().filter(|i| matches!(i.action, AdoptAction::Adopt { .. })).count()
+        self.items
+            .iter()
+            .filter(|i| matches!(i.action, AdoptAction::Adopt { .. }))
+            .count()
     }
 
     pub fn render(&self) -> String {
         let mut s = String::new();
-        let verb = if self.dry_run { "would adopt" } else { "adopted" };
+        let verb = if self.dry_run {
+            "would adopt"
+        } else {
+            "adopted"
+        };
         for i in &self.items {
             let what = match &i.action {
                 AdoptAction::Adopt { seq } => format!("{verb} as segment {seq}"),
@@ -89,7 +96,12 @@ impl AdoptReport {
         for (p, why) in &self.skipped {
             s.push_str(&format!("  {}  left in place: {why}\n", p.display()));
         }
-        let mut tail = format!("log adopt {}: {} {}", self.dir.display(), verb, self.adopted());
+        let mut tail = format!(
+            "log adopt {}: {} {}",
+            self.dir.display(),
+            verb,
+            self.adopted()
+        );
         let already = self.items.len() - self.adopted();
         if already > 0 {
             tail.push_str(&format!(", {already} already in the log"));
@@ -156,7 +168,10 @@ fn trim_zeros(d: &[u8]) -> &[u8] {
 }
 
 fn is_star_name(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("sg1")).unwrap_or(false)
+    p.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("sg1"))
+        .unwrap_or(false)
 }
 
 /// `true` when `p` is the log itself or anything inside a `.sigil` container.
@@ -228,13 +243,24 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         return Err(err("give at least one .sg1 star or a folder of them"));
     }
     let (files, ignored) = expand(sources)?;
-    let mut rep = AdoptReport { dir: log.dir.clone(), ignored, dry_run: opts.dry_run, ..Default::default() };
+    let mut rep = AdoptReport {
+        dir: log.dir.clone(),
+        ignored,
+        dry_run: opts.dry_run,
+        ..Default::default()
+    };
 
-    let _guard = if opts.dry_run { None } else { Some(lock(&log)?) };
+    let _guard = if opts.dry_run {
+        None
+    } else {
+        Some(lock(&log)?)
+    };
     let (idx, notes) = if opts.dry_run {
         let idx = read_index(&log)?;
         if let Some((line, _, msg)) = &idx.error {
-            return Err(err(format!("INDEX is damaged at line {line} ({msg}); run `sigil log verify`")));
+            return Err(err(format!(
+                "INDEX is damaged at line {line} ({msg}); run `sigil log verify`"
+            )));
         }
         (idx, Vec::new())
     } else {
@@ -247,7 +273,12 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
     // what is already in the log, by source-file hash
     let mut known: BTreeMap<[u8; 32], u64> = BTreeMap::new();
     for e in &idx.entries {
-        if let Some(src) = e.body.split_whitespace().find_map(|t| t.strip_prefix("src=")).and_then(parse_hex32) {
+        if let Some(src) = e
+            .body
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("src="))
+            .and_then(parse_hex32)
+        {
             known.entry(src).or_insert(e.seq);
         }
     }
@@ -258,7 +289,8 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
     let mut staged: Vec<(PathBuf, Vec<u8>)> = Vec::new(); // (segment path, bytes) to write
     for f in files {
         if inside_container(&f) {
-            rep.skipped.push((f, "inside a sigil container (not a loose star)".into()));
+            rep.skipped
+                .push((f, "inside a sigil container (not a loose star)".into()));
             continue;
         }
         let bytes = match fs::read(&f) {
@@ -278,7 +310,13 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         match health_bytes(&bytes) {
             Health::Ok => {}
             Health::Mendable(m) => {
-                rep.skipped.push((f.clone(), format!("{m}; run `sigil mend {}` first, then adopt again", f.display())));
+                rep.skipped.push((
+                    f.clone(),
+                    format!(
+                        "{m}; run `sigil mend {}` first, then adopt again",
+                        f.display()
+                    ),
+                ));
                 continue;
             }
             Health::Damaged(m) => {
@@ -293,7 +331,13 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
                 rep.skipped.push((f, format!("these exact bytes were segment {seq}, deleted by entry {t}; not adopted again")));
                 continue;
             }
-            rep.items.push(AdoptItem { src: f, size: h.orig_len, sha: h.digest, action: AdoptAction::Already { seq }, kind });
+            rep.items.push(AdoptItem {
+                src: f,
+                size: h.orig_len,
+                sha: h.digest,
+                action: AdoptAction::Already { seq },
+                kind,
+            });
             continue;
         }
         let seq = next;
@@ -307,7 +351,13 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
             hex32(&src)
         ));
         staged.push((log.segment_path(seq), bytes));
-        rep.items.push(AdoptItem { src: f, size: h.orig_len, sha: h.digest, action: AdoptAction::Adopt { seq }, kind });
+        rep.items.push(AdoptItem {
+            src: f,
+            size: h.orig_len,
+            sha: h.digest,
+            action: AdoptAction::Adopt { seq },
+            kind,
+        });
     }
     if opts.dry_run {
         return Ok(rep);
@@ -319,7 +369,10 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         write_atomic(seg, bytes)?;
         let back = fs::read(seg).map_err(io)?;
         if sha256(&back) != sha256(bytes) {
-            return Err(err(format!("{}: read-back differs from the source; nothing was committed", seg.display())));
+            return Err(err(format!(
+                "{}: read-back differs from the source; nothing was committed",
+                seg.display()
+            )));
         }
     }
     // 2. INDEX (commit point), 3. HEAD — also refreshed when nothing new, so the head stays current

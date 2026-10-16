@@ -3,7 +3,6 @@
 //! the fast `rs` must produce byte-identical output. Do not optimise this file.
 #![allow(dead_code, clippy::needless_range_loop)]
 
-
 use crate::gf;
 use crate::Error;
 
@@ -230,7 +229,6 @@ pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8
     Ok(out)
 }
 
-
 /// Soft-RS stripe width within a shard payload (v0).
 pub const SOFT_STRIPE: usize = 4096;
 
@@ -270,7 +268,9 @@ fn decode_column_parts(
     }
     let coeffs = gf::solve_vandermonde(&xs, &ys);
     if systematic {
-        Ok((0..k).map(|i| gf::eval_poly(&coeffs, (i + 1) as u8)).collect())
+        Ok((0..k)
+            .map(|i| gf::eval_poly(&coeffs, (i + 1) as u8))
+            .collect())
     } else {
         Ok(coeffs)
     }
@@ -417,9 +417,7 @@ where
         if use_parts.len() < k {
             continue;
         }
-        if let Ok(payload) =
-            decode_graded_with_mask(&use_parts, k, payload_len, systematic, &[])
-        {
+        if let Ok(payload) = decode_graded_with_mask(&use_parts, k, payload_len, systematic, &[]) {
             if accept(&payload) {
                 return Ok(payload);
             }
@@ -457,11 +455,8 @@ where
         for (a_i, &a) in soft_idx.iter().enumerate() {
             for &b in soft_idx.iter().skip(a_i + 1) {
                 for st in 0..n_stripes {
-                    let use_parts: Vec<SoftPart> = parts
-                        .iter()
-                        .filter(|p| p.index != a)
-                        .cloned()
-                        .collect();
+                    let use_parts: Vec<SoftPart> =
+                        parts.iter().filter(|p| p.index != a).cloned().collect();
                     if use_parts.len() < k {
                         continue;
                     }

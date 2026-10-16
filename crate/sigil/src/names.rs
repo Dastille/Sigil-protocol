@@ -47,16 +47,28 @@ pub fn vault_dir(input: &Path) -> Option<PathBuf> {
         && input
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n.ends_with(crate::vault::VAULT_SUFFIX) || n.ends_with(crate::container::CONTAINER_SUFFIX))
+            .map(|n| {
+                n.ends_with(crate::vault::VAULT_SUFFIX)
+                    || n.ends_with(crate::container::CONTAINER_SUFFIX)
+            })
             .unwrap_or(false);
     (is_chart_dir || !live.exists()).then_some(vdir)
 }
 
 /// List a constellation by name (needs `pass` / `identities` for a locked card).
-pub fn sky_entries(sky: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Vec<SkyEntry>> {
-    let card = crate::constellation::find_card(sky).ok_or_else(|| err("no constellation card in this folder"))?;
-    let chart = crate::constellation::load_chart_from_mark(&card, pass, identities)
-        .map_err(|e| err(format!("{e} (locked card: give --pass / --identity to see names)")))?;
+pub fn sky_entries(
+    sky: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Vec<SkyEntry>> {
+    let card = crate::constellation::find_card(sky)
+        .ok_or_else(|| err("no constellation card in this folder"))?;
+    let chart =
+        crate::constellation::load_chart_from_mark(&card, pass, identities).map_err(|e| {
+            err(format!(
+                "{e} (locked card: give --pass / --identity to see names)"
+            ))
+        })?;
     let by_digest = crate::constellation::index_stars(sky, Some(&card));
     let mut out: Vec<SkyEntry> = chart
         .members
@@ -78,11 +90,22 @@ pub fn sky_entries(sky: &Path, pass: Option<&str>, identities: &[Identity]) -> R
 
 /// Text listing of a constellation, optionally narrowed to names under `prefix`.
 pub fn render_sky(sky: &Path, entries: &[SkyEntry], prefix: &str) -> String {
-    let mut s = format!("{}  constellation  {} name(s)\n", sky.display(), entries.len());
-    let shown: Vec<&SkyEntry> = entries.iter().filter(|e| prefix.is_empty() || e.name.starts_with(prefix)).collect();
+    let mut s = format!(
+        "{}  constellation  {} name(s)\n",
+        sky.display(),
+        entries.len()
+    );
+    let shown: Vec<&SkyEntry> = entries
+        .iter()
+        .filter(|e| prefix.is_empty() || e.name.starts_with(prefix))
+        .collect();
     let w = shown.iter().map(|e| e.name.len()).max().unwrap_or(0);
     for e in &shown {
-        let state = if e.star.is_some() { String::new() } else { "  MISSING star".to_string() };
+        let state = if e.star.is_some() {
+            String::new()
+        } else {
+            "  MISSING star".to_string()
+        };
         s.push_str(&format!(
             "  {:<w$}  {:>12} bytes  {}{}\n",
             e.name,
@@ -103,7 +126,12 @@ pub fn version_label(chart_name: &str, n: u32) -> String {
 /// Text listing of a vault's versions with `name@vN` names.
 pub fn render_vault(vdir: &Path) -> Result<String> {
     let chart = crate::vault::load_chart(vdir)?;
-    let name = chart.live.file_name().and_then(|n| n.to_str()).unwrap_or("vault").to_string();
+    let name = chart
+        .live
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("vault")
+        .to_string();
     let mut s = format!(
         "{}  vault  tip=v{}  retention={}  {} version(s)\n",
         vdir.display(),
@@ -137,11 +165,11 @@ pub fn parse_version_ref(s: &str) -> Option<u32> {
 /// The seal path of version `n` inside a chart dir, if the CHART lists it.
 pub fn version_seal(vdir: &Path, n: u32) -> Result<PathBuf> {
     let chart = crate::vault::load_chart(vdir)?;
-    let v = chart
-        .versions
-        .iter()
-        .find(|v| v.n == n)
-        .ok_or_else(|| err(format!("no version v{n} in this vault (see `sigil ls` of the container)")))?;
+    let v = chart.versions.iter().find(|v| v.n == n).ok_or_else(|| {
+        err(format!(
+            "no version v{n} in this vault (see `sigil ls` of the container)"
+        ))
+    })?;
     Ok(crate::vault::seal_path_in(vdir, &v.seal))
 }
 
@@ -156,7 +184,9 @@ pub fn friendly_label(mark: &Path, pass: Option<&str>, identities: &[Identity]) 
     if parent.file_name().and_then(|n| n.to_str()) == Some(crate::container::VERSIONS_DIR) {
         let root = parent.parent()?;
         if crate::container::is_container(root) {
-            let n = crate::gc::is_version_seal_name(&file).then(|| parse_version_ref(&file)).flatten()?;
+            let n = crate::gc::is_version_seal_name(&file)
+                .then(|| parse_version_ref(&file))
+                .flatten()?;
             let chart = crate::vault::load_chart(root).ok()?;
             let name = chart.live.file_name()?.to_str()?.to_string();
             return Some(version_label(&name, n));
@@ -173,11 +203,19 @@ pub fn friendly_label(mark: &Path, pass: Option<&str>, identities: &[Identity]) 
     let card = crate::constellation::find_card(root)?;
     let chart = crate::constellation::load_chart_from_mark(&card, pass, identities).ok()?;
     let digest: [u8; 32] = if crate::work::is_work_pack(&abs) {
-        hex::decode(file.strip_suffix(".sg1")?).ok()?.try_into().ok()?
+        hex::decode(file.strip_suffix(".sg1")?)
+            .ok()?
+            .try_into()
+            .ok()?
     } else {
         crate::constellation::peek_digest(&abs)?
     };
-    let names: Vec<&str> = chart.members.iter().filter(|m| m.digest == digest).map(|m| m.name.as_str()).collect();
+    let names: Vec<&str> = chart
+        .members
+        .iter()
+        .filter(|m| m.digest == digest)
+        .map(|m| m.name.as_str())
+        .collect();
     match names.len() {
         0 => None,
         1 => Some(names[0].to_string()),

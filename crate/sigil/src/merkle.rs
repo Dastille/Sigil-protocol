@@ -54,7 +54,12 @@ pub fn merkle_path(leaves: &[[u8; 32]], index: usize) -> Option<Vec<[u8; 32]>> {
 
 /// Root implied by `leaf` at `index` in a tree of `size` leaves with inclusion `path`
 /// (as made by [`merkle_path`]). `None` when the path has the wrong length for that position.
-pub fn root_from_path(leaf: &[u8; 32], index: usize, size: usize, path: &[[u8; 32]]) -> Option<[u8; 32]> {
+pub fn root_from_path(
+    leaf: &[u8; 32],
+    index: usize,
+    size: usize,
+    path: &[[u8; 32]],
+) -> Option<[u8; 32]> {
     if size == 0 || index >= size {
         return None;
     }
@@ -89,7 +94,9 @@ mod path_tests {
     #[test]
     fn every_leaf_of_every_size_proves_to_the_root() {
         for n in 1..=33usize {
-            let leaves: Vec<[u8; 32]> = (0..n).map(|i| Sha256::digest((i as u32).to_le_bytes()).into()).collect();
+            let leaves: Vec<[u8; 32]> = (0..n)
+                .map(|i| Sha256::digest((i as u32).to_le_bytes()).into())
+                .collect();
             let root = merkle_root(&leaves);
             for (i, leaf) in leaves.iter().enumerate() {
                 let p = merkle_path(&leaves, i).unwrap();
@@ -97,11 +104,19 @@ mod path_tests {
                 // wrong position or a flipped sibling must not reproduce the root
                 if n > 1 {
                     let other = (i + 1) % n;
-                    assert_ne!(root_from_path(leaf, other, n, &p), Some(root), "n={n} i={i} moved");
+                    assert_ne!(
+                        root_from_path(leaf, other, n, &p),
+                        Some(root),
+                        "n={n} i={i} moved"
+                    );
                 }
                 if let Some(first) = p.first() {
                     let mut bad = p.clone();
-                    bad[0] = { let mut x = *first; x[0] ^= 1; x };
+                    bad[0] = {
+                        let mut x = *first;
+                        x[0] ^= 1;
+                        x
+                    };
                     assert_ne!(root_from_path(leaf, i, n, &bad), Some(root));
                     assert_eq!(root_from_path(leaf, i, n, &p[1..]), None);
                 }

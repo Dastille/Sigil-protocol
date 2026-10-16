@@ -74,8 +74,13 @@ pub trait Authenticator {
     /// Create a non-discoverable credential with hmac-secret enabled; returns its id.
     fn make_credential(&mut self, rp_id: &str, uv: bool) -> Result<Vec<u8>>;
     /// Evaluate hmac-secret for `cred_id` with the 32-byte CTAP `salt`.
-    fn hmac_secret(&mut self, rp_id: &str, cred_id: &[u8], salt: &[u8; 32], uv: bool)
-        -> Result<PrfEval>;
+    fn hmac_secret(
+        &mut self,
+        rp_id: &str,
+        cred_id: &[u8],
+        salt: &[u8; 32],
+        uv: bool,
+    ) -> Result<PrfEval>;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,17 +221,21 @@ impl Wrapped {
         let mut i = HEADER_LEN;
         let body_nonce: [u8; 12] = body.get(i..i + 12).ok_or_else(bad)?.try_into().unwrap();
         i += 12;
-        let ct_len = u32::from_le_bytes(body.get(i..i + 4).ok_or_else(bad)?.try_into().unwrap())
-            as usize;
+        let ct_len =
+            u32::from_le_bytes(body.get(i..i + 4).ok_or_else(bad)?.try_into().unwrap()) as usize;
         i += 4;
-        let body_ct = body.get(i..i.checked_add(ct_len).ok_or_else(bad)?).ok_or_else(bad)?.to_vec();
+        let body_ct = body
+            .get(i..i.checked_add(ct_len).ok_or_else(bad)?)
+            .ok_or_else(bad)?
+            .to_vec();
         i += ct_len;
         let mut slots = Vec::new();
         let mut unknown_slots = Vec::new();
         for _ in 0..nslots {
             let kind = *body.get(i).ok_or_else(bad)?;
-            let len = u16::from_le_bytes(body.get(i + 1..i + 3).ok_or_else(bad)?.try_into().unwrap())
-                as usize;
+            let len =
+                u16::from_le_bytes(body.get(i + 1..i + 3).ok_or_else(bad)?.try_into().unwrap())
+                    as usize;
             let s = body.get(i + 3..i + 3 + len).ok_or_else(bad)?;
             i += 3 + len;
             if kind != SLOT_FIDO2_PRF {
@@ -240,7 +249,8 @@ impl Wrapped {
             let rp_id = String::from_utf8(s.get(j..j + rp_len).ok_or_else(bad)?.to_vec())
                 .map_err(|_| bad())?;
             j += rp_len;
-            let cl = u16::from_le_bytes(s.get(j..j + 2).ok_or_else(bad)?.try_into().unwrap()) as usize;
+            let cl =
+                u16::from_le_bytes(s.get(j..j + 2).ok_or_else(bad)?.try_into().unwrap()) as usize;
             j += 2;
             let cred_id = s.get(j..j + cl).ok_or_else(bad)?.to_vec();
             j += cl;
@@ -287,7 +297,9 @@ impl Wrapped {
         eprintln!("passkey: registering a new credential — touch your authenticator");
         let cred_id = auth.make_credential(rp_id, uv)?;
         if cred_id.is_empty() || cred_id.len() > u16::MAX as usize {
-            return Err(Error::Msg("authenticator returned an unusable credential id".into()));
+            return Err(Error::Msg(
+                "authenticator returned an unusable credential id".into(),
+            ));
         }
         let prf_input = rand::<32>()?;
         eprintln!("passkey: deriving the unlock key — touch your authenticator again");
@@ -375,7 +387,9 @@ impl Wrapped {
         let id = parse_identity(&inner)?;
         let p = id.public();
         if p.x25519_pk != self.public.x25519_pk || p.ed25519_pk != self.public.ed25519_pk {
-            return Err(Error::Msg("passkey identity public keys do not match its contents".into()));
+            return Err(Error::Msg(
+                "passkey identity public keys do not match its contents".into(),
+            ));
         }
         Ok(id)
     }
@@ -434,7 +448,11 @@ impl Wrapped {
                 "  slot #{n}: FIDO2 hmac-secret/PRF  rp {}  cred {}…  {}\n",
                 sl.rp_id,
                 &cid[..cid.len().min(16)],
-                if sl.uv { "PIN/UV required" } else { "touch only" }
+                if sl.uv {
+                    "PIN/UV required"
+                } else {
+                    "touch only"
+                }
             ));
         }
         for (kind, _) in &self.unknown_slots {
@@ -547,7 +565,11 @@ impl Authenticator for SoftAuthenticator {
             .iter()
             .find(|c| c.id[..] == *cred_id && c.rp_hash == rp_hash)
             .ok_or_else(|| Error::Msg("no matching credential on this authenticator".into()))?;
-        let key = if uv { &c.cred_random_uv } else { &c.cred_random_no_uv };
+        let key = if uv {
+            &c.cred_random_uv
+        } else {
+            &c.cred_random_no_uv
+        };
         let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("hmac key");
         mac.update(salt);
         let mut out = Zeroizing::new([0u8; 32]);
@@ -678,7 +700,9 @@ pub mod ctap {
                     });
                 }
             }
-            Err(Error::Msg("security key returned no hmac-secret output".into()))
+            Err(Error::Msg(
+                "security key returned no hmac-secret output".into(),
+            ))
         }
     }
 }
@@ -741,7 +765,10 @@ mod tests {
         let base = Identity::generate().unwrap();
         let raw = Identity::from_raw(base.x25519_sk, base.ed25519_seed, Some([3u8; 20]));
         let w2 = Wrapped::protect(&raw, &mut auth, "example.org", false).unwrap();
-        let got2 = Wrapped::parse(&w2.to_bytes()).unwrap().unlock(&mut auth).unwrap();
+        let got2 = Wrapped::parse(&w2.to_bytes())
+            .unwrap()
+            .unlock(&mut auth)
+            .unwrap();
         assert_eq!(got2.pgp_fpr, Some([3u8; 20]));
         assert_eq!(got2.ed25519_seed, base.ed25519_seed);
     }
@@ -781,7 +808,8 @@ mod tests {
         let mut backup = SoftAuthenticator::new();
         let id = Identity::generate().unwrap();
         let mut w = Wrapped::protect(&id, &mut primary, DEFAULT_RP_ID, true).unwrap();
-        w.add_slot(&mut primary, &mut backup, DEFAULT_RP_ID, false).unwrap();
+        w.add_slot(&mut primary, &mut backup, DEFAULT_RP_ID, false)
+            .unwrap();
         let w = Wrapped::parse(&w.to_bytes()).unwrap();
         assert_eq!(w.slots.len(), 2);
         assert_eq!(w.unlock(&mut backup).unwrap().master, id.master);
@@ -812,7 +840,10 @@ mod tests {
         let salt = [1u8; 16];
         let sgto = crate::keys::build_sgto(&cek, &[pk], None, &salt).unwrap();
         let loaded = Identity::load_with(&path, &mut auth).unwrap();
-        assert_eq!(crate::keys::unwrap_cek(&sgto, &[loaded], None, &salt).unwrap(), cek);
+        assert_eq!(
+            crate::keys::unwrap_cek(&sgto, &[loaded], None, &salt).unwrap(),
+            cek
+        );
         // Plain v1 files still load the old way, untouched by the wrapper code.
         let plain = dir.join("plain.sgk");
         id.write(&plain).unwrap();

@@ -80,7 +80,11 @@ pub fn unfold(data: &[u8], salt: &[u8]) -> Vec<u8> {
     }
     for i in 0..out.len() {
         let mut b = out[i] ^ phi[i];
-        b = if b == 0 { 0 } else { gf::mul(b, gf::inv(prime)) };
+        b = if b == 0 {
+            0
+        } else {
+            gf::mul(b, gf::inv(prime))
+        };
         out[i] = b ^ pi[i];
     }
     out

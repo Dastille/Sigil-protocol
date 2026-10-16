@@ -12,7 +12,11 @@ fn sigil(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(o: Output) -> String {
@@ -43,48 +47,138 @@ fn encrypt_to_constellation_cli() {
     std::fs::write(dir.join("docs/sub/big.bin"), &big).unwrap();
     std::fs::write(dir.join("extra.txt"), b"extra").unwrap();
 
-    ok(sigil(&dir, &["keygen", "-o", "alice.sgk", "--pub-out", "alice.pub"]));
-    ok(sigil(&dir, &["keygen", "-o", "eve.sgk", "--pub-out", "eve.pub"]));
+    ok(sigil(
+        &dir,
+        &["keygen", "-o", "alice.sgk", "--pub-out", "alice.pub"],
+    ));
+    ok(sigil(
+        &dir,
+        &["keygen", "-o", "eve.sgk", "--pub-out", "eve.pub"],
+    ));
 
     let out = ok(sigil(
         &dir,
-        &["constellation", "add", "Sky", "docs", "--to", "alice.pub", "--chunk", "131072"],
+        &[
+            "constellation",
+            "add",
+            "Sky",
+            "docs",
+            "--to",
+            "alice.pub",
+            "--chunk",
+            "131072",
+        ],
     ));
-    assert!(out.contains("encrypt-to 1 recipient") && out.contains("stars=2"), "{out}");
+    assert!(
+        out.contains("encrypt-to 1 recipient") && out.contains("stars=2"),
+        "{out}"
+    );
 
     // Adding again needs the identity to read the card, and --to to keep it encrypt-to.
-    let e = fails(sigil(&dir, &["constellation", "add", "Sky", "extra.txt", "--to", "alice.pub"]));
+    let e = fails(sigil(
+        &dir,
+        &[
+            "constellation",
+            "add",
+            "Sky",
+            "extra.txt",
+            "--to",
+            "alice.pub",
+        ],
+    ));
     assert!(e.contains("--identity"), "{e}");
-    let e = fails(sigil(&dir, &["constellation", "add", "Sky", "extra.txt", "--identity", "alice.sgk"]));
+    let e = fails(sigil(
+        &dir,
+        &[
+            "constellation",
+            "add",
+            "Sky",
+            "extra.txt",
+            "--identity",
+            "alice.sgk",
+        ],
+    ));
     assert!(e.contains("encrypt-to") && e.contains("--to"), "{e}");
     ok(sigil(
         &dir,
-        &["constellation", "add", "Sky", "extra.txt", "--to", "alice.pub", "--identity", "alice.sgk"],
+        &[
+            "constellation",
+            "add",
+            "Sky",
+            "extra.txt",
+            "--to",
+            "alice.pub",
+            "--identity",
+            "alice.sgk",
+        ],
     ));
 
     let e = fails(sigil(&dir, &["scry", "Sky"]));
     assert!(e.contains("--identity"), "{e}");
-    let s = ok(sigil(&dir, &["constellation", "scry", "Sky", "--identity", "alice.sgk"]));
+    let s = ok(sigil(
+        &dir,
+        &["constellation", "scry", "Sky", "--identity", "alice.sgk"],
+    ));
     assert!(s.contains("stars=3") && !s.contains("MISSING"), "{s}");
 
-    fails(sigil(&dir, &["de-scribe", "-o", "nope", "Sky", "--identity", "eve.sgk"]));
-    ok(sigil(&dir, &["de-scribe", "-o", "out", "Sky", "--identity", "alice.sgk"]));
+    fails(sigil(
+        &dir,
+        &["de-scribe", "-o", "nope", "Sky", "--identity", "eve.sgk"],
+    ));
+    ok(sigil(
+        &dir,
+        &["de-scribe", "-o", "out", "Sky", "--identity", "alice.sgk"],
+    ));
     assert_eq!(std::fs::read(dir.join("out/a.txt")).unwrap(), b"alpha");
     assert_eq!(std::fs::read(dir.join("out/sub/big.bin")).unwrap(), big);
     assert_eq!(std::fs::read(dir.join("out/extra.txt")).unwrap(), b"extra");
 
     // Atlas bag: locked card needs the identity to bag; the bag opens with it.
-    fails(sigil(&dir, &["constellation", "atlas", "Sky", "-o", "bag.sga"]));
-    ok(sigil(&dir, &["constellation", "atlas", "Sky", "-o", "bag.sga", "--identity", "alice.sgk"]));
+    fails(sigil(
+        &dir,
+        &["constellation", "atlas", "Sky", "-o", "bag.sga"],
+    ));
+    ok(sigil(
+        &dir,
+        &[
+            "constellation",
+            "atlas",
+            "Sky",
+            "-o",
+            "bag.sga",
+            "--identity",
+            "alice.sgk",
+        ],
+    ));
     fails(sigil(&dir, &["de-scribe", "-o", "bag-none", "bag.sga"]));
-    ok(sigil(&dir, &["de-scribe", "-o", "bag-out", "bag.sga", "--identity", "alice.sgk"]));
+    ok(sigil(
+        &dir,
+        &[
+            "de-scribe",
+            "-o",
+            "bag-out",
+            "bag.sga",
+            "--identity",
+            "alice.sgk",
+        ],
+    ));
     assert_eq!(std::fs::read(dir.join("bag-out/sub/big.bin")).unwrap(), big);
 
     // A named star gone: still refused.
     // New constellations are tidy containers: `Sky` resolves to `Sky.sigil/`, stars sharded by fingerprint.
     assert!(dir.join("Sky.sigil/CONTAINER").is_file());
-    std::fs::remove_file(sigil::container::star_path(&dir.join("Sky.sigil"), &sigil::sha256(b"extra"))).unwrap();
-    let e = fails(sigil(&dir, &["de-scribe", "-o", "out2", "Sky", "--identity", "alice.sgk"]));
-    assert!(e.contains("missing a star") && e.contains("extra.txt"), "{e}");
+    std::fs::remove_file(sigil::container::star_path(
+        &dir.join("Sky.sigil"),
+        &sigil::sha256(b"extra"),
+    ))
+    .unwrap();
+    let e = fails(sigil(
+        &dir,
+        &["de-scribe", "-o", "out2", "Sky", "--identity", "alice.sgk"],
+    ));
+    assert!(
+        e.contains("missing a star") && e.contains("extra.txt"),
+        "{e}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

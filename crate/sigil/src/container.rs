@@ -75,7 +75,9 @@ impl Manifest {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             match k {
                 "sigil-container" => {
                     version = Some(
@@ -91,13 +93,19 @@ impl Manifest {
                 }
             }
         }
-        let version = version.ok_or_else(|| err("not a sigil CONTAINER (missing sigil-container=)"))?;
+        let version =
+            version.ok_or_else(|| err("not a sigil CONTAINER (missing sigil-container=)"))?;
         if version > CONTAINER_VERSION {
             return Err(err(format!(
                 "container format {version} is newer than this sigil understands ({CONTAINER_VERSION}); upgrade sigil"
             )));
         }
-        Ok(Manifest { version, kind, name, extra })
+        Ok(Manifest {
+            version,
+            kind,
+            name,
+            extra,
+        })
     }
 }
 
@@ -121,7 +129,9 @@ pub fn with_suffix(path: &Path) -> PathBuf {
 
 /// Strip `.sigil` from a name.
 pub fn strip_suffix(name: &str) -> &str {
-    name.strip_suffix(CONTAINER_SUFFIX).filter(|s| !s.is_empty()).unwrap_or(name)
+    name.strip_suffix(CONTAINER_SUFFIX)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(name)
 }
 
 /// A directory holding a `CONTAINER` manifest.
@@ -264,15 +274,26 @@ impl TidyReport {
             if self.dry_run { "dry run:" } else { "done:" },
             self.moved.len(),
             if self.moved.len() == 1 { "" } else { "s" },
-            if self.dry_run { "" } else { ", fingerprints verified" },
-            if self.list_checked { ", list checked" } else { "" },
+            if self.dry_run {
+                ""
+            } else {
+                ", fingerprints verified"
+            },
+            if self.list_checked {
+                ", list checked"
+            } else {
+                ""
+            },
         ));
         s
     }
 }
 
 fn file_name_str(p: &Path) -> String {
-    p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn is_version_seal_name(n: &str) -> bool {
@@ -321,7 +342,10 @@ fn plan_vault(sgv: &Path) -> Result<Plan> {
         .strip_suffix(crate::vault::VAULT_SUFFIX)
         .ok_or_else(|| err("vault chart dir must end with .sgv"))?
         .to_string();
-    let to = sgv.parent().unwrap_or(Path::new(".")).join(format!("{stem}{CONTAINER_SUFFIX}"));
+    let to = sgv
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{stem}{CONTAINER_SUFFIX}"));
     let mut rels = Vec::new();
     walk_rel(sgv, sgv, &mut rels)?;
     let mut items = Vec::new();
@@ -368,7 +392,10 @@ fn plan_constellation(dir: &Path) -> Result<Plan> {
             continue;
         }
         let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
-        if p == card || (ext == "sg1" && is_constellation_mark(&p)) || (ext == "sga" && is_atlas_file(&p)) {
+        if p == card
+            || (ext == "sg1" && is_constellation_mark(&p))
+            || (ext == "sga" && is_atlas_file(&p))
+        {
             items.push((p.clone(), PathBuf::from(&n)));
             continue;
         }
@@ -440,7 +467,12 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
             let legacy = crate::vault::legacy_vault_dir_for(&path);
             if !legacy.join(crate::vault::CHART_NAME).is_file() {
                 read_manifest(&cand)?;
-                return Ok(TidyReport { to: cand, already: true, dry_run: opts.dry_run, ..Default::default() });
+                return Ok(TidyReport {
+                    to: cand,
+                    already: true,
+                    dry_run: opts.dry_run,
+                    ..Default::default()
+                });
             }
             return Err(err(format!(
                 "both {} and {} exist; refusing to merge (move one aside)",
@@ -454,7 +486,11 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
         Some(path.clone())
     } else {
         let l = crate::vault::legacy_vault_dir_for(&path);
-        if l.join(crate::vault::CHART_NAME).is_file() { Some(l) } else { None }
+        if l.join(crate::vault::CHART_NAME).is_file() {
+            Some(l)
+        } else {
+            None
+        }
     };
     let plan = if let Some(sgv) = sgv.filter(|s| s.join(crate::vault::CHART_NAME).is_file()) {
         plan_vault(&sgv)?
@@ -467,13 +503,20 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
         )));
     };
     if plan.to.exists() {
-        return Err(err(format!("{} already exists; refusing to overwrite", plan.to.display())));
+        return Err(err(format!(
+            "{} already exists; refusing to overwrite",
+            plan.to.display()
+        )));
     }
     let mut report = TidyReport {
         kind: plan.kind.into(),
         from: plan.from.clone(),
         to: plan.to.clone(),
-        moved: plan.items.iter().map(|(s, r)| (s.clone(), plan.to.join(r))).collect(),
+        moved: plan
+            .items
+            .iter()
+            .map(|(s, r)| (s.clone(), plan.to.join(r)))
+            .collect(),
         left: plan.left.clone(),
         dry_run: opts.dry_run,
         ..Default::default()
@@ -486,7 +529,8 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
     let staging = parent.join(format!(".tidy-{}", file_name_str(&plan.to)));
     if staging.exists() {
         // Leftover from an interrupted tidy: the original was never touched, start over.
-        fs::remove_dir_all(&staging).map_err(|e| err(format!("clear stale {}: {e}", staging.display())))?;
+        fs::remove_dir_all(&staging)
+            .map_err(|e| err(format!("clear stale {}: {e}", staging.display())))?;
     }
     let result = (|| -> Result<bool> {
         fs::create_dir_all(&staging).map_err(|e| err(e.to_string()))?;
@@ -535,7 +579,10 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
                 let p = crate::vault::seal_path_in(&staging, &v.seal);
                 let old = crate::vault::seal_path_in(&plan.from, &v.seal);
                 if old.is_file() && !p.is_file() {
-                    return Err(err(format!("version v{} missing in container; refusing", v.n)));
+                    return Err(err(format!(
+                        "version v{} missing in container; refusing",
+                        v.n
+                    )));
                 }
             }
             Ok(true)

@@ -17,7 +17,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -28,7 +32,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -40,8 +48,13 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 fn age(p: &Path, secs: u64) {
-    let f = fs::OpenOptions::new().write(true).open(p).or_else(|_| fs::File::open(p)).unwrap();
-    f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(p)
+        .or_else(|_| fs::File::open(p))
+        .unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(secs))
+        .unwrap();
 }
 
 fn star(c: &Path, bytes: &[u8]) -> PathBuf {
@@ -55,7 +68,10 @@ fn sample_sky(dir: &Path) -> PathBuf {
     fs::write(dir.join("in/b.txt"), b"beta").unwrap();
     fs::write(dir.join("in/dir/c.txt"), b"gamma").unwrap();
     fs::write(dir.join("in/dir/d.txt"), b"alpha").unwrap();
-    ok(dir, &["constellation", "add", "Sky", "in", "--mode", "glyph"]);
+    ok(
+        dir,
+        &["constellation", "add", "Sky", "in", "--mode", "glyph"],
+    );
     dir.join("Sky.sigil")
 }
 
@@ -65,13 +81,22 @@ fn constellation_remove_frees_star_but_keeps_shared_bytes() {
     let c = sample_sky(&dir);
     assert!(star(&c, b"beta").is_file());
     // dry run changes nothing
-    let o = ok(&dir, &["constellation", "remove", "Sky", "b.txt", "--dry-run"]);
-    assert!(o.contains("would remove b.txt") && o.contains("would delete"), "{o}");
+    let o = ok(
+        &dir,
+        &["constellation", "remove", "Sky", "b.txt", "--dry-run"],
+    );
+    assert!(
+        o.contains("would remove b.txt") && o.contains("would delete"),
+        "{o}"
+    );
     assert!(star(&c, b"beta").is_file());
     // real remove
     let o = ok(&dir, &["constellation", "remove", "Sky", "b.txt"]);
     assert!(o.contains("1 star file(s) freed"), "{o}");
-    assert!(!star(&c, b"beta").exists() && !star(&c, b"beta").parent().unwrap().exists(), "empty shard folder goes too");
+    assert!(
+        !star(&c, b"beta").exists() && !star(&c, b"beta").parent().unwrap().exists(),
+        "empty shard folder goes too"
+    );
     let s = ok(&dir, &["constellation", "scry", "Sky"]);
     assert!(!s.contains("b.txt") && !s.contains("MISSING"), "{s}");
     // a.txt and dir/d.txt share bytes: removing one keeps the star
@@ -86,7 +111,9 @@ fn constellation_remove_frees_star_but_keeps_shared_bytes() {
     ok(&dir, &["de-scribe", "-o", "out", "Sky.sigil"]);
     assert_eq!(fs::read(dir.join("out/dir/c.txt")).unwrap(), b"gamma");
     // unknown name and last name refuse
-    assert!(fails(&dir, &["constellation", "remove", "Sky", "nope.txt"]).contains("not on the list"));
+    assert!(
+        fails(&dir, &["constellation", "remove", "Sky", "nope.txt"]).contains("not on the list")
+    );
     assert!(fails(&dir, &["constellation", "remove", "Sky", "dir/c.txt"]).contains("empty"));
     let _ = fs::remove_dir_all(&dir);
 }
@@ -95,12 +122,21 @@ fn constellation_remove_frees_star_but_keeps_shared_bytes() {
 fn constellation_remove_folder_prefix_and_keep_stars_then_gc() {
     let dir = tmp("sky-prefix");
     let c = sample_sky(&dir);
-    let o = ok(&dir, &["constellation", "remove", "Sky", "dir/", "--keep-stars"]);
-    assert!(o.contains("2 name(s) off the list") && o.contains("0 star file(s) freed"), "{o}");
+    let o = ok(
+        &dir,
+        &["constellation", "remove", "Sky", "dir/", "--keep-stars"],
+    );
+    assert!(
+        o.contains("2 name(s) off the list") && o.contains("0 star file(s) freed"),
+        "{o}"
+    );
     assert!(star(&c, b"gamma").is_file(), "--keep-stars leaves the star");
     // alpha is still on the list via a.txt; gamma is now an orphan.
     let o = ok(&dir, &["gc", "Sky"]);
-    assert!(o.contains("orphan star") && o.contains("dry run: nothing was changed"), "{o}");
+    assert!(
+        o.contains("orphan star") && o.contains("dry run: nothing was changed"),
+        "{o}"
+    );
     assert!(star(&c, b"gamma").is_file());
     let o = ok(&dir, &["gc", "Sky.sigil", "--apply"]);
     assert!(o.contains("reclaimed"), "{o}");
@@ -115,20 +151,74 @@ fn constellation_remove_passphrase_and_encrypt_to_cards() {
     let dir = tmp("sky-keys");
     fs::write(dir.join("a.txt"), b"alpha").unwrap();
     fs::write(dir.join("b.txt"), b"beta").unwrap();
-    ok(&dir, &["constellation", "add", "W", "a.txt", "--pass", "pw"]);
-    ok(&dir, &["constellation", "add", "W", "b.txt", "--pass", "pw"]);
+    ok(
+        &dir,
+        &["constellation", "add", "W", "a.txt", "--pass", "pw"],
+    );
+    ok(
+        &dir,
+        &["constellation", "add", "W", "b.txt", "--pass", "pw"],
+    );
     // locked card: gc refuses to guess, remove needs the passphrase
     assert!(fails(&dir, &["gc", "W", "--apply"]).contains("will not guess"));
     fails(&dir, &["constellation", "remove", "W", "b.txt"]);
-    ok(&dir, &["constellation", "remove", "W", "b.txt", "--pass", "pw"]);
+    ok(
+        &dir,
+        &["constellation", "remove", "W", "b.txt", "--pass", "pw"],
+    );
     assert!(!star(&dir.join("W.sigil"), b"beta").exists());
     assert!(ok(&dir, &["gc", "W", "--pass", "pw"]).contains("nothing to reclaim"));
 
     ok(&dir, &["keygen", "-o", "alice.sgk"]);
-    ok(&dir, &["constellation", "add", "E", "a.txt", "--to", "alice.sgk.pub"]);
-    ok(&dir, &["constellation", "add", "E", "b.txt", "--to", "alice.sgk.pub", "--identity", "alice.sgk"]);
-    assert!(fails(&dir, &["constellation", "remove", "E", "b.txt", "--identity", "alice.sgk"]).contains("encrypt-to"));
-    ok(&dir, &["constellation", "remove", "E", "b.txt", "--to", "alice.sgk.pub", "--identity", "alice.sgk"]);
+    ok(
+        &dir,
+        &[
+            "constellation",
+            "add",
+            "E",
+            "a.txt",
+            "--to",
+            "alice.sgk.pub",
+        ],
+    );
+    ok(
+        &dir,
+        &[
+            "constellation",
+            "add",
+            "E",
+            "b.txt",
+            "--to",
+            "alice.sgk.pub",
+            "--identity",
+            "alice.sgk",
+        ],
+    );
+    assert!(fails(
+        &dir,
+        &[
+            "constellation",
+            "remove",
+            "E",
+            "b.txt",
+            "--identity",
+            "alice.sgk"
+        ]
+    )
+    .contains("encrypt-to"));
+    ok(
+        &dir,
+        &[
+            "constellation",
+            "remove",
+            "E",
+            "b.txt",
+            "--to",
+            "alice.sgk.pub",
+            "--identity",
+            "alice.sgk",
+        ],
+    );
     assert!(!star(&dir.join("E.sigil"), b"beta").exists());
     assert!(star(&dir.join("E.sigil"), b"alpha").is_file());
     let o = ok(&dir, &["gc", "E", "--identity", "alice.sgk"]);
@@ -157,10 +247,18 @@ fn gc_constellation_temp_duplicates_cold_and_unknown_files() {
     fs::copy(&oz, star(&c, b"zeta")).unwrap();
 
     let before = ok(&dir, &["gc", "Sky"]);
-    assert!(before.contains("orphan star") && before.contains("duplicate star") && before.contains("temp file"), "{before}");
+    assert!(
+        before.contains("orphan star")
+            && before.contains("duplicate star")
+            && before.contains("temp file"),
+        "{before}"
+    );
     assert!(before.contains("left alone: notes.md"), "{before}");
     assert!(before.contains("recent temp file kept"), "{before}");
-    assert!(star(&c, b"zeta").is_file() && c.join("stars/ab.part").is_file(), "report-only changed nothing");
+    assert!(
+        star(&c, b"zeta").is_file() && c.join("stars/ab.part").is_file(),
+        "report-only changed nothing"
+    );
     // explicit --dry-run behaves the same
     ok(&dir, &["gc", "Sky", "--dry-run"]);
     assert!(star(&c, b"zeta").is_file());
@@ -193,11 +291,17 @@ fn gc_flat_folder_is_report_only_but_remove_works() {
     fs::write(dir.join("g.txt"), b"gee").unwrap();
     ok(&dir, &["constellation", "add", "Flat", "f.txt"]);
     ok(&dir, &["constellation", "add", "Flat", "g.txt"]);
-    ok(&dir, &["constellation", "remove", "Flat", "g.txt", "--keep-stars"]);
+    ok(
+        &dir,
+        &["constellation", "remove", "Flat", "g.txt", "--keep-stars"],
+    );
     assert!(dir.join("Flat/g.txt.sg1").is_file());
     let o = ok(&dir, &["gc", "Flat", "--apply"]);
     assert!(o.contains("orphan star") && o.contains("tidy"), "{o}");
-    assert!(dir.join("Flat/g.txt.sg1").is_file(), "old flat folders are never reclaimed");
+    assert!(
+        dir.join("Flat/g.txt.sg1").is_file(),
+        "old flat folders are never reclaimed"
+    );
     // real remove on a flat folder deletes the star it freed
     fs::write(dir.join("h.txt"), b"aitch").unwrap();
     ok(&dir, &["constellation", "add", "Flat", "h.txt"]);
@@ -220,29 +324,54 @@ fn vault_remove_policy_and_cold_here() {
     assert!(fails(&dir, &["vault", "remove", "n.txt", "--version", "4"]).contains("tip"));
     assert!(fails(&dir, &["vault", "remove", "n.txt", "--version", "9"]).contains("not in CHART"));
     // full retention: plain explicit remove is allowed
-    let o = ok(&dir, &["vault", "remove", "n.txt", "--version", "2", "--dry-run"]);
-    assert!(o.contains("dry run") && c.join("versions/v2.sg1").is_file(), "{o}");
+    let o = ok(
+        &dir,
+        &["vault", "remove", "n.txt", "--version", "2", "--dry-run"],
+    );
+    assert!(
+        o.contains("dry run") && c.join("versions/v2.sg1").is_file(),
+        "{o}"
+    );
     ok(&dir, &["vault", "remove", "n.txt", "--version", "2"]);
     assert!(!c.join("versions/v2.sg1").exists());
     assert!(!ok(&dir, &["vault", "versions", "n.txt"]).contains("v2"));
     // light retention needs a cold kit or force-drop
-    ok(&dir, &["vault", "retention", "n.txt", "--light", "--keep", "3"]);
+    ok(
+        &dir,
+        &["vault", "retention", "n.txt", "--light", "--keep", "3"],
+    );
     let e = fails(&dir, &["vault", "remove", "n.txt", "--version", "1"]);
     assert!(e.contains("--cold"), "{e}");
     assert!(c.join("versions/v1.sg1").is_file());
-    ok(&dir, &["vault", "remove", "n.txt", "--version", "1", "--cold-here"]);
+    ok(
+        &dir,
+        &["vault", "remove", "n.txt", "--version", "1", "--cold-here"],
+    );
     assert!(!c.join("versions/v1.sg1").exists());
-    assert!(c.join("cold/v1").is_dir(), "seal archived into the container's cold/");
+    assert!(
+        c.join("cold/v1").is_dir(),
+        "seal archived into the container's cold/"
+    );
     // tip restores, gc leaves cold alone
     ok(&dir, &["vault", "restore", "n.txt", "--force"]);
     assert_eq!(fs::read(dir.join("n.txt")).unwrap(), b"four");
     let o = ok(&dir, &["gc", "n.txt", "--apply"]);
-    assert!(o.contains("nothing to reclaim") && o.contains("cold/"), "{o}");
+    assert!(
+        o.contains("nothing to reclaim") && o.contains("cold/"),
+        "{o}"
+    );
     assert!(c.join("cold/v1").is_dir());
     // force-drop
-    ok(&dir, &["vault", "remove", "n.txt", "--version", "3", "--force-drop"]);
+    ok(
+        &dir,
+        &["vault", "remove", "n.txt", "--version", "3", "--force-drop"],
+    );
     // only the tip remains: nothing more to remove
-    assert!(fails(&dir, &["vault", "remove", "n.txt", "--version", "4", "--force-drop"]).contains("tip"));
+    assert!(fails(
+        &dir,
+        &["vault", "remove", "n.txt", "--version", "4", "--force-drop"]
+    )
+    .contains("tip"));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -256,7 +385,10 @@ fn vault_prune_cold_here_and_old_layout_remove() {
         ok(&dir, &["vault", "commit", "p.txt"]);
     }
     let c = dir.join("p.txt.sigil");
-    ok(&dir, &["vault", "prune", "p.txt", "--keep", "2", "--cold-here"]);
+    ok(
+        &dir,
+        &["vault", "prune", "p.txt", "--keep", "2", "--cold-here"],
+    );
     assert!(c.join("cold/v1").is_dir() && !c.join("versions/v1.sg1").exists());
     // old .sgv layout: remove works, --cold-here refuses
     fs::write(dir.join("q.txt"), b"1").unwrap();
@@ -264,7 +396,23 @@ fn vault_prune_cold_here_and_old_layout_remove() {
     fs::write(dir.join("q.txt"), b"2").unwrap();
     ok(&dir, &["vault", "commit", "q.txt"]);
     ok(&dir, &["tidy", "q.txt"]); // container ...
-    assert!(fails(&dir, &["vault", "remove", "q.txt", "--version", "1", "--cold", "x", "--cold-here"]).len() > 0);
+    assert!(
+        fails(
+            &dir,
+            &[
+                "vault",
+                "remove",
+                "q.txt",
+                "--version",
+                "1",
+                "--cold",
+                "x",
+                "--cold-here"
+            ]
+        )
+        .len()
+            > 0
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -286,15 +434,31 @@ fn gc_vault_orphans_temp_and_staging() {
     fs::write(c.join("stray.bin"), b"mine").unwrap();
 
     let o = ok(&dir, &["gc", "n.txt"]);
-    assert!(o.contains("orphan version") && o.contains("v9.sg1") && o.contains("temp file") && o.contains("stale staging"), "{o}");
-    assert!(o.contains("kept 2 referenced") && o.contains("left alone: stray.bin"), "{o}");
+    assert!(
+        o.contains("orphan version")
+            && o.contains("v9.sg1")
+            && o.contains("temp file")
+            && o.contains("stale staging"),
+        "{o}"
+    );
+    assert!(
+        o.contains("kept 2 referenced") && o.contains("left alone: stray.bin"),
+        "{o}"
+    );
     assert!(c.join("versions/v9.sg1").is_file());
     let o = ok(&dir, &["gc", "n.txt.sigil", "--apply"]);
     assert!(o.contains("reclaimed 3 of 3"), "{o}");
     assert!(!c.join("versions/v9.sg1").exists() && !c.join("versions/v3.sg1.part").exists());
     assert!(!dir.join(".tidy-n.txt.sigil").exists());
-    assert!(c.join("versions/v1.sg1").is_file() && c.join("versions/v2.sg1").is_file() && c.join("stray.bin").is_file());
-    ok(&dir, &["vault", "restore", "n.txt", "--version", "1", "--force"]);
+    assert!(
+        c.join("versions/v1.sg1").is_file()
+            && c.join("versions/v2.sg1").is_file()
+            && c.join("stray.bin").is_file()
+    );
+    ok(
+        &dir,
+        &["vault", "restore", "n.txt", "--version", "1", "--force"],
+    );
     assert_eq!(fs::read(dir.join("n.txt")).unwrap(), b"one");
 
     // gc on something that is neither
@@ -317,7 +481,12 @@ fn gc_old_sgv_layout_vault() {
     fs::remove_dir_all(&c).unwrap();
     fs::copy(old.join("v1.sg1"), old.join("v5.sg1")).unwrap();
     let o = ok(&dir, &["gc", "o.txt.sgv", "--apply"]);
-    assert!(o.contains("orphan version") && o.contains("old layout"), "{o}");
-    assert!(old.join("v1.sg1").is_file() && old.join("CHART").is_file() && !old.join("v5.sg1").exists());
+    assert!(
+        o.contains("orphan version") && o.contains("old layout"),
+        "{o}"
+    );
+    assert!(
+        old.join("v1.sg1").is_file() && old.join("CHART").is_file() && !old.join("v5.sg1").exists()
+    );
     let _ = fs::remove_dir_all(&dir);
 }

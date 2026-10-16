@@ -44,31 +44,42 @@ pub fn choose_overture(stars: u32, orig: u64, chunk: u32, overture_mb: u32) -> u
 
 fn read_head<R: Read>(r: &mut R) -> Result<WorkHead> {
     let mut mag = [0u8; 4];
-    r.read_exact(&mut mag).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    r.read_exact(&mut mag)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     if mag != WORK_MAGIC {
         return Err(crate::Error::Msg("not a work pack (SGWK)".into()));
     }
     let mut one = [0u8; 1];
-    r.read_exact(&mut one).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    r.read_exact(&mut one)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     if one[0] != 1 && one[0] != 2 {
-        return Err(crate::Error::Msg(format!("unknown work version {}", one[0])));
+        return Err(crate::Error::Msg(format!(
+            "unknown work version {}",
+            one[0]
+        )));
     }
     let ver = one[0];
     let mut buf4 = [0u8; 4];
-    r.read_exact(&mut buf4).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    r.read_exact(&mut buf4)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let chunk_size = u32::from_le_bytes(buf4);
     let mut buf8 = [0u8; 8];
-    r.read_exact(&mut buf8).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    r.read_exact(&mut buf8)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig_total = u64::from_le_bytes(buf8);
-    r.read_exact(&mut one).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    r.read_exact(&mut one)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut name = vec![0u8; one[0] as usize];
     if !name.is_empty() {
-        r.read_exact(&mut name).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        r.read_exact(&mut name)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
     }
-    r.read_exact(&mut buf4).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    r.read_exact(&mut buf4)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let stars = u32::from_le_bytes(buf4);
     let overture = if ver == 2 {
-        r.read_exact(&mut buf4).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        r.read_exact(&mut buf4)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         u32::from_le_bytes(buf4).min(stars).max(1)
     } else {
         choose_overture(stars, orig_total, chunk_size, DEFAULT_OVERTURE_MB)
@@ -99,7 +110,18 @@ pub fn inscribe_path(
     cdc: Option<CdcProfile>,
 ) -> Result<(u64, u32, bool)> {
     inscribe_path_to(
-        input, output, mode, pass, covenant, geas, chunk, shards, piece_bytes, overture_mb, cdc, &[],
+        input,
+        output,
+        mode,
+        pass,
+        covenant,
+        geas,
+        chunk,
+        shards,
+        piece_bytes,
+        overture_mb,
+        cdc,
+        &[],
     )
 }
 
@@ -120,7 +142,11 @@ pub fn inscribe_path_to(
 ) -> Result<(u64, u32, bool)> {
     let meta = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = meta.len();
-    let piece_bytes = if piece_bytes == 0 { DEFAULT_PIECE } else { piece_bytes };
+    let piece_bytes = if piece_bytes == 0 {
+        DEFAULT_PIECE
+    } else {
+        piece_bytes
+    };
     let name = input
         .file_name()
         .and_then(|s| s.to_str())
@@ -133,13 +159,36 @@ pub fn inscribe_path_to(
         // Drop the full buffer; re-read per star below for large files would be better,
         // but we already hold `data` — seal from slices of it.
         return inscribe_ranges(
-            &data, &name, output, mode, pass, covenant, geas, shards, piece_bytes, overture_mb, &r, profile.max as u32, recipients,
+            &data,
+            &name,
+            output,
+            mode,
+            pass,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+            overture_mb,
+            &r,
+            profile.max as u32,
+            recipients,
         );
     } else {
         let chunk = chunk.max(64 * 1024);
         if orig <= chunk as u64 {
             let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let out = seal_kn_to(&data, mode, pass, &name, false, covenant, geas, shards, piece_bytes, recipients)?;
+            let out = seal_kn_to(
+                &data,
+                mode,
+                pass,
+                &name,
+                false,
+                covenant,
+                geas,
+                shards,
+                piece_bytes,
+                recipients,
+            )?;
             std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
             return Ok((orig, 1, false));
         }
@@ -160,41 +209,82 @@ pub fn inscribe_path_to(
     let chunk = chunk.max(64 * 1024);
     let stars = ranges.len() as u32;
     let overture = choose_overture(stars, orig, chunk, overture_mb);
-    let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
-    let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
-    writer.write_all(&WORK_MAGIC).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&[2u8]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&chunk.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&orig.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut reader =
+        BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let mut writer =
+        BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    writer
+        .write_all(&WORK_MAGIC)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&[2u8])
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&chunk.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&orig.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let nb = name.as_bytes();
     let nlen = nb.len().min(255) as u8;
-    writer.write_all(&[nlen]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&nb[..nlen as usize]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&stars.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&overture.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&[nlen])
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&nb[..nlen as usize])
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&stars.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&overture.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut buf = vec![0u8; chunk as usize];
     let mut facets = Vec::new();
     for (i, range) in ranges.iter().enumerate() {
         let n = range.length;
-        reader.read_exact(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        reader
+            .read_exact(&mut buf[..n])
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         let star_name = format!("{name}.{i:04}");
-        let sealed = seal_kn_to(&buf[..n], mode, pass, &star_name, false, covenant, geas, shards, piece_bytes, recipients)?;
+        let sealed = seal_kn_to(
+            &buf[..n],
+            mode,
+            pass,
+            &star_name,
+            false,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+            recipients,
+        )?;
         writer
             .write_all(&(sealed.len() as u64).to_le_bytes())
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        writer.write_all(&sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        writer
+            .write_all(&sealed)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         if let Ok((h, _, _)) = crate::locate_header(&sealed) {
             facets.push(h.digest);
         } else {
             facets.push([0u8; 32]);
         }
     }
-    writer.write_all(b"SGFC").map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&(facets.len() as u32).to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(b"SGFC")
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&(facets.len() as u32).to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     for d in &facets {
-        writer.write_all(d).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        writer
+            .write_all(d)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
     }
-    writer.flush().map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .flush()
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok((orig, stars, true))
 }
 
@@ -215,46 +305,99 @@ fn inscribe_ranges(
 ) -> Result<(u64, u32, bool)> {
     let orig = data.len() as u64;
     if ranges.len() <= 1 {
-        let slice = if ranges.is_empty() { data } else { &data[ranges[0].offset..ranges[0].end()] };
-        let out = seal_kn_to(slice, mode, pass, name, false, covenant, geas, shards, piece_bytes, recipients)?;
+        let slice = if ranges.is_empty() {
+            data
+        } else {
+            &data[ranges[0].offset..ranges[0].end()]
+        };
+        let out = seal_kn_to(
+            slice,
+            mode,
+            pass,
+            name,
+            false,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+            recipients,
+        )?;
         std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
         return Ok((orig, 1, false));
     }
     let stars = ranges.len() as u32;
     let chunk = header_chunk.max(64 * 1024);
     let overture = choose_overture(stars, orig, chunk, overture_mb);
-    let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
-    writer.write_all(&WORK_MAGIC).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&[2u8]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&chunk.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&orig.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut writer =
+        BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    writer
+        .write_all(&WORK_MAGIC)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&[2u8])
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&chunk.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&orig.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let nb = name.as_bytes();
     let nlen = nb.len().min(255) as u8;
-    writer.write_all(&[nlen]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&nb[..nlen as usize]).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&stars.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&overture.to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&[nlen])
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&nb[..nlen as usize])
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&stars.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&overture.to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut facets = Vec::new();
     for (i, range) in ranges.iter().enumerate() {
         let slice = &data[range.offset..range.end()];
         let star_name = format!("{name}.{i:04}");
-        let sealed = seal_kn_to(slice, mode, pass, &star_name, false, covenant, geas, shards, piece_bytes, recipients)?;
+        let sealed = seal_kn_to(
+            slice,
+            mode,
+            pass,
+            &star_name,
+            false,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+            recipients,
+        )?;
         writer
             .write_all(&(sealed.len() as u64).to_le_bytes())
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        writer.write_all(&sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        writer
+            .write_all(&sealed)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         if let Ok((h, _, _)) = crate::locate_header(&sealed) {
             facets.push(h.digest);
         } else {
             facets.push([0u8; 32]);
         }
     }
-    writer.write_all(b"SGFC").map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer.write_all(&(facets.len() as u32).to_le_bytes()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(b"SGFC")
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .write_all(&(facets.len() as u32).to_le_bytes())
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     for d in &facets {
-        writer.write_all(d).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        writer
+            .write_all(d)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
     }
-    writer.flush().map_err(|e| crate::Error::Msg(e.to_string()))?;
+    writer
+        .flush()
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok((orig, stars, true))
 }
 
@@ -268,7 +411,10 @@ pub struct Facet {
 /// Chunk true names from the SGFC trailer, or by walking stars.
 pub fn read_facet_digests(input: &Path) -> Result<Vec<[u8; 32]>> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let len = f.metadata().map_err(|e| crate::Error::Msg(e.to_string()))?.len();
+    let len = f
+        .metadata()
+        .map_err(|e| crate::Error::Msg(e.to_string()))?
+        .len();
     let head = read_head(&mut f)?;
     let n = head.stars as u64;
     let trailer = 4 + 4 + 32 * n;
@@ -303,17 +449,22 @@ pub fn read_facet_digests(input: &Path) -> Result<Vec<[u8; 32]>> {
 
 /// Bao-style slice list: each work-pack star is a checkable 4 MiB facet.
 pub fn scry_facets(input: &Path) -> Result<Vec<Facet>> {
-    let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let mut reader =
+        BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
     let head = read_head(&mut reader)?;
     let mut out = Vec::new();
     let mut remain = head.orig_total;
     let mut orig_off = 0u64;
     for i in 0..head.stars {
         let mut lenb = [0u8; 8];
-        reader.read_exact(&mut lenb).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        reader
+            .read_exact(&mut lenb)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         let len = u64::from_le_bytes(lenb) as usize;
         let mut star = vec![0u8; len];
-        reader.read_exact(&mut star).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        reader
+            .read_exact(&mut star)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         let (digest, orig_len) = match crate::locate_header(&star) {
             Ok((h, _, _)) => (h.digest, h.orig_len.min(remain) as u32),
             Err(_) => ([0u8; 32], remain.min(head.chunk_size as u64) as u32),
@@ -383,7 +534,12 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
     Ok((head, loc))
 }
 
-pub fn unseal_star_at(input: &Path, loc: &StarLoc, pass: Option<&str>, companions: &[Vec<u8>]) -> Result<Vec<u8>> {
+pub fn unseal_star_at(
+    input: &Path,
+    loc: &StarLoc,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+) -> Result<Vec<u8>> {
     unseal_star_at_keys(input, loc, pass, companions, &[])
 }
 
@@ -398,7 +554,8 @@ pub fn unseal_star_at_keys(
     std::io::Seek::seek(&mut f, SeekFrom::Start(loc.file_off))
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut star = vec![0u8; loc.star_len as usize];
-    f.read_exact(&mut star).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    f.read_exact(&mut star)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     unseal_ex_keys(&star, pass, companions, identities)
 }
 
@@ -423,7 +580,10 @@ pub fn unseal_range_keys(
     identities: &[Identity],
 ) -> Result<(u64, u32)> {
     let (head, locs) = index_pack(input)?;
-    if !locs.iter().any(|l| l.index >= from_star && l.index <= to_star) {
+    if !locs
+        .iter()
+        .any(|l| l.index >= from_star && l.index <= to_star)
+    {
         return Err(crate::Error::Msg(format!(
             "no slices in {from_star}..{to_star} (pack has 0..{})",
             head.stars.saturating_sub(1)
@@ -437,7 +597,9 @@ pub fn unseal_range_keys(
                 continue;
             }
             let plain = unseal_star_at_keys(input, loc, pass, companions, identities)?;
-            writer.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            writer
+                .write_all(&plain)
+                .map_err(|e| crate::Error::Msg(e.to_string()))?;
             written += plain.len() as u64;
             n += 1;
         }
@@ -460,7 +622,18 @@ pub fn inscribe_stars_dir(
     cdc: Option<CdcProfile>,
 ) -> Result<(u64, u32)> {
     inscribe_stars_dir_to(
-        input, dir, mode, pass, covenant, geas, chunk, shards, piece_bytes, overture_mb, cdc, &[],
+        input,
+        dir,
+        mode,
+        pass,
+        covenant,
+        geas,
+        chunk,
+        shards,
+        piece_bytes,
+        overture_mb,
+        cdc,
+        &[],
     )
 }
 
@@ -480,12 +653,30 @@ pub fn inscribe_stars_dir_to(
     recipients: &[PublicIdentity],
 ) -> Result<(u64, u32)> {
     std::fs::create_dir_all(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let orig = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?.len();
-    let piece_bytes = if piece_bytes == 0 { DEFAULT_PIECE } else { piece_bytes };
+    let orig = std::fs::metadata(input)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?
+        .len();
+    let piece_bytes = if piece_bytes == 0 {
+        DEFAULT_PIECE
+    } else {
+        piece_bytes
+    };
     let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
     if orig == 0 {
-        let sealed = seal_kn_to(&[], mode, pass, name, false, covenant, geas, shards, piece_bytes, recipients)?;
-        std::fs::write(dir.join("star-0000.sg1"), sealed).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let sealed = seal_kn_to(
+            &[],
+            mode,
+            pass,
+            name,
+            false,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+            recipients,
+        )?;
+        std::fs::write(dir.join("star-0000.sg1"), sealed)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         return Ok((0, 1));
     }
     if let Some(profile) = cdc {
@@ -515,7 +706,8 @@ pub fn inscribe_stars_dir_to(
             "name={name}\nstars={stars}\norig={orig}\nchunk={chunk}\ncdc={}\noverture={ov}\n",
             profile.name
         );
-        std::fs::write(dir.join("manifest.txt"), man).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        std::fs::write(dir.join("manifest.txt"), man)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         let mut boot =
             String::from("Overture — copy these first; you can start before the rest arrives.\n");
         for i in 0..ov {
@@ -526,13 +718,16 @@ pub fn inscribe_stars_dir_to(
     }
     let chunk = chunk.max(64 * 1024);
     let stars = orig.div_ceil(chunk as u64).max(1) as u32;
-    let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let mut reader =
+        BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
     let mut buf = vec![0u8; chunk as usize];
     let mut remain = orig;
     let mut i = 0u32;
     while remain > 0 {
         let n = remain.min(chunk as u64) as usize;
-        reader.read_exact(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        reader
+            .read_exact(&mut buf[..n])
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         let sealed = seal_kn_to(
             &buf[..n],
             mode,
@@ -582,7 +777,9 @@ fn mend_chunk_star(i: u32, stars: u32, star: &[u8], soft: bool) -> Result<Option
         return Ok(None);
     }
     let (healed, used_soft) = crate::pieces::mend_bytes_ex(star, soft).map_err(|e| {
-        crate::Error::Msg(format!("chunk star {i} of {stars} is too damaged to mend: {e}"))
+        crate::Error::Msg(format!(
+            "chunk star {i} of {stars} is too damaged to mend: {e}"
+        ))
     })?;
     match crate::verify(&healed) {
         Ok((_, true, _, _, _)) => Ok(Some((healed, used_soft))),
@@ -620,11 +817,14 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
         let mut lb = [0u8; 8];
         r.read_exact(&mut lb).map_err(io)?;
         let len = u64::from_le_bytes(lb);
-        let end = (off + 8).checked_add(len).filter(|&e| e <= file_len).ok_or_else(|| {
-            crate::Error::Msg(format!(
-                "work pack framing damaged at star {i} (bad length); not RS-coded, refusing"
-            ))
-        })?;
+        let end = (off + 8)
+            .checked_add(len)
+            .filter(|&e| e <= file_len)
+            .ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "work pack framing damaged at star {i} (bad length); not RS-coded, refusing"
+                ))
+            })?;
         spans.push((off + 8, len));
         off = end;
     }
@@ -639,7 +839,12 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
         && &trailer[0..4] == b"SGFC"
         && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
     {
-        Some(trailer[8..].chunks(32).map(|c| c.try_into().unwrap()).collect())
+        Some(
+            trailer[8..]
+                .chunks(32)
+                .map(|c| c.try_into().unwrap())
+                .collect(),
+        )
     } else {
         return Err(crate::Error::Msg(
             "work pack facet trailer (SGFC) damaged; not RS-coded, refusing".into(),
@@ -676,7 +881,8 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
                     )));
                 }
             }
-            w.write_all(&(star.len() as u64).to_le_bytes()).map_err(io)?;
+            w.write_all(&(star.len() as u64).to_le_bytes())
+                .map_err(io)?;
             w.write_all(&star).map_err(io)?;
         }
         w.write_all(&trailer).map_err(io)?;
@@ -747,13 +953,20 @@ pub fn mend_pack_to<W: Write>(
     let mut spans: Vec<(usize, usize)> = Vec::with_capacity(head.stars as usize);
     for i in 0..head.stars {
         let lb = pack.get(off..off + 8).ok_or_else(|| {
-            crate::Error::Msg(format!("work pack framing damaged at star {i} (length missing)"))
+            crate::Error::Msg(format!(
+                "work pack framing damaged at star {i} (length missing)"
+            ))
         })?;
         let len = u64::from_le_bytes(lb.try_into().unwrap()) as usize;
         off += 8;
-        let end = off.checked_add(len).filter(|&e| e <= pack.len()).ok_or_else(|| {
-            crate::Error::Msg(format!("work pack framing damaged at star {i} (bad length)"))
-        })?;
+        let end = off
+            .checked_add(len)
+            .filter(|&e| e <= pack.len())
+            .ok_or_else(|| {
+                crate::Error::Msg(format!(
+                    "work pack framing damaged at star {i} (bad length)"
+                ))
+            })?;
         spans.push((off, end));
         off = end;
     }
@@ -764,7 +977,12 @@ pub fn mend_pack_to<W: Write>(
             && &trailer[0..4] == b"SGFC"
             && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
         {
-            Some(trailer[8..].chunks(32).map(|c| c.try_into().unwrap()).collect())
+            Some(
+                trailer[8..]
+                    .chunks(32)
+                    .map(|c| c.try_into().unwrap())
+                    .collect(),
+            )
         } else {
             None
         }
@@ -809,7 +1027,8 @@ pub fn mend_pack_to<W: Write>(
                 )));
             }
         }
-        out.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        out.write_all(&plain)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         written += plain.len() as u64;
     }
     if written != head.orig_total {
@@ -844,7 +1063,12 @@ pub fn mend_pack_to<W: Write>(
     })
 }
 
-pub fn unseal_path(input: &Path, output: &Path, pass: Option<&str>, companions: &[Vec<u8>]) -> Result<u64> {
+pub fn unseal_path(
+    input: &Path,
+    output: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+) -> Result<u64> {
     unseal_path_keys(input, output, pass, companions, &[])
 }
 
@@ -856,14 +1080,19 @@ pub fn unseal_path_keys(
     identities: &[Identity],
 ) -> Result<u64> {
     if is_work_pack(input) {
-        return write_atomic(output, |writer| unseal_pack_stream(input, writer, pass, companions, identities));
+        return write_atomic(output, |writer| {
+            unseal_pack_stream(input, writer, pass, companions, identities)
+        });
     }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // unseal_ex_keys checks length + SHA-256 against the header and refuses a
     // buffer holding more than one seal (damaged pack head).
     let plain = unseal_ex_keys(&data, pass, companions, identities)?;
     let n = plain.len() as u64;
-    write_atomic(output, |w| w.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string())))?;
+    write_atomic(output, |w| {
+        w.write_all(&plain)
+            .map_err(|e| crate::Error::Msg(e.to_string()))
+    })?;
     Ok(n)
 }
 
@@ -885,15 +1114,23 @@ fn unseal_pack_stream<W: Write>(
     for i in 0..head.stars {
         let mut lenb = [0u8; 8];
         reader.read_exact(&mut lenb).map_err(|_| {
-            crate::Error::Msg(format!("work pack truncated or framing damaged at star {i} of {}", head.stars))
+            crate::Error::Msg(format!(
+                "work pack truncated or framing damaged at star {i} of {}",
+                head.stars
+            ))
         })?;
         let len = u64::from_le_bytes(lenb);
         if len > head.orig_total.saturating_mul(4).saturating_add(1 << 30) {
-            return Err(crate::Error::Msg(format!("work pack framing damaged at star {i} (bad length)")));
+            return Err(crate::Error::Msg(format!(
+                "work pack framing damaged at star {i} (bad length)"
+            )));
         }
         let mut star = vec![0u8; len as usize];
         reader.read_exact(&mut star).map_err(|_| {
-            crate::Error::Msg(format!("work pack truncated inside star {i} of {}", head.stars))
+            crate::Error::Msg(format!(
+                "work pack truncated inside star {i} of {}",
+                head.stars
+            ))
         })?;
         let plain = unseal_ex_keys(&star, pass, companions, identities)
             .map_err(|e| crate::Error::Msg(format!("star {i} of {}: {e}", head.stars)))?;
@@ -939,7 +1176,9 @@ pub(crate) fn write_atomic<T>(
     let result = (|| {
         let mut w = BufWriter::new(File::create(&part).map_err(io)?);
         let v = f(&mut w)?;
-        let file = w.into_inner().map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let file = w
+            .into_inner()
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         file.sync_all().map_err(io)?;
         drop(file);
         std::fs::rename(&part, output).map_err(io)?;
@@ -954,10 +1193,12 @@ pub(crate) fn write_atomic<T>(
 pub fn payload_name(input: &Path) -> Result<String> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mag = [0u8; 4];
-    f.read_exact(&mut mag).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    f.read_exact(&mut mag)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     if mag == WORK_MAGIC {
         drop(f);
-        let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+        let mut reader =
+            BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
         let head = read_head(&mut reader)?;
         if head.name.is_empty() {
             return Ok("payload.bin".into());
@@ -1006,10 +1247,12 @@ fn basename_only(name: &str) -> Option<String> {
 pub fn scry_path(input: &Path) -> Result<String> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mag = [0u8; 4];
-    f.read_exact(&mut mag).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    f.read_exact(&mut mag)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     if mag == WORK_MAGIC {
         drop(f);
-        let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+        let mut reader =
+            BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
         let head = read_head(&mut reader)?;
         let mut s = format!(
             "work  name={} orig={} chunk={} stars={} overture={}/{} (first ~{} MiB to start)",
@@ -1024,7 +1267,11 @@ pub fn scry_path(input: &Path) -> Result<String> {
         drop(reader);
         if let Ok(facets) = scry_facets(input) {
             for f in facets {
-                let tag = if f.index < head.overture { "overture" } else { "follow" };
+                let tag = if f.index < head.overture {
+                    "overture"
+                } else {
+                    "follow"
+                };
                 s.push_str(&format!(
                     "\nfacet {:>5}  {tag}  off={}  {} bytes  {}",
                     f.index,
@@ -1153,7 +1400,18 @@ mod tests {
         std::fs::write(&src, &d).unwrap();
         let out = dir.join("big.sg1");
         let (_, stars, is_work) = inscribe_path_to(
-            &src, &out, Mode::Seal, None, "", &[], 64 * 1024, None, DEFAULT_PIECE, 0, None, recipients,
+            &src,
+            &out,
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            DEFAULT_PIECE,
+            0,
+            None,
+            recipients,
         )
         .unwrap();
         assert!(is_work && stars >= 4, "want a multi-star work pack");
@@ -1178,7 +1436,10 @@ mod tests {
         let healed = m.healed.expect("healed pack");
         assert_eq!(healed.len(), pack.len(), "same layout");
         assert_eq!(&healed[..spans[0].0], &pack[..spans[0].0], "same head");
-        assert_eq!(read_facet_digests_bytes(&healed), read_facet_digests_bytes(&pack));
+        assert_eq!(
+            read_facet_digests_bytes(&healed),
+            read_facet_digests_bytes(&pack)
+        );
         for (a, b) in star_spans(&healed) {
             assert!(!star_torn(&healed[a..b]));
         }
@@ -1210,12 +1471,18 @@ mod tests {
             smash_shard(&mut torn, spans[2].0, spans[2].1, s);
         }
         let mut out = Vec::new();
-        let e = mend_pack_to(&torn, &mut out, None, &[], &[]).err().unwrap().to_string();
+        let e = mend_pack_to(&torn, &mut out, None, &[], &[])
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("star 2"), "{e}");
 
         let mut framing = pack.clone();
         framing[spans[1].0 - 8..spans[1].0].copy_from_slice(&u64::MAX.to_le_bytes());
-        let e = mend_pack_to(&framing, &mut Vec::new(), None, &[], &[]).err().unwrap().to_string();
+        let e = mend_pack_to(&framing, &mut Vec::new(), None, &[], &[])
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("framing"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1228,7 +1495,10 @@ mod tests {
         let spans = star_spans(&pack);
         let mut torn = pack.clone();
         smash_shard(&mut torn, spans[0].0, spans[0].1, 1);
-        assert!(mend_pack_to(&torn, &mut Vec::new(), None, &[], &[]).is_err(), "needs identity");
+        assert!(
+            mend_pack_to(&torn, &mut Vec::new(), None, &[], &[]).is_err(),
+            "needs identity"
+        );
         let mut out = Vec::new();
         let m = mend_pack_to(&torn, &mut out, None, &[], &[id]).unwrap();
         assert_eq!(out, d);
@@ -1291,7 +1561,10 @@ mod tests {
         let out = dir.join("out.sg1");
         let check = |bytes: &[u8], want: &str| {
             std::fs::write(&p, bytes).unwrap();
-            let e = mend_pack_path(&p, &out, false).err().expect("should refuse").to_string();
+            let e = mend_pack_path(&p, &out, false)
+                .err()
+                .expect("should refuse")
+                .to_string();
             assert!(e.contains(want), "{e}");
             assert!(!out.exists(), "no output on refusal");
             assert!(!dir.join("out.sg1.mend-part").exists());
@@ -1325,7 +1598,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-
     /// Rebuild a pack with stars `a` and `b` swapped (framing rewritten).
     fn swap_stars(pack: &[u8], a: usize, b: usize) -> Vec<u8> {
         let spans = star_spans(pack);
@@ -1349,10 +1621,15 @@ mod tests {
         let p = dir.join("swapped.sg1");
         std::fs::write(&p, &bad).unwrap();
         let out = dir.join("out.bin");
-        let e = unseal_path_keys(&p, &out, None, &[], &[]).unwrap_err().to_string();
+        let e = unseal_path_keys(&p, &out, None, &[], &[])
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("facet"), "{e}");
         assert!(!out.exists());
-        let e = mend_pack_to(&bad, &mut Vec::new(), None, &[], &[]).err().unwrap().to_string();
+        let e = mend_pack_to(&bad, &mut Vec::new(), None, &[], &[])
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("facet"), "{e}");
     }
 
@@ -1362,7 +1639,9 @@ mod tests {
         let (_, pack) = make_pack(&dir, 300 * 1024, &[]);
         let mut torn = pack.clone();
         torn[..4].fill(0);
-        let e = unseal_ex_keys(&torn, None, &[], &[]).unwrap_err().to_string();
+        let e = unseal_ex_keys(&torn, None, &[], &[])
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("more than one seal"), "{e}");
         let e = crate::pieces::mend_bytes(&torn).unwrap_err().to_string();
         assert!(e.contains("more than one seal"), "{e}");

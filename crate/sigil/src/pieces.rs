@@ -2,8 +2,8 @@
 //! Gather rebuilds a normal .sg1 from any k distinct pieces — originals or rain.
 
 use crate::header::{
-    locate_header, shard_stride, write_ember, write_header, GradedShard, Header,
-    HEADER_SIZE, VOW_SIZE,
+    locate_header, shard_stride, write_ember, write_header, GradedShard, Header, HEADER_SIZE,
+    VOW_SIZE,
 };
 use crate::{header, merkle, rs, sha256, Result};
 use std::fs;
@@ -12,14 +12,7 @@ use std::path::Path;
 pub const PIECE_MAGIC: [u8; 4] = *b"SGPC";
 const MAX_INDEX: usize = 254;
 
-fn write_piece(
-    dir: &Path,
-    index: u8,
-    n: u8,
-    k: u8,
-    map: &[u8],
-    body: &[u8],
-) -> Result<()> {
+fn write_piece(dir: &Path, index: u8, n: u8, k: u8, map: &[u8], body: &[u8]) -> Result<()> {
     let mut out = Vec::new();
     out.extend_from_slice(&PIECE_MAGIC);
     out.push(1);
@@ -30,7 +23,8 @@ fn write_piece(
     out.extend_from_slice(map);
     out.extend_from_slice(&(body.len() as u32).to_le_bytes());
     out.extend_from_slice(body);
-    fs::write(dir.join(format!("piece-{index:03}.sgp")), out).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    fs::write(dir.join(format!("piece-{index:03}.sgp")), out)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok(())
 }
 
@@ -161,12 +155,28 @@ pub fn vessel_present(dir: &Path) -> bool {
     dir.join(VESSEL).is_file()
 }
 
-fn scan(dir: &Path) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec<(usize, Vec<u8>)>)> {
+fn scan(
+    dir: &Path,
+) -> Result<(
+    Vec<(usize, Vec<u8>)>,
+    usize,
+    usize,
+    Vec<u8>,
+    Vec<(usize, Vec<u8>)>,
+)> {
     scan_dirs(&[dir])
 }
 
 /// Collect pieces from one or more folders (e.g. cold-USB `usb-*` dirs).
-fn scan_dirs(dirs: &[&Path]) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec<u8>, Vec<(usize, Vec<u8>)>)> {
+fn scan_dirs(
+    dirs: &[&Path],
+) -> Result<(
+    Vec<(usize, Vec<u8>)>,
+    usize,
+    usize,
+    Vec<u8>,
+    Vec<(usize, Vec<u8>)>,
+)> {
     let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut map: Option<Vec<u8>> = None;
     let mut k = 0u8;
@@ -197,7 +207,8 @@ fn scan_dirs(dirs: &[&Path]) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec
             if map.is_none() {
                 map = Some(raw[12..12 + map_len].to_vec());
             }
-            let body_len = u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
+            let body_len =
+                u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
             let start = 16 + map_len;
             if start + body_len > raw.len() {
                 continue;
@@ -227,7 +238,12 @@ fn scan_dirs(dirs: &[&Path]) -> Result<(Vec<(usize, Vec<u8>)>, usize, usize, Vec
 }
 
 /// Rewrite a healthy classic mark (keystone / SGTO / vow / ember / shards) from payload shards.
-fn assemble_mark(h: &Header, shards: &[Vec<u8>], vow: Option<&[u8]>, sgto: Option<&[u8]>) -> Vec<u8> {
+fn assemble_mark(
+    h: &Header,
+    shards: &[Vec<u8>],
+    vow: Option<&[u8]>,
+    sgto: Option<&[u8]>,
+) -> Vec<u8> {
     let hdr = write_header(h);
     let mut out = if h.keystone() {
         header::wrap_keystone(&hdr)
@@ -301,7 +317,10 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
             )));
         }
         let shards: Vec<Vec<u8>> = live.into_iter().map(|s| s.expect("checked")).collect();
-        return Ok((assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()), false));
+        return Ok((
+            assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
+            false,
+        ));
     }
 
     let live = header::gather_live_shards(file, &h, prefix);
@@ -317,7 +336,10 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
                 let shards: Vec<Vec<u8>> = (0..n)
                     .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
                     .collect();
-                return Ok((assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()), false));
+                return Ok((
+                    assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
+                    false,
+                ));
             }
             Ok(_) if !soft => {
                 return Err(crate::Error::Msg(
@@ -360,18 +382,16 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
         .collect();
 
     let systematic = h.version >= 2;
-    let payload = rs::decode_soft(
-        &parts,
-        k,
-        n,
-        h.folded_len as usize,
-        systematic,
-        |p| accept_folded(&h, p),
-    )?;
+    let payload = rs::decode_soft(&parts, k, n, h.folded_len as usize, systematic, |p| {
+        accept_folded(&h, p)
+    })?;
     let shards: Vec<Vec<u8>> = (0..n)
         .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
         .collect();
-    Ok((assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()), true))
+    Ok((
+        assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
+        true,
+    ))
 }
 
 fn accept_folded(h: &Header, payload: &[u8]) -> bool {
@@ -425,7 +445,10 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
     let (h, _, _) = locate_header(&map)?;
     if h.mode() == crate::Mode::Glyph {
         if shards.len() < n {
-            return Err(crate::Error::Msg(format!("Glyph needs all {n} pieces, have {}", shards.len())));
+            return Err(crate::Error::Msg(format!(
+                "Glyph needs all {n} pieces, have {}",
+                shards.len()
+            )));
         }
         shards.sort_by_key(|(i, _)| *i);
         let mut out = map;
@@ -440,7 +463,10 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
         return Ok(out);
     }
     if shards.len() < k {
-        return Err(crate::Error::Msg(format!("need {k} pieces, have {}", shards.len())));
+        return Err(crate::Error::Msg(format!(
+            "need {k} pieces, have {}",
+            shards.len()
+        )));
     }
     let payload = rs::decode_indexed(&shards, k, h.folded_len as usize, h.version >= 2)?;
     let prefix = header::body_prefix_file(&h, &map);
@@ -456,5 +482,10 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
     let rebuilt: Vec<Vec<u8>> = (0..n)
         .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
         .collect();
-    Ok(assemble_mark(&h, &rebuilt, vow.as_deref(), sgto_from_prefix(&map, &h).as_deref()))
+    Ok(assemble_mark(
+        &h,
+        &rebuilt,
+        vow.as_deref(),
+        sgto_from_prefix(&map, &h).as_deref(),
+    ))
 }

@@ -80,7 +80,11 @@ pub fn looks_like_pgp(b: &[u8]) -> bool {
     }
     match b.first() {
         Some(&c) if c & 0x80 != 0 => {
-            let tag = if c & 0x40 != 0 { c & 0x3f } else { (c >> 2) & 0x0f };
+            let tag = if c & 0x40 != 0 {
+                c & 0x3f
+            } else {
+                (c >> 2) & 0x0f
+            };
             tag == TAG_PUBLIC_KEY || tag == TAG_SECRET_KEY
         }
         _ => false,
@@ -105,8 +109,12 @@ pub fn import_with_passphrase(input: &[u8], passphrase: Option<&[u8]>) -> Result
 
 /// True when the file holds secret key packets protected by a passphrase.
 pub fn secret_is_protected(input: &[u8]) -> bool {
-    let Ok(data) = dearmor(input) else { return false };
-    let Ok(pkts) = packets(&data) else { return false };
+    let Ok(data) = dearmor(input) else {
+        return false;
+    };
+    let Ok(pkts) = packets(&data) else {
+        return false;
+    };
     pkts.iter().any(|p| {
         (p.tag == TAG_SECRET_KEY || p.tag == TAG_SECRET_SUBKEY)
             && parse_key(p.tag, p.body, None).map_or(false, |k| k.protected)
@@ -386,7 +394,11 @@ fn parse_key(tag: u8, body: &[u8], passphrase: Option<&[u8]>) -> Result<Key> {
     let created = r.u32()?;
     let algo = r.u8()?;
     // v6 counts the public key material (RFC 9580 §5.5.2.3).
-    let material_len = if ver == 6 { Some(r.u32()? as usize) } else { None };
+    let material_len = if ver == 6 {
+        Some(r.u32()? as usize)
+    } else {
+        None
+    };
     let material_start = r.p;
     let is_secret_packet = tag == TAG_SECRET_KEY || tag == TAG_SECRET_SUBKEY;
     let mut kind = Kind::Other;
@@ -404,20 +416,35 @@ fn parse_key(tag: u8, body: &[u8], passphrase: Option<&[u8]>) -> Result<Key> {
                 let kdf_len = r.u8()? as usize;
                 r.take(kdf_len)?;
             }
-            let want_oid = if algo == ALGO_ECDH { OID_CV25519 } else { OID_ED25519 };
+            let want_oid = if algo == ALGO_ECDH {
+                OID_CV25519
+            } else {
+                OID_ED25519
+            };
             if oid == want_oid && point.len() == 33 && point[0] == 0x40 {
                 public.copy_from_slice(&point[1..]);
-                kind = if algo == ALGO_ECDH { Kind::X25519 } else { Kind::Ed25519 };
+                kind = if algo == ALGO_ECDH {
+                    Kind::X25519
+                } else {
+                    Kind::Ed25519
+                };
             }
         }
         ALGO_X25519 | ALGO_ED25519 => {
             public.copy_from_slice(r.take(32)?);
-            kind = if algo == ALGO_X25519 { Kind::X25519 } else { Kind::Ed25519 };
+            kind = if algo == ALGO_X25519 {
+                Kind::X25519
+            } else {
+                Kind::Ed25519
+            };
         }
         _ => {
             // Unsupported algorithm: we only need to know it is not ours.
             let pub_body = match material_len {
-                Some(n) => r.take(n).map(|_| body[..r.p].to_vec()).unwrap_or_else(|_| body.to_vec()),
+                Some(n) => r
+                    .take(n)
+                    .map(|_| body[..r.p].to_vec())
+                    .unwrap_or_else(|_| body.to_vec()),
                 None => body.to_vec(),
             };
             return Ok(Key {
@@ -434,7 +461,9 @@ fn parse_key(tag: u8, body: &[u8], passphrase: Option<&[u8]>) -> Result<Key> {
     }
     if let Some(n) = material_len {
         if r.p - material_start != n {
-            return Err(err("v6 public key material length does not match its count"));
+            return Err(err(
+                "v6 public key material length does not match its count",
+            ));
         }
     }
     let pub_end = r.p;
@@ -443,9 +472,15 @@ fn parse_key(tag: u8, body: &[u8], passphrase: Option<&[u8]>) -> Result<Key> {
     if is_secret_packet && kind != Kind::Other {
         let usage = r.u8()?;
         // v6: one octet counting every S2K parameter field that follows (§5.5.3).
-        let params_len = if ver == 6 && usage != 0 { Some(r.u8()? as usize) } else { None };
+        let params_len = if ver == 6 && usage != 0 {
+            Some(r.u8()? as usize)
+        } else {
+            None
+        };
         if usage == 255 && ver == 6 {
-            return Err(err("v6 secret key uses MalleableCFB (usage 255), which RFC 9580 forbids"));
+            return Err(err(
+                "v6 secret key uses MalleableCFB (usage 255), which RFC 9580 forbids",
+            ));
         }
         if usage == 253 || usage == 254 || usage == 255 {
             match passphrase {
@@ -534,11 +569,25 @@ pub const ARGON2_MAX_PASSES: u8 = 64;
 const ARGON2_MAX_WORK_LOG2: u32 = 26;
 
 enum S2k {
-    Simple { hash: u8 },
-    Salted { hash: u8, salt: [u8; 8] },
-    Iterated { hash: u8, salt: [u8; 8], count: usize },
+    Simple {
+        hash: u8,
+    },
+    Salted {
+        hash: u8,
+        salt: [u8; 8],
+    },
+    Iterated {
+        hash: u8,
+        salt: [u8; 8],
+        count: usize,
+    },
     /// RFC 9580 §3.7.1.4 (type 4); only valid with AEAD protection.
-    Argon2 { salt: [u8; 16], t: u8, p: u8, m: u8 },
+    Argon2 {
+        salt: [u8; 16],
+        t: u8,
+        p: u8,
+        m: u8,
+    },
     /// GnuPG extension 101: no secret here (stub / smartcard).
     GnuStub,
 }
@@ -549,7 +598,10 @@ fn parse_s2k(r: &mut Reader<'_>) -> Result<S2k> {
         0 => Ok(S2k::Simple { hash: r.u8()? }),
         1 => {
             let hash = r.u8()?;
-            Ok(S2k::Salted { hash, salt: r.take(8)?.try_into().unwrap() })
+            Ok(S2k::Salted {
+                hash,
+                salt: r.take(8)?.try_into().unwrap(),
+            })
         }
         3 => {
             let hash = r.u8()?;
@@ -578,7 +630,9 @@ fn parse_s2k(r: &mut Reader<'_>) -> Result<S2k> {
 /// before anything is allocated.
 fn argon2_check(t: u8, p: u8, m: u8) -> Result<()> {
     if t == 0 || p == 0 {
-        return Err(err("Argon2 S2K with zero passes or parallelism (malformed key)"));
+        return Err(err(
+            "Argon2 S2K with zero passes or parallelism (malformed key)",
+        ));
     }
     // m must be in 3 + ceil(log2 p) ..= 31, i.e. at least 8*p KiB.
     let min_m = 3 + (p as u32).next_power_of_two().trailing_zeros();
@@ -604,7 +658,14 @@ fn argon2_check(t: u8, p: u8, m: u8) -> Result<()> {
     Ok(())
 }
 
-fn argon2_derive(pass: &[u8], salt: &[u8; 16], t: u8, p: u8, m: u8, key_len: usize) -> Result<Zeroizing<Vec<u8>>> {
+fn argon2_derive(
+    pass: &[u8],
+    salt: &[u8; 16],
+    t: u8,
+    p: u8,
+    m: u8,
+    key_len: usize,
+) -> Result<Zeroizing<Vec<u8>>> {
     use argon2::{Algorithm, Argon2, Block, Params, Version};
     use zeroize::Zeroize;
     argon2_check(t, p, m)?;
@@ -613,7 +674,9 @@ fn argon2_derive(pass: &[u8], salt: &[u8; 16], t: u8, p: u8, m: u8, key_len: usi
     let blocks_n = params.block_count();
     let mut blocks: Vec<Block> = Vec::new();
     blocks.try_reserve_exact(blocks_n).map_err(|_| {
-        err(format!("not enough memory for Argon2 S2K (needs 2^{m} KiB)"))
+        err(format!(
+            "not enough memory for Argon2 S2K (needs 2^{m} KiB)"
+        ))
     })?;
     blocks.resize(blocks_n, Block::default());
     let mut out = Zeroizing::new(vec![0u8; key_len]);
@@ -631,7 +694,11 @@ fn hasher(algo: u8) -> Result<Box<dyn sha2::digest::DynDigest>> {
         HASH_SHA256 => Box::new(Sha256::new()),
         HASH_SHA384 => Box::new(Sha384::new()),
         HASH_SHA512 => Box::new(Sha512::new()),
-        a => return Err(err(format!("S2K hash algorithm {a} not supported (SHA-1/SHA-2 only)"))),
+        a => {
+            return Err(err(format!(
+                "S2K hash algorithm {a} not supported (SHA-1/SHA-2 only)"
+            )))
+        }
     })
 }
 
@@ -692,9 +759,15 @@ fn cfb_decrypt(sym: u8, key: &[u8], iv: &[u8], buf: &mut [u8]) -> Result<()> {
     use cfb_mode::cipher::{AsyncStreamCipher, KeyIvInit};
     let bad = |_| err("bad AES key/IV length");
     match sym {
-        7 => cfb_mode::Decryptor::<aes::Aes128>::new_from_slices(key, iv).map_err(bad)?.decrypt(buf),
-        8 => cfb_mode::Decryptor::<aes::Aes192>::new_from_slices(key, iv).map_err(bad)?.decrypt(buf),
-        9 => cfb_mode::Decryptor::<aes::Aes256>::new_from_slices(key, iv).map_err(bad)?.decrypt(buf),
+        7 => cfb_mode::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
+            .map_err(bad)?
+            .decrypt(buf),
+        8 => cfb_mode::Decryptor::<aes::Aes192>::new_from_slices(key, iv)
+            .map_err(bad)?
+            .decrypt(buf),
+        9 => cfb_mode::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
+            .map_err(bad)?
+            .decrypt(buf),
         _ => unreachable!(),
     }
     Ok(())
@@ -713,18 +786,32 @@ fn aead_nonce_len(aead: u8) -> Result<usize> {
 }
 
 /// One-shot AEAD open (ciphertext || 16-byte tag). `None` on authentication failure.
-fn aead_open(sym: u8, aead: u8, key: &[u8], nonce: &[u8], ct: &[u8], ad: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
-    use aes_gcm::aead::{consts::U15, consts::U12, Aead, KeyInit, Payload};
-    fn open<A: KeyInit + Aead>(key: &[u8], nonce: &[u8], ct: &[u8], ad: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+fn aead_open(
+    sym: u8,
+    aead: u8,
+    key: &[u8],
+    nonce: &[u8],
+    ct: &[u8],
+    ad: &[u8],
+) -> Option<Zeroizing<Vec<u8>>> {
+    use aes_gcm::aead::{consts::U12, consts::U15, Aead, KeyInit, Payload};
+    fn open<A: KeyInit + Aead>(
+        key: &[u8],
+        nonce: &[u8],
+        ct: &[u8],
+        ad: &[u8],
+    ) -> Option<Zeroizing<Vec<u8>>> {
         let c = A::new_from_slice(key).ok()?;
         if nonce.len() != <A as aes_gcm::aead::AeadCore>::NonceSize::to_usize() {
             return None;
         }
         let n = aes_gcm::aead::Nonce::<A>::from_slice(nonce);
-        c.decrypt(n, Payload { msg: ct, aad: ad }).ok().map(Zeroizing::new)
+        c.decrypt(n, Payload { msg: ct, aad: ad })
+            .ok()
+            .map(Zeroizing::new)
     }
-    use aes_gcm::aead::generic_array::typenum::Unsigned;
     use aes::{Aes128, Aes192, Aes256};
+    use aes_gcm::aead::generic_array::typenum::Unsigned;
     match (aead, sym) {
         (AEAD_EAX, 7) => open::<eax::Eax<Aes128>>(key, nonce, ct, ad),
         (AEAD_EAX, 8) => open::<eax::Eax<Aes192>>(key, nonce, ct, ad),
@@ -760,7 +847,9 @@ fn decrypt_secret(
         let mut sr = Reader { b: spec, p: 0 };
         let s = parse_s2k(&mut sr)?;
         if sr.p != n {
-            return Err(err("S2K specifier length does not match its count (malformed key)"));
+            return Err(err(
+                "S2K specifier length does not match its count (malformed key)",
+            ));
         }
         s
     } else {
@@ -791,7 +880,9 @@ fn decrypt_secret(
     let iv = r.take(iv_len)?;
     if let Some(n) = params_len {
         if r.p - params_start != n {
-            return Err(err("S2K parameter count does not match the fields (malformed key)"));
+            return Err(err(
+                "S2K parameter count does not match the fields (malformed key)",
+            ));
         }
     }
     let rest = &body[r.p..];
@@ -905,10 +996,18 @@ fn parse_sig(body: &[u8]) -> Option<Sig> {
     let sigtype = r.u8().ok()?;
     let pub_algo = r.u8().ok()?;
     let hash_algo = r.u8().ok()?;
-    let hlen = if v6 { r.u32().ok()? as usize } else { r.u16().ok()? as usize };
+    let hlen = if v6 {
+        r.u32().ok()? as usize
+    } else {
+        r.u16().ok()? as usize
+    };
     let hashed_subs = r.take(hlen).ok()?.to_vec();
     let hashed_part = body[..r.p].to_vec();
-    let ulen = if v6 { r.u32().ok()? as usize } else { r.u16().ok()? as usize };
+    let ulen = if v6 {
+        r.u32().ok()? as usize
+    } else {
+        r.u16().ok()? as usize
+    };
     r.take(ulen).ok()?;
     let left16: [u8; 2] = r.take(2).ok()?.try_into().ok()?;
     let salt = if v6 {
@@ -980,11 +1079,15 @@ fn verify_sig(sig: &Sig, primary: &[u8; 32], key_version: u8, prefix: &[u8]) -> 
     data.push(sig.version);
     data.push(0xFF);
     data.extend_from_slice(&(sig.hashed_part.len() as u32).to_be_bytes());
-    let Some(d) = digest(sig.hash_algo, &data) else { return false };
+    let Some(d) = digest(sig.hash_algo, &data) else {
+        return false;
+    };
     if d[..2] != sig.left16 {
         return false;
     }
-    let Ok(vk) = VerifyingKey::from_bytes(primary) else { return false };
+    let Ok(vk) = VerifyingKey::from_bytes(primary) else {
+        return false;
+    };
     vk.verify_strict(&d, &Signature::from_bytes(&raw)).is_ok()
 }
 
@@ -1086,7 +1189,9 @@ fn select(pkts: &[Packet<'_>], now: u64, passphrase: Option<&[u8]>) -> Result<Pg
             }
             TAG_PUBLIC_KEY | TAG_SECRET_KEY => break, // next key in a keyring: stop at the first
             TAG_SIG => {
-                let Some(sig) = parse_sig(pkt.body) else { continue };
+                let Some(sig) = parse_sig(pkt.body) else {
+                    continue;
+                };
                 match &ctx {
                     Ctx::Primary => {
                         if sig.sigtype == SIG_KEY_REVOCATION
@@ -1206,8 +1311,12 @@ fn select(pkts: &[Packet<'_>], now: u64, passphrase: Option<&[u8]>) -> Result<Pg
 
 /// Why secret import is not possible, for CLI messages.
 pub fn secret_unavailable_reason(input: &[u8]) -> String {
-    let Ok(data) = dearmor(input) else { return "unreadable key".into() };
-    let Ok(pkts) = packets(&data) else { return "unreadable key".into() };
+    let Ok(data) = dearmor(input) else {
+        return "unreadable key".into();
+    };
+    let Ok(pkts) = packets(&data) else {
+        return "unreadable key".into();
+    };
     let mut any_secret = false;
     for p in &pkts {
         if p.tag == TAG_SECRET_KEY || p.tag == TAG_SECRET_SUBKEY {
@@ -1249,7 +1358,10 @@ mod tests {
         assert_eq!(a.public.x25519_pk, b.public.x25519_pk);
         assert_eq!(a.public.ed25519_pk, b.public.ed25519_pk);
         assert!(a.secret.is_none());
-        assert_eq!(a.user_id.as_deref(), Some("Sigil Test <test@sigil.invalid>"));
+        assert_eq!(
+            a.user_id.as_deref(),
+            Some("Sigil Test <test@sigil.invalid>")
+        );
         assert!(looks_like_pgp(PUB_ASC) && looks_like_pgp(PUB_GPG));
     }
 
@@ -1302,7 +1414,10 @@ mod tests {
         let mut b = lines[i].clone().into_bytes();
         b[10] = if b[10] == b'A' { b'B' } else { b'A' };
         lines[i] = String::from_utf8(b).unwrap();
-        let e = import(lines.join("\n").as_bytes()).err().unwrap().to_string();
+        let e = import(lines.join("\n").as_bytes())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("CRC24") || e.contains("pgp import"), "{e}");
     }
 
@@ -1331,31 +1446,49 @@ mod tests {
         let p = import(LOCKED).unwrap();
         assert!(secret_is_protected(LOCKED) && !secret_is_protected(SEC_ASC));
         let s = import_with_passphrase(LOCKED, Some(b"hunter2")).unwrap();
-        assert_eq!(hex::encode_upper(s.primary_fpr), "D72741DA96202F19169094EE7E85B88D75D629D3");
+        assert_eq!(
+            hex::encode_upper(s.primary_fpr),
+            "D72741DA96202F19169094EE7E85B88D75D629D3"
+        );
         let id = s.secret.expect("decrypted secret");
         assert_eq!(id.public().x25519_pk, p.public.x25519_pk);
         assert_eq!(id.public().ed25519_pk, p.public.ed25519_pk);
         let cek = [9u8; 32];
         let salt = [4u8; 16];
         let sgto = crate::keys::build_sgto(&cek, &[p.public.clone()], None, &salt).unwrap();
-        assert_eq!(crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap(), cek);
+        assert_eq!(
+            crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap(),
+            cek
+        );
     }
 
     #[test]
     fn independent_aes256_sha512_secret_decrypts() {
         // Made by PGPy (AES-256, iterated+salted SHA-512), cross-checked by importing into gpg.
         let s = import_with_passphrase(PGPY256, Some(b"pgpy pass 256")).unwrap();
-        assert_eq!(hex::encode_upper(s.primary_fpr), "5834A3244168C7852AF2388EE03B0A4A27E9BCDA");
-        assert_eq!(hex::encode_upper(s.subkey_fpr), "2E0ED3C7E41E94D70AF6D249982C8A39D81E44E6");
+        assert_eq!(
+            hex::encode_upper(s.primary_fpr),
+            "5834A3244168C7852AF2388EE03B0A4A27E9BCDA"
+        );
+        assert_eq!(
+            hex::encode_upper(s.subkey_fpr),
+            "2E0ED3C7E41E94D70AF6D249982C8A39D81E44E6"
+        );
         let id = s.secret.expect("decrypted secret");
         assert_eq!(id.public().x25519_pk, s.public.x25519_pk);
     }
 
     #[test]
     fn wrong_passphrase_and_damage_refused() {
-        let e = import_with_passphrase(LOCKED, Some(b"hunter3")).err().unwrap().to_string();
+        let e = import_with_passphrase(LOCKED, Some(b"hunter3"))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("wrong passphrase"), "{e}");
-        let e = import_with_passphrase(PGPY256, Some(b"")).err().unwrap().to_string();
+        let e = import_with_passphrase(PGPY256, Some(b""))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("wrong passphrase"), "{e}");
         // Flip the last encrypted byte of the primary secret packet: SHA-1 check fails.
         let mut bin = dearmor(LOCKED).unwrap();
@@ -1365,24 +1498,46 @@ mod tests {
             k.body.as_ptr() as usize - bin.as_ptr() as usize + k.body.len()
         };
         bin[end - 1] ^= 0x01;
-        let e = import_with_passphrase(&bin, Some(b"hunter2")).err().unwrap().to_string();
+        let e = import_with_passphrase(&bin, Some(b"hunter2"))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("wrong passphrase"), "{e}");
     }
 
     #[test]
     fn s2k_count_and_checks_254_255() {
         // RFC 4880 §3.7.1.3 coded count.
-        let mut r = Reader { b: &[3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 255], p: 0 };
-        assert!(matches!(parse_s2k(&mut r).unwrap(), S2k::Iterated { count: 65011712, .. }));
-        let mut r = Reader { b: &[3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 96], p: 0 };
-        assert!(matches!(parse_s2k(&mut r).unwrap(), S2k::Iterated { count: 65536, .. }));
+        let mut r = Reader {
+            b: &[3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 255],
+            p: 0,
+        };
+        assert!(matches!(
+            parse_s2k(&mut r).unwrap(),
+            S2k::Iterated {
+                count: 65011712,
+                ..
+            }
+        ));
+        let mut r = Reader {
+            b: &[3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 96],
+            p: 0,
+        };
+        assert!(matches!(
+            parse_s2k(&mut r).unwrap(),
+            S2k::Iterated { count: 65536, .. }
+        ));
 
         use cfb_mode::cipher::{AsyncStreamCipher, KeyIvInit};
         let seed = [0x42u8; 32];
         let public = SigningKey::from_bytes(&seed).verifying_key().to_bytes();
         let salt = [7u8; 8];
         let spec = [3u8, HASH_SHA256, 7, 7, 7, 7, 7, 7, 7, 7, 96];
-        let s2k = S2k::Iterated { hash: HASH_SHA256, salt, count: 65536 };
+        let s2k = S2k::Iterated {
+            hash: HASH_SHA256,
+            salt,
+            count: 65536,
+        };
         let key = s2k_derive(&s2k, b"pw", 32).unwrap();
         let iv = [5u8; 16];
         for usage in [254u8, 255] {
@@ -1393,7 +1548,9 @@ mod tests {
                 let sum = seed.iter().fold(0u16, |a, &b| a.wrapping_add(b as u16));
                 pt.extend_from_slice(&sum.to_be_bytes());
             }
-            cfb_mode::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv).unwrap().encrypt(&mut pt);
+            cfb_mode::Encryptor::<aes::Aes256>::new_from_slices(&key, &iv)
+                .unwrap()
+                .encrypt(&mut pt);
             let mut body = vec![9u8];
             body.extend_from_slice(&spec);
             body.extend_from_slice(&iv);
@@ -1455,7 +1612,10 @@ mod tests {
     fn packet_at(bin: &[u8], tag: u8) -> (usize, usize) {
         let pkts = packets(bin).unwrap();
         let k = pkts.iter().find(|p| p.tag == tag).unwrap();
-        (k.body.as_ptr() as usize - bin.as_ptr() as usize, k.body.len())
+        (
+            k.body.as_ptr() as usize - bin.as_ptr() as usize,
+            k.body.len(),
+        )
     }
 
     #[test]
@@ -1476,8 +1636,12 @@ mod tests {
         assert_eq!(back.ed25519_seed, id.ed25519_seed);
         let cek = [5u8; 32];
         let salt = [6u8; 16];
-        let sgto = crate::keys::build_sgto(&cek, std::slice::from_ref(&p.public), None, &salt).unwrap();
-        assert_eq!(crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap(), cek);
+        let sgto =
+            crate::keys::build_sgto(&cek, std::slice::from_ref(&p.public), None, &salt).unwrap();
+        assert_eq!(
+            crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap(),
+            cek
+        );
     }
 
     /// The A.5 key uses Argon2id with m = 2^21 KiB (2 GiB); keep those runs few and serial.
@@ -1512,7 +1676,10 @@ mod tests {
         let start = r.p;
         assert_eq!((r.u8().unwrap(), r.u8().unwrap()), (9, AEAD_OCB));
         let n = r.u8().unwrap() as usize;
-        let mut sr = Reader { b: r.take(n).unwrap(), p: 0 };
+        let mut sr = Reader {
+            b: r.take(n).unwrap(),
+            p: 0,
+        };
         let s2k = parse_s2k(&mut sr).unwrap();
         let nonce = r.take(15).unwrap().to_vec();
         assert_eq!(r.p - start, params_len);
@@ -1543,7 +1710,15 @@ mod tests {
             let (off, len) = packet_at(&bin, tag);
             let body = &bin[off..off + len];
             let (s2k, nonce, ct) = a5_fields(body);
-            assert!(matches!(s2k, S2k::Argon2 { t: 1, p: 4, m: 21, .. }));
+            assert!(matches!(
+                s2k,
+                S2k::Argon2 {
+                    t: 1,
+                    p: 4,
+                    m: 21,
+                    ..
+                }
+            ));
             let ikm = hex::decode(s2k_hex).unwrap();
             let mut kek = [0u8; 32];
             hkdf::Hkdf::<Sha256>::new(None, &ikm)
@@ -1554,7 +1729,11 @@ mod tests {
             ad.extend_from_slice(&body[..42]);
             assert_eq!(hex::encode(&ad), ad_hex);
             let pt = aead_open(9, AEAD_OCB, &kek, &nonce, &ct, &ad).expect("OCB opens");
-            let expect = if tag == TAG_SECRET_KEY { want.ed25519_seed } else { want.x25519_sk };
+            let expect = if tag == TAG_SECRET_KEY {
+                want.ed25519_seed
+            } else {
+                want.x25519_sk
+            };
             assert_eq!(pt[..], expect[..]);
             let mut t = ct.clone();
             *t.last_mut().unwrap() ^= 0x80; // tag
@@ -1566,7 +1745,12 @@ mod tests {
             a2[3] ^= 0x01; // creation time is associated data
             assert!(aead_open(9, AEAD_OCB, &kek, &nonce, &ct, &a2).is_none());
             let mut a2 = ad.clone();
-            a2[0] = 0xC0 | if tag == TAG_SECRET_KEY { TAG_SECRET_SUBKEY } else { TAG_SECRET_KEY };
+            a2[0] = 0xC0
+                | if tag == TAG_SECRET_KEY {
+                    TAG_SECRET_SUBKEY
+                } else {
+                    TAG_SECRET_KEY
+                };
             assert!(aead_open(9, AEAD_OCB, &kek, &nonce, &ct, &a2).is_none());
         }
     }
@@ -1592,7 +1776,10 @@ mod tests {
         let m_at = off + 42 + 5 + 1 + 16 + 2; // usage,count,sym,aead,s2klen | type | salt | t,p | m
         assert_eq!(bin[m_at], 21);
         bin[m_at] = 30;
-        let e = import_with_passphrase(&bin, Some(RFC_PASS)).err().unwrap().to_string();
+        let e = import_with_passphrase(&bin, Some(RFC_PASS))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("caps import") && e.contains("4 GiB"), "{e}");
     }
 
@@ -1610,12 +1797,18 @@ mod tests {
             assert_eq!(id.public().x25519_pk, s.public.x25519_pk);
             assert_eq!(id.public().ed25519_pk, s.public.ed25519_pk);
             assert_eq!(id.pgp_fpr.map(hex::encode).as_deref(), Some(fpr));
-            let e = import_with_passphrase(file, Some(b"nope")).err().unwrap().to_string();
+            let e = import_with_passphrase(file, Some(b"nope"))
+                .err()
+                .unwrap()
+                .to_string();
             assert!(e.contains("wrong passphrase"), "{e}");
             let mut bin = dearmor(file).unwrap();
             let (off, len) = packet_at(&bin, TAG_SECRET_SUBKEY);
             bin[off + len - 3] ^= 0x10; // inside the tag
-            let e = import_with_passphrase(&bin, Some(pass)).err().unwrap().to_string();
+            let e = import_with_passphrase(&bin, Some(pass))
+                .err()
+                .unwrap()
+                .to_string();
             assert!(e.contains("wrong passphrase"), "{e}");
         }
     }
@@ -1636,26 +1829,49 @@ mod tests {
         assert_eq!(s.user_id.as_deref(), Some("Sigil v6 <v6@sigil.invalid>"));
         let id = s.secret.expect("decrypted secret");
         assert_eq!(id.public().x25519_pk, s.public.x25519_pk);
-        let e = import_with_passphrase(SQ_V6, Some(b"sq v6 pas")).err().unwrap().to_string();
+        let e = import_with_passphrase(SQ_V6, Some(b"sq v6 pas"))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("wrong passphrase"), "{e}");
     }
 
     /// Own encoder: v4 usage-253 secret params + AEAD-sealed Ed25519 seed (algo 27).
-    fn seal_v4_aead(tag: u8, sym: u8, aead: u8, s2k_spec: &[u8], pass: &[u8], pub_body: &[u8], seed: &[u8; 32]) -> Vec<u8> {
+    fn seal_v4_aead(
+        tag: u8,
+        sym: u8,
+        aead: u8,
+        s2k_spec: &[u8],
+        pass: &[u8],
+        pub_body: &[u8],
+        seed: &[u8; 32],
+    ) -> Vec<u8> {
         use aes_gcm::aead::{consts::U12, consts::U15, Aead, KeyInit, Payload};
-        let key_len = match sym { 7 => 16, 8 => 24, _ => 32 };
+        let key_len = match sym {
+            7 => 16,
+            8 => 24,
+            _ => 32,
+        };
         let mut sr = Reader { b: s2k_spec, p: 0 };
         let s2k = parse_s2k(&mut sr).unwrap();
         let ikm = s2k_derive(&s2k, pass, key_len).unwrap();
         let mut kek = vec![0u8; key_len];
-        hkdf::Hkdf::<Sha256>::new(None, &ikm).expand(&[0xC0 | tag, 4, sym, aead], &mut kek).unwrap();
+        hkdf::Hkdf::<Sha256>::new(None, &ikm)
+            .expand(&[0xC0 | tag, 4, sym, aead], &mut kek)
+            .unwrap();
         let nonce = vec![0x5Au8; aead_nonce_len(aead).unwrap()];
         let mut ad = vec![0xC0 | tag];
         ad.extend_from_slice(pub_body);
-        let pl = Payload { msg: &seed[..], aad: &ad };
+        let pl = Payload {
+            msg: &seed[..],
+            aad: &ad,
+        };
         macro_rules! seal {
             ($t:ty) => {
-                <$t>::new_from_slice(&kek).unwrap().encrypt(aes_gcm::aead::Nonce::<$t>::from_slice(&nonce), pl).unwrap()
+                <$t>::new_from_slice(&kek)
+                    .unwrap()
+                    .encrypt(aes_gcm::aead::Nonce::<$t>::from_slice(&nonce), pl)
+                    .unwrap()
             };
         }
         use aes::{Aes128, Aes192, Aes256};
@@ -1698,7 +1914,8 @@ mod tests {
         for aead in [AEAD_EAX, AEAD_OCB, AEAD_GCM] {
             for sym in [7u8, 8, 9] {
                 for spec in [&argon[..], &iter[..]] {
-                    let body = seal_v4_aead(TAG_SECRET_KEY, sym, aead, spec, b"pw", &pub_body, &seed);
+                    let body =
+                        seal_v4_aead(TAG_SECRET_KEY, sym, aead, spec, b"pw", &pub_body, &seed);
                     let mut r = Reader { b: &body, p: 0 };
                     let got = decrypt_secret(253, None, &mut r, &body, b"pw", &ctx).unwrap();
                     assert_eq!(got, Some(seed), "aead {aead} sym {sym}");
@@ -1707,10 +1924,16 @@ mod tests {
                     let mut bad = body.clone();
                     *bad.last_mut().unwrap() ^= 1;
                     let mut r = Reader { b: &bad, p: 0 };
-                    let e = decrypt_secret(253, None, &mut r, &bad, b"pw", &ctx).err().unwrap().to_string();
+                    let e = decrypt_secret(253, None, &mut r, &bad, b"pw", &ctx)
+                        .err()
+                        .unwrap()
+                        .to_string();
                     assert!(e.contains("wrong passphrase"), "{e}");
                     // Sealed as a primary, opened as a subkey: packet tag is bound via HKDF info + AD.
-                    let sub_ctx = KeyCtx { tag: TAG_SECRET_SUBKEY, ..ctx };
+                    let sub_ctx = KeyCtx {
+                        tag: TAG_SECRET_SUBKEY,
+                        ..ctx
+                    };
                     let mut r = Reader { b: &body, p: 0 };
                     assert!(decrypt_secret(253, None, &mut r, &body, b"pw", &sub_ctx).is_err());
                 }
@@ -1735,24 +1958,36 @@ mod tests {
         body.extend_from_slice(&[1, 1, 3]);
         body.extend_from_slice(&[0; 16 + 52]);
         let mut r = Reader { b: &body, p: 0 };
-        let e = decrypt_secret(254, None, &mut r, &body, b"pw", &ctx).err().unwrap().to_string();
+        let e = decrypt_secret(254, None, &mut r, &body, b"pw", &ctx)
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("only valid with AEAD"), "{e}");
         // Unknown AEAD mode.
         let mut body = vec![9u8, 7, 3, HASH_SHA256, 1, 2, 3, 4, 5, 6, 7, 8, 96];
         body.extend_from_slice(&[0; 64]);
         let mut r = Reader { b: &body, p: 0 };
-        let e = decrypt_secret(253, None, &mut r, &body, b"pw", &ctx).err().unwrap().to_string();
+        let e = decrypt_secret(253, None, &mut r, &body, b"pw", &ctx)
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("AEAD algorithm 7"), "{e}");
         // v6 key with a legacy algorithm id.
         let mut v6 = vec![6u8, 0, 0, 0, 1, ALGO_EDDSA_LEGACY, 0, 0, 0, 10];
         v6.extend_from_slice(&[0; 10]);
-        let e = parse_key(TAG_PUBLIC_KEY, &v6, None).err().unwrap().to_string();
+        let e = parse_key(TAG_PUBLIC_KEY, &v6, None)
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("forbids"), "{e}");
         // v6 secret with MalleableCFB (255).
         let mut v6 = vec![6u8, 0, 0, 0, 1, ALGO_ED25519, 0, 0, 0, 32];
         v6.extend_from_slice(&[0; 32]);
         v6.extend_from_slice(&[255, 0]);
-        let e = parse_key(TAG_SECRET_KEY, &v6, Some(b"x")).err().unwrap().to_string();
+        let e = parse_key(TAG_SECRET_KEY, &v6, Some(b"x"))
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("MalleableCFB"), "{e}");
     }
 }

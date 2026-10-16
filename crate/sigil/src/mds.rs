@@ -102,11 +102,7 @@ impl CauchyRs {
             }
         }
         let c = Self::coding_matrix(k, n)?;
-        *self.cache.lock().unwrap() = Some(CauchyCache {
-            k,
-            n,
-            c: c.clone(),
-        });
+        *self.cache.lock().unwrap() = Some(CauchyCache { k, n, c: c.clone() });
         Ok(c)
     }
 }
@@ -129,7 +125,8 @@ impl MdsBackend for CauchyRs {
         {
             let (data, parity) = shards.split_at_mut(k);
             let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
-            let mut outs: Vec<&mut [u8]> = parity[..m].iter_mut().map(|v| v.as_mut_slice()).collect();
+            let mut outs: Vec<&mut [u8]> =
+                parity[..m].iter_mut().map(|v| v.as_mut_slice()).collect();
             gf::matrix_apply(&c, &ins, &mut outs);
         }
         shards
@@ -485,7 +482,10 @@ mod tests {
     #[test]
     fn backend_by_name_resolves() {
         assert_eq!(backend_by_name("cauchy").unwrap().name(), "cauchy");
-        assert_eq!(backend_by_name("vandermonde").unwrap().name(), "vandermonde");
+        assert_eq!(
+            backend_by_name("vandermonde").unwrap().name(),
+            "vandermonde"
+        );
     }
 
     #[test]
@@ -505,7 +505,13 @@ mod tests {
     fn cauchy_slices_match_scalar_oracle() {
         let be = CauchyRs::new();
         let mut seed = 12345u64;
-        for &(k, n, len) in &[(1usize, 2usize, 7usize), (8, 16, 5000), (12, 16, 33333), (15, 20, 1), (40, 60, 9001)] {
+        for &(k, n, len) in &[
+            (1usize, 2usize, 7usize),
+            (8, 16, 5000),
+            (12, 16, 33333),
+            (15, 20, 1),
+            (40, 60, 9001),
+        ] {
             let payload: Vec<u8> = (0..len)
                 .map(|_| {
                     seed ^= seed << 13;

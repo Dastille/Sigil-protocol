@@ -17,7 +17,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -42,8 +46,13 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 fn age(p: &Path, secs: u64) {
-    let f = fs::OpenOptions::new().write(true).open(p).or_else(|_| fs::File::open(p)).unwrap();
-    f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(p)
+        .or_else(|_| fs::File::open(p))
+        .unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(secs))
+        .unwrap();
 }
 
 fn star(c: &Path, bytes: &[u8]) -> PathBuf {
@@ -83,14 +92,31 @@ fn healthy_vault_and_constellation_exit_zero_and_json() {
     sky(&dir);
     let (c, o) = doc(&dir, &["n.txt"]);
     assert_eq!(c, 0, "{o}");
-    assert!(o.contains("result: healthy") && o.contains("verified 3 member(s)") && o.contains("container format 1"), "{o}");
+    assert!(
+        o.contains("result: healthy")
+            && o.contains("verified 3 member(s)")
+            && o.contains("container format 1"),
+        "{o}"
+    );
     let (c, o) = doc(&dir, &["Sky"]);
     assert_eq!(c, 0, "{o}");
-    assert!(o.contains("constellation") && o.contains("verified 2 member(s)"), "{o}");
+    assert!(
+        o.contains("constellation") && o.contains("verified 2 member(s)"),
+        "{o}"
+    );
     let (c, j) = doc(&dir, &["Sky.sigil", "--json"]);
     assert_eq!(c, 0);
-    assert!(j.starts_with('{') && j.contains("\"status\":\"healthy\"") && j.contains("\"exit_code\":0") && j.contains("\"findings\":[]"), "{j}");
-    assert!(j.contains("\"kind\":\"constellation\"") && j.contains("\"container_version\":1"), "{j}");
+    assert!(
+        j.starts_with('{')
+            && j.contains("\"status\":\"healthy\"")
+            && j.contains("\"exit_code\":0")
+            && j.contains("\"findings\":[]"),
+        "{j}"
+    );
+    assert!(
+        j.contains("\"kind\":\"constellation\"") && j.contains("\"container_version\":1"),
+        "{j}"
+    );
     // doctor changes nothing
     assert!(ok(&dir, &["gc", "Sky"]).contains("nothing to reclaim"));
     let (c, o) = doc(&dir, &["--quick", "n.txt"]);
@@ -108,7 +134,10 @@ fn vault_bit_rot_missing_seal_and_orphans() {
     zero_mid(&v1, 8);
     let (code, o) = doc(&dir, &["n.txt"]);
     assert_eq!(code, 1, "{o}");
-    assert!(o.contains("bit-rot") && o.contains("repairable") && o.contains("sigil mend"), "{o}");
+    assert!(
+        o.contains("bit-rot") && o.contains("repairable") && o.contains("sigil mend"),
+        "{o}"
+    );
     // beyond repair
     let mut b = good.clone();
     let n = b.len();
@@ -122,7 +151,10 @@ fn vault_bit_rot_missing_seal_and_orphans() {
     fs::remove_file(c.join("versions/v2.sg1")).unwrap();
     let (code, o) = doc(&dir, &["n.txt.sigil", "--json"]);
     assert_eq!(code, 2, "{o}");
-    assert!(o.contains("\"code\":\"seal-missing\"") && o.contains("\"status\":\"problems\""), "{o}");
+    assert!(
+        o.contains("\"code\":\"seal-missing\"") && o.contains("\"status\":\"problems\""),
+        "{o}"
+    );
     let _ = fs::remove_dir_all(&dir);
 
     let dir = tmp("vault-orphan");
@@ -132,8 +164,14 @@ fn vault_bit_rot_missing_seal_and_orphans() {
     age(&c.join("versions/v4.sg1.part"), 7200);
     let (code, o) = doc(&dir, &["n.txt"]);
     assert_eq!(code, 1, "{o}");
-    assert!(o.contains("orphan-version") && o.contains("temp-file") && o.contains("sigil gc"), "{o}");
-    assert!(c.join("versions/v9.sg1").is_file(), "doctor alone is read-only");
+    assert!(
+        o.contains("orphan-version") && o.contains("temp-file") && o.contains("sigil gc"),
+        "{o}"
+    );
+    assert!(
+        c.join("versions/v9.sg1").is_file(),
+        "doctor alone is read-only"
+    );
     let (code, o) = doc(&dir, &["n.txt", "--fix"]);
     assert_eq!(code, 0, "{o}");
     assert!(o.contains("fixed: gc removed 2"), "{o}");
@@ -164,11 +202,19 @@ fn constellation_missing_star_rot_locked_card_and_manifest() {
     fs::create_dir_all(sb.parent().unwrap()).unwrap(); // gc dropped the emptied shard folder
     fs::write(&sb, &good).unwrap();
     // newer container format
-    fs::write(c.join("CONTAINER"), "sigil-container=99\nkind=constellation\nname=Sky\n").unwrap();
+    fs::write(
+        c.join("CONTAINER"),
+        "sigil-container=99\nkind=constellation\nname=Sky\n",
+    )
+    .unwrap();
     let (code, o) = doc(&dir, &["Sky"]);
     assert_eq!(code, 2, "{o}");
     assert!(o.contains("manifest") && o.contains("upgrade sigil"), "{o}");
-    fs::write(c.join("CONTAINER"), "sigil-container=1\nkind=vault\nname=Sky\n").unwrap();
+    fs::write(
+        c.join("CONTAINER"),
+        "sigil-container=1\nkind=vault\nname=Sky\n",
+    )
+    .unwrap();
     let (_, o) = doc(&dir, &["Sky"]);
     assert!(o.contains("manifest-kind"), "{o}");
     // nothing there
@@ -179,7 +225,10 @@ fn constellation_missing_star_rot_locked_card_and_manifest() {
     // warded card: warning without the key, healthy with it; rot still found without it
     let dir = tmp("sky-locked");
     fs::write(dir.join("w.txt"), b"warded warded warded").unwrap();
-    ok(&dir, &["constellation", "add", "W", "w.txt", "--pass", "pw"]);
+    ok(
+        &dir,
+        &["constellation", "add", "W", "w.txt", "--pass", "pw"],
+    );
     let (code, o) = doc(&dir, &["W"]);
     assert_eq!(code, 1, "{o}");
     assert!(o.contains("card-locked") && o.contains("--pass"), "{o}");
@@ -210,9 +259,19 @@ fn old_layouts_warn_and_fix_tidies() {
     assert!(old.is_dir() && !c.exists(), "no --fix: nothing moved");
     let (code, o) = doc(&dir, &["n.txt", "--fix"]);
     assert_eq!(code, 0, "{o}");
-    assert!(o.contains("fixed: tidied") && o.contains("container format 1"), "{o}");
+    assert!(
+        o.contains("fixed: tidied") && o.contains("container format 1"),
+        "{o}"
+    );
     assert!(c.join("CONTAINER").is_file() && !old.exists());
-    assert_eq!(ok(&dir, &["vault", "versions", "n.txt"]).matches(".sg1").count().max(1) > 0, true);
+    assert_eq!(
+        ok(&dir, &["vault", "versions", "n.txt"])
+            .matches(".sg1")
+            .count()
+            .max(1)
+            > 0,
+        true
+    );
 
     // flat constellation
     fs::create_dir_all(dir.join("Flat")).unwrap();
@@ -233,8 +292,14 @@ fn old_layouts_warn_and_fix_tidies() {
 fn cold_kits_stale_missing_and_broken() {
     let dir = tmp("cold");
     let c = vault3(&dir);
-    ok(&dir, &["vault", "retention", "n.txt", "--light", "--keep", "2"]);
-    ok(&dir, &["vault", "prune", "n.txt", "--keep", "2", "--cold-here"]);
+    ok(
+        &dir,
+        &["vault", "retention", "n.txt", "--light", "--keep", "2"],
+    );
+    ok(
+        &dir,
+        &["vault", "prune", "n.txt", "--keep", "2", "--cold-here"],
+    );
     assert!(c.join("cold/v1").is_dir());
     let (code, o) = doc(&dir, &["n.txt"]);
     assert_eq!(code, 0, "healthy cold kit: {o}");
@@ -256,7 +321,10 @@ fn cold_kits_stale_missing_and_broken() {
     assert_eq!(code, 0, "{o}");
     fs::remove_dir_all(c.join("cold/v3")).unwrap();
     // missing: cold/ is used but a departed version has no kit
-    ok(&dir, &["vault", "remove", "n.txt", "--version", "2", "--force-drop"]);
+    ok(
+        &dir,
+        &["vault", "remove", "n.txt", "--version", "2", "--force-drop"],
+    );
     let (code, o) = doc(&dir, &["n.txt"]);
     assert_eq!(code, 1, "{o}");
     assert!(o.contains("cold-missing") && o.contains("v2"), "{o}");
@@ -274,7 +342,10 @@ fn cold_kits_stale_missing_and_broken() {
     wreck(&c.join("cold/v1"));
     let (code, o) = doc(&dir, &["n.txt"]);
     assert_eq!(code, 2, "{o}");
-    assert!(o.contains("cold-broken") || o.contains("bit-rot-unrecoverable"), "{o}");
+    assert!(
+        o.contains("cold-broken") || o.contains("bit-rot-unrecoverable"),
+        "{o}"
+    );
     // never "fixed" by --fix
     let (code, _) = doc(&dir, &["n.txt", "--fix"]);
     assert_eq!(code, 2);
@@ -312,7 +383,10 @@ fn folder_vault_and_work_pack_stars_are_verified() {
         })
         .collect();
     fs::write(dir.join("big.bin"), &data).unwrap();
-    ok(&dir, &["constellation", "add", "Big", "big.bin", "--chunk", "65536"]);
+    ok(
+        &dir,
+        &["constellation", "add", "Big", "big.bin", "--chunk", "65536"],
+    );
     let (c, o) = doc(&dir, &["Big"]);
     assert_eq!(c, 0, "{o}");
     let star = dir.join(format!("Big.sigil/stars/{}", {

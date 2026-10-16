@@ -17,7 +17,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -28,7 +32,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -61,7 +69,10 @@ fn sample(dir: &Path) -> PathBuf {
     fs::write(dir.join("in/b.txt"), b"beta beta").unwrap();
     fs::write(dir.join("in/docs/a.txt"), b"alpha alpha alpha").unwrap();
     fs::write(dir.join("in/docs/c.txt"), b"gamma").unwrap();
-    ok(dir, &["constellation", "add", "Sky", "in", "--mode", "glyph"]);
+    ok(
+        dir,
+        &["constellation", "add", "Sky", "in", "--mode", "glyph"],
+    );
     dir.join("Sky.sigil")
 }
 
@@ -71,10 +82,22 @@ fn ls_constellation_shows_names_not_hashes() {
     let c = sample(&dir);
     let before = fingerprints(&c);
     let o = ok(&dir, &["ls", "Sky"]);
-    assert!(o.contains("3 name(s)") && o.contains("b.txt") && o.contains("docs/a.txt") && o.contains("docs/c.txt"), "{o}");
-    assert!(!o.contains("stars/") && !o.contains(".sg1"), "no fingerprint paths: {o}");
+    assert!(
+        o.contains("3 name(s)")
+            && o.contains("b.txt")
+            && o.contains("docs/a.txt")
+            && o.contains("docs/c.txt"),
+        "{o}"
+    );
+    assert!(
+        !o.contains("stars/") && !o.contains(".sg1"),
+        "no fingerprint paths: {o}"
+    );
     let o = ok(&dir, &["ls", "Sky.sigil", "docs/"]);
-    assert!(o.contains("docs/a.txt") && o.contains("docs/c.txt") && !o.contains("b.txt  "), "{o}");
+    assert!(
+        o.contains("docs/a.txt") && o.contains("docs/c.txt") && !o.contains("b.txt  "),
+        "{o}"
+    );
     assert!(fails(&dir, &["ls", "Sky", "nope/"]).contains("nothing named"));
     // descend into a member by name
     let o = ok(&dir, &["ls", "Sky", "docs/a.txt"]);
@@ -82,13 +105,20 @@ fn ls_constellation_shows_names_not_hashes() {
     // a raw fingerprint path gets its list name in the breadcrumb
     let star = container::star_path(&c, &sigil::sha256(b"beta beta"));
     let o = ok(&dir, &["ls", star.to_str().unwrap()]);
-    assert!(o.contains("trail  b.txt") && !o.contains("trail  b6"), "{o}");
+    assert!(
+        o.contains("trail  b.txt") && !o.contains("trail  b6"),
+        "{o}"
+    );
     // missing star is flagged by name
     fs::remove_file(&star).unwrap();
     let o = ok(&dir, &["ls", "Sky"]);
     assert!(o.contains("b.txt") && o.contains("MISSING star"), "{o}");
     assert!(fails(&dir, &["ls", "Sky", "b.txt"]).contains("missing"));
-    assert_ne!(before, fingerprints(&c), "(sanity: the file we deleted is gone)");
+    assert_ne!(
+        before,
+        fingerprints(&c),
+        "(sanity: the file we deleted is gone)"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -99,7 +129,11 @@ fn ls_never_changes_disk_and_works_on_flat_and_locked() {
     let before = fingerprints(&c);
     ok(&dir, &["ls", "Sky"]);
     ok(&dir, &["mount", "Sky", "m", "--export-dir", "x"]);
-    assert_eq!(before, fingerprints(&c), "ls / mount never write into the container");
+    assert_eq!(
+        before,
+        fingerprints(&c),
+        "ls / mount never write into the container"
+    );
 
     // old flat folder
     fs::create_dir_all(dir.join("Flat")).unwrap();
@@ -111,7 +145,10 @@ fn ls_never_changes_disk_and_works_on_flat_and_locked() {
 
     // warded card
     fs::write(dir.join("w.txt"), b"warded").unwrap();
-    ok(&dir, &["constellation", "add", "W", "w.txt", "--pass", "pw"]);
+    ok(
+        &dir,
+        &["constellation", "add", "W", "w.txt", "--pass", "pw"],
+    );
     assert!(fails(&dir, &["ls", "W"]).contains("--pass"));
     assert!(ok(&dir, &["ls", "W", "--pass", "pw"]).contains("w.txt"));
     // fingerprint path of a warded star: no name without the key (falls back), name with it
@@ -129,7 +166,10 @@ fn ls_vault_versions_by_name() {
     fs::write(dir.join("n.txt"), b"two two").unwrap();
     ok(&dir, &["vault", "commit", "n.txt"]);
     let o = ok(&dir, &["ls", "n.txt.sigil"]);
-    assert!(o.contains("n.txt@v1") && o.contains("n.txt@v2") && o.contains("(tip)"), "{o}");
+    assert!(
+        o.contains("n.txt@v1") && o.contains("n.txt@v2") && o.contains("(tip)"),
+        "{o}"
+    );
     assert!(!o.contains("versions/"), "{o}");
     let o = ok(&dir, &["ls", "n.txt.sigil", "v1"]);
     assert!(o.contains("trail  n.txt@v1"), "{o}");
@@ -165,22 +205,59 @@ fn mount_constellation_export_uses_list_names() {
     let c = sample(&dir);
     let before = fingerprints(&c);
     let o = ok(&dir, &["mount", "Sky.sigil", "mnt", "--export-dir", "out"]);
-    assert!(o.contains("exported 3 file(s)") && o.contains("seal intact"), "{o}");
+    assert!(
+        o.contains("exported 3 file(s)") && o.contains("seal intact"),
+        "{o}"
+    );
     assert_eq!(fs::read(dir.join("out/b.txt")).unwrap(), b"beta beta");
-    assert_eq!(fs::read(dir.join("out/docs/a.txt")).unwrap(), b"alpha alpha alpha");
+    assert_eq!(
+        fs::read(dir.join("out/docs/a.txt")).unwrap(),
+        b"alpha alpha alpha"
+    );
     assert_eq!(fs::read(dir.join("out/docs/c.txt")).unwrap(), b"gamma");
     assert_eq!(before, fingerprints(&c));
-    assert!(fails(&dir, &["mount", "Sky", "mnt", "--export-dir", "out2", "--writable"]).contains("--writable"));
+    assert!(fails(
+        &dir,
+        &["mount", "Sky", "mnt", "--export-dir", "out2", "--writable"]
+    )
+    .contains("--writable"));
 
     // warded + encrypt-to constellations mount with the right key, refuse without
     fs::write(dir.join("w.txt"), b"warded").unwrap();
-    ok(&dir, &["constellation", "add", "W", "w.txt", "--pass", "pw"]);
+    ok(
+        &dir,
+        &["constellation", "add", "W", "w.txt", "--pass", "pw"],
+    );
     assert!(fails(&dir, &["mount", "W", "mnt", "--export-dir", "wout"]).contains("--pass"));
-    ok(&dir, &["mount", "W", "mnt", "--export-dir", "wout", "--pass", "pw"]);
+    ok(
+        &dir,
+        &["mount", "W", "mnt", "--export-dir", "wout", "--pass", "pw"],
+    );
     assert_eq!(fs::read(dir.join("wout/w.txt")).unwrap(), b"warded");
     ok(&dir, &["keygen", "-o", "alice.sgk"]);
-    ok(&dir, &["constellation", "add", "E", "w.txt", "--to", "alice.sgk.pub"]);
-    ok(&dir, &["mount", "E", "mnt", "--export-dir", "eout", "--identity", "alice.sgk"]);
+    ok(
+        &dir,
+        &[
+            "constellation",
+            "add",
+            "E",
+            "w.txt",
+            "--to",
+            "alice.sgk.pub",
+        ],
+    );
+    ok(
+        &dir,
+        &[
+            "mount",
+            "E",
+            "mnt",
+            "--export-dir",
+            "eout",
+            "--identity",
+            "alice.sgk",
+        ],
+    );
     assert_eq!(fs::read(dir.join("eout/w.txt")).unwrap(), b"warded");
 
     // a missing star surfaces by name instead of a hash
@@ -195,7 +272,17 @@ fn mount_vault_container_still_names_the_payload() {
     let dir = tmp("mount-vault");
     fs::write(dir.join("n.txt"), b"vault bytes").unwrap();
     ok(&dir, &["vault", "track", "n.txt"]);
-    ok(&dir, &["mount", "n.txt.sigil", "mnt", "--export-dir", "out", "--vault"]);
+    ok(
+        &dir,
+        &[
+            "mount",
+            "n.txt.sigil",
+            "mnt",
+            "--export-dir",
+            "out",
+            "--vault",
+        ],
+    );
     assert_eq!(fs::read(dir.join("out/n.txt")).unwrap(), b"vault bytes");
     let _ = fs::remove_dir_all(&dir);
 }

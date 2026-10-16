@@ -276,7 +276,9 @@ mod tests {
     use super::*;
 
     fn patterned(len: usize) -> Vec<u8> {
-        (0..len).map(|i| ((i * 17 + (i >> 8) * 3) % 251) as u8).collect()
+        (0..len)
+            .map(|i| ((i * 17 + (i >> 8) * 3) % 251) as u8)
+            .collect()
     }
 
     #[test]

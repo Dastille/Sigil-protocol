@@ -8,8 +8,8 @@
 //! seq names); always available via `--export-dir`.
 
 use crate::folder::{is_dir_pack, list_dir_pack, read_dir_entry_star, DirEntry};
-use crate::vault::{self, VAULT_SUFFIX};
 use crate::keys::Identity;
+use crate::vault::{self, VAULT_SUFFIX};
 use crate::work::{is_work_pack, payload_name, unseal_path_keys};
 use crate::{locate_header, unseal_ex_keys, Result};
 use std::collections::HashMap;
@@ -82,7 +82,11 @@ impl VaultFs {
         prefer_vault: bool,
         identities: &[Identity],
     ) -> Result<Self> {
-        let sky = if prefer_vault { None } else { crate::names::sky_dir(input) };
+        let sky = if prefer_vault {
+            None
+        } else {
+            crate::names::sky_dir(input)
+        };
         let seal = match &sky {
             Some(d) => crate::constellation::find_card(d)
                 .ok_or_else(|| crate::Error::Msg("no constellation card".into()))?,
@@ -125,11 +129,7 @@ impl VaultFs {
     /// Open a `kind=log` container: one file per live segment (tombstones absent).
     /// Filenames are zero-padded seqs (`0000000007`), matching on-disk segment basenames without `.sg1`.
     /// Compaction members stay addressable under their original seq (same as `log read --seq`).
-    pub fn open_log(
-        input: &Path,
-        pass: Option<&str>,
-        identities: &[Identity],
-    ) -> Result<Self> {
+    pub fn open_log(input: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Self> {
         let listing = crate::seglog::list(input)?;
         let log_dir = listing.log.dir.clone();
         let mut fs = VaultFs {
@@ -178,12 +178,13 @@ impl VaultFs {
     }
 
     pub fn list_dir(&self, path: &str) -> Result<Vec<(String, bool, u64)>> {
-        let ino = self.lookup_path(path).ok_or_else(|| {
-            crate::Error::Msg(format!("no such path in mount: {path:?}"))
-        })?;
-        let node = self.nodes.get(&ino).ok_or_else(|| {
-            crate::Error::Msg(format!("missing inode {ino}"))
-        })?;
+        let ino = self
+            .lookup_path(path)
+            .ok_or_else(|| crate::Error::Msg(format!("no such path in mount: {path:?}")))?;
+        let node = self
+            .nodes
+            .get(&ino)
+            .ok_or_else(|| crate::Error::Msg(format!("missing inode {ino}")))?;
         match &node.kind {
             NodeKind::Dir => {
                 let mut out = Vec::new();
@@ -203,16 +204,16 @@ impl VaultFs {
     }
 
     pub fn read_file(&self, path: &str) -> Result<Arc<Vec<u8>>> {
-        let ino = self.lookup_path(path).ok_or_else(|| {
-            crate::Error::Msg(format!("no such path in mount: {path:?}"))
-        })?;
+        let ino = self
+            .lookup_path(path)
+            .ok_or_else(|| crate::Error::Msg(format!("no such path in mount: {path:?}")))?;
         self.read_ino(ino)
     }
 
     pub fn file_size(&self, path: &str) -> Result<u64> {
-        let ino = self.lookup_path(path).ok_or_else(|| {
-            crate::Error::Msg(format!("no such path in mount: {path:?}"))
-        })?;
+        let ino = self
+            .lookup_path(path)
+            .ok_or_else(|| crate::Error::Msg(format!("no such path in mount: {path:?}")))?;
         match &self.nodes[&ino].kind {
             NodeKind::File { size, .. } => Ok(*size),
             NodeKind::Dir => Err(crate::Error::Msg("is a directory".into())),
@@ -265,8 +266,7 @@ impl VaultFs {
                 }
                 NodeKind::File { .. } => {
                     if let Some(parent) = out.parent() {
-                        fs::create_dir_all(parent)
-                            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+                        fs::create_dir_all(parent).map_err(|e| crate::Error::Msg(e.to_string()))?;
                     }
                     let data = self.read_ino(*ino)?;
                     fs::write(&out, data.as_ref()).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -352,14 +352,22 @@ impl VaultFs {
         for e in entries {
             let rel = e.name.replace('\\', "/");
             if rel.contains("..") || Path::new(&rel).is_absolute() {
-                return Err(crate::Error::Msg(format!("refusing unsafe name on the list: {rel}")));
+                return Err(crate::Error::Msg(format!(
+                    "refusing unsafe name on the list: {rel}"
+                )));
             }
             let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-            let Some((last, dirs)) = parts.split_last() else { continue };
+            let Some((last, dirs)) = parts.split_last() else {
+                continue;
+            };
             let mut parent = String::new();
             for seg in dirs {
                 self.ensure_dir(&parent, seg)?;
-                parent = if parent.is_empty() { (*seg).to_string() } else { format!("{parent}/{seg}") };
+                parent = if parent.is_empty() {
+                    (*seg).to_string()
+                } else {
+                    format!("{parent}/{seg}")
+                };
             }
             self.add_file(&parent, last, e.size, FileSrc::Member { star: e.star })?;
         }
@@ -414,9 +422,10 @@ impl VaultFs {
         if let Some(&ino) = self.by_path.get(&full) {
             return Ok(ino);
         }
-        let parent_ino = *self.by_path.get(parent_path).ok_or_else(|| {
-            crate::Error::Msg(format!("missing parent {parent_path:?}"))
-        })?;
+        let parent_ino = *self
+            .by_path
+            .get(parent_path)
+            .ok_or_else(|| crate::Error::Msg(format!("missing parent {parent_path:?}")))?;
         let ino = self.next_ino;
         self.next_ino += 1;
         self.nodes.insert(
@@ -428,11 +437,7 @@ impl VaultFs {
                 children: Vec::new(),
             },
         );
-        self.nodes
-            .get_mut(&parent_ino)
-            .unwrap()
-            .children
-            .push(ino);
+        self.nodes.get_mut(&parent_ino).unwrap().children.push(ino);
         self.by_path.insert(full, ino);
         Ok(ino)
     }
@@ -450,9 +455,10 @@ impl VaultFs {
                 }
             }
         }
-        let parent_ino = *self.by_path.get(parent_path).ok_or_else(|| {
-            crate::Error::Msg(format!("missing parent {parent_path:?}"))
-        })?;
+        let parent_ino = *self
+            .by_path
+            .get(parent_path)
+            .ok_or_else(|| crate::Error::Msg(format!("missing parent {parent_path:?}")))?;
         let full = if parent_path.is_empty() {
             name.to_string()
         } else {
@@ -472,11 +478,7 @@ impl VaultFs {
                 children: Vec::new(),
             },
         );
-        self.nodes
-            .get_mut(&parent_ino)
-            .unwrap()
-            .children
-            .push(ino);
+        self.nodes.get_mut(&parent_ino).unwrap().children.push(ino);
         self.by_path.insert(full, ino);
         Ok(ino)
     }
@@ -502,7 +504,10 @@ impl VaultFs {
             FileSrc::Whole => decode_whole(&self.seal, self.pass.as_deref(), &self.identities)?,
             FileSrc::Member { star } => {
                 let star = star.ok_or_else(|| {
-                    crate::Error::Msg(format!("star for {} is missing (see `sigil doctor`)", node.name))
+                    crate::Error::Msg(format!(
+                        "star for {} is missing (see `sigil doctor`)",
+                        node.name
+                    ))
                 })?;
                 decode_whole(&star, self.pass.as_deref(), &self.identities)?
             }
@@ -512,9 +517,10 @@ impl VaultFs {
                 decode_star(&star, file_pass.as_deref(), &self.identities)?
             }
             FileSrc::LogSeg { seq } => {
-                let dir = self.log_dir.as_ref().ok_or_else(|| {
-                    crate::Error::Msg("internal: LogSeg without log_dir".into())
-                })?;
+                let dir = self
+                    .log_dir
+                    .as_ref()
+                    .ok_or_else(|| crate::Error::Msg("internal: LogSeg without log_dir".into()))?;
                 let opts = crate::seglog::ReadOpts {
                     pass: self.pass.as_deref(),
                     identities: &self.identities,
@@ -530,9 +536,7 @@ impl VaultFs {
                     .into_iter()
                     .next()
                     .map(|(_, b)| b)
-                    .ok_or_else(|| {
-                        crate::Error::Msg(format!("segment {seq} produced no bytes"))
-                    })?
+                    .ok_or_else(|| crate::Error::Msg(format!("segment {seq} produced no bytes")))?
             }
         };
         let arc = Arc::new(data);
@@ -552,11 +556,11 @@ impl VaultFs {
 }
 
 fn resolve_seal(input: &Path, prefer_vault: bool) -> Result<PathBuf> {
-    let name = input
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    if name.ends_with(VAULT_SUFFIX) || prefer_vault || (input.is_dir() && input.join(vault::CHART_NAME).is_file()) {
+    let name = input.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.ends_with(VAULT_SUFFIX)
+        || prefer_vault
+        || (input.is_dir() && input.join(vault::CHART_NAME).is_file())
+    {
         let (seal, _tip) = vault::tip_seal_path(input)?;
         return Ok(seal);
     }
@@ -716,7 +720,6 @@ pub fn mount_fuse(fs: VaultFs, mountpoint: &Path) -> Result<()> {
     })
 }
 
-
 #[cfg(not(unix))]
 pub fn mount_fuse(_fs: VaultFs, _mountpoint: &Path) -> Result<()> {
     Err(crate::Error::Msg(
@@ -730,9 +733,7 @@ pub fn umount(mountpoint: &Path) -> Result<()> {
         .to_str()
         .ok_or_else(|| crate::Error::Msg("mountpoint is not utf-8".into()))?;
     for bin in ["fusermount3", "fusermount"] {
-        let status = std::process::Command::new(bin)
-            .args(["-u", mp])
-            .status();
+        let status = std::process::Command::new(bin).args(["-u", mp]).status();
         match status {
             Ok(s) if s.success() => return Ok(()),
             Ok(s) => {
@@ -966,7 +967,16 @@ pub fn run_mount(
     prefer_vault: bool,
     export: Option<&Path>,
 ) -> Result<()> {
-    run_mount_keys(input, mountpoint, pass, wards, prefer_vault, export, &[], false)
+    run_mount_keys(
+        input,
+        mountpoint,
+        pass,
+        wards,
+        prefer_vault,
+        export,
+        &[],
+        false,
+    )
 }
 
 pub fn run_mount_keys(
@@ -986,9 +996,21 @@ pub fn run_mount_keys(
     }
     // Segment log: one file per live segment (always read-only).
     if crate::seglog::is_log(input) {
-        return run_log_mount(input, mountpoint, pass, export, identities, writable, prefer_vault);
+        return run_log_mount(
+            input,
+            mountpoint,
+            pass,
+            export,
+            identities,
+            writable,
+            prefer_vault,
+        );
     }
-    let sky = if prefer_vault { None } else { crate::names::sky_dir(input) };
+    let sky = if prefer_vault {
+        None
+    } else {
+        crate::names::sky_dir(input)
+    };
     if sky.is_some() && writable {
         return Err(crate::Error::Msg(
             "--writable is for vault versions; a constellation is a list of separate stars (use `constellation add` / `remove`)".into(),
@@ -1205,7 +1227,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dest.join("x.bin")).unwrap().permissions().mode();
+            let mode = fs::metadata(dest.join("x.bin"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o222, 0, "export should not be writable");
         }
         let _ = fs::remove_dir_all(&d);
@@ -1220,7 +1245,17 @@ mod tests {
         fs::write(src.join("inner.sg1"), &inner).unwrap();
         fs::write(src.join("plain.txt"), b"plain").unwrap();
         let pack = d.join("outer.sg1");
-        inscribe_dir(&src, &pack, Mode::Glyph, None, "", &[], 4 * 1024 * 1024, &[]).unwrap();
+        inscribe_dir(
+            &src,
+            &pack,
+            Mode::Glyph,
+            None,
+            "",
+            &[],
+            4 * 1024 * 1024,
+            &[],
+        )
+        .unwrap();
         let vfs = VaultFs::open(&pack, None, &[], false).unwrap();
         let listing = vfs.list_dir("").unwrap();
         let names: Vec<_> = listing.iter().map(|e| e.0.clone()).collect();
@@ -1257,7 +1292,10 @@ mod tests {
         let dest = d.join("view");
         let n = vfs.export_dir(&dest).unwrap();
         assert_eq!(n, 1);
-        assert_eq!(fs::read(dest.join("secret.bin")).unwrap(), b"mount-id-clear");
+        assert_eq!(
+            fs::read(dest.join("secret.bin")).unwrap(),
+            b"mount-id-clear"
+        );
         assert_eq!(crate::sha256_path(&mark).unwrap(), before);
         assert!(VaultFs::open_keys(&mark, None, &[], false, &[]).is_ok());
         // listing works without identity; read should fail without matching key
@@ -1288,7 +1326,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dest.join("notes.txt")).unwrap().permissions().mode();
+            let mode = fs::metadata(dest.join("notes.txt"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_ne!(mode & 0o222, 0, "writable export should allow writes");
         }
 
@@ -1299,7 +1340,10 @@ mod tests {
         assert_eq!(vault::status(&live).unwrap().tip, 2);
         // Durable tip seal advanced; v1 immutable still there
         assert!(vault::version_seal_path(&live, 1).unwrap().is_file());
-        assert_ne!(crate::sha256_path(&vault::tip_seal_path(&live).unwrap().0).unwrap(), before);
+        assert_ne!(
+            crate::sha256_path(&vault::tip_seal_path(&live).unwrap().0).unwrap(),
+            before
+        );
         let _ = fs::remove_dir_all(&d);
     }
 
@@ -1316,7 +1360,10 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dest.join("x.bin")).unwrap().permissions().mode();
+            let mode = fs::metadata(dest.join("x.bin"))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o222, 0);
         }
         let _ = fs::remove_dir_all(&d);
@@ -1396,7 +1443,11 @@ mod tests {
         opts.pass = Some("house");
         crate::seglog::append(&log_path, b"secret-batch\n", &opts).unwrap();
         let vfs = VaultFs::open_log(&log_path, None, &[]).unwrap();
-        assert!(vfs.list_dir("").unwrap().iter().any(|e| e.0 == "0000000001"));
+        assert!(vfs
+            .list_dir("")
+            .unwrap()
+            .iter()
+            .any(|e| e.0 == "0000000001"));
         assert!(vfs.read_file("0000000001").is_err());
         let vfs = VaultFs::open_log(&log_path, Some("house"), &[]).unwrap();
         assert_eq!(&vfs.read_file("0000000001").unwrap()[..], b"secret-batch\n");
@@ -1408,12 +1459,7 @@ mod tests {
         let d = tmp("log-ro");
         let log_path = d.join("ev");
         crate::seglog::init(&log_path, None).unwrap();
-        crate::seglog::append(
-            &log_path,
-            b"x\n",
-            &crate::seglog::AppendOpts::default(),
-        )
-        .unwrap();
+        crate::seglog::append(&log_path, b"x\n", &crate::seglog::AppendOpts::default()).unwrap();
         let dest = d.join("view");
         let err = run_mount_keys(
             &log_path,
@@ -1443,5 +1489,4 @@ mod tests {
         assert_eq!(fs::read(dest.join("0000000001")).unwrap(), b"x\n");
         let _ = fs::remove_dir_all(&d);
     }
-
 }

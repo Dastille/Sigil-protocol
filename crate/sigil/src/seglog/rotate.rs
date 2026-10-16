@@ -48,11 +48,26 @@ pub fn rotate_signer(path: &Path, identity: &Identity, new: [u8; 32]) -> Result<
         return Err(err("--new is already this log's signer"));
     }
     let seq = idx.entries.len() as u64 + 1;
-    let sig = sk.sign(&handover_message(&log.id, seq, &from, &new)).to_bytes();
-    let body = format!("seq={seq} t={} op=signer from={} to={} sig={}", now(), hex32(&from), hex32(&new), hex::encode(sig));
+    let sig = sk
+        .sign(&handover_message(&log.id, seq, &from, &new))
+        .to_bytes();
+    let body = format!(
+        "seq={seq} t={} op=signer from={} to={} sig={}",
+        now(),
+        hex32(&from),
+        hex32(&new),
+        hex::encode(sig)
+    );
     // The manifest goes first: an older sigil must refuse this log before it can see the line.
     raise_format(&mut log, 4)?;
     let (entries, head) = commit(&log, idx, &[body], Some(identity))?;
     let handovers = entries.iter().filter(|e| e.is_handover()).count();
-    Ok(RotateReport { entry: seq, from, to: new, root: head.root, handovers, notes })
+    Ok(RotateReport {
+        entry: seq,
+        from,
+        to: new,
+        root: head.root,
+        handovers,
+        notes,
+    })
 }

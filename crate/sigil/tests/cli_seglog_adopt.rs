@@ -13,7 +13,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -24,7 +28,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -63,24 +71,38 @@ fn folder_adopted_in_natural_order_and_originals_removed() {
 
     // dry run changes nothing
     let plan = ok(&d, &["log", "adopt", "ev", "pile", "--dry-run"]);
-    assert!(plan.contains("would adopt 3") && plan.contains("1 non-star file(s) ignored"), "{plan}");
+    assert!(
+        plan.contains("would adopt 3") && plan.contains("1 non-star file(s) ignored"),
+        "{plan}"
+    );
     assert_eq!(index(&d).lines().count(), 1, "dry run wrote INDEX");
     assert!(s1.exists() && s2.exists() && s10.exists());
 
     let out = ok(&d, &["log", "adopt", "ev", "pile"]);
-    assert!(out.contains("adopted 3") && out.contains("removed 3 original(s)"), "{out}");
+    assert!(
+        out.contains("adopted 3") && out.contains("removed 3 original(s)"),
+        "{out}"
+    );
     assert!(!s1.exists() && !s2.exists() && !s10.exists());
-    assert!(d.join("pile/notes.txt").exists(), "non-star file must be left alone");
+    assert!(
+        d.join("pile/notes.txt").exists(),
+        "non-star file must be left alone"
+    );
 
     // natural order: day-1, day-2, day-10
     let o = sigil_cmd(&d, &["log", "read", "ev"]);
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(o.stdout, b"one\ntwo\nten\n");
     // byte-for-byte: segment 2 is exactly the old file
-    assert_eq!(fs::read(d.join("ev.sigil/segments/0000/0000000002.sg1")).unwrap(), src_bytes);
+    assert_eq!(
+        fs::read(d.join("ev.sigil/segments/0000/0000000002.sg1")).unwrap(),
+        src_bytes
+    );
     // plain log=1 lines (plus the additive src= key); manifest not raised
     assert!(index(&d).lines().nth(1).unwrap().contains(" src="));
-    assert!(fs::read_to_string(d.join("ev.sigil/CONTAINER")).unwrap().contains("log=1"));
+    assert!(fs::read_to_string(d.join("ev.sigil/CONTAINER"))
+        .unwrap()
+        .contains("log=1"));
     let v = ok(&d, &["log", "verify", "ev"]);
     assert!(!v.contains("ERROR"), "{v}");
     // a normal append continues after the adopted ones
@@ -99,9 +121,15 @@ fn locked_stars_adopted_without_any_key() {
     let out = ok(&d, &["log", "adopt", "ev", "pile/a.sg1", "pile/b.sg1"]);
     assert!(out.contains("locked") && out.contains("adopted 2"), "{out}");
     // each opens with its own key
-    let o = sigil_cmd(&d, &["log", "read", "ev", "--seq", "1", "--pass", "hunter2"]);
+    let o = sigil_cmd(
+        &d,
+        &["log", "read", "ev", "--seq", "1", "--pass", "hunter2"],
+    );
     assert_eq!(o.stdout, b"secret a\n", "{}", text(&o));
-    let o = sigil_cmd(&d, &["log", "read", "ev", "--seq", "2", "--identity", "me.sgk"]);
+    let o = sigil_cmd(
+        &d,
+        &["log", "read", "ev", "--seq", "2", "--identity", "me.sgk"],
+    );
     assert_eq!(o.stdout, b"secret b\n", "{}", text(&o));
     // keyless verify is clean
     let v = ok(&d, &["log", "verify", "ev"]);
@@ -119,7 +147,12 @@ fn rerun_is_idempotent() {
     let lines = index(&d).lines().count();
     // second run: nothing appended, originals now cleaned up
     let out = ok(&d, &["log", "adopt", "ev", "pile"]);
-    assert!(out.contains("adopted 0") && out.contains("2 already in the log") && out.contains("removed 2"), "{out}");
+    assert!(
+        out.contains("adopted 0")
+            && out.contains("2 already in the log")
+            && out.contains("removed 2"),
+        "{out}"
+    );
     assert_eq!(index(&d).lines().count(), lines);
     assert!(!d.join("pile/a.sg1").exists());
     // the same file named twice is one source
@@ -138,7 +171,10 @@ fn bad_stars_left_in_place() {
     let o = sigil_cmd(&d, &["log", "adopt", "ev", "pile"]);
     assert_eq!(o.status.code(), Some(1), "{}", text(&o));
     let t = text(&o);
-    assert!(t.contains("adopted 1") && t.contains("junk.sg1") && t.contains("left in place"), "{t}");
+    assert!(
+        t.contains("adopted 1") && t.contains("junk.sg1") && t.contains("left in place"),
+        "{t}"
+    );
     assert!(d.join("pile/junk.sg1").exists());
     assert!(!d.join("pile/good.sg1").exists());
 }
@@ -154,7 +190,10 @@ fn tombstoned_bytes_not_readopted() {
     let t = text(&o);
     assert_eq!(o.status.code(), Some(1), "{t}");
     assert!(t.contains("deleted by entry 2"), "{t}");
-    assert!(d.join("pile/a.sg1").exists(), "user's copy of deleted data must stay");
+    assert!(
+        d.join("pile/a.sg1").exists(),
+        "user's copy of deleted data must stay"
+    );
 }
 
 #[test]
@@ -165,7 +204,18 @@ fn signed_and_segment_key_logs() {
     ok(&d, &["log", "init", "signed", "--identity", "me.sgk"]);
     let e = fails(&d, &["log", "adopt", "signed", "pile", "--keep"]);
     assert!(e.contains("--identity"), "{e}");
-    let out = ok(&d, &["log", "adopt", "signed", "pile", "--keep", "--identity", "me.sgk"]);
+    let out = ok(
+        &d,
+        &[
+            "log",
+            "adopt",
+            "signed",
+            "pile",
+            "--keep",
+            "--identity",
+            "me.sgk",
+        ],
+    );
     assert!(out.contains("(signed)"), "{out}");
     ok(&d, &["log", "init", "keyed", "--segment-keys"]);
     let e = fails(&d, &["log", "adopt", "keyed", "pile"]);

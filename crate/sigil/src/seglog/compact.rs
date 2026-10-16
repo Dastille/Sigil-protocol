@@ -41,7 +41,12 @@ pub struct TombstoneReport {
 
 /// Append a tombstone entry. This is a *logical* delete: chain-covered and permanent (there is no
 /// undelete), honoured by `read` / `ls` at once. The bytes are erased by `compact --apply`.
-pub fn tombstone(path: &Path, target: TombTarget, reason: Option<&str>, identity: Option<&Identity>) -> Result<TombstoneReport> {
+pub fn tombstone(
+    path: &Path,
+    target: TombTarget,
+    reason: Option<&str>,
+    identity: Option<&Identity>,
+) -> Result<TombstoneReport> {
     let mut log = Log::open(path)?;
     signer_gate(&log, identity)?;
     if let Some(r) = reason {
@@ -59,10 +64,14 @@ pub fn tombstone(path: &Path, target: TombTarget, reason: Option<&str>, identity
         TombTarget::Range(a, b) => (a, b),
     };
     if from == 0 || to < from {
-        return Err(err("segment numbers start at 1 and --from must not exceed --to"));
+        return Err(err(
+            "segment numbers start at 1 and --from must not exceed --to",
+        ));
     }
     if to > n {
-        return Err(err(format!("segment {to} does not exist (the log has {n} entries)")));
+        return Err(err(format!(
+            "segment {to} does not exist (the log has {n} entries)"
+        )));
     }
     let mut deleted = Vec::new();
     let mut already = Vec::new();
@@ -87,20 +96,37 @@ pub fn tombstone(path: &Path, target: TombTarget, reason: Option<&str>, identity
     }
     if deleted.is_empty() {
         return Err(err(match target {
-            TombTarget::Seq(s) => format!("segment {s} is already deleted (tombstone #{})", st.deleted_by(s).unwrap_or(0)),
-            TombTarget::Range(a, b) => format!("nothing to delete in {a}..{b}: no live segments there"),
+            TombTarget::Seq(s) => format!(
+                "segment {s} is already deleted (tombstone #{})",
+                st.deleted_by(s).unwrap_or(0)
+            ),
+            TombTarget::Range(a, b) => {
+                format!("nothing to delete in {a}..{b}: no live segments there")
+            }
         }));
     }
     let pending: u64 = deleted.iter().map(|s| st.size_of(*s)).sum();
     let seq = n + 1;
-    let mut body = format!("seq={seq} t={} op=tomb del={}", now(), fmt_ranges(&compress(&deleted)));
+    let mut body = format!(
+        "seq={seq} t={} op=tomb del={}",
+        now(),
+        fmt_ranges(&compress(&deleted))
+    );
     if let Some(r) = reason.filter(|r| !r.is_empty()) {
         body.push_str(&format!(" reason={}", enc_reason(r)));
     }
     // The manifest goes first: an older sigil must refuse this log before it can see the line.
     upgrade_manifest(&mut log)?;
     let (_entries, head) = commit(&log, idx, &[body], identity)?;
-    Ok(TombstoneReport { entry: seq, deleted, already, pending_bytes: pending, root: head.root, signed: head.sig.is_some(), notes })
+    Ok(TombstoneReport {
+        entry: seq,
+        deleted,
+        already,
+        pending_bytes: pending,
+        root: head.root,
+        signed: head.sig.is_some(),
+        notes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +185,10 @@ impl Default for CompactOpts<'_> {
             seal_pass: None,
             recipients: &[],
             allow_decrypt: false,
-            read: ReadOpts { pass: None, identities: &[] },
+            read: ReadOpts {
+                pass: None,
+                identities: &[],
+            },
             stop_after: None,
         }
     }
@@ -228,7 +257,11 @@ impl CompactReport {
             s.push_str(&format!(
                 "  erase {} ({}, {} bytes)\n",
                 rel(&p.path),
-                if p.why == Slot::DeadDeleted { "deleted by tombstone" } else { "merged away" },
+                if p.why == Slot::DeadDeleted {
+                    "deleted by tombstone"
+                } else {
+                    "merged away"
+                },
                 p.bytes
             ));
         }
@@ -243,10 +276,16 @@ impl CompactReport {
                 "compacted: {} new segment(s), {} old file(s) erased{}, {} → {} sealed bytes{}\n",
                 self.groups.len(),
                 self.removed,
-                if self.keys_destroyed > 0 { format!(", {} key record(s) destroyed", self.keys_destroyed) } else { String::new() },
+                if self.keys_destroyed > 0 {
+                    format!(", {} key record(s) destroyed", self.keys_destroyed)
+                } else {
+                    String::new()
+                },
                 self.bytes_before,
                 self.bytes_after,
-                self.root.map(|r| format!("; new anchor {}", hex32(&r))).unwrap_or_default()
+                self.root
+                    .map(|r| format!("; new anchor {}", hex32(&r)))
+                    .unwrap_or_default()
             ));
         } else if !(self.groups.is_empty() && self.purge.is_empty()) {
             s.push_str(&format!(
@@ -261,7 +300,12 @@ impl CompactReport {
 
 fn sized(log: &Log, seq: u64, why: Slot) -> Option<PurgeFile> {
     let path = log.segment_path(seq);
-    fs::metadata(&path).ok().map(|m| PurgeFile { seq, path, bytes: m.len(), why })
+    fs::metadata(&path).ok().map(|m| PurgeFile {
+        seq,
+        path,
+        bytes: m.len(),
+        why,
+    })
 }
 
 fn describe_rule(o: &CompactOpts<'_>) -> String {
@@ -283,7 +327,14 @@ fn describe_rule(o: &CompactOpts<'_>) -> String {
 }
 
 /// Decide what to merge and what to erase. Pure: reads INDEX state only (plus file sizes).
-fn plan(log: &Log, entries: &[Entry], state: &State, trusted: usize, opts: &CompactOpts<'_>, t_now: u64) -> (Vec<Group>, Vec<PurgeFile>, usize) {
+fn plan(
+    log: &Log,
+    entries: &[Entry],
+    state: &State,
+    trusted: usize,
+    opts: &CompactOpts<'_>,
+    t_now: u64,
+) -> (Vec<Group>, Vec<PurgeFile>, usize) {
     let n = entries.len() as u64;
     let st_t = State::build(&entries[..trusted]);
     // files nobody needs any more (judged only from entries the HEAD vouches for)
@@ -302,7 +353,9 @@ fn plan(log: &Log, entries: &[Entry], state: &State, trusted: usize, opts: &Comp
         _ => None,
     };
     let eligible = |live: &[u64]| -> bool {
-        let (Some(&lo), Some(&hi)) = (live.first(), live.last()) else { return false };
+        let (Some(&lo), Some(&hi)) = (live.first(), live.last()) else {
+            return false;
+        };
         if let Some(km) = kept_min {
             if hi >= km {
                 return false;
@@ -325,20 +378,29 @@ fn plan(log: &Log, entries: &[Entry], state: &State, trusted: usize, opts: &Comp
     let mut cur: Vec<u64> = Vec::new();
     let (mut cur_bytes, mut cur_dirty) = (0u64, false);
     let mut live_total = 0usize;
-    let flush = |cur: &mut Vec<u64>, cur_bytes: &mut u64, cur_dirty: &mut bool, groups: &mut Vec<Group>| {
-        if cur.len() >= 2 || (cur.len() == 1 && *cur_dirty) {
-            let mut members: Vec<u64> = cur.iter().flat_map(|h| state.live_members(*h)).collect();
-            members.sort_unstable();
-            let mut dropped: Vec<u64> = cur.iter().flat_map(|h| state.deleted_members(*h)).collect();
-            dropped.sort_unstable();
-            let new_seq = n + 1 + groups.len() as u64;
-            groups.push(Group { sources: std::mem::take(cur), members, dropped, bytes: *cur_bytes, new_seq });
-        } else {
-            cur.clear();
-        }
-        *cur_bytes = 0;
-        *cur_dirty = false;
-    };
+    let flush =
+        |cur: &mut Vec<u64>, cur_bytes: &mut u64, cur_dirty: &mut bool, groups: &mut Vec<Group>| {
+            if cur.len() >= 2 || (cur.len() == 1 && *cur_dirty) {
+                let mut members: Vec<u64> =
+                    cur.iter().flat_map(|h| state.live_members(*h)).collect();
+                members.sort_unstable();
+                let mut dropped: Vec<u64> =
+                    cur.iter().flat_map(|h| state.deleted_members(*h)).collect();
+                dropped.sort_unstable();
+                let new_seq = n + 1 + groups.len() as u64;
+                groups.push(Group {
+                    sources: std::mem::take(cur),
+                    members,
+                    dropped,
+                    bytes: *cur_bytes,
+                    new_seq,
+                });
+            } else {
+                cur.clear();
+            }
+            *cur_bytes = 0;
+            *cur_dirty = false;
+        };
     for h in 1..=n {
         if state.slot(h) != Slot::Needed {
             continue;
@@ -377,21 +439,40 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     let mut loaded = load(&log, &CheckOpts::default());
     let refuse = |l: &Loaded| -> Result<()> {
         match l.findings.iter().find(|f| f.severity == Severity::Error) {
-            Some(f) => Err(err(format!("refusing to compact: {} {}: {} (run `sigil log verify`)", f.code, f.subject, f.message))),
+            Some(f) => Err(err(format!(
+                "refusing to compact: {} {}: {} (run `sigil log verify`)",
+                f.code, f.subject, f.message
+            ))),
             None => Ok(()),
         }
     };
     refuse(&loaded)?;
-    let mut rep = CompactReport { apply: opts.apply, rule: describe_rule(opts), ..Default::default() };
+    let mut rep = CompactReport {
+        apply: opts.apply,
+        rule: describe_rule(opts),
+        ..Default::default()
+    };
     // the signing key, when the log is signed and we are about to write HEAD (the current signer,
     // after any handovers)
     let current = signer_for(&log, &loaded.index.entries, loaded.index.entries.len() + 1);
     let signer: Option<&Identity> = current.and_then(|pk| {
-        opts.read.identities.iter().find(|i| SigningKey::from_bytes(&i.ed25519_seed).verifying_key().to_bytes() == pk)
+        opts.read.identities.iter().find(|i| {
+            SigningKey::from_bytes(&i.ed25519_seed)
+                .verifying_key()
+                .to_bytes()
+                == pk
+        })
     });
     let lag = loaded.trusted < loaded.index.entries.len();
     let t_now = now();
-    let (groups, _purge, _live) = plan(&log, &loaded.index.entries, &loaded.index.state, loaded.trusted, opts, t_now);
+    let (groups, _purge, _live) = plan(
+        &log,
+        &loaded.index.entries,
+        &loaded.index.state,
+        loaded.trusted,
+        opts,
+        t_now,
+    );
     if opts.apply && (lag || !groups.is_empty()) && log.signer.is_some() && signer.is_none() {
         return Err(err("this log is signed and compaction rewrites HEAD: give the signing key with --identity KEY.sgk"));
     }
@@ -400,7 +481,11 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             "HEAD covers {} of {} entries (an earlier operation was interrupted); {}",
             loaded.trusted,
             loaded.index.entries.len(),
-            if opts.apply { "the new HEAD covers them" } else { "files are judged dead only from the covered ones" }
+            if opts.apply {
+                "the new HEAD covers them"
+            } else {
+                "files are judged dead only from the covered ones"
+            }
         ));
     }
     if opts.apply && (lag || loaded.index.torn) {
@@ -414,7 +499,14 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
         loaded = load(&log, &CheckOpts::default());
         refuse(&loaded)?;
     }
-    let (groups, purge, live) = plan(&log, &loaded.index.entries, &loaded.index.state, loaded.trusted, opts, t_now);
+    let (groups, purge, live) = plan(
+        &log,
+        &loaded.index.entries,
+        &loaded.index.state,
+        loaded.trusted,
+        opts,
+        t_now,
+    );
     rep.live_segments = live;
     rep.purge = purge;
     rep.groups = groups;
@@ -425,7 +517,12 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             }
         }
     }
-    rep.bytes_before = rep.purge.iter().chain(&rep.source_files).map(|p| p.bytes).sum();
+    rep.bytes_before = rep
+        .purge
+        .iter()
+        .chain(&rep.source_files)
+        .map(|p| p.bytes)
+        .sum();
     if !opts.apply {
         return Ok(rep);
     }
@@ -443,13 +540,21 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             for m in &g.members {
                 plain.extend_from_slice(&rd.member(*m)?);
             }
-            if log.segkeys && opts.seal_pass.filter(|p| !p.is_empty()).is_none() && opts.recipients.is_empty() {
+            if log.segkeys
+                && opts.seal_pass.filter(|p| !p.is_empty()).is_none()
+                && opts.recipients.is_empty()
+            {
                 return Err(err(format!(
                     "this log has per-segment keys: give --seal-pass and/or --to so the key of merged segment {} can be wrapped and kept in the key ring",
                     g.new_seq
                 )));
             }
-            if !log.segkeys && rd.keyed_seen && opts.seal_pass.is_none() && opts.recipients.is_empty() && !opts.allow_decrypt {
+            if !log.segkeys
+                && rd.keyed_seen
+                && opts.seal_pass.is_none()
+                && opts.recipients.is_empty()
+                && !opts.allow_decrypt
+            {
                 return Err(err(format!(
                     "merging into segment {} would store encrypted batches in the clear; give --seal-pass or --to for the merged segment, or --allow-decrypt",
                     g.new_seq
@@ -457,9 +562,24 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             }
             let sha = sha256(&plain);
             // a merged segment gets its own fresh key (wrapped into the ring), like any append
-            let own_key = if log.segkeys { Some(keyring::new_key()?) } else { None };
+            let own_key = if log.segkeys {
+                Some(keyring::new_key()?)
+            } else {
+                None
+            };
             let sealed = match &own_key {
-                Some((_, id)) => crate::seal_kn_to(&plain, opts.mode, None, &format!("compact-{}", g.new_seq), false, "", &[], None, crate::DEFAULT_PIECE, &[id.public()])?,
+                Some((_, id)) => crate::seal_kn_to(
+                    &plain,
+                    opts.mode,
+                    None,
+                    &format!("compact-{}", g.new_seq),
+                    false,
+                    "",
+                    &[],
+                    None,
+                    crate::DEFAULT_PIECE,
+                    &[id.public()],
+                )?,
                 None => crate::seal_kn_to(
                     &plain,
                     opts.mode,
@@ -514,13 +634,25 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     rep.root = head_root;
     // old files last
     let mut first = true;
-    let victims: Vec<PathBuf> = rep.source_files.iter().chain(&rep.purge).map(|p| p.path.clone()).collect();
-    let dead_seqs: Vec<u64> = rep.source_files.iter().chain(&rep.purge).map(|p| p.seq).collect();
+    let victims: Vec<PathBuf> = rep
+        .source_files
+        .iter()
+        .chain(&rep.purge)
+        .map(|p| p.path.clone())
+        .collect();
+    let dead_seqs: Vec<u64> = rep
+        .source_files
+        .iter()
+        .chain(&rep.purge)
+        .map(|p| p.seq)
+        .collect();
     for p in victims {
         match fs::remove_file(&p) {
             Ok(()) => rep.removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => rep.notes.push(format!("could not erase {}: {e}", p.display())),
+            Err(e) => rep
+                .notes
+                .push(format!("could not erase {}: {e}", p.display())),
         }
         if first {
             first = false;
@@ -532,12 +664,18 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     if log.segkeys {
         match keyring::destroy(&log, &dead_seqs) {
             Ok(gone) => rep.keys_destroyed = gone.len(),
-            Err(e) => rep.notes.push(format!("could not destroy old key records: {e} (`sigil gc --apply` retries)")),
+            Err(e) => rep.notes.push(format!(
+                "could not destroy old key records: {e} (`sigil gc --apply` retries)"
+            )),
         }
     }
     // emptied shard folders
     for shard in sorted(&log.dir.join(SEGMENTS_DIR)) {
-        if shard.is_dir() && fs::read_dir(&shard).map(|mut r| r.next().is_none()).unwrap_or(false) {
+        if shard.is_dir()
+            && fs::read_dir(&shard)
+                .map(|mut r| r.next().is_none())
+                .unwrap_or(false)
+        {
             let _ = fs::remove_dir(&shard);
         }
     }

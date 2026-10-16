@@ -44,7 +44,10 @@ fn mend_work_pack_cli() {
         })
         .collect();
     std::fs::write(dir.join("big.bin"), &data).unwrap();
-    let o = sigil(&dir, &["inscribe", "--chunk", "131072", "-o", "big.sg1", "big.bin"]);
+    let o = sigil(
+        &dir,
+        &["inscribe", "--chunk", "131072", "-o", "big.sg1", "big.bin"],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let mut pack = std::fs::read(dir.join("big.sg1")).unwrap();
     assert_eq!(&pack[0..4], b"SGWK");

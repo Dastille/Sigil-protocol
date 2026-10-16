@@ -106,7 +106,11 @@ fn parse_header(buf: &[u8], magic: &[u8; 4]) -> Result<Header> {
     if expect != got {
         return Err(Error::Msg("header CRC mismatch".into()));
     }
-    let name_end = buf[112..128].iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+    let name_end = buf[112..128]
+        .iter()
+        .rposition(|&b| b != 0)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     Ok(Header {
         version: buf[4],
         flags: buf[5],
@@ -139,7 +143,6 @@ pub fn shard_stride(h: &Header) -> usize {
     let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { VOW_SIZE } else { 0 };
     lead + h.shard_len as usize + 4
 }
-
 
 /// Soft-RS grading: CRC-good (Hard), present-but-CRC-fail (Soft), or absent.
 #[derive(Clone, Debug)]
@@ -199,7 +202,8 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
                     let off = i + lead;
                     if off + sl + 4 <= file.len() {
                         let shard = file[off..off + sl].to_vec();
-                        let crc = u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
+                        let crc =
+                            u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
                         hits.push(Hit {
                             slot,
                             grade: grade_shard(shard, crc),
@@ -220,7 +224,11 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
             }
         }
     }
-    let body = if prefix <= file.len() { &file[prefix..] } else { file };
+    let body = if prefix <= file.len() {
+        &file[prefix..]
+    } else {
+        file
+    };
     for i in 0..n {
         if !matches!(live[i], GradedShard::Missing) {
             continue;
@@ -261,7 +269,8 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
                     let off = i + lead;
                     if off + sl + 4 <= file.len() {
                         let shard = file[off..off + sl].to_vec();
-                        let crc = u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
+                        let crc =
+                            u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
                         if crc32fast::hash(&shard) == crc {
                             hits.push(Hit { slot, shard });
                         }
@@ -271,7 +280,8 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
                 _ => i += 1,
             }
         }
-        let unique: std::collections::BTreeSet<usize> = hits.iter().map(|h| h.slot).filter(|s| *s < n).collect();
+        let unique: std::collections::BTreeSet<usize> =
+            hits.iter().map(|h| h.slot).filter(|s| *s < n).collect();
         let use_order = unique.len() < 2;
         for (order, hit) in hits.into_iter().enumerate() {
             let slot = if use_order { order } else { hit.slot };
@@ -280,7 +290,11 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
             }
         }
     }
-    let body = if prefix <= file.len() { &file[prefix..] } else { file };
+    let body = if prefix <= file.len() {
+        &file[prefix..]
+    } else {
+        file
+    };
     for i in 0..n {
         if live[i].is_some() {
             continue;
@@ -299,7 +313,11 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
 }
 
 pub fn maps_len(h: &Header) -> usize {
-    if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE }
+    if h.keystone() {
+        KEYSTONE_SPAN
+    } else {
+        HEADER_SIZE
+    }
 }
 
 /// Body prefix without peeking for SGTO (legacy / when file bytes unavailable).
@@ -371,7 +389,11 @@ fn score_prefix(file: &[u8], h: &Header, prefix: usize) -> i32 {
             continue;
         }
         let shard = &body[off..off + h.shard_len as usize];
-        let crc = u32::from_le_bytes(body[off + h.shard_len as usize..off + h.shard_len as usize + 4].try_into().unwrap());
+        let crc = u32::from_le_bytes(
+            body[off + h.shard_len as usize..off + h.shard_len as usize + 4]
+                .try_into()
+                .unwrap(),
+        );
         if crc32fast::hash(shard) == crc {
             live += 1;
         }
@@ -502,4 +524,3 @@ pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
         "header damaged and no Keystone or Ember survived".into(),
     ))
 }
-

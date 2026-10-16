@@ -1,21 +1,20 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
-    add_to_constellation, attest, copy_sigil_binary, deluge_fountain, deluge_pieces,
-    backend_by_name, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd,
-    inscribe_dir_to, inscribe_path_to, inscribe_stars_dir_to, install_hooks, is_constellation_input,
-    is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_scan,
-    overture_report, path_extract_keys, path_walk_keys, prepare_boot, resolve_recipient,
-    run_bakeoff, run_mount_keys, run_open_keys, run_showing, scry_constellation, scry_dir, scry_path,
-    scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
-    place_kit, mend_kit, Identity, unseal_dir_only_keys, unseal_ex,
-    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, umount_path,
-    vessel_present, write_vessel, AddOpts,
-    vault_format_retention, vault_format_status, vault_format_versions, vault_get_retention,
-    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
-    vault_set_retention, vault_status, BootOutcome, VaultRetention,
-    vault_commit_ex, vault_commit_from_export_ex, vault_restore_ex, vault_track_ex,
-    vault_format_recipients, vault_get_recipients, vault_set_recipients,
-    CdcProfile, Mode, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    add_to_constellation, attest, backend_by_name, copy_sigil_binary, deluge_fountain,
+    deluge_pieces, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd,
+    inscribe_dir_to, inscribe_path_to, inscribe_stars_dir_to, install_hooks,
+    is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
+    mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
+    place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
+    run_showing, scatter_pieces, scry_constellation, scry_dir, scry_path, seal_kn_mds_to, sha256,
+    sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
+    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
+    vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
+    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
+    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
+    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
+    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, VaultRetention, CDC_DEDUP,
+    CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -586,9 +585,7 @@ enum VaultCmd {
         force_drop: bool,
     },
     /// List version stack (v1…tip) from the chart.
-    Versions {
-        path: PathBuf,
-    },
+    Versions { path: PathBuf },
     /// Restore tip (or --version N) over the live path. Mends a torn seal if needed.
     Restore {
         path: PathBuf,
@@ -1101,7 +1098,9 @@ fn resolve_pass(
 }
 
 /// PGP secret passphrase: --passphrase-file (first line), $SIGIL_PGP_PASSPHRASE, or prompt.
-fn pgp_passphrase(file: Option<&Path>) -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
+fn pgp_passphrase(
+    file: Option<&Path>,
+) -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
     if let Some(f) = file {
         let raw = zeroize::Zeroizing::new(fs::read(f)?);
         let line = raw.split(|&b| b == b'\n').next().unwrap_or(&[]);
@@ -1122,7 +1121,9 @@ fn load_identities(paths: &[PathBuf]) -> Result<Vec<Identity>, Box<dyn std::erro
     paths.iter().map(|p| Ok(Identity::load(p)?)).collect()
 }
 
-fn load_recipients(specs: &[String]) -> Result<Vec<sigil::PublicIdentity>, Box<dyn std::error::Error>> {
+fn load_recipients(
+    specs: &[String],
+) -> Result<Vec<sigil::PublicIdentity>, Box<dyn std::error::Error>> {
     specs.iter().map(|s| Ok(resolve_recipient(s)?)).collect()
 }
 
@@ -1154,10 +1155,9 @@ fn run_cmd(bin: &str, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
         .stderr(Stdio::inherit())
         .status();
     match status {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!(
-            "{bin} is not installed. Install it, or copy the .sg1 yourself."
-        )
-        .into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("{bin} is not installed. Install it, or copy the .sg1 yourself.").into())
+        }
         Err(e) => Err(e.into()),
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(format!("{bin} failed ({s})").into()),
@@ -1208,7 +1208,16 @@ fn rsync_dir(src: &str, dest: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("rsync {src} ↔ {dest}");
     run_cmd(
         "rsync",
-        &["-av", "--partial", "--exclude", VESSEL, "--exclude", "manifest.txt", &src, &dest],
+        &[
+            "-av",
+            "--partial",
+            "--exclude",
+            VESSEL,
+            "--exclude",
+            "manifest.txt",
+            &src,
+            &dest,
+        ],
     )
 }
 
@@ -1339,7 +1348,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if mds_be.name() != "vandermonde" {
                 if input.is_dir() || pieces.is_some() || cdc.is_some() {
                     return Err(
-                        "Cauchy --mds is single-star .sg1 only (no folder / --pieces / --cdc yet)".into(),
+                        "Cauchy --mds is single-star .sg1 only (no folder / --pieces / --cdc yet)"
+                            .into(),
                     );
                 }
                 let data = fs::read(&input)?;
@@ -1363,7 +1373,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     data.len(),
                     output.display(),
                     mds_be.name(),
-                    if recipients.is_empty() { "" } else { ", encrypt-to" },
+                    if recipients.is_empty() {
+                        ""
+                    } else {
+                        ", encrypt-to"
+                    },
                 );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
                 return Ok(());
@@ -1373,12 +1387,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     return Err("folder Inscribe writes one pack. Omit --pieces.".into());
                 }
                 let (n, orig) = inscribe_dir_to(
-                    &input, &output, mode.into(), pass.as_deref(), cov, &geas, chunk, &wards, &recipients,
+                    &input,
+                    &output,
+                    mode.into(),
+                    pass.as_deref(),
+                    cov,
+                    &geas,
+                    chunk,
+                    &wards,
+                    &recipients,
                 )?;
                 println!(
                     "folder {n} files, {orig} bytes → {}{}",
                     output.display(),
-                    if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                    if recipients.is_empty() {
+                        ""
+                    } else {
+                        " (encrypt-to)"
+                    },
                 );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else if let Some(dir) = pieces {
@@ -1419,7 +1445,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!(
                         "wrote {stars} stars ({orig} bytes) into {}{}",
                         dir.display(),
-                        if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                        if recipients.is_empty() {
+                            ""
+                        } else {
+                            " (encrypt-to)"
+                        },
                     );
                     println!("Overture list: {}/{OVERTURE}", dir.display());
                 }
@@ -1468,14 +1498,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!(
                         "work pack {stars} stars, {orig} bytes → {}{}",
                         output.display(),
-                        if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                        if recipients.is_empty() {
+                            ""
+                        } else {
+                            " (encrypt-to)"
+                        },
                     );
-                    println!("Overture: first {overture_mb} MiB is boot. sigil overture {}", output.display());
+                    println!(
+                        "Overture: first {overture_mb} MiB is boot. sigil overture {}",
+                        output.display()
+                    );
                 } else {
                     println!(
                         "inscribed {orig} bytes → {}{}",
                         output.display(),
-                        if recipients.is_empty() { "" } else { " (encrypt-to)" },
+                        if recipients.is_empty() {
+                            ""
+                        } else {
+                            " (encrypt-to)"
+                        },
                     );
                 }
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
@@ -1501,14 +1542,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let identities = load_identities(&identity)?;
             let mds_be = resolve_mds(&mds)?;
             if mds_be.name() != "vandermonde" {
-                if star.is_some() || from_mb.is_some() || to_mb.is_some() || is_dir_pack(&input) || is_constellation_input(&input) {
+                if star.is_some()
+                    || from_mb.is_some()
+                    || to_mb.is_some()
+                    || is_dir_pack(&input)
+                    || is_constellation_input(&input)
+                {
                     return Err("Cauchy --mds De-scribe is plain .sg1 only for now".into());
                 }
                 let data = fs::read(&input)?;
-                let plain = unseal_ex_mds_keys(&data, pass.as_deref(), &companions, &*mds_be, &identities)?;
+                let plain =
+                    unseal_ex_mds_keys(&data, pass.as_deref(), &companions, &*mds_be, &identities)?;
                 let n = plain.len();
                 fs::write(&output, &plain)?;
-                println!("de-scribed {n} bytes → {} (mds {})", output.display(), mds_be.name());
+                println!(
+                    "de-scribed {n} bytes → {} (mds {})",
+                    output.display(),
+                    mds_be.name()
+                );
                 return Ok(());
             }
             if star.is_some() || from_mb.is_some() || to_mb.is_some() {
@@ -1527,26 +1578,45 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     head.stars.saturating_sub(1)
                 };
                 let (n, stars) = unseal_range_keys(
-                    &input, &output, pass.as_deref(), &companions, from, to, &identities,
+                    &input,
+                    &output,
+                    pass.as_deref(),
+                    &companions,
+                    from,
+                    to,
+                    &identities,
                 )?;
-                println!("de-scribed {stars} slices ({n} bytes) → {}", output.display());
+                println!(
+                    "de-scribed {stars} slices ({n} bytes) → {}",
+                    output.display()
+                );
             } else if is_dir_pack(&input) {
                 let n = unseal_dir_only_keys(
-                    &input, &output, pass.as_deref(), &companions, &only, &wards, &identities,
+                    &input,
+                    &output,
+                    pass.as_deref(),
+                    &companions,
+                    &only,
+                    &wards,
+                    &identities,
                 )?;
                 println!("de-scribed {n} files → {}", output.display());
             } else if is_constellation_input(&input) {
                 let n = sigil::unseal_constellation_keys(
-                    &input, &output, pass.as_deref(), &companions, &only, &identities,
+                    &input,
+                    &output,
+                    pass.as_deref(),
+                    &companions,
+                    &only,
+                    &identities,
                 )?;
                 println!("de-scribed {n} files → {}", output.display());
             } else {
                 if !only.is_empty() {
                     return Err("--only is for a folder wrap. This is one file.".into());
                 }
-                let n = unseal_path_keys(
-                    &input, &output, pass.as_deref(), &companions, &identities,
-                )?;
+                let n =
+                    unseal_path_keys(&input, &output, pass.as_deref(), &companions, &identities)?;
                 println!("de-scribed {n} bytes → {}", output.display());
             }
         }
@@ -1586,67 +1656,71 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("far side: sigil gather -o rebuilt.sg1 <folder>");
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {
-            let from = from.or_else(|| watch.then(sigil::rain_lane));
-            if let Some(f) = from {
-                println!("this lane starts at part {f} (other people should pick a different --from so rain does not overlap)");
-            }
-            if watch {
-                fs::create_dir_all(&output)?;
-                println!("sending parts one at a time. Stops when the far side writes VESSEL.");
-                for round in 1..=extra {
-                    if vessel_present(&output) || rsync.as_deref().map(vessel_at).unwrap_or(false) {
-                        println!("Vessel is full. Stopping.");
-                        break;
-                    }
-                    let before: std::collections::HashSet<_> = fs::read_dir(&output)
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .flatten()
-                        .filter_map(|e| e.file_name().into_string().ok())
-                        .collect();
-                    deluge_pieces(&data, round, &output, only_rain, from)?;
-                    let new_files: Vec<_> = fs::read_dir(&output)?
-                        .flatten()
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension().and_then(|x| x.to_str()) == Some("sgp")
-                                && p.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .map(|n| !before.contains(n))
-                                    .unwrap_or(false)
-                        })
-                        .collect();
-                    for f in &new_files {
-                        println!("new part {}", f.display());
-                        if let Some(d) = &rsync {
-                            rsync_file(f, d)?;
+                let from = from.or_else(|| watch.then(sigil::rain_lane));
+                if let Some(f) = from {
+                    println!("this lane starts at part {f} (other people should pick a different --from so rain does not overlap)");
+                }
+                if watch {
+                    fs::create_dir_all(&output)?;
+                    println!("sending parts one at a time. Stops when the far side writes VESSEL.");
+                    for round in 1..=extra {
+                        if vessel_present(&output)
+                            || rsync.as_deref().map(vessel_at).unwrap_or(false)
+                        {
+                            println!("Vessel is full. Stopping.");
+                            break;
+                        }
+                        let before: std::collections::HashSet<_> = fs::read_dir(&output)
+                            .ok()
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .filter_map(|e| e.file_name().into_string().ok())
+                            .collect();
+                        deluge_pieces(&data, round, &output, only_rain, from)?;
+                        let new_files: Vec<_> = fs::read_dir(&output)?
+                            .flatten()
+                            .map(|e| e.path())
+                            .filter(|p| {
+                                p.extension().and_then(|x| x.to_str()) == Some("sgp")
+                                    && p.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .map(|n| !before.contains(n))
+                                        .unwrap_or(false)
+                            })
+                            .collect();
+                        for f in &new_files {
+                            println!("new part {}", f.display());
+                            if let Some(d) = &rsync {
+                                rsync_file(f, d)?;
+                            }
+                        }
+                        if rsync.is_none() {
+                            println!("copy the new part to them, or use --rsync user@host:rain/");
+                        }
+                        if rsync.as_deref().map(vessel_at).unwrap_or(false)
+                            || vessel_present(&output)
+                        {
+                            println!("Vessel is full. Stopping.");
+                            break;
                         }
                     }
-                    if rsync.is_none() {
-                        println!("copy the new part to them, or use --rsync user@host:rain/");
+                    if wormhole {
+                        dispatch(&output, &None, &None, true, false)?;
                     }
-                    if rsync.as_deref().map(vessel_at).unwrap_or(false) || vessel_present(&output) {
-                        println!("Vessel is full. Stopping.");
-                        break;
+                    if let Some(d) = &rclone {
+                        dispatch(&output, &None, &Some(d.clone()), false, false)?;
                     }
-                }
-                if wormhole {
-                    dispatch(&output, &None, &None, true, false)?;
-                }
-                if let Some(d) = &rclone {
-                    dispatch(&output, &None, &Some(d.clone()), false, false)?;
-                }
-            } else {
-                let n = deluge_pieces(&data, extra, &output, only_rain, from)?;
-                if only_rain {
-                    println!("rained {n} new pieces → {}", output.display());
                 } else {
-                    println!("deluge {n} pieces → {}", output.display());
+                    let n = deluge_pieces(&data, extra, &output, only_rain, from)?;
+                    if only_rain {
+                        println!("rained {n} new pieces → {}", output.display());
+                    } else {
+                        println!("deluge {n} pieces → {}", output.display());
+                    }
+                    println!("far side can: sigil gather --watch -o rebuilt.sg1 <folder>");
+                    dispatch(&output, &rsync, &rclone, wormhole, false)?;
                 }
-                println!("far side can: sigil gather --watch -o rebuilt.sg1 <folder>");
-                dispatch(&output, &rsync, &rclone, wormhole, false)?;
-            }
             }
         }
         Cmd::Gather {
@@ -1673,7 +1747,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if open {
                                 let plain = unseal_ex(&sg1, pass.as_deref(), &[])?;
                                 fs::write(&output, plain)?;
-                                println!("enough ({have} ≥ {k}). De-scribed → {}", output.display());
+                                println!(
+                                    "enough ({have} ≥ {k}). De-scribed → {}",
+                                    output.display()
+                                );
                             } else {
                                 fs::write(&output, sg1)?;
                                 println!("enough ({have} ≥ {k}). Gathered → {}", output.display());
@@ -1708,24 +1785,40 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Cmd::Mend { input, output, soft } if sigil::is_work_pack(&input) => {
+        Cmd::Mend {
+            input,
+            output,
+            soft,
+        } if sigil::is_work_pack(&input) => {
             let rep = sigil::mend_pack_path(&input, &output, soft)?;
             let healed = if rep.mended.is_empty() {
                 "no damage".to_string()
             } else {
                 let list: Vec<String> = rep.mended.iter().map(|i| i.to_string()).collect();
-                format!("healed {} chunk star(s): {}", rep.mended.len(), list.join(", "))
+                format!(
+                    "healed {} chunk star(s): {}",
+                    rep.mended.len(),
+                    list.join(", ")
+                )
             };
             println!(
                 "mended work pack {} → {} ({healed}; {} stars verified{}{})",
                 input.display(),
                 output.display(),
                 rep.stars,
-                if rep.facets_checked { ", facets ok" } else { ", no facet trailer" },
+                if rep.facets_checked {
+                    ", facets ok"
+                } else {
+                    ", no facet trailer"
+                },
                 if rep.soft_used { ", soft salvage" } else { "" }
             );
         }
-        Cmd::Mend { input, output, soft } => {
+        Cmd::Mend {
+            input,
+            output,
+            soft,
+        } => {
             let data = fs::read(&input)?;
             let (healed, used_soft) = mend_bytes_ex(&data, soft)?;
             let mut tmp = output.as_os_str().to_os_string();
@@ -1794,7 +1887,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         }
                         if !rained {
                             let n = deluge_pieces(&sg1, extra.max(1), &input, true, Some(lane))?;
-                            println!("raining {n} new parts from lane {lane} for people still short");
+                            println!(
+                                "raining {n} new parts from lane {lane} for people still short"
+                            );
                             rained = true;
                         }
                     }
@@ -1885,14 +1980,29 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!(
                     "identity → {}  (passkey-protected, {})  x25519 {}",
                     output.display(),
-                    if w.slots[0].uv { "PIN/UV" } else { "touch only" },
+                    if w.slots[0].uv {
+                        "PIN/UV"
+                    } else {
+                        "touch only"
+                    },
                     hex32(&w.public.x25519_pk)
                 );
-                println!("public → {}  (encrypt-to: --to {})", pub_path.display(), pub_path.display());
-                println!("add a backup key now: sigil identity add-passkey {}", output.display());
+                println!(
+                    "public → {}  (encrypt-to: --to {})",
+                    pub_path.display(),
+                    pub_path.display()
+                );
+                println!(
+                    "add a backup key now: sigil identity add-passkey {}",
+                    output.display()
+                );
             } else if legacy {
                 let pk = keygen_legacy(&output)?;
-                println!("legacy attest key → {}  public {}", output.display(), hex32(&pk));
+                println!(
+                    "legacy attest key → {}  public {}",
+                    output.display(),
+                    hex32(&pk)
+                );
                 println!("same file is a Talisman: --talisman {}", output.display());
             } else {
                 let pk = keygen_ecc(&output, pub_out.as_deref())?;
@@ -1906,8 +2016,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     output.display(),
                     hex32(&pk.x25519_pk)
                 );
-                println!("public → {}  (encrypt-to: --to {})", pub_path.display(), pub_path.display());
-                println!("attest seed is inside .sgk; sign with --key {}", output.display());
+                println!(
+                    "public → {}  (encrypt-to: --to {})",
+                    pub_path.display(),
+                    pub_path.display()
+                );
+                println!(
+                    "attest seed is inside .sgk; sign with --key {}",
+                    output.display()
+                );
             }
         }
         Cmd::ImportPgp {
@@ -1952,14 +2069,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("identity → {}  (.sgk v2, owner-only)", out.display());
                 }
             } else if imp.had_secret_packets {
-                println!("note: secret packets ignored (public only); pass -o me.sgk to import them");
+                println!(
+                    "note: secret packets ignored (public only); pass -o me.sgk to import them"
+                );
             }
             imp.public.write(&pub_path)?;
             println!(
                 "pgp {}  {}{}",
                 hex::encode_upper(&imp.primary_fpr),
                 imp.user_id.as_deref().unwrap_or("(no verified user id)"),
-                if imp.key_version == 6 { "  (OpenPGP v6)" } else { "" }
+                if imp.key_version == 6 {
+                    "  (OpenPGP v6)"
+                } else {
+                    ""
+                }
             );
             println!("encrypt subkey {}", hex::encode_upper(&imp.subkey_fpr));
             println!(
@@ -1976,7 +2099,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
         Cmd::Log { cmd } => run_log(cmd)?,
-        Cmd::Tidy { path, dry_run, pass, talisman, identity } => {
+        Cmd::Tidy {
+            path,
+            dry_run,
+            pass,
+            talisman,
+            identity,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let report = sigil::container::tidy(
@@ -1990,12 +2119,27 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             print!("{}", report.render());
         }
-        Cmd::Doctor { path, json, fix, quick, pass, talisman, identity, temp_age } => {
+        Cmd::Doctor {
+            path,
+            json,
+            fix,
+            quick,
+            pass,
+            talisman,
+            identity,
+            temp_age,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             match sigil::doctor::doctor(
                 &path,
-                &sigil::doctor::DoctorOpts { pass: pass.as_deref(), identities: &identities, quick, fix, temp_age_secs: temp_age },
+                &sigil::doctor::DoctorOpts {
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                    quick,
+                    fix,
+                    temp_age_secs: temp_age,
+                },
             ) {
                 Ok(r) => {
                     if json {
@@ -2011,12 +2155,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Cmd::Gc { path, apply, dry_run: _, pass, talisman, identity, temp_age } => {
+        Cmd::Gc {
+            path,
+            apply,
+            dry_run: _,
+            pass,
+            talisman,
+            identity,
+            temp_age,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let r = sigil::gc::gc(
                 &path,
-                &sigil::gc::GcOpts { apply, pass: pass.as_deref(), identities: &identities, temp_age_secs: temp_age },
+                &sigil::gc::GcOpts {
+                    apply,
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                    temp_age_secs: temp_age,
+                },
             )?;
             print!("{}", r.render());
         }
@@ -2046,15 +2203,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if !input.is_file() {
                 if let Some(sky) = sigil::names::sky_dir(&input) {
                     let entries = sigil::names::sky_entries(&sky, pass.as_deref(), &identities)?;
-                    let first = steps.first().map(|s| s.trim().trim_start_matches("./").to_string());
-                    match first.as_deref().and_then(|f| entries.iter().find(|e| e.name == f)) {
+                    let first = steps
+                        .first()
+                        .map(|s| s.trim().trim_start_matches("./").to_string());
+                    match first
+                        .as_deref()
+                        .and_then(|f| entries.iter().find(|e| e.name == f))
+                    {
                         Some(e) => {
-                            input = e.star.clone().ok_or_else(|| format!("star for {} is missing (see `sigil doctor`)", e.name))?;
+                            input = e.star.clone().ok_or_else(|| {
+                                format!("star for {} is missing (see `sigil doctor`)", e.name)
+                            })?;
                             steps.remove(0);
                         }
                         None => {
                             let prefix = first.unwrap_or_default();
-                            if !prefix.is_empty() && !entries.iter().any(|e| e.name.starts_with(&prefix)) {
+                            if !prefix.is_empty()
+                                && !entries.iter().any(|e| e.name.starts_with(&prefix))
+                            {
                                 return Err(format!("nothing named {prefix:?} on the list").into());
                             }
                             print!("{}", sigil::names::render_sky(&sky, &entries, &prefix));
@@ -2072,7 +2238,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             steps.remove(0);
                         }
                         Some(None) => {
-                            return Err(format!("{:?} is not a version (try v1, @2, or notes.txt@v3)", steps[0]).into());
+                            return Err(format!(
+                                "{:?} is not a version (try v1, @2, or notes.txt@v3)",
+                                steps[0]
+                            )
+                            .into());
                         }
                     }
                 }
@@ -2081,7 +2251,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", view.format());
             if let Some(dest) = output {
                 let (written, trail) = path_extract_keys(
-                    &input, &steps, &dest, pass.as_deref(), &wards, depth, &identities,
+                    &input,
+                    &steps,
+                    &dest,
+                    pass.as_deref(),
+                    &wards,
+                    depth,
+                    &identities,
                 )?;
                 println!(
                     "extracted {} → {} (outer .sg1 unchanged)",
@@ -2162,34 +2338,57 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let raw = fs::read(&input)?;
             if is_wrapped(&raw) {
-                return Err("already passkey-protected; use `identity add-passkey` for a backup key".into());
+                return Err(
+                    "already passkey-protected; use `identity add-passkey` for a backup key".into(),
+                );
             }
             let id = Identity::load(&input)?;
             let mut auth = default_authenticator()?;
             let w = Wrapped::protect(&id, auth.as_mut(), &rp_id, !no_uv)?;
             // Prove the new file opens before anything is replaced.
             Wrapped::parse(&w.to_bytes())?.unlock(auth.as_mut())?;
-            let dest = if in_place { input.clone() } else { output.unwrap() };
+            let dest = if in_place {
+                input.clone()
+            } else {
+                output.unwrap()
+            };
             write_atomic_secret(&dest, &w)?;
             println!(
                 "protected → {}  ({}, rp {})",
                 dest.display(),
-                if w.slots[0].uv { "PIN/UV" } else { "touch only" },
+                if w.slots[0].uv {
+                    "PIN/UV"
+                } else {
+                    "touch only"
+                },
                 rp_id
             );
             if !in_place {
                 println!("the plain copy {} still exists — delete it (shred -u) once you've tested the new file", input.display());
             }
-            println!("add a backup key: sigil identity add-passkey {}", dest.display());
+            println!(
+                "add a backup key: sigil identity add-passkey {}",
+                dest.display()
+            );
         }
-        IdentityCmd::AddPasskey { input, rp_id, no_uv } => {
+        IdentityCmd::AddPasskey {
+            input,
+            rp_id,
+            no_uv,
+        } => {
             let mut w = Wrapped::load(&input)?;
             let mut unlock = default_authenticator()?;
             let mut new_auth = default_authenticator()?;
-            eprintln!("passkey: unlock with an existing key first; then plug in the new key when asked");
+            eprintln!(
+                "passkey: unlock with an existing key first; then plug in the new key when asked"
+            );
             w.add_slot(unlock.as_mut(), new_auth.as_mut(), &rp_id, !no_uv)?;
             write_atomic_secret(&input, &w)?;
-            println!("added passkey slot #{} → {}", w.slots.len() - 1, input.display());
+            println!(
+                "added passkey slot #{} → {}",
+                w.slots.len() - 1,
+                input.display()
+            );
         }
         IdentityCmd::RemovePasskey { input, slot } => {
             let mut w = Wrapped::load(&input)?;
@@ -2200,7 +2399,10 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
         IdentityCmd::Unprotect { input, output } => {
             let id = Identity::load(&input)?;
             id.write(&output)?;
-            println!("plain identity → {}  (owner-only; anyone with this file can open your seals)", output.display());
+            println!(
+                "plain identity → {}  (owner-only; anyone with this file can open your seals)",
+                output.display()
+            );
         }
         IdentityCmd::Info { input } => {
             let raw = fs::read(&input)?;
@@ -2217,7 +2419,11 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     "public key"
                 };
-                println!("{kind}\n  x25519 {}\n  ed25519 {}", hex32(&pk.x25519_pk), hex32(&pk.ed25519_pk));
+                println!(
+                    "{kind}\n  x25519 {}\n  ed25519 {}",
+                    hex32(&pk.x25519_pk),
+                    hex32(&pk.ed25519_pk)
+                );
             }
         }
     }
@@ -2246,7 +2452,11 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 &hex32(&report.digest)[..12]
             );
             if !recipients.is_empty() {
-                println!("encrypt-to {} recipient{}", recipients.len(), if recipients.len() == 1 { "" } else { "s" });
+                println!(
+                    "encrypt-to {} recipient{}",
+                    recipients.len(),
+                    if recipients.len() == 1 { "" } else { "s" }
+                );
             }
             println!("{}", vault_format_status(&vault_status(&path)?));
         }
@@ -2279,14 +2489,20 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     &wards,
                 )?;
                 let meta = sigil::VaultDirtyMeta::read(&export)?;
-                let live = meta.live.ok_or("dirty export missing live= (not vault-tracked)")?;
+                let live = meta
+                    .live
+                    .ok_or("dirty export missing live= (not vault-tracked)")?;
                 (report, live)
             } else {
-                let path = path.ok_or(
-                    "vault commit needs a live path, or --from-export DIR",
+                let path = path.ok_or("vault commit needs a live path, or --from-export DIR")?;
+                let report = vault_commit_ex(
+                    &path,
+                    mode.into(),
+                    pass.as_deref(),
+                    force,
+                    &recipients,
+                    &wards,
                 )?;
-                let report =
-                    vault_commit_ex(&path, mode.into(), pass.as_deref(), force, &recipients, &wards)?;
                 (report, path)
             };
             if report.skipped {
@@ -2313,18 +2529,19 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                         "encrypt-to {} recipient{}{}",
                         effective.len(),
                         if effective.len() == 1 { "" } else { "s" },
-                        if recipients.is_empty() { " (remembered)" } else { " (now remembered)" }
+                        if recipients.is_empty() {
+                            " (remembered)"
+                        } else {
+                            " (now remembered)"
+                        }
                     );
                 }
             }
             // Explicit --keep, or chart light policy: prune after a real commit.
             if !report.skipped {
-                if let Some(p) = vault_maybe_prune_after_commit(
-                    &status_path,
-                    keep,
-                    cold.as_deref(),
-                    force_drop,
-                )? {
+                if let Some(p) =
+                    vault_maybe_prune_after_commit(&status_path, keep, cold.as_deref(), force_drop)?
+                {
                     if !p.removed.is_empty() {
                         let where_cold = p
                             .cold_dir
@@ -2380,7 +2597,11 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             force_drop,
             cold_here,
         } => {
-            let cold = if cold_here { Some(sigil::vault_cold_here(&path)?) } else { cold };
+            let cold = if cold_here {
+                Some(sigil::vault_cold_here(&path)?)
+            } else {
+                cold
+            };
             let p = vault_prune_with(&path, keep, cold.as_deref(), force_drop)?;
             let removed = if p.removed.is_empty() {
                 "(none)".to_string()
@@ -2402,16 +2623,31 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
             print!("{}", vault_format_versions(&vault_list_versions(&path)?));
         }
-        VaultCmd::Remove { path, version, cold, cold_here, force_drop, dry_run } => {
-            let cold = if cold_here { Some(sigil::vault_cold_here(&path)?) } else { cold };
-            let r = sigil::vault_remove_version(&path, version, cold.as_deref(), force_drop, dry_run)?;
+        VaultCmd::Remove {
+            path,
+            version,
+            cold,
+            cold_here,
+            force_drop,
+            dry_run,
+        } => {
+            let cold = if cold_here {
+                Some(sigil::vault_cold_here(&path)?)
+            } else {
+                cold
+            };
+            let r =
+                sigil::vault_remove_version(&path, version, cold.as_deref(), force_drop, dry_run)?;
             println!(
                 "{}vault remove v{} tip=v{} remaining={}{}",
                 if r.dry_run { "dry run: would " } else { "" },
                 r.removed,
                 r.tip,
                 r.remaining,
-                r.cold_dir.as_ref().map(|d| format!("  cold={}", d.display())).unwrap_or_default()
+                r.cold_dir
+                    .as_ref()
+                    .map(|d| format!("  cold={}", d.display()))
+                    .unwrap_or_default()
             );
             if !r.dry_run {
                 print!("{}", vault_format_versions(&vault_list_versions(&path)?));
@@ -2498,8 +2734,10 @@ fn parse_signer(spec: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
         }
         return Ok(Identity::load(p)?.public().ed25519_pk);
     }
-    let b = hex::decode(spec.trim()).map_err(|_| format!("--signer: not a file and not hex: {spec}"))?;
-    b.try_into().map_err(|_| "--signer hex must be 32 bytes (64 hex chars)".into())
+    let b = hex::decode(spec.trim())
+        .map_err(|_| format!("--signer: not a file and not hex: {spec}"))?;
+    b.try_into()
+        .map_err(|_| "--signer hex must be 32 bytes (64 hex chars)".into())
 }
 
 /// `90`, `45s`, `30m`, `12h`, `7d`, `2w` → seconds.
@@ -2513,12 +2751,17 @@ fn parse_duration_secs(spec: &str) -> Result<u64, Box<dyn std::error::Error>> {
         Some('w') => (&t[..t.len() - 1], 7 * 86400),
         _ => (t, 1),
     };
-    let n: u64 = num.trim().parse().map_err(|_| format!("bad duration {spec:?}: use e.g. 90, 30m, 12h, 7d, 2w"))?;
+    let n: u64 = num
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad duration {spec:?}: use e.g. 90, 30m, 12h, 7d, 2w"))?;
     Ok(n.saturating_mul(mult))
 }
 
 fn parse_anchor(spec: &str) -> Result<(u64, [u8; 32]), Box<dyn std::error::Error>> {
-    let (n, r) = spec.split_once(':').ok_or("--anchor needs SEQ:ROOT (as printed by `sigil log ls`)")?;
+    let (n, r) = spec
+        .split_once(':')
+        .ok_or("--anchor needs SEQ:ROOT (as printed by `sigil log ls`)")?;
     let root: [u8; 32] = hex::decode(r.trim())
         .map_err(|_| "--anchor ROOT is not hex")?
         .try_into()
@@ -2529,7 +2772,11 @@ fn parse_anchor(spec: &str) -> Result<(u64, [u8; 32]), Box<dyn std::error::Error
 fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
     use sigil::seglog;
     match cmd {
-        LogCmd::Init { path, identity, segment_keys } => {
+        LogCmd::Init {
+            path,
+            identity,
+            segment_keys,
+        } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let log = seglog::init_with(&path, id.as_ref(), segment_keys)?;
             println!(
@@ -2542,7 +2789,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 if segment_keys { "; per-segment keys: append with --pass and/or --to to wrap each segment's key, then `sigil log shred` can destroy it" } else { "" }
             );
         }
-        LogCmd::Append { path, input, mode, pass, talisman, to, identity } => {
+        LogCmd::Append {
+            path,
+            input,
+            mode,
+            pass,
+            talisman,
+            to,
+            identity,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let id = identity.as_deref().map(Identity::load).transpose()?;
@@ -2557,7 +2812,12 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let r = seglog::append(
                 &path,
                 &data,
-                &seglog::AppendOpts { mode: mode.into(), pass: pass.as_deref(), recipients: &recipients, identity: id.as_ref() },
+                &seglog::AppendOpts {
+                    mode: mode.into(),
+                    pass: pass.as_deref(),
+                    recipients: &recipients,
+                    identity: id.as_ref(),
+                },
             )?;
             for n in &r.notes {
                 eprintln!("note: {n}");
@@ -2574,7 +2834,17 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         LogCmd::Ls { path } => print!("{}", seglog::list(&path)?.render()),
-        LogCmd::Read { path, seq, from, to, output, strict, pass, talisman, identity } => {
+        LogCmd::Read {
+            path,
+            seq,
+            from,
+            to,
+            output,
+            strict,
+            pass,
+            talisman,
+            identity,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let n = seglog::list(&path)?.entries.len() as u64;
@@ -2592,7 +2862,16 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 seglog::ReadMode::SkipDeleted
             };
-            let got = seglog::read_range(&path, a, b, &seglog::ReadOpts { pass: pass.as_deref(), identities: &identities }, mode)?;
+            let got = seglog::read_range(
+                &path,
+                a,
+                b,
+                &seglog::ReadOpts {
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                },
+                mode,
+            )?;
             if !got.skipped_deleted.is_empty() {
                 eprintln!(
                     "note: skipped {} deleted segment(s): {}",
@@ -2610,17 +2889,39 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             }
             out.flush()?;
         }
-        LogCmd::Verify { path, quick, pass, talisman, identity, signer, anchor, json, temp_age } => {
+        LogCmd::Verify {
+            path,
+            quick,
+            pass,
+            talisman,
+            identity,
+            signer,
+            anchor,
+            json,
+            temp_age,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let signer = signer.as_deref().map(parse_signer).transpose()?;
-            let anchors = anchor.iter().map(|a| parse_anchor(a)).collect::<Result<Vec<_>, _>>()?;
+            let anchors = anchor
+                .iter()
+                .map(|a| parse_anchor(a))
+                .collect::<Result<Vec<_>, _>>()?;
             match seglog::check(
                 &path,
-                &seglog::CheckOpts { pass: pass.as_deref(), identities: &identities, quick, signer, anchors: &anchors, temp_age_secs: temp_age },
+                &seglog::CheckOpts {
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                    quick,
+                    signer,
+                    anchors: &anchors,
+                    temp_age_secs: temp_age,
+                },
             ) {
                 Ok(c) => {
-                    let dir = sigil::seglog::Log::open(&path).map(|l| l.dir).unwrap_or(path.clone());
+                    let dir = sigil::seglog::Log::open(&path)
+                        .map(|l| l.dir)
+                        .unwrap_or(path.clone());
                     let r = sigil::doctor::DoctorReport {
                         kind: "log".into(),
                         root: dir,
@@ -2642,7 +2943,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                                     c.format,
                                     c.deleted,
                                     c.compactions,
-                                    if c.segkeys { format!(", per-segment keys, {} shredded", c.shredded) } else { String::new() }
+                                    if c.segkeys {
+                                        format!(", per-segment keys, {} shredded", c.shredded)
+                                    } else {
+                                        String::new()
+                                    }
                                 )
                             } else {
                                 String::new()
@@ -2666,7 +2971,14 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        LogCmd::Tombstone { path, seq, from, to, reason, identity } => {
+        LogCmd::Tombstone {
+            path,
+            seq,
+            from,
+            to,
+            reason,
+            identity,
+        } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let target = match (seq, from, to) {
                 (Some(s), _, _) => seglog::TombTarget::Seq(s),
@@ -2681,14 +2993,25 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 "tombstone {}: deleted segment(s) {}{}  head {}:{}{}",
                 r.entry,
                 seglog::fmt_ranges(&seglog::compress(&r.deleted)),
-                if r.already.is_empty() { String::new() } else { format!(" ({} already deleted, skipped)", r.already.len()) },
+                if r.already.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({} already deleted, skipped)", r.already.len())
+                },
                 r.entry,
                 hex::encode(r.root),
                 if r.signed { "  (signed)" } else { "" }
             );
             println!("  reads and `log ls` honour it now; {} byte(s) stay on disk until `sigil log compact --apply` (or `gc --apply`)", r.pending_bytes);
         }
-        LogCmd::Shred { path, seq, from, to, reason, identity } => {
+        LogCmd::Shred {
+            path,
+            seq,
+            from,
+            to,
+            reason,
+            identity,
+        } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let target = match (seq, from, to) {
                 (Some(s), _, _) => seglog::TombTarget::Seq(s),
@@ -2703,7 +3026,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 "shred {}: crypto-shredded segment(s) {}{}  head {}:{}{}",
                 r.entry,
                 seglog::fmt_ranges(&seglog::compress(&r.shredded)),
-                if r.already.is_empty() { String::new() } else { format!(" ({} already shredded, skipped)", r.already.len()) },
+                if r.already.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({} already shredded, skipped)", r.already.len())
+                },
                 r.entry,
                 hex::encode(r.root),
                 if r.signed { "  (signed)" } else { "" }
@@ -2713,7 +3040,21 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 r.keys_destroyed, r.files_removed
             );
         }
-        LogCmd::Compact { path, keep_last, older_than, range, apply, target_size, mode, pass, talisman, identity, seal_pass, to, allow_decrypt } => {
+        LogCmd::Compact {
+            path,
+            keep_last,
+            older_than,
+            range,
+            apply,
+            target_size,
+            mode,
+            pass,
+            talisman,
+            identity,
+            seal_pass,
+            to,
+            allow_decrypt,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let recipients = load_recipients(&to)?;
@@ -2737,16 +3078,35 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     seal_pass: seal_pass.as_deref(),
                     recipients: &recipients,
                     allow_decrypt,
-                    read: seglog::ReadOpts { pass: pass.as_deref(), identities: &identities },
+                    read: seglog::ReadOpts {
+                        pass: pass.as_deref(),
+                        identities: &identities,
+                    },
                     ..Default::default()
                 },
             )?;
-            let dir = seglog::Log::open(&path).map(|l| l.dir).unwrap_or(path.clone());
+            let dir = seglog::Log::open(&path)
+                .map(|l| l.dir)
+                .unwrap_or(path.clone());
             print!("{}", rep.render(&dir));
         }
-        LogCmd::Adopt { path, sources, identity, keep, dry_run } => {
+        LogCmd::Adopt {
+            path,
+            sources,
+            identity,
+            keep,
+            dry_run,
+        } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
-            let r = seglog::adopt(&path, &sources, &seglog::AdoptOpts { identity: id.as_ref(), keep, dry_run })?;
+            let r = seglog::adopt(
+                &path,
+                &sources,
+                &seglog::AdoptOpts {
+                    identity: id.as_ref(),
+                    keep,
+                    dry_run,
+                },
+            )?;
             for n in &r.notes {
                 eprintln!("note: {n}");
             }
@@ -2755,7 +3115,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
-        LogCmd::RotateSigner { path, identity, new } => {
+        LogCmd::RotateSigner {
+            path,
+            identity,
+            new,
+        } => {
             let id = Identity::load(&identity)?;
             let new = parse_signer(&new).map_err(|e| e.to_string().replace("--signer", "--new"))?;
             let r = seglog::rotate_signer(&path, &id, new)?;
@@ -2775,7 +3139,12 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 r.handovers
             );
         }
-        LogCmd::Prove { path, seq, at, output } => {
+        LogCmd::Prove {
+            path,
+            seq,
+            at,
+            output,
+        } => {
             let p = seglog::prove(&path, seq, at)?;
             let text = p.render();
             match output {
@@ -2785,15 +3154,25 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                         "proof of entry {seq} against {}:{} ({}) written to {}",
                         p.size,
                         hex::encode(p.root),
-                        if p.head.is_some() { "signed" } else { "unsigned" },
+                        if p.head.is_some() {
+                            "signed"
+                        } else {
+                            "unsigned"
+                        },
                         o.display()
                     );
                 }
                 None => print!("{text}"),
             }
         }
-        LogCmd::CheckProof { proof, file, signer, anchor } => {
-            let text = fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
+        LogCmd::CheckProof {
+            proof,
+            file,
+            signer,
+            anchor,
+        } => {
+            let text =
+                fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
             let opts = seglog::ProofCheckOpts {
                 signer: signer.as_deref().map(parse_signer).transpose()?,
                 anchor: anchor.as_deref().map(parse_anchor).transpose()?,
@@ -2819,10 +3198,28 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 "log mend: checked {} segment(s), healed {}{}",
                 r.checked,
                 r.mended.len(),
-                if r.mended.is_empty() { String::new() } else { format!(" ({})", r.mended.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")) }
+                if r.mended.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " ({})",
+                        r.mended
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
             );
             if !r.keys_mended.is_empty() {
-                println!("  key ring shard(s) healed: {}", r.keys_mended.iter().map(|s| format!("{s:04}")).collect::<Vec<_>>().join(", "));
+                println!(
+                    "  key ring shard(s) healed: {}",
+                    r.keys_mended
+                        .iter()
+                        .map(|s| format!("{s:04}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
             for (s, m) in &r.keys_unrecoverable {
                 println!("  key ring shard {s:04}: cannot be healed: {m}");
@@ -2833,7 +3230,10 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             for (s, m) in &r.unrecoverable {
                 println!("  segment {s}: cannot be healed: {m}");
             }
-            if !r.missing.is_empty() || !r.unrecoverable.is_empty() || !r.keys_unrecoverable.is_empty() {
+            if !r.missing.is_empty()
+                || !r.unrecoverable.is_empty()
+                || !r.keys_unrecoverable.is_empty()
+            {
                 std::process::exit(2);
             }
         }
@@ -2913,14 +3313,26 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             if wormhole {
                 let bag = sky.join(format!(
                     "{}.sga",
-                    sky.file_name().and_then(|s| s.to_str()).map(sigil::container::strip_suffix).unwrap_or("constellation")
+                    sky.file_name()
+                        .and_then(|s| s.to_str())
+                        .map(sigil::container::strip_suffix)
+                        .unwrap_or("constellation")
                 ));
-                let chart = report.chart.as_ref().ok_or("constellation list missing after add")?;
+                let chart = report
+                    .chart
+                    .as_ref()
+                    .ok_or("constellation list missing after add")?;
                 sigil::pack_atlas_chart(&sky, chart, &bag)?;
                 dispatch(&bag, &None, &None, true, false)?;
             }
         }
-        SkyCmd::Atlas { sky, output, pass, talisman, identity } => {
+        SkyCmd::Atlas {
+            sky,
+            output,
+            pass,
+            talisman,
+            identity,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let sky = sigil::container::sky_for_read(&sky);
@@ -2935,7 +3347,16 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             let n = sigil::pack_atlas_keys(&sky, &dest, pass.as_deref(), &identities)?;
             println!("atlas {n} files → {}", dest.display());
         }
-        SkyCmd::Remove { sky, names, pass, talisman, to, identity, keep_stars, dry_run } => {
+        SkyCmd::Remove {
+            sky,
+            names,
+            pass,
+            talisman,
+            to,
+            identity,
+            keep_stars,
+            dry_run,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let identities = load_identities(&identity)?;
@@ -2955,7 +3376,11 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {verb} {n}");
             }
             for p in &r.stars_freed {
-                println!("  {} star {}", if r.dry_run { "would delete" } else { "deleted" }, p.display());
+                println!(
+                    "  {} star {}",
+                    if r.dry_run { "would delete" } else { "deleted" },
+                    p.display()
+                );
             }
             println!(
                 "{}constellation {}: {} name(s) off the list, {} star file(s) freed, {} name(s) remain",
@@ -2966,10 +3391,18 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                 r.remaining
             );
         }
-        SkyCmd::Scry { sky, pass, talisman, identity } => {
+        SkyCmd::Scry {
+            sky,
+            pass,
+            talisman,
+            identity,
+        } => {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            println!("{}", sigil::scry_constellation_keys(&sky, pass.as_deref(), &identities)?);
+            println!(
+                "{}",
+                sigil::scry_constellation_keys(&sky, pass.as_deref(), &identities)?
+            );
         }
     }
     Ok(())
