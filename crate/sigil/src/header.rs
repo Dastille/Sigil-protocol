@@ -426,6 +426,42 @@ pub fn wrap_keystone(header: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Fail closed when `file` holds more than the one seal its header describes.
+///
+/// A large-file pack (SGWK) is many complete seals back to back. If the pack's
+/// front is damaged, `locate_header` still finds the *first* chunk's seal a few
+/// bytes in, and that seal opens and checks out on its own, so opening "the
+/// file" would silently return only the first chunk. Any second Sigil header or
+/// pack trailer after the end of the located seal means "this is not one seal".
+pub fn ensure_single_seal(file: &[u8], h: &Header, prefix: usize) -> Result<()> {
+    let end = prefix.saturating_add((h.n as usize).saturating_mul(shard_stride(h)));
+    if file.len() <= end {
+        return Ok(());
+    }
+    let tail = &file[end..];
+    let mut i = 0;
+    while i + 4 <= tail.len() {
+        let w = &tail[i..i + 4];
+        let hit = (w == MAGIC && read_header(&tail[i..]).is_ok())
+            || (w == MAGIC_EMBER && parse_header(&tail[i..], &MAGIC_EMBER).is_ok())
+            || (w == b"SGFC"
+                && tail.len() >= i + 8
+                && (tail.len() - i - 8).is_multiple_of(32)
+                && u32::from_le_bytes(tail[i + 4..i + 8].try_into().unwrap()) as usize
+                    == (tail.len() - i - 8) / 32);
+        if hit {
+            return Err(Error::Msg(
+                "this file holds more than one seal: it looks like a large-file pack whose \
+                 front (pack head) is damaged. Refusing to return only the first part. \
+                 The pack head is not repairable; restore it from another copy."
+                    .into(),
+            ));
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
 /// Returns (header, body prefix, recovered from a spare copy).
 pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
     if let Ok(h) = read_header(file) {

@@ -479,6 +479,7 @@ pub fn unseal_ex_mds_keys(
     identities: &[keys::Identity],
 ) -> Result<Vec<u8>> {
     let (h, prefix, _) = locate_header(file)?;
+    header::ensure_single_seal(file, &h, prefix)?;
     if h.vow() {
         let vow_off = prefix.saturating_sub(header::VOW_SIZE);
         let mut got = file
