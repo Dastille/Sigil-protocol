@@ -16,6 +16,7 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use std::path::Path;
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
+use zeroize::Zeroizing;
 
 pub const ID_MAGIC: [u8; 4] = *b"SGIK";
 pub const PUB_MAGIC: [u8; 4] = *b"SGIP";
@@ -26,6 +27,9 @@ pub const ID_VERSION_RAW: u8 = 2;
 const ID_FLAG_PGP: u8 = 1;
 const ID_SIZE_RAW: usize = ID_HEADER + 32 + 32 + 20; // x25519 sk + ed25519 seed + pgp fpr
 pub const SGTO_VERSION: u8 = 1;
+/// SGTO v2: same layout as v1, written when the block carries a [`KIND_PASS_ARGON2ID`]
+/// record. Readers accept v1 and v2; builds that only know v1 refuse v2 blocks (fail closed).
+pub const SGTO_VERSION_ARGON2: u8 = 2;
 
 const ID_HEADER: usize = 8; // magic + ver + flags + pad
 const PUB_SIZE: usize = ID_HEADER + 32 + 32;
@@ -33,7 +37,26 @@ const ID_SIZE: usize = ID_HEADER + 32; // master seed; keys derived via HKDF
 const RECIPIENT_REC: usize = 8 + 32 + 12 + 16 + 32; // hint + eph_pk + nonce + tag + ct
 const SGTO_HEADER: usize = 8; // magic + ver + count + flags + pad
 const KIND_X25519: u8 = 1;
+/// Legacy passphrase wrap: PBKDF2-HMAC-SHA256, fixed [`PBKDF2_ITERS`], salt = header salt.
+/// Read-only since Argon2id wraps were added; kept so existing files keep opening.
 const KIND_PASS: u8 = 2;
+/// Passphrase wrap with Argon2id (RFC 9106, RustCrypto `argon2`) and its parameters stored
+/// in the record: salt(16) | m_kib u32le | t u32le | p u32le | nonce(12) | tag(16) | ct(32).
+const KIND_PASS_ARGON2ID: u8 = 3;
+const PASS_ARGON2_REC: usize = 16 + 4 + 4 + 4 + 12 + 16 + 32;
+/// New-file Argon2id defaults: the OWASP Password Storage Cheat Sheet minimum configuration
+/// "m=19456 (19 MiB), t=2, p=1" for Argon2id
+/// (https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+pub const ARGON2_M_KIB: u32 = 19_456;
+pub const ARGON2_T: u32 = 2;
+pub const ARGON2_P: u32 = 1;
+/// Reader bounds on stored parameters, so a crafted file cannot demand unbounded memory or
+/// time before the AEAD check: at most 1 GiB, 16 passes, 8 lanes, and a passes × memory
+/// budget of 2^22 KiB-passes (e.g. 256 MiB × 16, or 1 GiB × 4).
+pub const ARGON2_MAX_M_KIB: u32 = 1 << 20;
+pub const ARGON2_MAX_T: u32 = 16;
+pub const ARGON2_MAX_P: u32 = 8;
+pub const ARGON2_MAX_WORK: u64 = 1 << 22;
 const FLAG_HAS_PASS_WRAP: u8 = 1;
 
 /// Secret identity: X25519 decrypt + Ed25519 attest seed (HKDF-split from master).
@@ -390,15 +413,66 @@ fn encode_recipient_x25519(recip: &PublicIdentity, cek: &[u8; 32]) -> Result<Vec
     Ok(rec)
 }
 
-fn encode_recipient_pass(pass: &str, salt: &[u8; 16], cek: &[u8; 32]) -> Result<Vec<u8>> {
-    let mut key = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(pass.as_bytes(), salt, PBKDF2_ITERS, &mut key);
+/// Validate stored Argon2id parameters against RFC 9106 minimums and Sigil's DoS bounds.
+fn argon2_params_ok(m_kib: u32, t: u32, p: u32) -> Result<()> {
+    let bad = |why: &str| {
+        Err(Error::Msg(format!(
+            "Argon2id wrap parameters rejected: {why}"
+        )))
+    };
+    if t == 0 || p == 0 || m_kib < 8 * p {
+        return bad("below RFC 9106 minimums (t >= 1, p >= 1, m >= 8p KiB)");
+    }
+    if m_kib > ARGON2_MAX_M_KIB || t > ARGON2_MAX_T || p > ARGON2_MAX_P {
+        return bad("above Sigil's resource caps");
+    }
+    if m_kib as u64 * t as u64 > ARGON2_MAX_WORK {
+        return bad("passes x memory above Sigil's work budget");
+    }
+    Ok(())
+}
+
+/// Argon2id (v0x13) → 32-byte wrap key. Working memory is reserved fallibly (an error, not
+/// an abort, on a machine without it) and wiped afterwards, as in `pgp::argon2_derive`.
+fn argon2id_key(
+    pass: &str,
+    salt: &[u8; 16],
+    m_kib: u32,
+    t: u32,
+    p: u32,
+) -> Result<Zeroizing<[u8; 32]>> {
+    use argon2::{Algorithm, Argon2, Block, Params, Version};
+    use zeroize::Zeroize;
+    argon2_params_ok(m_kib, t, p)?;
+    let params = Params::new(m_kib, t, p, Some(32))
+        .map_err(|e| Error::Msg(format!("Argon2id parameters rejected: {e}")))?;
+    let mut blocks: Vec<Block> = Vec::new();
+    blocks
+        .try_reserve_exact(params.block_count())
+        .map_err(|_| Error::Msg(format!("not enough memory for Argon2id ({m_kib} KiB)")))?;
+    blocks.resize(params.block_count(), Block::default());
+    let mut key = Zeroizing::new([0u8; 32]);
+    let res = Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into_with_memory(pass.as_bytes(), salt, key.as_mut(), &mut blocks);
+    blocks.iter_mut().for_each(|b| b.zeroize());
+    res.map_err(|e| Error::Msg(format!("Argon2id failed: {e}")))?;
+    Ok(key)
+}
+
+fn encode_recipient_pass(pass: &str, cek: &[u8; 32]) -> Result<Vec<u8>> {
+    let mut salt = [0u8; 16];
+    getrandom::getrandom(&mut salt).map_err(|e| Error::Msg(e.to_string()))?;
+    let key = argon2id_key(pass, &salt, ARGON2_M_KIB, ARGON2_T, ARGON2_P)?;
     let (nonce, tag, ct) = aes_wrap(&key, cek)?;
     if ct.len() != 32 {
         return Err(Error::Msg("unexpected CEK ciphertext length".into()));
     }
-    let mut rec = Vec::with_capacity(1 + 12 + 16 + 32);
-    rec.push(KIND_PASS);
+    let mut rec = Vec::with_capacity(1 + PASS_ARGON2_REC);
+    rec.push(KIND_PASS_ARGON2ID);
+    rec.extend_from_slice(&salt);
+    rec.extend_from_slice(&ARGON2_M_KIB.to_le_bytes());
+    rec.extend_from_slice(&ARGON2_T.to_le_bytes());
+    rec.extend_from_slice(&ARGON2_P.to_le_bytes());
     rec.extend_from_slice(&nonce);
     rec.extend_from_slice(&tag);
     rec.extend_from_slice(&ct);
@@ -410,7 +484,8 @@ pub fn build_sgto(
     cek: &[u8; 32],
     recipients: &[PublicIdentity],
     pass: Option<&str>,
-    salt: &[u8; 16],
+    // Unused since Argon2id wraps carry their own salt; kept for API stability.
+    _salt: &[u8; 16],
 ) -> Result<Vec<u8>> {
     if recipients.is_empty() && pass.map(|p| p.is_empty()).unwrap_or(true) {
         return Err(Error::Msg(
@@ -424,14 +499,16 @@ pub fn build_sgto(
         body.extend_from_slice(&encode_recipient_x25519(r, cek)?);
         count = count.saturating_add(1);
     }
+    let mut version = SGTO_VERSION;
     if let Some(p) = pass.filter(|s| !s.is_empty()) {
-        body.extend_from_slice(&encode_recipient_pass(p, salt, cek)?);
+        body.extend_from_slice(&encode_recipient_pass(p, cek)?);
         count = count.saturating_add(1);
         flags |= FLAG_HAS_PASS_WRAP;
+        version = SGTO_VERSION_ARGON2;
     }
     let mut out = Vec::with_capacity(SGTO_HEADER + 4 + body.len());
     out.extend_from_slice(&SGTO_MAGIC);
-    out.push(SGTO_VERSION);
+    out.push(version);
     out.push(count);
     out.push(flags);
     out.push(0); // pad
@@ -439,6 +516,12 @@ pub fn build_sgto(
     let crc = crc32fast::hash(&out);
     out.extend_from_slice(&crc.to_le_bytes());
     Ok(out)
+}
+
+/// True when an SGTO block wraps the CEK for at least one X25519 recipient (records beyond
+/// the single optional passphrase wrap). A passphrase-only seal also carries SGTO now.
+pub fn sgto_has_recipients(block: &[u8]) -> bool {
+    block.len() > 6 && (block[5] as usize) > (block[6] & FLAG_HAS_PASS_WRAP) as usize
 }
 
 /// Peek SGTO at `off`; returns (block_bytes including CRC, inner payload after header).
@@ -449,7 +532,7 @@ pub fn read_sgto_at(file: &[u8], off: usize) -> Option<&[u8]> {
     if file[off..off + 4] != SGTO_MAGIC {
         return None;
     }
-    if file[off + 4] != SGTO_VERSION {
+    if !(SGTO_VERSION..=SGTO_VERSION_ARGON2).contains(&file[off + 4]) {
         return None;
     }
     let count = file[off + 5] as usize;
@@ -473,6 +556,12 @@ pub fn read_sgto_at(file: &[u8], off: usize) -> Option<&[u8]> {
                     return None;
                 }
                 i += 12 + 16 + 32;
+            }
+            KIND_PASS_ARGON2ID => {
+                if i + PASS_ARGON2_REC > file.len() {
+                    return None;
+                }
+                i += PASS_ARGON2_REC;
             }
             _ => return None,
         }
@@ -570,6 +659,31 @@ pub fn unwrap_cek(
                 if let Some(p) = pass.filter(|s| !s.is_empty()) {
                     let mut key = [0u8; 32];
                     pbkdf2_hmac::<Sha256>(p.as_bytes(), salt, PBKDF2_ITERS, &mut key);
+                    if let Ok(cek) = aes_unwrap(&key, &nonce, &tag, ct) {
+                        if cek.len() == 32 {
+                            let mut out = [0u8; 32];
+                            out.copy_from_slice(&cek);
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+            KIND_PASS_ARGON2ID => {
+                if i + PASS_ARGON2_REC > end {
+                    break;
+                }
+                let r = &sgto[i..i + PASS_ARGON2_REC];
+                i += PASS_ARGON2_REC;
+                let salt: [u8; 16] = r[0..16].try_into().unwrap();
+                let m_kib = u32::from_le_bytes(r[16..20].try_into().unwrap());
+                let t = u32::from_le_bytes(r[20..24].try_into().unwrap());
+                let p_lanes = u32::from_le_bytes(r[24..28].try_into().unwrap());
+                let nonce: [u8; 12] = r[28..40].try_into().unwrap();
+                let tag: [u8; 16] = r[40..56].try_into().unwrap();
+                let ct = &r[56..88];
+                if let Some(p) = pass.filter(|s| !s.is_empty()) {
+                    // Out-of-bounds parameters are an error, not a skip: fail closed.
+                    let key = argon2id_key(p, &salt, m_kib, t, p_lanes)?;
                     if let Ok(cek) = aes_unwrap(&key, &nonce, &tag, ct) {
                         if cek.len() == 32 {
                             let mut out = [0u8; 32];
