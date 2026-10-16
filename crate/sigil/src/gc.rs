@@ -105,10 +105,21 @@ impl GcReport {
     }
 
     pub fn render(&self) -> String {
-        let mut s = format!("gc {} ({}, {})\n", self.root.display(), self.kind, self.layout);
+        let mut s = format!(
+            "gc {} ({}, {})\n",
+            self.root.display(),
+            self.kind,
+            self.layout
+        );
         for i in &self.items {
             let rel = i.path.strip_prefix(&self.root).unwrap_or(&i.path);
-            let verb = if i.removed { "removed " } else if self.apply { "FAILED  " } else { "" };
+            let verb = if i.removed {
+                "removed "
+            } else if self.apply {
+                "FAILED  "
+            } else {
+                ""
+            };
             s.push_str(&format!(
                 "  {verb}{:<15} {}  ({} bytes)\n",
                 i.kind.label(),
@@ -132,7 +143,11 @@ impl GcReport {
                 "reclaimed {} of {} item(s), {} bytes\n",
                 self.removed_count(),
                 n,
-                self.items.iter().filter(|i| i.removed).map(|i| i.bytes).sum::<u64>()
+                self.items
+                    .iter()
+                    .filter(|i| i.removed)
+                    .map(|i| i.bytes)
+                    .sum::<u64>()
             ));
         } else {
             s.push_str(&format!(
@@ -158,7 +173,12 @@ pub struct GcOpts<'a> {
 
 impl Default for GcOpts<'_> {
     fn default() -> Self {
-        GcOpts { apply: false, pass: None, identities: &[], temp_age_secs: DEFAULT_TEMP_AGE_SECS }
+        GcOpts {
+            apply: false,
+            pass: None,
+            identities: &[],
+            temp_age_secs: DEFAULT_TEMP_AGE_SECS,
+        }
     }
 }
 
@@ -185,11 +205,16 @@ fn size_of(p: &Path) -> u64 {
 }
 
 fn name_of(p: &Path) -> String {
-    p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string()
+    p.file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn entries(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    let mut v: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|r| r.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
     v.sort();
     v
 }
@@ -205,10 +230,19 @@ pub(crate) fn is_version_seal_name(n: &str) -> bool {
 /// Sibling `.tidy-<name>` staging left by an interrupted `sigil tidy`.
 fn stale_staging(root: &Path, opts: &GcOpts<'_>, rep: &mut GcReport) {
     let Some(parent) = root.parent() else { return };
-    let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     let st = parent.join(format!(".tidy-{}", name_of(root)));
     if st.is_dir() && old_enough(&st, opts.temp_age_secs) {
-        rep.items.push(GcItem { kind: GcKind::StaleStaging, path: st.clone(), bytes: size_of(&st), removed: false });
+        rep.items.push(GcItem {
+            kind: GcKind::StaleStaging,
+            path: st.clone(),
+            bytes: size_of(&st),
+            removed: false,
+        });
     }
 }
 
@@ -226,14 +260,18 @@ pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
     let path = path.components().as_path().to_path_buf();
     for cand in [path.clone(), container::with_suffix(&path)] {
         if container::is_container(&cand)
-            && container::read_manifest(&cand).map(|m| m.kind == crate::seglog::KIND).unwrap_or(false)
+            && container::read_manifest(&cand)
+                .map(|m| m.kind == crate::seglog::KIND)
+                .unwrap_or(false)
         {
             return Ok(Target::Log(cand));
         }
     }
     let sky = container::sky_for_read(&path);
     let is_sky_container = container::is_container(&sky)
-        && container::read_manifest(&sky).map(|m| m.kind == "constellation").unwrap_or(false);
+        && container::read_manifest(&sky)
+            .map(|m| m.kind == "constellation")
+            .unwrap_or(false);
     if !is_sky_container {
         if let Ok((_live, vdir)) = crate::vault::resolve_paths(&path) {
             if vdir.join(crate::vault::CHART_NAME).is_file() {
@@ -283,12 +321,40 @@ fn gc_log(dir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     };
     for x in crate::seglog::scan_extras(&log, &gate.entries, gate.trusted, opts.temp_age_secs) {
         match x.kind {
-            ExtraKind::Orphan => rep.items.push(GcItem { kind: GcKind::OrphanSegment, path: x.path, bytes: x.bytes, removed: false }),
-            ExtraKind::Temp => rep.items.push(GcItem { kind: GcKind::Temp, path: x.path, bytes: x.bytes, removed: false }),
-            ExtraKind::Stale(crate::seglog::Slot::DeadDeleted) => rep.items.push(GcItem { kind: GcKind::DeletedSegment, path: x.path, bytes: x.bytes, removed: false }),
-            ExtraKind::Stale(_) => rep.items.push(GcItem { kind: GcKind::SupersededSegment, path: x.path, bytes: x.bytes, removed: false }),
-            ExtraKind::EmptyDir => rep.items.push(GcItem { kind: GcKind::EmptyDir, path: x.path, bytes: 0, removed: false }),
-            ExtraKind::Recent => rep.notes.push(format!("recent unindexed segment kept (append may be running): {}", x.path.display())),
+            ExtraKind::Orphan => rep.items.push(GcItem {
+                kind: GcKind::OrphanSegment,
+                path: x.path,
+                bytes: x.bytes,
+                removed: false,
+            }),
+            ExtraKind::Temp => rep.items.push(GcItem {
+                kind: GcKind::Temp,
+                path: x.path,
+                bytes: x.bytes,
+                removed: false,
+            }),
+            ExtraKind::Stale(crate::seglog::Slot::DeadDeleted) => rep.items.push(GcItem {
+                kind: GcKind::DeletedSegment,
+                path: x.path,
+                bytes: x.bytes,
+                removed: false,
+            }),
+            ExtraKind::Stale(_) => rep.items.push(GcItem {
+                kind: GcKind::SupersededSegment,
+                path: x.path,
+                bytes: x.bytes,
+                removed: false,
+            }),
+            ExtraKind::EmptyDir => rep.items.push(GcItem {
+                kind: GcKind::EmptyDir,
+                path: x.path,
+                bytes: 0,
+                removed: false,
+            }),
+            ExtraKind::Recent => rep.notes.push(format!(
+                "recent unindexed segment kept (append may be running): {}",
+                x.path.display()
+            )),
             ExtraKind::Unknown => rep.left.push(x.path),
         }
     }
@@ -297,13 +363,22 @@ fn gc_log(dir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     if log.segkeys {
         match crate::seglog::dead_keys(&log, &gate) {
             Ok(dead) if !dead.is_empty() => {
-                let mut shards: std::collections::BTreeMap<u64, Vec<u64>> = std::collections::BTreeMap::new();
+                let mut shards: std::collections::BTreeMap<u64, Vec<u64>> =
+                    std::collections::BTreeMap::new();
                 for s in &dead {
-                    shards.entry(crate::seglog::keyring_shard_of(*s)).or_default().push(*s);
+                    shards
+                        .entry(crate::seglog::keyring_shard_of(*s))
+                        .or_default()
+                        .push(*s);
                 }
                 let first = rep.items.len();
                 for (shard, seqs) in &shards {
-                    rep.items.push(GcItem { kind: GcKind::DeadKey, path: crate::seglog::keyring_shard_path(dir, *shard), bytes: 0, removed: false });
+                    rep.items.push(GcItem {
+                        kind: GcKind::DeadKey,
+                        path: crate::seglog::keyring_shard_path(dir, *shard),
+                        bytes: 0,
+                        removed: false,
+                    });
                     rep.notes.push(format!(
                         "dead key record(s) for segment(s) {} in keys/{shard:04}.sg1",
                         crate::seglog::fmt_ranges(&crate::seglog::compress(seqs))
@@ -312,7 +387,9 @@ fn gc_log(dir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
                 if opts.apply {
                     match crate::seglog::reclaim_dead_keys(&log) {
                         Ok(_) => rep.items[first..].iter_mut().for_each(|i| i.removed = true),
-                        Err(e) => rep.notes.push(format!("could not destroy dead key records: {e}")),
+                        Err(e) => rep
+                            .notes
+                            .push(format!("could not destroy dead key records: {e}")),
                     }
                 }
             }
@@ -343,7 +420,9 @@ fn finish(rep: &mut GcReport) {
         };
         match r {
             Ok(()) => it.removed = true,
-            Err(e) => rep.notes.push(format!("could not remove {}: {e}", it.path.display())),
+            Err(e) => rep
+                .notes
+                .push(format!("could not remove {}: {e}", it.path.display())),
         }
     }
 }
@@ -354,12 +433,20 @@ fn gc_vault(vdir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     let mut rep = GcReport {
         kind: "vault".into(),
         root: vdir.to_path_buf(),
-        layout: if is_container { "container".into() } else { "old layout".into() },
+        layout: if is_container {
+            "container".into()
+        } else {
+            "old layout".into()
+        },
         apply: opts.apply,
         ..Default::default()
     };
     let listed: HashSet<&str> = chart.versions.iter().map(|v| v.seal.as_str()).collect();
-    let seals_dir = if is_container { vdir.join(container::VERSIONS_DIR) } else { vdir.to_path_buf() };
+    let seals_dir = if is_container {
+        vdir.join(container::VERSIONS_DIR)
+    } else {
+        vdir.to_path_buf()
+    };
     for p in entries(&seals_dir) {
         let n = name_of(&p);
         if p.is_dir() {
@@ -370,15 +457,26 @@ fn gc_vault(vdir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
             if listed.contains(n.as_str()) {
                 rep.kept += 1;
             } else {
-                rep.items.push(GcItem { kind: GcKind::OrphanVersion, bytes: size_of(&p), path: p, removed: false });
+                rep.items.push(GcItem {
+                    kind: GcKind::OrphanVersion,
+                    bytes: size_of(&p),
+                    path: p,
+                    removed: false,
+                });
             }
         } else if n.ends_with(".part") {
             if old_enough(&p, opts.temp_age_secs) {
-                rep.items.push(GcItem { kind: GcKind::Temp, bytes: size_of(&p), path: p, removed: false });
+                rep.items.push(GcItem {
+                    kind: GcKind::Temp,
+                    bytes: size_of(&p),
+                    path: p,
+                    removed: false,
+                });
             } else {
                 rep.notes.push(format!("recent temp file kept: {n}"));
             }
-        } else if !is_container && (n == crate::vault::CHART_NAME || n == crate::vault::DIRTY_NAME) {
+        } else if !is_container && (n == crate::vault::CHART_NAME || n == crate::vault::DIRTY_NAME)
+        {
             // regular sidecar files
         } else {
             rep.left.push(p);
@@ -387,12 +485,21 @@ fn gc_vault(vdir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     if is_container {
         for p in entries(vdir) {
             let n = name_of(&p);
-            if n == container::CONTAINER_FILE || n == crate::vault::CHART_NAME || n == container::VERSIONS_DIR || n == container::COLD_DIR {
+            if n == container::CONTAINER_FILE
+                || n == crate::vault::CHART_NAME
+                || n == container::VERSIONS_DIR
+                || n == container::COLD_DIR
+            {
                 continue;
             }
             if n.ends_with(".part") && p.is_file() {
                 if old_enough(&p, opts.temp_age_secs) {
-                    rep.items.push(GcItem { kind: GcKind::Temp, bytes: size_of(&p), path: p, removed: false });
+                    rep.items.push(GcItem {
+                        kind: GcKind::Temp,
+                        bytes: size_of(&p),
+                        path: p,
+                        removed: false,
+                    });
                 }
                 continue;
             }
@@ -409,7 +516,10 @@ fn gc_vault(vdir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     }
     for v in &chart.versions {
         if !crate::vault::seal_path_in(vdir, &v.seal).is_file() {
-            rep.notes.push(format!("CHART lists v{} but its seal is missing (see `sigil doctor`)", v.n));
+            rep.notes.push(format!(
+                "CHART lists v{} but its seal is missing (see `sigil doctor`)",
+                v.n
+            ));
         }
     }
     finish(&mut rep);
@@ -449,7 +559,11 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     let mut rep = GcReport {
         kind: "constellation".into(),
         root: sky.to_path_buf(),
-        layout: if is_container { "container".into() } else { "old layout".into() },
+        layout: if is_container {
+            "container".into()
+        } else {
+            "old layout".into()
+        },
         apply: opts.apply && is_container,
         ..Default::default()
     };
@@ -493,7 +607,12 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
         }
         if n.ends_with(".part") {
             if is_container && old_enough(&p, opts.temp_age_secs) {
-                rep.items.push(GcItem { kind: GcKind::Temp, bytes: size_of(&p), path: p, removed: false });
+                rep.items.push(GcItem {
+                    kind: GcKind::Temp,
+                    bytes: size_of(&p),
+                    path: p,
+                    removed: false,
+                });
             } else {
                 rep.notes.push(format!("recent temp file kept: {n}"));
             }
@@ -504,7 +623,8 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
             continue;
         }
         if ext == "sg1" && crate::constellation::is_constellation_mark(&p) {
-            rep.notes.push(format!("another card-like mark left alone: {n}"));
+            rep.notes
+                .push(format!("another card-like mark left alone: {n}"));
             continue;
         }
         if ext == "sg1" {
@@ -518,7 +638,12 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
         let n = name_of(&p);
         if n.ends_with(".part") {
             if old_enough(&p, opts.temp_age_secs) {
-                rep.items.push(GcItem { kind: GcKind::Temp, bytes: size_of(&p), path: p, removed: false });
+                rep.items.push(GcItem {
+                    kind: GcKind::Temp,
+                    bytes: size_of(&p),
+                    path: p,
+                    removed: false,
+                });
             } else {
                 rep.notes.push(format!("recent temp file kept: {n}"));
             }
@@ -533,7 +658,12 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
             continue;
         };
         if !referenced.contains(&d) {
-            rep.items.push(GcItem { kind: GcKind::OrphanStar, bytes: size_of(&p), path: p, removed: false });
+            rep.items.push(GcItem {
+                kind: GcKind::OrphanStar,
+                bytes: size_of(&p),
+                path: p,
+                removed: false,
+            });
             continue;
         }
         let canon = canonical(&d);
@@ -549,7 +679,12 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
             && crate::sha256_path(&canon).ok().is_some()
             && crate::sha256_path(&canon).ok() == crate::sha256_path(&p).ok();
         if identical {
-            rep.items.push(GcItem { kind: GcKind::DuplicateStar, bytes: size_of(&p), path: p, removed: false });
+            rep.items.push(GcItem {
+                kind: GcKind::DuplicateStar,
+                bytes: size_of(&p),
+                path: p,
+                removed: false,
+            });
         } else if seen_digest.insert(d) {
             rep.kept += 1;
         }
@@ -563,13 +698,21 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
         }
     }
     for dir in empties {
-        rep.items.push(GcItem { kind: GcKind::EmptyDir, path: dir, bytes: 0, removed: false });
+        rep.items.push(GcItem {
+            kind: GcKind::EmptyDir,
+            path: dir,
+            bytes: 0,
+            removed: false,
+        });
     }
     // Referenced members whose star is nowhere (not gc's job to fix; point at doctor).
     let by_digest = crate::constellation::index_stars(sky, Some(&card));
     for m in chart.members.iter().filter(|m| m.bytes.is_empty()) {
         if crate::constellation::find_member_star(sky, m, &by_digest).is_none() {
-            rep.notes.push(format!("list entry {} has no star on disk (see `sigil doctor`)", m.name));
+            rep.notes.push(format!(
+                "list entry {} has no star on disk (see `sigil doctor`)",
+                m.name
+            ));
         }
     }
     if is_container {

@@ -151,10 +151,9 @@ fn main() -> eframe::Result<()> {
                 egui::TextStyle::Small,
                 FontId::new(12.0, FontFamily::Proportional),
             );
-            style.text_styles.insert(
-                egui::TextStyle::Heading,
-                FontId::new(28.0, serif_family()),
-            );
+            style
+                .text_styles
+                .insert(egui::TextStyle::Heading, FontId::new(28.0, serif_family()));
             style.text_styles.insert(
                 egui::TextStyle::Monospace,
                 FontId::new(12.5, FontFamily::Monospace),
@@ -304,7 +303,10 @@ impl Lab {
     }
 
     fn geas_hashes(&self) -> Vec<[u8; 32]> {
-        self.geas.iter().filter_map(|p| sha256_path(p).ok()).collect()
+        self.geas
+            .iter()
+            .filter_map(|p| sha256_path(p).ok())
+            .collect()
     }
 
     fn companion_bytes(&self) -> Vec<Vec<u8>> {
@@ -329,7 +331,10 @@ impl Lab {
     }
 
     fn pick_mark(&mut self) {
-        if let Some(p) = rfd::FileDialog::new().add_filter("Sigil", &["sg1"]).pick_file() {
+        if let Some(p) = rfd::FileDialog::new()
+            .add_filter("Sigil", &["sg1"])
+            .pick_file()
+        {
             self.mark = p.display().to_string();
             self.described_to.clear();
             self.refresh_probe();
@@ -430,7 +435,10 @@ impl Lab {
         let p = PathBuf::from(self.mark.trim());
         match punch(&p, self.hex_pct) {
             Ok(n) => {
-                self.set_status(true, format!("Hex: wrote {n} bad bytes into {}", p.display()));
+                self.set_status(
+                    true,
+                    format!("Hex: wrote {n} bad bytes into {}", p.display()),
+                );
                 self.refresh_probe();
             }
             Err(e) => self.set_status(false, format!("Hex failed: {e}")),
@@ -662,9 +670,14 @@ fn secondary_btn(ui: &mut Ui, label: &str) -> egui::Response {
 
 fn ghost_btn(ui: &mut Ui, label: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(RichText::new(label).color(MUTED).size(12.0).family(FontFamily::Monospace))
-            .fill(Color32::TRANSPARENT)
-            .stroke(Stroke::NONE),
+        egui::Button::new(
+            RichText::new(label)
+                .color(MUTED)
+                .size(12.0)
+                .family(FontFamily::Monospace),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE),
     )
 }
 
@@ -686,11 +699,41 @@ fn draw_mark(ui: &mut Ui, size: f32) {
     let r = size * 0.34;
     let s = Stroke::new(1.35_f32, CREAM);
     p.circle_stroke(c, r, s);
-    p.line_segment([egui::pos2(c.x, c.y - r * 0.72), egui::pos2(c.x, c.y + r * 0.72)], s);
-    p.line_segment([egui::pos2(c.x, c.y - r * 0.42), egui::pos2(c.x - r * 0.72, c.y - r * 0.95)], s);
-    p.line_segment([egui::pos2(c.x, c.y - r * 0.42), egui::pos2(c.x + r * 0.72, c.y - r * 0.95)], s);
-    p.line_segment([egui::pos2(c.x, c.y + r * 0.72), egui::pos2(c.x - r * 0.62, c.y + r * 1.18)], s);
-    p.line_segment([egui::pos2(c.x, c.y + r * 0.72), egui::pos2(c.x + r * 0.62, c.y + r * 1.18)], s);
+    p.line_segment(
+        [
+            egui::pos2(c.x, c.y - r * 0.72),
+            egui::pos2(c.x, c.y + r * 0.72),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(c.x, c.y - r * 0.42),
+            egui::pos2(c.x - r * 0.72, c.y - r * 0.95),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(c.x, c.y - r * 0.42),
+            egui::pos2(c.x + r * 0.72, c.y - r * 0.95),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(c.x, c.y + r * 0.72),
+            egui::pos2(c.x - r * 0.62, c.y + r * 1.18),
+        ],
+        s,
+    );
+    p.line_segment(
+        [
+            egui::pos2(c.x, c.y + r * 0.72),
+            egui::pos2(c.x + r * 0.62, c.y + r * 1.18),
+        ],
+        s,
+    );
 }
 
 fn mode_stripes(ui: &mut Ui, k: u8, n: u8, active: bool) {
@@ -705,7 +748,15 @@ fn mode_stripes(ui: &mut Ui, k: u8, n: u8, active: bool) {
         let x = rect.left() + i as f32 * (w + gap);
         let r = egui::Rect::from_min_size(egui::pos2(x, rect.top()), Vec2::new(w.max(1.5), height));
         if i < k {
-            p.rect_filled(r, 2.0, if active { CREAM } else { CREAM.gamma_multiply(0.45) });
+            p.rect_filled(
+                r,
+                2.0,
+                if active {
+                    CREAM
+                } else {
+                    CREAM.gamma_multiply(0.45)
+                },
+            );
         } else {
             p.rect_stroke(
                 r,
@@ -745,9 +796,11 @@ impl eframe::App for Lab {
                             (Page::Lab, "Lab"),
                         ] {
                             let active = self.page == page;
-                            let txt = RichText::new(label)
-                                .size(14.0)
-                                .color(if active { CREAM } else { MUTED });
+                            let txt = RichText::new(label).size(14.0).color(if active {
+                                CREAM
+                            } else {
+                                MUTED
+                            });
                             if ui
                                 .add(
                                     egui::Button::new(txt)
@@ -769,7 +822,11 @@ impl eframe::App for Lab {
             .show(ctx, |_| {});
 
         egui::CentralPanel::default()
-            .frame(Frame::new().fill(BG).inner_margin(Margin::symmetric(28, 20)))
+            .frame(
+                Frame::new()
+                    .fill(BG)
+                    .inner_margin(Margin::symmetric(28, 20)),
+            )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -817,7 +874,10 @@ impl Lab {
             .inner_margin(Margin::same(4))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    for (tab, label) in [(LabTab::Inscribe, "Inscribe"), (LabTab::Describe, "De-scribe")] {
+                    for (tab, label) in [
+                        (LabTab::Inscribe, "Inscribe"),
+                        (LabTab::Describe, "De-scribe"),
+                    ] {
                         let on = self.tab == tab;
                         let txt = RichText::new(label)
                             .size(14.0)
@@ -910,7 +970,9 @@ impl Lab {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(basename(&self.input)).color(CREAM).size(14.5));
+                                ui.label(
+                                    RichText::new(basename(&self.input)).color(CREAM).size(14.5),
+                                );
                                 ui.label(
                                     RichText::new(fmt_bytes(self.input_len))
                                         .color(MUTED)
@@ -918,11 +980,14 @@ impl Lab {
                                         .family(FontFamily::Monospace),
                                 );
                             });
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ghost_btn(ui, "CHANGE").clicked() {
-                                    self.pick_in();
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ghost_btn(ui, "CHANGE").clicked() {
+                                        self.pick_in();
+                                    }
+                                },
+                            );
                         });
                     });
             }
@@ -989,9 +1054,18 @@ impl Lab {
         }
 
         card(ui, false, |ui| {
-            ui.label(RichText::new("Ward — optional password").color(CREAM).size(13.5));
+            ui.label(
+                RichText::new("Ward — optional password")
+                    .color(CREAM)
+                    .size(13.5),
+            );
             ui.add_space(6.0);
-            field(ui, &mut self.ward, "Leave blank if you do not want a password", true);
+            field(
+                ui,
+                &mut self.ward,
+                "Leave blank if you do not want a password",
+                true,
+            );
             ui.add_space(4.0);
             ui.label(
                 RichText::new(
@@ -1003,28 +1077,56 @@ impl Lab {
         });
         ui.add_space(10.0);
 
-        egui::CollapsingHeader::new(RichText::new("Covenant and Geas (optional)").color(MUTED).size(13.0))
-            .show(ui, |ui| {
-                ui.add_space(6.0);
-                ui.label(RichText::new("Covenant — a note, not a lock").color(CREAM).size(13.0));
-                field(ui, &mut self.covenant, "e.g. app=game-save;class=private", false);
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Geas — bind companion files").color(CREAM).size(13.0));
-                    if secondary_btn(ui, "Bind file").clicked() {
-                        self.pick_geas();
-                    }
-                });
-                if self.geas.is_empty() {
-                    muted(ui, "De-scribe will refuse unless those exact files are present. Up to two.");
-                } else {
-                    let names: Vec<String> = self.geas.iter().map(|p| basename(&p.display().to_string())).collect();
-                    ui.label(RichText::new(format!("Bound: {}", names.join(", "))).color(CREAM).size(12.5));
-                    if ghost_btn(ui, "CLEAR").clicked() {
-                        self.geas.clear();
-                    }
+        egui::CollapsingHeader::new(
+            RichText::new("Covenant and Geas (optional)")
+                .color(MUTED)
+                .size(13.0),
+        )
+        .show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new("Covenant — a note, not a lock")
+                    .color(CREAM)
+                    .size(13.0),
+            );
+            field(
+                ui,
+                &mut self.covenant,
+                "e.g. app=game-save;class=private",
+                false,
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Geas — bind companion files")
+                        .color(CREAM)
+                        .size(13.0),
+                );
+                if secondary_btn(ui, "Bind file").clicked() {
+                    self.pick_geas();
                 }
             });
+            if self.geas.is_empty() {
+                muted(
+                    ui,
+                    "De-scribe will refuse unless those exact files are present. Up to two.",
+                );
+            } else {
+                let names: Vec<String> = self
+                    .geas
+                    .iter()
+                    .map(|p| basename(&p.display().to_string()))
+                    .collect();
+                ui.label(
+                    RichText::new(format!("Bound: {}", names.join(", ")))
+                        .color(CREAM)
+                        .size(12.5),
+                );
+                if ghost_btn(ui, "CLEAR").clicked() {
+                    self.geas.clear();
+                }
+            }
+        });
         ui.add_space(14.0);
 
         let label = format!("Inscribe a {}", mode_copy(self.mode).label);
@@ -1082,7 +1184,11 @@ impl Lab {
                 ui.add_space(10.0);
                 ui.columns(2, |c| {
                     kv(&mut c[0], "Original", &fmt_bytes(pr.orig));
-                    kv(&mut c[1], "Good pieces", &format!("{}/{} · need {}", pr.live, pr.n, pr.k));
+                    kv(
+                        &mut c[1],
+                        "Good pieces",
+                        &format!("{}/{} · need {}", pr.live, pr.n, pr.k),
+                    );
                     kv(
                         &mut c[0],
                         "Binding",
@@ -1092,14 +1198,21 @@ impl Lab {
                             "open — damage or unread"
                         },
                     );
-                    kv(&mut c[1], "Map", if pr.recovered { "recovered" } else { "intact" });
+                    kv(
+                        &mut c[1],
+                        "Map",
+                        if pr.recovered { "recovered" } else { "intact" },
+                    );
                 });
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(format!("name  {}", if pr.name.is_empty() { "—" } else { &pr.name }))
-                        .color(MUTED)
-                        .size(11.5)
-                        .family(FontFamily::Monospace),
+                    RichText::new(format!(
+                        "name  {}",
+                        if pr.name.is_empty() { "—" } else { &pr.name }
+                    ))
+                    .color(MUTED)
+                    .size(11.5)
+                    .family(FontFamily::Monospace),
                 );
                 ui.label(
                     RichText::new(format!("true name  {}", pr.true_name))
@@ -1155,7 +1268,11 @@ impl Lab {
             );
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("How much to damage (Hex)").color(CREAM).size(13.0));
+                ui.label(
+                    RichText::new("How much to damage (Hex)")
+                        .color(CREAM)
+                        .size(13.0),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new(format!("{}%", self.hex_pct))
@@ -1196,7 +1313,10 @@ impl Lab {
                         .family(serif_family()),
                 );
                 ui.add_space(4.0);
-                muted(ui, "Scry runs as soon as it lands. Then you can De-scribe to unpack it.");
+                muted(
+                    ui,
+                    "Scry runs as soon as it lands. Then you can De-scribe to unpack it.",
+                );
                 if !self.mark.trim().is_empty() {
                     ui.add_space(10.0);
                     let extra = self
@@ -1223,13 +1343,21 @@ impl Lab {
         }
 
         ui.add_space(14.0);
-        ui.label(RichText::new("Password (Ward), if you set one").color(CREAM).size(13.5));
+        ui.label(
+            RichText::new("Password (Ward), if you set one")
+                .color(CREAM)
+                .size(13.5),
+        );
         field(ui, &mut self.ward, "", true);
 
         if !self.companions.is_empty() || !self.geas.is_empty() {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Geas — companion files this mark requires").color(CREAM).size(13.0));
+                ui.label(
+                    RichText::new("Geas — companion files this mark requires")
+                        .color(CREAM)
+                        .size(13.0),
+                );
                 if secondary_btn(ui, "Attach").clicked() {
                     self.pick_companions();
                 }
@@ -1307,8 +1435,17 @@ impl Lab {
             "Drop a .sg1 here. Scry tells you if it is still the same file. The original stays packed. If you wrote down a true name earlier, paste it below to compare.",
         );
         ui.add_space(16.0);
-        ui.label(RichText::new("True name or envelope hash you wrote down (optional)").color(CREAM).size(13.0));
-        field(ui, &mut self.scry_expected, "true name or envelope hash", false);
+        ui.label(
+            RichText::new("True name or envelope hash you wrote down (optional)")
+                .color(CREAM)
+                .size(13.0),
+        );
+        field(
+            ui,
+            &mut self.scry_expected,
+            "true name or envelope hash",
+            false,
+        );
         ui.add_space(12.0);
 
         let drop = dashed_card(ui, |ui| {
@@ -1345,7 +1482,9 @@ impl Lab {
 
         if let Some(pr) = self.probe.clone() {
             ui.add_space(16.0);
-            let want = self.scry_expected.replace(|c: char| !c.is_ascii_hexdigit(), "");
+            let want = self
+                .scry_expected
+                .replace(|c: char| !c.is_ascii_hexdigit(), "");
             let verdict = scry_verdict(&pr, &want);
             self.verdict_card(ui, verdict, &pr);
         }
@@ -1499,7 +1638,11 @@ impl Lab {
         card(ui, false, |ui| {
             ui.columns(2, |c| {
                 kv(&mut c[0], "Type", spec.label);
-                kv(&mut c[1], "Good pieces", &format!("{}/{} · need {}", pr.live, pr.n, pr.k));
+                kv(
+                    &mut c[1],
+                    "Good pieces",
+                    &format!("{}/{} · need {}", pr.live, pr.n, pr.k),
+                );
                 kv(
                     &mut c[0],
                     "Binding",
@@ -1557,7 +1700,11 @@ impl Lab {
                 false,
             ),
         };
-        let stroke_c = if ok { OK.gamma_multiply(0.45) } else { BAD.gamma_multiply(0.5) };
+        let stroke_c = if ok {
+            OK.gamma_multiply(0.45)
+        } else {
+            BAD.gamma_multiply(0.5)
+        };
         let fill = if ok {
             Color32::from_rgba_unmultiplied(93, 138, 106, 24)
         } else {
@@ -1592,7 +1739,12 @@ impl Lab {
 
 fn kv(ui: &mut Ui, k: &str, v: &str) {
     ui.label(RichText::new(k).color(MUTED).size(12.5));
-    ui.label(RichText::new(v).color(CREAM).size(15.0).family(serif_family()));
+    ui.label(
+        RichText::new(v)
+            .color(CREAM)
+            .size(15.0)
+            .family(serif_family()),
+    );
     ui.add_space(6.0);
 }
 

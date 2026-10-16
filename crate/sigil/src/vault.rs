@@ -21,7 +21,9 @@
 //! them when no `--to` is given, so an encrypt-to vault never silently goes plain. See
 //! `docs/VAULT-RECIPIENTS.md`.
 
-use crate::folder::{inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_mend_keys, unseal_dir_only_keys};
+use crate::folder::{
+    inscribe_dir_to, is_dir_pack, tree_files, unseal_dir_mend_keys, unseal_dir_only_keys,
+};
 use crate::header::locate_header;
 use crate::keys::{Identity, PublicIdentity};
 use crate::pieces::mend_bytes;
@@ -267,7 +269,8 @@ impl DirtyMeta {
             )));
         }
         Ok(DirtyMeta {
-            source: source.ok_or_else(|| crate::Error::Msg("dirty sidecar missing source=".into()))?,
+            source: source
+                .ok_or_else(|| crate::Error::Msg("dirty sidecar missing source=".into()))?,
             seal: seal.ok_or_else(|| crate::Error::Msg("dirty sidecar missing seal=".into()))?,
             live,
             vault,
@@ -293,11 +296,10 @@ pub fn dirty_meta_for(input: &Path, seal: &Path, prefer_vault: bool) -> Result<D
     } else {
         "single".to_string()
     };
-    let name = input
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    let mut vault = prefer_vault || is_chart_dir_name(name) && Path::new(input).join(CHART_NAME).is_file() || name.ends_with(VAULT_SUFFIX);
+    let name = input.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let mut vault = prefer_vault
+        || is_chart_dir_name(name) && Path::new(input).join(CHART_NAME).is_file()
+        || name.ends_with(VAULT_SUFFIX);
     let mut live = None;
     if vault || vault_dir_for(input).join(CHART_NAME).is_file() {
         vault = true;
@@ -316,12 +318,11 @@ pub fn dirty_meta_for(input: &Path, seal: &Path, prefer_vault: bool) -> Result<D
     // If seal lives inside a `.sgv` chart dir, treat as vault tip.
     if !vault {
         if let Some(parent) = seal.parent() {
-            let pname = parent
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let pname = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
             let container_parent = if pname == crate::container::VERSIONS_DIR {
-                parent.parent().filter(|g| is_container_vault_dir(g) && g.join(CHART_NAME).is_file())
+                parent
+                    .parent()
+                    .filter(|g| is_container_vault_dir(g) && g.join(CHART_NAME).is_file())
             } else {
                 None
             };
@@ -407,7 +408,8 @@ fn prepare_vault_dir(vault_dir: &Path, live: &Path) -> Result<()> {
 }
 
 fn is_chart_dir_name(name: &str) -> bool {
-    name.ends_with(VAULT_SUFFIX) || (name.ends_with(crate::container::CONTAINER_SUFFIX) && name.len() > 6)
+    name.ends_with(VAULT_SUFFIX)
+        || (name.ends_with(crate::container::CONTAINER_SUFFIX) && name.len() > 6)
 }
 
 /// Resolve a user path that may be the live file or the `.sgv` dir.
@@ -423,7 +425,8 @@ pub fn resolve_paths(path: &Path) -> Result<(PathBuf, PathBuf)> {
             .and_then(|n| n.to_str())
             .map(is_chart_dir_name)
             .unwrap_or(false)
-        && (path.join(CHART_NAME).is_file() || path.extension().map(|e| e == "sgv").unwrap_or(false))
+        && (path.join(CHART_NAME).is_file()
+            || path.extension().map(|e| e == "sgv").unwrap_or(false))
     {
         let live = live_from_vault_dir(&path)?;
         return Ok((live, path));
@@ -431,7 +434,11 @@ pub fn resolve_paths(path: &Path) -> Result<(PathBuf, PathBuf)> {
     if path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(|n| n.ends_with(VAULT_SUFFIX) || (n.ends_with(crate::container::CONTAINER_SUFFIX) && path.join(CHART_NAME).is_file()))
+        .map(|n| {
+            n.ends_with(VAULT_SUFFIX)
+                || (n.ends_with(crate::container::CONTAINER_SUFFIX)
+                    && path.join(CHART_NAME).is_file())
+        })
         .unwrap_or(false)
     {
         let live = live_from_vault_dir(&path)?;
@@ -449,11 +456,10 @@ fn live_from_vault_dir(vault: &Path) -> Result<PathBuf> {
     let stem = name
         .strip_suffix(VAULT_SUFFIX)
         .or_else(|| name.strip_suffix(crate::container::CONTAINER_SUFFIX))
-        .ok_or_else(|| crate::Error::Msg(format!("vault dir must end with {VAULT_SUFFIX} or .sigil")))?;
-    Ok(vault
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(stem))
+        .ok_or_else(|| {
+            crate::Error::Msg(format!("vault dir must end with {VAULT_SUFFIX} or .sigil"))
+        })?;
+    Ok(vault.parent().unwrap_or_else(|| Path::new(".")).join(stem))
 }
 
 fn seal_name(n: u32) -> String {
@@ -617,9 +623,8 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
             if seal.is_empty() {
                 seal = seal_name(n);
             }
-            let digest = digest.ok_or_else(|| {
-                crate::Error::Msg(format!("version {n} missing digest in CHART"))
-            })?;
+            let digest = digest
+                .ok_or_else(|| crate::Error::Msg(format!("version {n} missing digest in CHART")))?;
             versions.push(VersionEntry {
                 n,
                 seal,
@@ -685,7 +690,8 @@ fn recipient_token(r: &PublicIdentity) -> String {
 
 fn parse_recipient_token(s: &str) -> Result<PublicIdentity> {
     let (x, e) = s.split_once('.').unwrap_or((s, ""));
-    let x = parse_hex32(x).map_err(|_| crate::Error::Msg(format!("bad CHART to= recipient: {s}")))?;
+    let x =
+        parse_hex32(x).map_err(|_| crate::Error::Msg(format!("bad CHART to= recipient: {s}")))?;
     let e = if e.is_empty() {
         [0u8; 32]
     } else {
@@ -833,7 +839,8 @@ pub fn track_ex(
     let sg1 = seal_version(&data, mode, pass, &name, recipients)?;
     prepare_vault_dir(&vault_dir, &live)?;
     let seal_file = seal_name(1);
-    fs::write(seal_path_in(&vault_dir, &seal_file), &sg1).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    fs::write(seal_path_in(&vault_dir, &seal_file), &sg1)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let chart = Chart {
         live: live.clone(),
         vault_dir: vault_dir.clone(),
@@ -875,12 +882,21 @@ fn track_dir(
         )));
     }
     if vault_dir.starts_with(&live) {
-        return Err(crate::Error::Msg("vault chart cannot live inside the tracked folder".into()));
+        return Err(crate::Error::Msg(
+            "vault chart cannot live inside the tracked folder".into(),
+        ));
     }
     let (digest, size, _n) = tree_digest(&live)?;
     prepare_vault_dir(&vault_dir, &live)?;
     let seal_file = seal_name(1);
-    seal_tree_version(&live, &seal_path_in(&vault_dir, &seal_file), mode, pass, recipients, wards)?;
+    seal_tree_version(
+        &live,
+        &seal_path_in(&vault_dir, &seal_file),
+        mode,
+        pass,
+        recipients,
+        wards,
+    )?;
     let chart = Chart {
         live: live.clone(),
         vault_dir: vault_dir.clone(),
@@ -915,7 +931,10 @@ pub fn tree_digest(dir: &Path) -> Result<([u8; 32], u64, u32)> {
     let mut manifest = format!("{TREE_MAGIC}\n");
     let mut total = 0u64;
     for (rel, path) in &files {
-        let size = path.metadata().map_err(|e| crate::Error::Msg(e.to_string()))?.len();
+        let size = path
+            .metadata()
+            .map_err(|e| crate::Error::Msg(e.to_string()))?
+            .len();
         total += size;
         manifest.push_str(&format!("{rel}\0{size}\0{}\n", hex32(&sha256_path(path)?)));
     }
@@ -940,7 +959,17 @@ fn seal_tree_version(
     let mut part = out.as_os_str().to_os_string();
     part.push(".part");
     let part = PathBuf::from(part);
-    let res = inscribe_dir_to(src, &part, mode, pass, "", &[], DEFAULT_CHUNK, wards, recipients);
+    let res = inscribe_dir_to(
+        src,
+        &part,
+        mode,
+        pass,
+        "",
+        &[],
+        DEFAULT_CHUNK,
+        wards,
+        recipients,
+    );
     match res {
         Ok(_) => fs::rename(&part, out).map_err(|e| crate::Error::Msg(e.to_string())),
         Err(e) => {
@@ -1120,7 +1149,9 @@ pub fn commit_ex(
                 live.display()
             )));
         }
-        return commit_tree(&live, &live, &vault_dir, mode, pass, force, recipients, wards);
+        return commit_tree(
+            &live, &live, &vault_dir, mode, pass, force, recipients, wards,
+        );
     }
     if !live.is_file() {
         return Err(crate::Error::Msg(format!(
@@ -1164,7 +1195,8 @@ fn commit_bytes(
     }
     chart.recipients = recipients;
     let seal_file = seal_name(next);
-    fs::write(seal_path_in(&vault_dir, &seal_file), &sg1).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    fs::write(seal_path_in(&vault_dir, &seal_file), &sg1)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     let size = data.len() as u64;
     chart.versions.push(VersionEntry {
         n: next,
@@ -1218,7 +1250,14 @@ fn commit_tree(
     let recipients = effective_recipients(&chart, recipients)?;
     let next = chart.versions.iter().map(|v| v.n).max().unwrap_or(0) + 1;
     let seal_file = seal_name(next);
-    seal_tree_version(src, &seal_path_in(&vault_dir, &seal_file), mode, pass, &recipients, wards)?;
+    seal_tree_version(
+        src,
+        &seal_path_in(&vault_dir, &seal_file),
+        mode,
+        pass,
+        &recipients,
+        wards,
+    )?;
     if !recipients.is_empty() {
         chart.plain_ok = false;
     }
@@ -1285,9 +1324,10 @@ pub fn commit_from_export_ex(
             "export is not vault-tracked; `sigil vault track` the live file first, then mount --vault --writable".into(),
         ));
     }
-    let live = meta.live.clone().ok_or_else(|| {
-        crate::Error::Msg("dirty sidecar missing live= for vault export".into())
-    })?;
+    let live = meta
+        .live
+        .clone()
+        .ok_or_else(|| crate::Error::Msg("dirty sidecar missing live= for vault export".into()))?;
     let (_resolved_live, vault_dir) = resolve_paths(&live)?;
     if !vault_dir.join(CHART_NAME).is_file() {
         return Err(crate::Error::Msg(format!(
@@ -1351,7 +1391,9 @@ fn commit_folder_from_export(
     } else {
         !live.exists()
     };
-    let mut report = commit_tree(export_dir, &live, &vault_dir, mode, pass, force, recipients, wards)?;
+    let mut report = commit_tree(
+        export_dir, &live, &vault_dir, mode, pass, force, recipients, wards,
+    )?;
     if !report.skipped {
         if live_clean {
             sync_tree(export_dir, &live)?;
@@ -1457,7 +1499,9 @@ pub fn restore_ex(
         )));
     }
     if chart.kind == ChartKind::Folder {
-        return restore_tree(&chart, &entry, &seal_path, &live, pass, identities, wards, force);
+        return restore_tree(
+            &chart, &entry, &seal_path, &live, pass, identities, wards, force,
+        );
     }
     let raw = fs::read(&seal_path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mended = false;
@@ -1715,7 +1759,9 @@ pub fn remove_version(
         )));
     }
     if chart.versions.len() <= 1 {
-        return Err(crate::Error::Msg("refusing to remove the only version".into()));
+        return Err(crate::Error::Msg(
+            "refusing to remove the only version".into(),
+        ));
     }
     if matches!(chart.retention, RetentionPolicy::Light { .. }) && cold.is_none() && !force_drop {
         return Err(crate::Error::Msg(
@@ -1925,7 +1971,11 @@ pub fn format_versions(chart: &Chart) -> String {
         RetentionPolicy::Full => "full".to_string(),
         RetentionPolicy::Light { keep } => format!("light keep={keep}"),
     };
-    let kind = if chart.kind == ChartKind::Folder { "  kind=folder" } else { "" };
+    let kind = if chart.kind == ChartKind::Folder {
+        "  kind=folder"
+    } else {
+        ""
+    };
     let mut out = format!(
         "vault {}  tip=v{}  versions={}  retention={}{}\n",
         chart.live.display(),
@@ -2112,9 +2162,18 @@ mod tests {
         assert_eq!(
             tree_map(&live),
             vec![
-                ("a.txt".into(), b"mend-folder-a-0123456789abcdef-AAAAAAAA".to_vec()),
-                ("b.txt".into(), b"mend-folder-b-0123456789abcdef-BBBBBBBB".to_vec()),
-                ("sub/c.txt".into(), b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()),
+                (
+                    "a.txt".into(),
+                    b"mend-folder-a-0123456789abcdef-AAAAAAAA".to_vec()
+                ),
+                (
+                    "b.txt".into(),
+                    b"mend-folder-b-0123456789abcdef-BBBBBBBB".to_vec()
+                ),
+                (
+                    "sub/c.txt".into(),
+                    b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()
+                ),
             ]
         );
         // On-disk version seal is healed.
@@ -2125,9 +2184,18 @@ mod tests {
         assert_eq!(
             tree_map(&open),
             vec![
-                ("a.txt".into(), b"mend-folder-a-0123456789abcdef-AAAAAAAA".to_vec()),
-                ("b.txt".into(), b"mend-folder-b-0123456789abcdef-BBBBBBBB".to_vec()),
-                ("sub/c.txt".into(), b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()),
+                (
+                    "a.txt".into(),
+                    b"mend-folder-a-0123456789abcdef-AAAAAAAA".to_vec()
+                ),
+                (
+                    "b.txt".into(),
+                    b"mend-folder-b-0123456789abcdef-BBBBBBBB".to_vec()
+                ),
+                (
+                    "sub/c.txt".into(),
+                    b"mend-folder-c-0123456789abcdef-CCCCCCCC".to_vec()
+                ),
             ]
         );
         let _ = fs::remove_dir_all(&dir);
@@ -2207,8 +2275,16 @@ mod tests {
         let v1 = version_seal_path(&live, 1).unwrap();
         let clean = fs::read(&v1).unwrap();
         let members = sgdr_members(&clean);
-        let (_, b0, b1) = members.iter().find(|(n, _, _)| n == "big.bin").unwrap().clone();
-        let (_, s0, s1) = members.iter().find(|(n, _, _)| n == "notes/small.txt").unwrap().clone();
+        let (_, b0, b1) = members
+            .iter()
+            .find(|(n, _, _)| n == "big.bin")
+            .unwrap()
+            .clone();
+        let (_, s0, s1) = members
+            .iter()
+            .find(|(n, _, _)| n == "notes/small.txt")
+            .unwrap()
+            .clone();
         let stars = work_star_spans(&clean, b0, b1);
         assert!(stars.len() >= 2, "expected a multi-chunk WORK member");
 
@@ -2220,13 +2296,23 @@ mod tests {
 
         fs::remove_dir_all(&live).unwrap();
         let ids = [id.clone()];
-        assert!(restore(&live, Some(1), None, &[]).is_err(), "encrypt-to needs the identity");
-        assert_eq!(fs::read(&v1).unwrap(), torn, "failed restore must not rewrite the seal");
+        assert!(
+            restore(&live, Some(1), None, &[]).is_err(),
+            "encrypt-to needs the identity"
+        );
+        assert_eq!(
+            fs::read(&v1).unwrap(),
+            torn,
+            "failed restore must not rewrite the seal"
+        );
         let r = restore(&live, Some(1), None, &ids).unwrap();
         assert!(r.mended, "WORK chunk mend should report mended");
         assert_eq!(
             tree_map(&live),
-            vec![("big.bin".into(), big.clone()), ("notes/small.txt".into(), small.clone())]
+            vec![
+                ("big.bin".into(), big.clone()),
+                ("notes/small.txt".into(), small.clone())
+            ]
         );
         // Version seal healed in place: same size/layout, every star clean.
         let healed = fs::read(&v1).unwrap();
@@ -2235,7 +2321,11 @@ mod tests {
             assert!(!crate::work::star_torn(&healed[a..b]));
         }
         assert!(!crate::work::star_torn(&healed[s0..s1]));
-        assert!(!PathBuf::from(format!("{}.mend-part", version_seal_path(&live, 1).unwrap().display())).exists());
+        assert!(!PathBuf::from(format!(
+            "{}.mend-part",
+            version_seal_path(&live, 1).unwrap().display()
+        ))
+        .exists());
         // Second restore is clean (no mend), and the healed pack opens directly.
         fs::remove_dir_all(&live).unwrap();
         let r2 = restore(&live, Some(1), None, &ids).unwrap();
@@ -2263,7 +2353,10 @@ mod tests {
         }
         fs::write(&v1, &torn).unwrap();
         fs::remove_dir_all(&live).unwrap();
-        let e = restore(&live, Some(1), None, &[]).err().unwrap().to_string();
+        let e = restore(&live, Some(1), None, &[])
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("big.bin") && e.contains("star 1"), "{e}");
         assert_eq!(fs::read(&v1).unwrap(), torn);
         assert!(!live.exists() || tree_map(&live).is_empty());
@@ -2387,16 +2480,32 @@ mod tests {
 
     #[test]
     fn vault_dir_for_ignores_trailing_slash() {
-        assert_eq!(legacy_vault_dir_for(Path::new("photos/")), PathBuf::from("photos.sgv"));
-        assert_eq!(vault_dir_for(Path::new("photos/")), PathBuf::from("photos.sigil"));
-        assert_eq!(legacy_vault_dir_for(Path::new("/a/photos")), PathBuf::from("/a/photos.sgv"));
+        assert_eq!(
+            legacy_vault_dir_for(Path::new("photos/")),
+            PathBuf::from("photos.sgv")
+        );
+        assert_eq!(
+            vault_dir_for(Path::new("photos/")),
+            PathBuf::from("photos.sigil")
+        );
+        assert_eq!(
+            legacy_vault_dir_for(Path::new("/a/photos")),
+            PathBuf::from("/a/photos.sgv")
+        );
     }
 
     #[test]
     fn folder_vault_track_commit_restore() {
         let dir = tmpdir("fold-round");
         let live = dir.join("photos");
-        write_tree(&live, &[("a.txt", b"alpha"), ("b.txt", b"bravo"), ("sub/c.txt", b"charlie")]);
+        write_tree(
+            &live,
+            &[
+                ("a.txt", b"alpha"),
+                ("b.txt", b"bravo"),
+                ("sub/c.txt", b"charlie"),
+            ],
+        );
         let t = track(&live, Mode::Glyph, None, &[]).unwrap();
         assert_eq!(t.version, 1);
         let vdir = vault_dir_for(&live);
@@ -2404,7 +2513,10 @@ mod tests {
         assert!(chart_txt.contains("kind=folder"), "{chart_txt}");
         // v1 is an ordinary SGDR pack — plain folder unseal opens it.
         assert!(is_dir_pack(&seal_path_in(&vdir, "v1.sg1")));
-        assert!(vdir.join("versions/v1.sg1").is_file() && vdir.join(crate::container::CONTAINER_FILE).is_file());
+        assert!(
+            vdir.join("versions/v1.sg1").is_file()
+                && vdir.join(crate::container::CONTAINER_FILE).is_file()
+        );
         assert_eq!(status(&live).unwrap().drift, Drift::Match);
 
         // Dotfiles are not part of the tree (same rule as folder Inscribe).
@@ -2416,7 +2528,11 @@ mod tests {
         assert_eq!(status(&live).unwrap().drift, Drift::Changed);
         let c = commit(&live, Mode::Glyph, None, false, &[]).unwrap();
         assert_eq!((c.version, c.skipped), (2, false));
-        assert!(commit(&live, Mode::Glyph, None, false, &[]).unwrap().skipped);
+        assert!(
+            commit(&live, Mode::Glyph, None, false, &[])
+                .unwrap()
+                .skipped
+        );
 
         // Restore v1: b.txt back, a.txt old bytes; dotfile untouched.
         let r = restore(&live, Some(1), None, &[]).unwrap();
@@ -2447,7 +2563,14 @@ mod tests {
     fn folder_export_reseal_edit_add_delete() {
         let dir = tmpdir("fold-export");
         let live = dir.join("docs");
-        write_tree(&live, &[("keep.txt", b"keep"), ("edit.txt", b"before"), ("gone/old.txt", b"old")]);
+        write_tree(
+            &live,
+            &[
+                ("keep.txt", b"keep"),
+                ("edit.txt", b"before"),
+                ("gone/old.txt", b"old"),
+            ],
+        );
         track(&live, Mode::Reflection, None, &[]).unwrap();
         let v1 = version_seal_path(&live, 1).unwrap();
         let v1_sha = sha256_path(&v1).unwrap();
@@ -2480,7 +2603,16 @@ mod tests {
 
         // New tip is a plain SGDR pack; open it with ordinary folder unseal.
         let out2 = dir.join("open-v2");
-        unseal_dir_only_keys(&tip_seal_path(&live).unwrap().0, &out2, None, &[], &[], &[], &[]).unwrap();
+        unseal_dir_only_keys(
+            &tip_seal_path(&live).unwrap().0,
+            &out2,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
         assert_eq!(tree_map(&out2), want);
         // v1 immutable and still opens.
         assert_eq!(sha256_path(&v1).unwrap(), v1_sha);
@@ -2513,7 +2645,10 @@ mod tests {
         let err = restore(&live, None, None, &[]).unwrap_err();
         assert!(err.to_string().contains("uncommitted"), "{err}");
         restore_ex(&live, None, None, &[], &[], true).unwrap();
-        assert_eq!(tree_map(&live), vec![("x.txt".into(), b"x-from-export".to_vec())]);
+        assert_eq!(
+            tree_map(&live),
+            vec![("x.txt".into(), b"x-from-export".to_vec())]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2532,7 +2667,12 @@ mod tests {
         fs::write(export.join("a.txt"), b"aaa-2").unwrap();
         let wards = vec![("p/b.txt".to_string(), "room".to_string())];
         let c = commit_from_export_ex(
-            &export, Mode::Glyph, Some("house"), false, &[alice.public()], &wards,
+            &export,
+            Mode::Glyph,
+            Some("house"),
+            false,
+            &[alice.public()],
+            &wards,
         )
         .unwrap();
         assert_eq!(c.version, 2);
@@ -2570,7 +2710,9 @@ mod tests {
         // Same retention hooks as ordinary commit.
         assert!(maybe_prune_after_commit(&live, None, None, false).is_err());
         let cold = dir.join("cold");
-        let p = maybe_prune_after_commit(&live, None, Some(&cold), false).unwrap().unwrap();
+        let p = maybe_prune_after_commit(&live, None, Some(&cold), false)
+            .unwrap()
+            .unwrap();
         assert_eq!(p.removed, vec![1]);
         assert!(cold.join("v1").is_dir());
         assert!(!version_seal_path(&live, 1).unwrap().exists());
@@ -2644,8 +2786,7 @@ mod tests {
         assert!(cold.join("v2").is_dir());
         // Seal → kit place should leave KIT under cold/v1
         assert!(
-            crate::kit::is_kit_dir(&cold.join("v1"))
-                || cold.join("v1").join("v1.sg1").is_file(),
+            crate::kit::is_kit_dir(&cold.join("v1")) || cold.join("v1").join("v1.sg1").is_file(),
             "cold/v1 should be kit or plain archive"
         );
         assert!(!version_seal_path(&live, 1).unwrap().is_file());
@@ -2698,21 +2839,21 @@ mod tests {
             .count();
         assert!(archived >= 1, "expected cold/vN dirs");
         // Glyph → plain .sg1 archive
-        let any_plain = cold
-            .read_dir()
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .any(|e| {
-                let p = e.path();
-                p.is_dir()
-                    && (p.join("ARCHIVE").is_file()
-                        || p.join("v1.sg1").is_file()
-                        || p.join(format!("{}.sg1", e.file_name().to_string_lossy())).is_file()
-                        || fs::read_dir(&p).ok().map(|rd| {
+        let any_plain = cold.read_dir().unwrap().filter_map(|e| e.ok()).any(|e| {
+            let p = e.path();
+            p.is_dir()
+                && (p.join("ARCHIVE").is_file()
+                    || p.join("v1.sg1").is_file()
+                    || p.join(format!("{}.sg1", e.file_name().to_string_lossy()))
+                        .is_file()
+                    || fs::read_dir(&p)
+                        .ok()
+                        .map(|rd| {
                             rd.filter_map(|x| x.ok())
                                 .any(|x| x.path().extension().map(|e| e == "sg1").unwrap_or(false))
-                        }).unwrap_or(false))
-            });
+                        })
+                        .unwrap_or(false))
+        });
         assert!(any_plain || crate::kit::is_kit_dir(&cold.join(format!("v{}", p2.removed[0]))));
         let _ = fs::remove_dir_all(&dir);
     }

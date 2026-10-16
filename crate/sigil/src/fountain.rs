@@ -15,14 +15,18 @@ fn write_rq(dir: &Path, i: u32, cfg: &[u8; 12], pkt: &EncodingPacket) -> Result<
     out.push(1);
     out.extend_from_slice(cfg);
     out.extend_from_slice(&ser);
-    fs::write(dir.join(format!("rain-{i:05}.rq")), out).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    fs::write(dir.join(format!("rain-{i:05}.rq")), out)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok(())
 }
 
 fn read_rq(path: &Path) -> Result<([u8; 12], EncodingPacket)> {
     let b = fs::read(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     if b.len() < 17 || b[0..4] != FT_MAGIC {
-        return Err(crate::Error::Msg(format!("not a fountain packet: {}", path.display())));
+        return Err(crate::Error::Msg(format!(
+            "not a fountain packet: {}",
+            path.display()
+        )));
     }
     let mut cfg = [0u8; 12];
     cfg.copy_from_slice(&b[5..17]);
@@ -65,7 +69,9 @@ pub fn gather_fountain(dir: &Path) -> Result<Vec<u8>> {
         let (c, pkt) = read_rq(&p)?;
         if let Some(old) = cfg {
             if old != c {
-                return Err(crate::Error::Msg("mixed fountain configs in this folder".into()));
+                return Err(crate::Error::Msg(
+                    "mixed fountain configs in this folder".into(),
+                ));
             }
         } else {
             cfg = Some(c);

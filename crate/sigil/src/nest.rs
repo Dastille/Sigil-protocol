@@ -1,9 +1,11 @@
 //! Nest + breadcrumb: walk into .sg1 seals embedded in SGDR packs (or wrapped marks)
 //! without permanently unpacking the durable store.
 
-use crate::folder::{list_dir_pack, looks_like_nest_name, read_dir_entry_star, DirEntry, DIR_MAGIC};
-use crate::work::WORK_MAGIC;
+use crate::folder::{
+    list_dir_pack, looks_like_nest_name, read_dir_entry_star, DirEntry, DIR_MAGIC,
+};
 use crate::keys::Identity;
+use crate::work::WORK_MAGIC;
 use crate::{hex32, locate_header, unseal_ex_keys, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -333,7 +335,9 @@ fn payload_label(data: &[u8]) -> Option<String> {
         NestKind::Work | NestKind::Mark => {
             let tmp = std::env::temp_dir().join(format!("sigil-nest-lbl-{}", std::process::id()));
             let _ = fs::write(&tmp, data);
-            let n = crate::work::payload_name(&tmp).ok().filter(|s| !s.is_empty());
+            let n = crate::work::payload_name(&tmp)
+                .ok()
+                .filter(|s| !s.is_empty());
             let _ = fs::remove_file(&tmp);
             n.or_else(|| {
                 locate_header(data)
@@ -477,7 +481,14 @@ pub fn path_extract_keys(
     for (i, step) in into.iter().enumerate() {
         check_depth(i + 1, max_depth)?;
         let step = step.trim().trim_start_matches("./");
-        let next = descend_one(&cur, step, pass, wards, &trail[.. i + 1.min(trail.len())], identities)?;
+        let next = descend_one(
+            &cur,
+            step,
+            pass,
+            wards,
+            &trail[..i + 1.min(trail.len())],
+            identities,
+        )?;
         push_seen(&mut seen, mark_id(&next))?;
         cur = next;
     }
@@ -489,11 +500,7 @@ pub fn path_extract_keys(
 }
 
 /// Convenience: list outer mark only.
-pub fn path_list(
-    mark: &Path,
-    pass: Option<&str>,
-    max_depth: usize,
-) -> Result<PathView> {
+pub fn path_list(mark: &Path, pass: Option<&str>, max_depth: usize) -> Result<PathView> {
     path_walk(mark, &[], pass, &[], max_depth)
 }
 
@@ -556,7 +563,11 @@ mod tests {
 
         let view = path_list(&outer, None, MAX_NEST_DEPTH).unwrap();
         assert_eq!(view.kind, NestKind::DirPack);
-        assert!(view.breadcrumb().contains("outer.sg1"), "{}", view.breadcrumb());
+        assert!(
+            view.breadcrumb().contains("outer.sg1"),
+            "{}",
+            view.breadcrumb()
+        );
         let nest = view.entries.iter().find(|e| e.path == "inner.sg1");
         assert!(nest.is_some(), "{:?}", view.entries);
         assert!(nest.unwrap().nest, "inner.sg1 should be flagged nest");
@@ -607,7 +618,10 @@ mod tests {
 
         let dest = dir.join("inner.sg1");
         path_extract(&path, &into, &dest, None, &[], MAX_NEST_DEPTH).unwrap();
-        assert_eq!(crate::unseal(&fs::read(&dest).unwrap(), None).unwrap(), b"wrapped leaf");
+        assert_eq!(
+            crate::unseal(&fs::read(&dest).unwrap(), None).unwrap(),
+            b"wrapped leaf"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -368,7 +368,9 @@ fn unpack_v1(data: &[u8]) -> Result<Chart> {
         }
         let byte_len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
         o += 4;
-        let nlen = *data.get(o).ok_or_else(|| err("truncated v1 constellation"))? as usize;
+        let nlen = *data
+            .get(o)
+            .ok_or_else(|| err("truncated v1 constellation"))? as usize;
         o += 1;
         if o + nlen + 32 + 32 + 4 + 8 + 1 + byte_len > data.len() {
             return Err(err("truncated v1 constellation"));
@@ -469,7 +471,11 @@ fn unseal_card(data: &[u8], pass: Option<&str>, identities: &[Identity]) -> Resu
     })
 }
 
-pub(crate) fn load_chart_from_mark(path: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Chart> {
+pub(crate) fn load_chart_from_mark(
+    path: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Chart> {
     let data = fs::read(path).map_err(io)?;
     let plain = unseal_card(&data, pass, identities)?;
     unpack_chart(&plain)
@@ -499,7 +505,9 @@ pub fn load_chart_keys(
         let parent = input.parent().unwrap_or(Path::new(".")).to_path_buf();
         return Ok((chart, parent));
     }
-    Err(err("not a constellation (folder, card .sg1, or atlas .sga)"))
+    Err(err(
+        "not a constellation (folder, card .sg1, or atlas .sga)",
+    ))
 }
 
 pub(crate) fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], PathBuf> {
@@ -508,10 +516,14 @@ pub(crate) fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], 
     // the digest is read from each star's header like the flat layout.
     let stars = dir.join(crate::container::STARS_DIR);
     if stars.is_dir() {
-        let mut shards: Vec<_> = fs::read_dir(&stars).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        let mut shards: Vec<_> = fs::read_dir(&stars)
+            .map(|r| r.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
         shards.sort();
         for shard in shards.into_iter().filter(|p| p.is_dir()) {
-            let mut files: Vec<_> = fs::read_dir(&shard).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+            let mut files: Vec<_> = fs::read_dir(&shard)
+                .map(|r| r.flatten().map(|e| e.path()).collect())
+                .unwrap_or_default();
             files.sort();
             for p in files {
                 if p.extension().and_then(|x| x.to_str()) != Some("sg1") || !p.is_file() {
@@ -865,7 +877,11 @@ pub fn remove_members(sky: &Path, names: &[String], opts: RemoveOpts<'_>) -> Res
     }
     let report = RemoveReport {
         removed: dropped.iter().map(|m| m.name.clone()).collect(),
-        stars_freed: if opts.keep_stars { Vec::new() } else { freed.clone() },
+        stars_freed: if opts.keep_stars {
+            Vec::new()
+        } else {
+            freed.clone()
+        },
         remaining: remaining.len(),
         dry_run: opts.dry_run,
     };
@@ -880,7 +896,10 @@ pub fn remove_members(sky: &Path, names: &[String], opts: RemoveOpts<'_>) -> Res
             if let Some(parent) = p.parent() {
                 // Drop an emptied shard folder (`stars/ab/`), never the container itself.
                 if parent.file_name().map(|n| n.len() == 2).unwrap_or(false)
-                    && parent.parent().map(|g| g.ends_with(crate::container::STARS_DIR)).unwrap_or(false)
+                    && parent
+                        .parent()
+                        .map(|g| g.ends_with(crate::container::STARS_DIR))
+                        .unwrap_or(false)
                 {
                     let _ = fs::remove_dir(parent);
                 }
@@ -906,7 +925,8 @@ fn mint_or_reuse(
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(io)?;
         }
-        if !dest.exists() || peek_digest(&dest) != Some(digest) && !crate::work::is_work_pack(&dest) {
+        if !dest.exists() || peek_digest(&dest) != Some(digest) && !crate::work::is_work_pack(&dest)
+        {
             crate::work::inscribe_path_to(
                 file,
                 &dest,
@@ -972,7 +992,12 @@ pub fn scry_constellation_keys(
     } else {
         find_card(&dir)
     };
-    Ok(render_scry(&chart, &dir, card.as_deref(), is_atlas_file(input)))
+    Ok(render_scry(
+        &chart,
+        &dir,
+        card.as_deref(),
+        is_atlas_file(input),
+    ))
 }
 
 /// Scry text for a list already in hand (e.g. the one `add` just wrote).
@@ -1061,7 +1086,16 @@ pub fn unseal_constellation_keys(
     };
     let missing = missing_stars(&dir, &chart, card.as_deref());
     refuse_missing(&missing)?;
-    restore_chart(&chart, dest, pass, companions, only, Some(&dir), card.as_deref(), identities)
+    restore_chart(
+        &chart,
+        dest,
+        pass,
+        companions,
+        only,
+        Some(&dir),
+        card.as_deref(),
+        identities,
+    )
 }
 
 fn wanted(rel: &str, only: &[String]) -> bool {
@@ -1070,7 +1104,9 @@ fn wanted(rel: &str, only: &[String]) -> bool {
     }
     only.iter().any(|p| {
         let p = p.trim().trim_start_matches("./");
-        rel == p || rel.starts_with(&(p.to_string() + "/")) || (p.ends_with('/') && rel.starts_with(p))
+        rel == p
+            || rel.starts_with(&(p.to_string() + "/"))
+            || (p.ends_with('/') && rel.starts_with(p))
     })
 }
 
@@ -1099,7 +1135,8 @@ fn restore_chart(
             if m.bytes.starts_with(&crate::work::WORK_MAGIC) {
                 let tmp = out_path.with_extension("sgwk");
                 fs::write(&tmp, &m.bytes).map_err(io)?;
-                let r = crate::work::unseal_path_keys(&tmp, &out_path, pass, companions, identities);
+                let r =
+                    crate::work::unseal_path_keys(&tmp, &out_path, pass, companions, identities);
                 let _ = fs::remove_file(&tmp);
                 r?;
             } else {
@@ -1115,7 +1152,9 @@ fn restore_chart(
         got += 1;
     }
     if !only.is_empty() && got == 0 {
-        return Err(err("nothing matched --only (Scry the constellation to see paths)"));
+        return Err(err(
+            "nothing matched --only (Scry the constellation to see paths)",
+        ));
     }
     Ok(got)
 }
@@ -1170,7 +1209,9 @@ pub fn pack_atlas_chart(sky: &Path, chart: &Chart, output: &Path) -> Result<u32>
     let mut writer = BufWriter::new(File::create(output).map_err(io)?);
     writer.write_all(&ATLAS_MAGIC).map_err(io)?;
     writer.write_all(&[2u8]).map_err(io)?;
-    writer.write_all(&(files.len() as u32).to_le_bytes()).map_err(io)?;
+    writer
+        .write_all(&(files.len() as u32).to_le_bytes())
+        .map_err(io)?;
     for (name, path) in &files {
         let nb = name.as_bytes();
         let nlen = nb.len().min(255) as u8;
@@ -1185,7 +1226,11 @@ pub fn pack_atlas_chart(sky: &Path, chart: &Chart, output: &Path) -> Result<u32>
     Ok(files.len() as u32)
 }
 
-fn load_chart_from_atlas(path: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Chart> {
+fn load_chart_from_atlas(
+    path: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Chart> {
     let mut last_err: Option<crate::Error> = None;
     let mut reader = BufReader::new(File::open(path).map_err(io)?);
     let mut mag = [0u8; 4];
@@ -1229,7 +1274,9 @@ fn load_chart_from_atlas(path: &Path, pass: Option<&str>, identities: &[Identity
             let mut bytes = vec![0u8; size as usize];
             reader.read_exact(&mut bytes).map_err(io)?;
             // Only graph-flagged marks are cards; skip stars without unsealing them.
-            let is_card = locate_header(&bytes).map(|(h, _, _)| h.graph()).unwrap_or(false);
+            let is_card = locate_header(&bytes)
+                .map(|(h, _, _)| h.graph())
+                .unwrap_or(false);
             if is_card {
                 match unseal_card(&bytes, pass, identities) {
                     Ok(plain) => {
@@ -1271,7 +1318,16 @@ fn unseal_atlas(
         let card = find_card(&dir);
         let missing = missing_stars(&dir, &chart, card.as_deref());
         refuse_missing(&missing)?;
-        restore_chart(&chart, dest, pass, companions, only, Some(&dir), card.as_deref(), identities)
+        restore_chart(
+            &chart,
+            dest,
+            pass,
+            companions,
+            only,
+            Some(&dir),
+            card.as_deref(),
+            identities,
+        )
     })();
     let _ = fs::remove_dir_all(&tmp);
     result
@@ -1381,10 +1437,14 @@ mod tests {
         assert_eq!(r1.added, 1);
         let r2 = add_to_constellation(&sky, &b, opts.clone()).unwrap();
         assert_eq!(r2.added, 1);
-        let r3 = add_to_constellation(&sky, &copy, AddOpts {
-            as_name: Some("dup.pdf"),
-            ..opts.clone()
-        })
+        let r3 = add_to_constellation(
+            &sky,
+            &copy,
+            AddOpts {
+                as_name: Some("dup.pdf"),
+                ..opts.clone()
+            },
+        )
         .unwrap();
         assert_eq!(r3.linked, 1);
         assert_eq!(r3.added, 0);
@@ -1397,7 +1457,11 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.ends_with(".sg1") && n != "Taxes.sg1")
             .collect();
-        assert_eq!(stars.len(), 2, "duplicate bytes must not mint a third star: {stars:?}");
+        assert_eq!(
+            stars.len(),
+            2,
+            "duplicate bytes must not mint a third star: {stars:?}"
+        );
 
         let out = root.join("out");
         let n = unseal_constellation(&sky, &out, None, &[], &[]).unwrap();
@@ -1405,7 +1469,10 @@ mod tests {
         assert_eq!(fs::read(out.join("tax-2025.pdf")).unwrap(), b"tax-bytes");
         assert_eq!(fs::read(out.join("notes.txt")).unwrap(), b"note-bytes");
         assert_eq!(fs::read(out.join("dup.pdf")).unwrap(), b"tax-bytes");
-        assert_eq!(sha256(&fs::read(out.join("dup.pdf")).unwrap()), sha256(b"tax-bytes"));
+        assert_eq!(
+            sha256(&fs::read(out.join("dup.pdf")).unwrap()),
+            sha256(b"tax-bytes")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1523,10 +1590,21 @@ mod tests {
         let r = add_to_constellation(&sky, &small, opts.clone()).unwrap();
         assert_eq!(r.added, 1);
         // Adding to an encrypt-to card needs an identity to read the list.
-        let e = add_to_constellation(&sky, &big, opts.clone()).err().unwrap().to_string();
+        let e = add_to_constellation(&sky, &big, opts.clone())
+            .err()
+            .unwrap()
+            .to_string();
         assert!(e.contains("--identity"), "{e}");
         let ids = [bob.clone()];
-        let r = add_to_constellation(&sky, &big, AddOpts { identities: &ids, ..opts.clone() }).unwrap();
+        let r = add_to_constellation(
+            &sky,
+            &big,
+            AddOpts {
+                identities: &ids,
+                ..opts.clone()
+            },
+        )
+        .unwrap();
         assert_eq!(r.added, 1);
         assert!(r.chart.as_ref().unwrap().members.len() == 2);
 
@@ -1534,19 +1612,34 @@ mod tests {
         assert!(has_sgto(&card), "card must be encrypt-to");
         let note_star = sky.join(star_file_name("note.txt"));
         assert!(has_sgto(&note_star), "star must be encrypt-to");
-        assert!(crate::work::is_work_pack(&sky.join(star_file_name("big.bin"))));
+        assert!(crate::work::is_work_pack(
+            &sky.join(star_file_name("big.bin"))
+        ));
         let probe = root.join("probe.bin");
-        assert!(crate::work::unseal_path(&sky.join(star_file_name("big.bin")), &probe, None, &[]).is_err());
-        crate::work::unseal_path_keys(&sky.join(star_file_name("big.bin")), &probe, None, &[], &[alice.clone()])
-            .unwrap();
+        assert!(
+            crate::work::unseal_path(&sky.join(star_file_name("big.bin")), &probe, None, &[])
+                .is_err()
+        );
+        crate::work::unseal_path_keys(
+            &sky.join(star_file_name("big.bin")),
+            &probe,
+            None,
+            &[],
+            &[alice.clone()],
+        )
+        .unwrap();
         assert_eq!(fs::read(&probe).unwrap(), big_bytes);
 
         // A later add without --to would rewrite the card in the clear: refused.
-        let e = add_to_constellation(&sky, &small, AddOpts {
-            recipients: &[],
-            identities: &ids,
-            ..opts.clone()
-        })
+        let e = add_to_constellation(
+            &sky,
+            &small,
+            AddOpts {
+                recipients: &[],
+                identities: &ids,
+                ..opts.clone()
+            },
+        )
         .err()
         .unwrap()
         .to_string();
@@ -1557,10 +1650,15 @@ mod tests {
         let e = scry_constellation(&sky, None).unwrap_err().to_string();
         assert!(e.contains("--identity"), "{e}");
         let text = scry_constellation_keys(&sky, None, &[alice.clone()]).unwrap();
-        assert!(text.contains("stars=2") && !text.contains("MISSING"), "{text}");
+        assert!(
+            text.contains("stars=2") && !text.contains("MISSING"),
+            "{text}"
+        );
 
         // De-scribe: wrong identity refused; each recipient restores everything.
-        assert!(unseal_constellation_keys(&sky, &root.join("eve"), None, &[], &[], &[eve]).is_err());
+        assert!(
+            unseal_constellation_keys(&sky, &root.join("eve"), None, &[], &[], &[eve]).is_err()
+        );
         assert!(unseal_constellation(&sky, &root.join("none"), None, &[], &[]).is_err());
         for (tag, who) in [("a", &alice), ("b", &bob)] {
             let out = root.join(format!("out-{tag}"));
@@ -1590,7 +1688,12 @@ mod tests {
         let report = add_to_constellation(
             &sky,
             &src,
-            AddOpts { title: Some("Bag"), chunk: 64 * 1024, recipients: &to, ..AddOpts::default() },
+            AddOpts {
+                title: Some("Bag"),
+                chunk: 64 * 1024,
+                recipients: &to,
+                ..AddOpts::default()
+            },
         )
         .unwrap();
         assert_eq!(report.added, 2);
@@ -1606,11 +1709,16 @@ mod tests {
         assert_eq!(pack_atlas_keys(&sky, &bag2, None, &ids).unwrap(), 3);
 
         for bag in [&bag1, &bag2] {
-            let e = unseal_constellation(bag, &root.join("x"), None, &[], &[]).unwrap_err().to_string();
+            let e = unseal_constellation(bag, &root.join("x"), None, &[], &[])
+                .unwrap_err()
+                .to_string();
             assert!(e.contains("--identity"), "{e}");
             let text = scry_constellation_keys(bag, None, &ids).unwrap();
             assert!(text.contains("stars=2"), "{text}");
-            let out = root.join(format!("out-{}", bag.file_stem().unwrap().to_string_lossy()));
+            let out = root.join(format!(
+                "out-{}",
+                bag.file_stem().unwrap().to_string_lossy()
+            ));
             let n = unseal_constellation_keys(bag, &out, None, &[], &[], &ids).unwrap();
             assert_eq!(n, 2);
             assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"alpha");
@@ -1624,7 +1732,9 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("missing a star") && e.contains("a.txt"), "{e}");
-        let e = pack_atlas_keys(&sky, &root.join("m.sga"), None, &ids).unwrap_err().to_string();
+        let e = pack_atlas_keys(&sky, &root.join("m.sga"), None, &ids)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("missing a star"), "{e}");
         let text = scry_constellation_keys(&sky, None, &ids).unwrap();
         assert!(text.contains("MISSING"), "{text}");
@@ -1639,8 +1749,16 @@ mod tests {
         fs::write(&a, b"warded alpha").unwrap();
         // Passphrase-only constellation: atlas used to read the card with no pass.
         let sky = legacy_sky(&root, "W");
-        add_to_constellation(&sky, &a, AddOpts { title: Some("W"), pass: Some("pw"), ..AddOpts::default() })
-            .unwrap();
+        add_to_constellation(
+            &sky,
+            &a,
+            AddOpts {
+                title: Some("W"),
+                pass: Some("pw"),
+                ..AddOpts::default()
+            },
+        )
+        .unwrap();
         let bag = root.join("w.sga");
         assert!(pack_atlas(&sky, &bag).is_err());
         assert_eq!(pack_atlas_keys(&sky, &bag, Some("pw"), &[]).unwrap(), 2);
@@ -1654,7 +1772,12 @@ mod tests {
         add_to_constellation(
             &sky2,
             &a,
-            AddOpts { title: Some("D"), pass: Some("pw2"), recipients: &to, ..AddOpts::default() },
+            AddOpts {
+                title: Some("D"),
+                pass: Some("pw2"),
+                recipients: &to,
+                ..AddOpts::default()
+            },
         )
         .unwrap();
         let o1 = root.join("d-pass");

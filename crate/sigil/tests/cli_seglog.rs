@@ -15,7 +15,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -26,7 +30,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -44,8 +52,13 @@ fn tmp(tag: &str) -> PathBuf {
 }
 
 fn age(p: &Path, secs: u64) {
-    let f = fs::OpenOptions::new().write(true).open(p).or_else(|_| fs::File::open(p)).unwrap();
-    f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(p)
+        .or_else(|_| fs::File::open(p))
+        .unwrap();
+    f.set_modified(SystemTime::now() - Duration::from_secs(secs))
+        .unwrap();
 }
 
 fn seg(c: &Path, seq: u64) -> PathBuf {
@@ -79,7 +92,10 @@ fn init_append_ls_read_verify() {
     let c = sample(&d, 3);
     assert!(c.join("CONTAINER").is_file() && c.join("INDEX").is_file() && c.join("HEAD").is_file());
     let m = fs::read_to_string(c.join("CONTAINER")).unwrap();
-    assert!(m.contains("sigil-container=1") && m.contains("kind=log") && m.contains("name=ev"), "{m}");
+    assert!(
+        m.contains("sigil-container=1") && m.contains("kind=log") && m.contains("name=ev"),
+        "{m}"
+    );
     for s in 1..=3 {
         assert!(seg(&c, s).is_file());
     }
@@ -87,21 +103,39 @@ fn init_append_ls_read_verify() {
     let o = Command::new("sh")
         .current_dir(&d)
         .arg("-c")
-        .arg(format!("printf 'from stdin\\n' | {} log append ev -", env!("CARGO_BIN_EXE_sigil")))
+        .arg(format!(
+            "printf 'from stdin\\n' | {} log append ev -",
+            env!("CARGO_BIN_EXE_sigil")
+        ))
         .output()
         .unwrap();
     assert!(o.status.success(), "{}", text(&o));
     let ls = ok(&d, &["log", "ls", "ev"]);
-    assert!(ls.contains("entries=4") && ls.contains("unsigned") && ls.contains("anchor"), "{ls}");
+    assert!(
+        ls.contains("entries=4") && ls.contains("unsigned") && ls.contains("anchor"),
+        "{ls}"
+    );
     assert_eq!(ok(&d, &["log", "read", "ev", "--seq", "2"]), "batch 2\n");
-    assert_eq!(ok(&d, &["log", "read", "ev", "--from", "2", "--to", "3"]), "batch 2\nbatch 3\n");
-    assert_eq!(ok(&d, &["log", "read", "ev"]), "batch 1\nbatch 2\nbatch 3\nfrom stdin\n");
+    assert_eq!(
+        ok(&d, &["log", "read", "ev", "--from", "2", "--to", "3"]),
+        "batch 2\nbatch 3\n"
+    );
+    assert_eq!(
+        ok(&d, &["log", "read", "ev"]),
+        "batch 1\nbatch 2\nbatch 3\nfrom stdin\n"
+    );
     ok(&d, &["log", "read", "ev", "--seq", "4", "-o", "out.bin"]);
     assert_eq!(fs::read(d.join("out.bin")).unwrap(), b"from stdin\n");
     let v = ok(&d, &["log", "verify", "ev"]);
-    assert!(v.contains("result: healthy") && v.contains("4 segment"), "{v}");
+    assert!(
+        v.contains("result: healthy") && v.contains("4 segment"),
+        "{v}"
+    );
     // the segment is an ordinary star: plain `sigil` tools open it
-    ok(&d, &["unseal", seg(&c, 1).to_str().unwrap(), "-o", "one.txt"]);
+    ok(
+        &d,
+        &["unseal", seg(&c, 1).to_str().unwrap(), "-o", "one.txt"],
+    );
     assert_eq!(fs::read(d.join("one.txt")).unwrap(), b"batch 1\n");
     // `sigil ls` shows the log
     assert!(ok(&d, &["ls", "ev"]).contains("entries=4"));
@@ -118,7 +152,11 @@ fn tamper_detection_unsigned_and_anchor() {
     let d = tmp("tamper");
     let c = sample(&d, 3);
     let ls = ok(&d, &["log", "ls", "ev"]);
-    let anchor = ls.lines().find_map(|l| l.strip_prefix("anchor (pin elsewhere, check with `verify --anchor`): ")).unwrap().to_string();
+    let anchor = ls
+        .lines()
+        .find_map(|l| l.strip_prefix("anchor (pin elsewhere, check with `verify --anchor`): "))
+        .unwrap()
+        .to_string();
     ok(&d, &["log", "verify", "ev", "--anchor", &anchor]);
     let good_index = fs::read_to_string(c.join("INDEX")).unwrap();
     let good_head = head_of(&c);
@@ -133,7 +171,11 @@ fn tamper_detection_unsigned_and_anchor() {
     fs::write(c.join("INDEX"), &good_index).unwrap();
 
     // cut the last entry off the INDEX (HEAD still says 3) → truncation
-    let cut: String = good_index.lines().take(3).map(|l| format!("{l}\n")).collect();
+    let cut: String = good_index
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
     fs::write(c.join("INDEX"), &cut).unwrap();
     let (code, o) = run(&d, &["log", "verify", "ev"]);
     assert_eq!(code, 2, "{o}");
@@ -145,7 +187,11 @@ fn tamper_detection_unsigned_and_anchor() {
     assert!(seg(&c, 3).is_file());
 
     // consistent rollback (INDEX + HEAD both cut to 2): unsigned log can't notice, the anchor does
-    let two: String = good_index.lines().take(3).map(|l| format!("{l}\n")).collect();
+    let two: String = good_index
+        .lines()
+        .take(3)
+        .map(|l| format!("{l}\n"))
+        .collect();
     fs::write(c.join("INDEX"), &two).unwrap();
     let h2 = {
         let l = sigil::seglog::list(&c).unwrap();
@@ -158,7 +204,10 @@ fn tamper_detection_unsigned_and_anchor() {
     );
     fs::write(c.join("HEAD"), head2).unwrap();
     let (code, o) = run(&d, &["log", "verify", "ev"]);
-    assert_eq!(code, 0, "unsigned rollback is invisible without an anchor: {o}");
+    assert_eq!(
+        code, 0,
+        "unsigned rollback is invisible without an anchor: {o}"
+    );
     let (code, o) = run(&d, &["log", "verify", "ev", "--anchor", &anchor]);
     assert_eq!(code, 2, "{o}");
     assert!(o.contains("anchor") && o.contains("rolled back"), "{o}");
@@ -193,10 +242,20 @@ fn signed_log() {
     fs::write(d.join("b.txt"), b"one\n").unwrap();
     // must sign, and with the pinned key
     assert!(fails(&d, &["log", "append", "ev", "b.txt"]).contains("signed"));
-    assert!(fails(&d, &["log", "append", "ev", "b.txt", "--identity", "eve.sgk"]).contains("not the key"));
-    ok(&d, &["log", "append", "ev", "b.txt", "--identity", "me.sgk"]);
+    assert!(fails(
+        &d,
+        &["log", "append", "ev", "b.txt", "--identity", "eve.sgk"]
+    )
+    .contains("not the key"));
+    ok(
+        &d,
+        &["log", "append", "ev", "b.txt", "--identity", "me.sgk"],
+    );
     fs::write(d.join("b.txt"), b"two\n").unwrap();
-    ok(&d, &["log", "append", "ev", "b.txt", "--identity", "me.sgk"]);
+    ok(
+        &d,
+        &["log", "append", "ev", "b.txt", "--identity", "me.sgk"],
+    );
     let c = d.join("ev.sigil");
     let v = ok(&d, &["log", "verify", "ev", "--signer", "me.pub"]);
     assert!(v.contains("healthy") && v.contains("signed"), "{v}");
@@ -207,7 +266,11 @@ fn signed_log() {
     assert!(o.contains("head-signer"), "{o}");
     // stripped signature
     let good = head_of(&c);
-    let stripped: String = good.lines().filter(|l| !l.starts_with("sig=") && !l.starts_with("signer=")).map(|l| format!("{l}\n")).collect();
+    let stripped: String = good
+        .lines()
+        .filter(|l| !l.starts_with("sig=") && !l.starts_with("signer="))
+        .map(|l| format!("{l}\n"))
+        .collect();
     fs::write(c.join("HEAD"), stripped).unwrap();
     let (code, o) = run(&d, &["log", "verify", "ev"]);
     assert_eq!(code, 2, "{o}");
@@ -228,7 +291,11 @@ fn signed_log() {
     ok(&d, &["log", "verify", "ev", "--signer", "me.pub"]);
     // an unsigned log cannot take a signing key
     ok(&d, &["log", "init", "plain"]);
-    assert!(fails(&d, &["log", "append", "plain", "b.txt", "--identity", "me.sgk"]).contains("unsigned"));
+    assert!(fails(
+        &d,
+        &["log", "append", "plain", "b.txt", "--identity", "me.sgk"]
+    )
+    .contains("unsigned"));
 }
 
 #[test]
@@ -247,11 +314,37 @@ fn keys_and_encrypted_segments() {
     assert!(v.contains("healthy"), "{v}");
     // reading needs the key
     fails(&d, &["log", "read", "ev", "--seq", "1"]);
-    assert_eq!(ok(&d, &["log", "read", "ev", "--seq", "1", "--pass", "hunter2"]), "secret one\n");
-    assert_eq!(ok(&d, &["log", "read", "ev", "--seq", "2", "--identity", "alice.sgk"]), "secret two\n");
+    assert_eq!(
+        ok(
+            &d,
+            &["log", "read", "ev", "--seq", "1", "--pass", "hunter2"]
+        ),
+        "secret one\n"
+    );
+    assert_eq!(
+        ok(
+            &d,
+            &["log", "read", "ev", "--seq", "2", "--identity", "alice.sgk"]
+        ),
+        "secret two\n"
+    );
     // verify with keys also unseals
-    let (code, o) = run(&d, &["log", "verify", "ev", "--pass", "hunter2", "--identity", "alice.sgk"]);
-    assert_eq!(code, 2, "seg 3 is plain and seg 1/2 each need a different key: {o}");
+    let (code, o) = run(
+        &d,
+        &[
+            "log",
+            "verify",
+            "ev",
+            "--pass",
+            "hunter2",
+            "--identity",
+            "alice.sgk",
+        ],
+    );
+    assert_eq!(
+        code, 2,
+        "seg 3 is plain and seg 1/2 each need a different key: {o}"
+    );
     let (code, o) = run(&d, &["log", "verify", "ev", "--identity", "alice.sgk"]);
     assert_eq!(code, 2, "{o}");
     assert!(o.contains("segment-unseal"), "{o}");
@@ -268,18 +361,28 @@ fn mend_segments() {
     // key-free verify sees the rot, repairable
     let (code, o) = run(&d, &["log", "verify", "ev"]);
     assert_eq!(code, 1, "{o}");
-    assert!(o.contains("bit-rot") && o.contains("repairable") && o.contains("sigil log mend"), "{o}");
+    assert!(
+        o.contains("bit-rot") && o.contains("repairable") && o.contains("sigil log mend"),
+        "{o}"
+    );
     // reading still works (ECC repairs in memory)
     assert_eq!(ok(&d, &["log", "read", "ev", "--seq", "2"]), "batch 2\n");
     let o = ok(&d, &["log", "mend", "ev"]);
     assert!(o.contains("healed 1") && o.contains("(2)"), "{o}");
-    assert_eq!(fs::read(seg(&c, 2)).unwrap(), good, "mend restores the original bytes");
+    assert_eq!(
+        fs::read(seg(&c, 2)).unwrap(),
+        good,
+        "mend restores the original bytes"
+    );
     assert_eq!(fs::read(c.join("INDEX")).unwrap(), before_index);
     assert_eq!(head_of(&c), before_head);
     ok(&d, &["log", "verify", "ev"]);
     // plain `sigil mend` also works on a segment (it is an ordinary star)
     zero_mid(&seg(&c, 3), 8);
-    ok(&d, &["mend", seg(&c, 3).to_str().unwrap(), "-o", "fixed.sg1"]);
+    ok(
+        &d,
+        &["mend", seg(&c, 3).to_str().unwrap(), "-o", "fixed.sg1"],
+    );
     // beyond repair
     let mut b = fs::read(seg(&c, 1)).unwrap();
     let n = b.len();
@@ -287,7 +390,10 @@ fn mend_segments() {
     fs::write(seg(&c, 1), b).unwrap();
     let (code, o) = run(&d, &["log", "verify", "ev"]);
     assert_eq!(code, 2, "{o}");
-    assert!(o.contains("bit-rot-unrecoverable") || o.contains("segment-digest"), "{o}");
+    assert!(
+        o.contains("bit-rot-unrecoverable") || o.contains("segment-digest"),
+        "{o}"
+    );
     let (code, o) = run(&d, &["log", "mend", "ev"]);
     assert_eq!(code, 2, "{o}");
     assert!(o.contains("segment 1"), "{o}");
@@ -333,13 +439,19 @@ fn doctor_and_gc_understand_logs() {
     assert_eq!(code, 0, "{o}");
     assert!(o.contains("recent-segment"), "{o}");
     let r = ok(&d, &["gc", "ev", "--apply"]);
-    assert!(r.contains("nothing to reclaim") && orphan.is_file() && junk.is_file(), "{r}");
+    assert!(
+        r.contains("nothing to reclaim") && orphan.is_file() && junk.is_file(),
+        "{r}"
+    );
     // old: reported, dry-run changes nothing, apply removes only the orphan + temp
     age(&orphan, 7200);
     age(&junk, 7200);
     let (code, o) = run(&d, &["doctor", "ev"]);
     assert_eq!(code, 1, "{o}");
-    assert!(o.contains("orphan-segment") && o.contains("temp-file"), "{o}");
+    assert!(
+        o.contains("orphan-segment") && o.contains("temp-file"),
+        "{o}"
+    );
     let r = ok(&d, &["gc", "ev"]);
     assert!(r.contains("dry run") && r.contains("orphan segment"), "{r}");
     assert!(orphan.is_file());
@@ -416,11 +528,17 @@ fn many_segments_shard_folders_and_json() {
     let c = d.join("ev.sigil");
     for i in 0..5u8 {
         fs::write(d.join("b.txt"), vec![i; 10]).unwrap();
-        ok(&d, &["log", "append", "ev.sigil", "b.txt", "--mode", "glyph"]);
+        ok(
+            &d,
+            &["log", "append", "ev.sigil", "b.txt", "--mode", "glyph"],
+        );
     }
     assert!(seg(&c, 1).starts_with(c.join("segments/0000")));
     assert!(sigil::seglog::segment_path(&c, 1234).ends_with("segments/0001/0000001234.sg1"));
     let (code, j) = run(&d, &["log", "verify", "ev", "--json"]);
     assert_eq!(code, 0, "{j}");
-    assert!(j.contains("\"kind\":\"log\"") && j.contains("\"status\":\"healthy\""), "{j}");
+    assert!(
+        j.contains("\"kind\":\"log\"") && j.contains("\"status\":\"healthy\""),
+        "{j}"
+    );
 }

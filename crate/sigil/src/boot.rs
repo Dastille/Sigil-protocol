@@ -82,7 +82,12 @@ fn strip_sg1(p: &Path) -> PathBuf {
 }
 
 /// Wrap the live squashfs as a Seal (default) next to it.
-pub fn prepare_boot(root: &Path, mode: Mode, pass: Option<&str>, only_mark: bool) -> Result<BootFind> {
+pub fn prepare_boot(
+    root: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    only_mark: bool,
+) -> Result<BootFind> {
     let payload = find_squashfs(root).ok_or_else(|| {
         crate::Error::Msg(
             "no filesystem.squashfs (or erofs) under live/ or casper/. Mount the USB and pass that folder."
@@ -131,7 +136,8 @@ fn find_squashfs(root: &Path) -> Option<PathBuf> {
 
 /// Scry the mark. If the payload is missing or not itself, De-scribe. Refuse if too damaged.
 pub fn mend_boot(root: &Path, pass: Option<&str>, stage: &Path) -> Result<BootOutcome> {
-    let find = find_boot_mark(root).ok_or_else(|| crate::Error::Msg("no boot mark (.sg1) on this medium".into()))?;
+    let find = find_boot_mark(root)
+        .ok_or_else(|| crate::Error::Msg("no boot mark (.sg1) on this medium".into()))?;
     mend_find(&find, pass, stage)
 }
 
@@ -230,13 +236,17 @@ fn payload_matches_facets(payload: &Path, chunk: u32, digests: &[[u8; 32]]) -> R
     let mut f = File::open(payload).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut buf = vec![0u8; chunk.max(1) as usize];
     for expect in digests {
-        let n = f.read(&mut buf).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let n = f
+            .read(&mut buf)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         if n == 0 || sha256(&buf[..n]) != *expect {
             return Ok(false);
         }
     }
     let mut extra = [0u8; 1];
-    let n = f.read(&mut extra).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let n = f
+        .read(&mut extra)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok(n == 0)
 }
 
@@ -249,7 +259,10 @@ fn place_payload(wanted: &Path, recovered: &Path) -> Result<PathBuf> {
         if parent.is_dir() && parent_writable(parent) {
             let tmp = wanted.with_file_name(format!(
                 ".{}.writing",
-                wanted.file_name().and_then(|s| s.to_str()).unwrap_or("payload")
+                wanted
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("payload")
             ));
             fs::copy(recovered, &tmp).map_err(|e| crate::Error::Msg(e.to_string()))?;
             fs::rename(&tmp, wanted).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -324,7 +337,11 @@ pub fn mend_scan(stage: &Path, pass: Option<&str>) -> Result<BootOutcome> {
             let _ = Command::new("umount").arg(&mp).status();
             continue;
         }
-        let _ = Command::new("mount").arg("-o").arg("remount,rw").arg(&mp).status();
+        let _ = Command::new("mount")
+            .arg("-o")
+            .arg("remount,rw")
+            .arg(&mp)
+            .status();
         match mend_boot(&mp, pass, stage) {
             Ok(o) => return Ok(o),
             Err(e) => {
@@ -356,7 +373,11 @@ fn list_block_devices() -> Vec<PathBuf> {
                     || n.starts_with("mmcblk")
                     || n.starts_with("xvd")
                 {
-                    if n.chars().last().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+                    if n.chars()
+                        .last()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or(false)
+                    {
                         out.push(ent.path());
                     }
                 }
@@ -471,7 +492,9 @@ fn fallback_unpack(initrd: &Path, dest: &Path) -> Result<()> {
             .status()
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
         if !st.success() {
-            return Err(crate::Error::Msg("cpio could not unpack this initrd".into()));
+            return Err(crate::Error::Msg(
+                "cpio could not unpack this initrd".into(),
+            ));
         }
         return Ok(());
     }
@@ -491,7 +514,10 @@ fn fallback_unpack(initrd: &Path, dest: &Path) -> Result<()> {
                 "could not unpack initrd ({e}). Install initramfs-tools (unmkinitramfs) or {decomp}."
             ))
         })?;
-    let stdout = child.stdout.take().ok_or_else(|| crate::Error::Msg("decompress pipe".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| crate::Error::Msg("decompress pipe".into()))?;
     let st = Command::new("cpio")
         .args(["-id", "--quiet"])
         .current_dir(dest)
@@ -514,7 +540,10 @@ fn repack_initrd(inner: &Path, dest: &Path, kind: &str) -> Result<()> {
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| crate::Error::Msg(format!("find: {e}")))?;
-    let find_out = find.stdout.take().ok_or_else(|| crate::Error::Msg("find pipe".into()))?;
+    let find_out = find
+        .stdout
+        .take()
+        .ok_or_else(|| crate::Error::Msg("find pipe".into()))?;
     let mut cpio = Command::new("cpio")
         .args(["-H", "newc", "-o", "--quiet"])
         .current_dir(inner)
@@ -522,7 +551,10 @@ fn repack_initrd(inner: &Path, dest: &Path, kind: &str) -> Result<()> {
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| crate::Error::Msg(format!("cpio: {e}")))?;
-    let cpio_out = cpio.stdout.take().ok_or_else(|| crate::Error::Msg("cpio pipe".into()))?;
+    let cpio_out = cpio
+        .stdout
+        .take()
+        .ok_or_else(|| crate::Error::Msg("cpio pipe".into()))?;
     let dest_f = File::create(dest).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let st = if kind == "cpio" {
         let mut out = dest_f;
@@ -620,7 +652,10 @@ pub fn install_hooks(prefix: &Path) -> Result<Vec<PathBuf>> {
             "share/initramfs-tools/scripts/init-premount/sigil",
             SCRIPT_INIT_PREMOUNT,
         ),
-        ("lib/dracut/modules.d/90sigil/module-setup.sh", HOOK_DRACUT_SETUP),
+        (
+            "lib/dracut/modules.d/90sigil/module-setup.sh",
+            HOOK_DRACUT_SETUP,
+        ),
         ("lib/dracut/modules.d/90sigil/mend.sh", HOOK_DRACUT_MEND),
     ];
     for (rel, body) in pairs {
@@ -685,7 +720,9 @@ mod tests {
         fs::remove_file(&squash).unwrap();
         let err = mend_boot(&dir, None, &stage).unwrap_err().to_string();
         assert!(
-            err.contains("too damaged") || err.contains("will not guess") || err.contains("De-scribe failed"),
+            err.contains("too damaged")
+                || err.contains("will not guess")
+                || err.contains("De-scribe failed"),
             "{err}"
         );
 
@@ -740,7 +777,9 @@ mod tests {
     #[test]
     fn no_mark_is_clean_error() {
         let dir = boot_tmp("empty");
-        let err = mend_boot(&dir, None, &dir.join("s")).unwrap_err().to_string();
+        let err = mend_boot(&dir, None, &dir.join("s"))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("no boot mark"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -750,7 +789,9 @@ mod tests {
         let dir = boot_tmp("hooks");
         let wrote = install_hooks(&dir).unwrap();
         assert!(wrote.len() >= 5);
-        assert!(dir.join("share/initramfs-tools/scripts/live-premount/sigil").is_file());
+        assert!(dir
+            .join("share/initramfs-tools/scripts/live-premount/sigil")
+            .is_file());
         assert!(dir.join("lib/dracut/modules.d/90sigil/mend.sh").is_file());
         let _ = fs::remove_dir_all(&dir);
     }

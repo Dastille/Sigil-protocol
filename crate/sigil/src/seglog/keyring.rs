@@ -54,7 +54,11 @@ type Frames = BTreeMap<u64, Frame>;
 fn render(frames: &Frames) -> String {
     let mut s = format!("{RING_MAGIC}\n");
     for (seq, f) in frames {
-        s.push_str(&format!("seq={seq} salt={} wrap={}\n", hex::encode(f.salt), hex::encode(&f.wrap)));
+        s.push_str(&format!(
+            "seq={seq} salt={} wrap={}\n",
+            hex::encode(f.salt),
+            hex::encode(&f.wrap)
+        ));
     }
     s
 }
@@ -73,9 +77,18 @@ fn parse(text: &str, shard: u64) -> Result<Frames> {
                 kv.entry(k).or_insert(v);
             }
         }
-        let seq = kv.get("seq").and_then(|v| v.parse::<u64>().ok()).filter(|s| shard_of(*s) == shard);
-        let salt = kv.get("salt").and_then(|v| hex::decode(v).ok()).and_then(|b| <[u8; 16]>::try_from(b).ok());
-        let wrap = kv.get("wrap").and_then(|v| hex::decode(v).ok()).filter(|w| keys::sgto_len_at(w, 0) == w.len());
+        let seq = kv
+            .get("seq")
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|s| shard_of(*s) == shard);
+        let salt = kv
+            .get("salt")
+            .and_then(|v| hex::decode(v).ok())
+            .and_then(|b| <[u8; 16]>::try_from(b).ok());
+        let wrap = kv
+            .get("wrap")
+            .and_then(|v| hex::decode(v).ok())
+            .filter(|w| keys::sgto_len_at(w, 0) == w.len());
         let (Some(seq), Some(salt), Some(wrap)) = (seq, salt, wrap) else {
             return Err(bad(format!("bad record {l:?}")));
         };
@@ -175,7 +188,13 @@ fn store_shard(dir: &Path, shard: u64, frames: &Frames) -> Result<()> {
 
 /// Wrap `master` (the segment's key) for the recipients / passphrase and store it under `seq`
 /// (replacing a leftover record of a crashed append at the same seq). Caller holds the lock.
-pub(super) fn put(log: &Log, seq: u64, master: &[u8; 32], pass: Option<&str>, recipients: &[PublicIdentity]) -> Result<()> {
+pub(super) fn put(
+    log: &Log,
+    seq: u64,
+    master: &[u8; 32],
+    pass: Option<&str>,
+    recipients: &[PublicIdentity],
+) -> Result<()> {
     let pass = pass.filter(|p| !p.is_empty());
     if pass.is_none() && recipients.is_empty() {
         return Err(err(
@@ -199,7 +218,9 @@ pub(super) fn destroy(log: &Log, seqs: &[u64]) -> Result<Vec<u64>> {
     }
     let mut gone = Vec::new();
     for (shard, list) in by_shard {
-        let Some(mut frames) = load_shard(&log.dir, shard)? else { continue };
+        let Some(mut frames) = load_shard(&log.dir, shard)? else {
+            continue;
+        };
         let before = frames.len();
         for s in &list {
             if frames.remove(s).is_some() {
@@ -230,7 +251,10 @@ pub(super) struct RingCache {
 
 impl RingCache {
     pub fn new(log: &Log) -> Self {
-        RingCache { dir: log.dir.clone(), shards: HashMap::new() }
+        RingCache {
+            dir: log.dir.clone(),
+            shards: HashMap::new(),
+        }
     }
 
     fn frame(&mut self, seq: u64) -> Result<Option<Frame>> {
@@ -263,7 +287,12 @@ pub(super) fn scan(log: &Log) -> BTreeMap<u64, ShardScan> {
     let mut out = BTreeMap::new();
     for p in sorted(&log.dir.join(KEYS_DIR)) {
         if let Some(shard) = shard_of_file(&p) {
-            out.insert(shard, load_shard(&log.dir, shard).map(|f| f.unwrap_or_default().keys().copied().collect()).map_err(|e| e.to_string()));
+            out.insert(
+                shard,
+                load_shard(&log.dir, shard)
+                    .map(|f| f.unwrap_or_default().keys().copied().collect())
+                    .map_err(|e| e.to_string()),
+            );
         }
     }
     out
@@ -276,7 +305,9 @@ pub(super) type MendedShards = (Vec<u64>, Vec<(u64, String)>);
 pub(super) fn mend_shards(log: &Log) -> Result<MendedShards> {
     let (mut mended, mut bad) = (Vec::new(), Vec::new());
     for p in sorted(&log.dir.join(KEYS_DIR)) {
-        let Some(shard) = shard_of_file(&p) else { continue };
+        let Some(shard) = shard_of_file(&p) else {
+            continue;
+        };
         let Ok(bytes) = fs::read(&p) else { continue };
         match health_bytes(&bytes) {
             Health::Ok => {}
@@ -312,14 +343,31 @@ mod tests {
         put(&log, 1500, &m2, Some("pw"), &[]).unwrap();
         assert!(shard_path(&log.dir, 0).is_file() && shard_path(&log.dir, 1).is_file());
         let mut rc = RingCache::new(&log);
-        assert_eq!(rc.identity(5, None, std::slice::from_ref(&me)).unwrap().master, m1);
+        assert_eq!(
+            rc.identity(5, None, std::slice::from_ref(&me))
+                .unwrap()
+                .master,
+            m1
+        );
         assert_eq!(rc.identity(1500, Some("pw"), &[]).unwrap().master, m2);
-        assert!(rc.identity(1500, Some("nope"), std::slice::from_ref(&me)).is_err());
-        assert!(rc.identity(6, None, std::slice::from_ref(&me)).err().unwrap().to_string().contains("no key"));
+        assert!(rc
+            .identity(1500, Some("nope"), std::slice::from_ref(&me))
+            .is_err());
+        assert!(rc
+            .identity(6, None, std::slice::from_ref(&me))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("no key"));
         // replacing a record (a crashed append's leftover) keeps one record per seq
         put(&log, 5, &m2, None, &[me.public()]).unwrap();
         let mut rc = RingCache::new(&log);
-        assert_eq!(rc.identity(5, None, std::slice::from_ref(&me)).unwrap().master, m2);
+        assert_eq!(
+            rc.identity(5, None, std::slice::from_ref(&me))
+                .unwrap()
+                .master,
+            m2
+        );
         // nothing to wrap to: refused
         assert!(put(&log, 7, &m1, None, &[]).is_err());
         // destroy: reports what existed, drops an emptied shard file, leaves other shards alone
@@ -335,7 +383,11 @@ mod tests {
         let ok = format!("{RING_MAGIC}\n");
         assert!(parse(&ok, 0).unwrap().is_empty());
         // bad hex, wrong shard, truncated wrap
-        for l in ["seq=1 salt=zz wrap=00", "seq=2000 salt=00000000000000000000000000000000 wrap=00", "seq=1 salt=00000000000000000000000000000000 wrap=0102"] {
+        for l in [
+            "seq=1 salt=zz wrap=00",
+            "seq=2000 salt=00000000000000000000000000000000 wrap=00",
+            "seq=1 salt=00000000000000000000000000000000 wrap=0102",
+        ] {
             assert!(parse(&format!("{ok}{l}\n"), 0).is_err(), "{l}");
         }
     }

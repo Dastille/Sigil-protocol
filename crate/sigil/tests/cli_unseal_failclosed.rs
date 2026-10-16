@@ -27,14 +27,22 @@ fn setup(tag: &str) -> (PathBuf, Vec<u8>) {
         })
         .collect();
     std::fs::write(dir.join("a.bin"), &data).unwrap();
-    let o = sigil(&dir, &["seal", "--mode", "seal", "--shards", "254", "-o", "a.sg1", "a.bin"]);
+    let o = sigil(
+        &dir,
+        &[
+            "seal", "--mode", "seal", "--shards", "254", "-o", "a.sg1", "a.bin",
+        ],
+    );
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     (dir, data)
 }
 
 fn no_leftovers(dir: &Path, name: &str) {
     assert!(!dir.join(name).exists(), "{name} must not be written");
-    assert!(!dir.join(format!("{name}.sigil-part")).exists(), "part file must be removed");
+    assert!(
+        !dir.join(format!("{name}.sigil-part")).exists(),
+        "part file must be removed"
+    );
 }
 
 #[test]
@@ -49,9 +57,16 @@ fn damaged_pack_head_fails_closed_not_truncated() {
     std::fs::write(dir.join("torn.sg1"), &pack).unwrap();
 
     let o = sigil(&dir, &["unseal", "torn.sg1", "-o", "out.bin"]);
-    assert!(!o.status.success(), "must exit nonzero, stdout: {}", String::from_utf8_lossy(&o.stdout));
+    assert!(
+        !o.status.success(),
+        "must exit nonzero, stdout: {}",
+        String::from_utf8_lossy(&o.stdout)
+    );
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("more than one seal"), "clear error, got: {err}");
+    assert!(
+        err.contains("more than one seal"),
+        "clear error, got: {err}"
+    );
     no_leftovers(&dir, "out.bin");
 
     // An existing output file is left untouched on failure.
@@ -62,7 +77,11 @@ fn damaged_pack_head_fails_closed_not_truncated() {
 
     // mend must not "heal" it into a healthy-looking single-chunk seal either.
     let o = sigil(&dir, &["mend", "torn.sg1", "-o", "m.sg1"]);
-    assert!(!o.status.success(), "mend must refuse: {}", String::from_utf8_lossy(&o.stdout));
+    assert!(
+        !o.status.success(),
+        "mend must refuse: {}",
+        String::from_utf8_lossy(&o.stdout)
+    );
     assert!(!dir.join("m.sg1").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -71,14 +90,21 @@ fn damaged_pack_head_fails_closed_not_truncated() {
 fn truncated_pack_fails_closed_and_leaves_nothing() {
     let (dir, data) = setup("trunc");
     let pack = std::fs::read(dir.join("a.sg1")).unwrap();
-    for (i, cut) in [pack.len() / 2, pack.len() - 10, pack.len() * 3 / 4, 100].into_iter().enumerate() {
+    for (i, cut) in [pack.len() / 2, pack.len() - 10, pack.len() * 3 / 4, 100]
+        .into_iter()
+        .enumerate()
+    {
         let name = format!("cut{i}.sg1");
         std::fs::write(dir.join(&name), &pack[..cut]).unwrap();
         let o = sigil(&dir, &["unseal", &name, "-o", "out.bin"]);
         if o.status.success() {
             // Only the unprotected facet trailer was cut: every chunk is still
             // there and verified, so the whole file must come back exactly.
-            assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), data, "cut at {cut}");
+            assert_eq!(
+                std::fs::read(dir.join("out.bin")).unwrap(),
+                data,
+                "cut at {cut}"
+            );
             std::fs::remove_file(dir.join("out.bin")).unwrap();
         } else {
             no_leftovers(&dir, "out.bin");

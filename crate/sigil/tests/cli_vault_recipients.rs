@@ -13,7 +13,11 @@ fn sigil(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(o: Output) -> String {
@@ -43,7 +47,10 @@ fn single_file_vault_remembers_recipients() {
     ok(sigil(&dir, &["keygen", "-o", "alice.sgk"]));
     ok(sigil(&dir, &["keygen", "-o", "bob.sgk"]));
     fs::write(dir.join("notes.txt"), b"v1 secret").unwrap();
-    ok(sigil(&dir, &["vault", "track", "notes.txt", "--to", "alice.sgk.pub"]));
+    ok(sigil(
+        &dir,
+        &["vault", "track", "notes.txt", "--to", "alice.sgk.pub"],
+    ));
     let c = chart(&dir, "notes.txt");
     assert_eq!(c.matches("\nto=").count(), 1, "{c}");
     assert!(!c.contains("alice"), "CHART stores keys, not paths: {c}");
@@ -54,13 +61,26 @@ fn single_file_vault_remembers_recipients() {
     assert!(out.contains("v2") && out.contains("(remembered)"), "{out}");
     fs::remove_file(dir.join("notes.txt")).unwrap();
     fails(sigil(&dir, &["vault", "restore", "notes.txt"]));
-    ok(sigil(&dir, &["vault", "restore", "notes.txt", "--identity", "alice.sgk"]));
+    ok(sigil(
+        &dir,
+        &["vault", "restore", "notes.txt", "--identity", "alice.sgk"],
+    ));
     assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"v2 secret edit");
 
     // Writable export → commit --from-export also stays encrypt-to.
     ok(sigil(
         &dir,
-        &["mount", "notes.txt", "view", "--vault", "--identity", "alice.sgk", "--export-dir", "ex", "--writable"],
+        &[
+            "mount",
+            "notes.txt",
+            "view",
+            "--vault",
+            "--identity",
+            "alice.sgk",
+            "--export-dir",
+            "ex",
+            "--writable",
+        ],
     ));
     let payload = fs::read_dir(dir.join("ex"))
         .unwrap()
@@ -72,35 +92,78 @@ fn single_file_vault_remembers_recipients() {
     assert!(out.contains("v3") && out.contains("(remembered)"), "{out}");
     fs::remove_file(dir.join("notes.txt")).unwrap();
     fails(sigil(&dir, &["vault", "restore", "notes.txt"]));
-    ok(sigil(&dir, &["vault", "restore", "notes.txt", "--identity", "alice.sgk"]));
+    ok(sigil(
+        &dir,
+        &["vault", "restore", "notes.txt", "--identity", "alice.sgk"],
+    ));
     assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"v3 from export");
 
     // --to on commit replaces the remembered set (now bob only).
     fs::write(dir.join("notes.txt"), b"v4 for bob").unwrap();
-    let out = ok(sigil(&dir, &["vault", "commit", "notes.txt", "--to", "bob.sgk.pub"]));
+    let out = ok(sigil(
+        &dir,
+        &["vault", "commit", "notes.txt", "--to", "bob.sgk.pub"],
+    ));
     assert!(out.contains("(now remembered)"), "{out}");
     fs::write(dir.join("notes.txt"), b"v5 still bob").unwrap();
     ok(sigil(&dir, &["vault", "commit", "notes.txt"]));
-    fails(sigil(&dir, &["vault", "restore", "notes.txt", "--identity", "alice.sgk"]));
-    ok(sigil(&dir, &["vault", "restore", "notes.txt", "--identity", "bob.sgk"]));
+    fails(sigil(
+        &dir,
+        &["vault", "restore", "notes.txt", "--identity", "alice.sgk"],
+    ));
+    ok(sigil(
+        &dir,
+        &["vault", "restore", "notes.txt", "--identity", "bob.sgk"],
+    ));
     assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"v5 still bob");
 
     // vault recipients: show, set (two), clear.
     let out = ok(sigil(&dir, &["vault", "recipients", "notes.txt"]));
     assert!(out.contains("1 remembered recipient"), "{out}");
-    let out = ok(sigil(&dir, &["vault", "recipients", "notes.txt", "--to", "alice.sgk.pub", "--to", "bob.sgk.pub"]));
+    let out = ok(sigil(
+        &dir,
+        &[
+            "vault",
+            "recipients",
+            "notes.txt",
+            "--to",
+            "alice.sgk.pub",
+            "--to",
+            "bob.sgk.pub",
+        ],
+    ));
     assert!(out.contains("2 remembered recipients"), "{out}");
-    let out = ok(sigil(&dir, &["vault", "recipients", "notes.txt", "--clear"]));
+    let out = ok(sigil(
+        &dir,
+        &["vault", "recipients", "notes.txt", "--clear"],
+    ));
     assert!(out.contains("none remembered"), "{out}");
     assert!(chart(&dir, "notes.txt").contains("\nto=-\n"));
     fs::write(dir.join("notes.txt"), b"v6 plain on purpose").unwrap();
     ok(sigil(&dir, &["vault", "commit", "notes.txt"]));
     fs::remove_file(dir.join("notes.txt")).unwrap();
     ok(sigil(&dir, &["vault", "restore", "notes.txt"]));
-    assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"v6 plain on purpose");
+    assert_eq!(
+        fs::read(dir.join("notes.txt")).unwrap(),
+        b"v6 plain on purpose"
+    );
     // Old encrypt-to versions are untouched.
-    fails(sigil(&dir, &["vault", "restore", "notes.txt", "--version", "5"]));
-    ok(sigil(&dir, &["vault", "restore", "notes.txt", "--version", "5", "--identity", "bob.sgk"]));
+    fails(sigil(
+        &dir,
+        &["vault", "restore", "notes.txt", "--version", "5"],
+    ));
+    ok(sigil(
+        &dir,
+        &[
+            "vault",
+            "restore",
+            "notes.txt",
+            "--version",
+            "5",
+            "--identity",
+            "bob.sgk",
+        ],
+    ));
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -117,7 +180,10 @@ fn plain_vault_chart_unchanged_and_legacy_guard() {
 
     // Simulate a chart made before remembered recipients: strip the to= line.
     fs::write(dir.join("old.txt"), b"o1").unwrap();
-    ok(sigil(&dir, &["vault", "track", "old.txt", "--to", "alice.sgk.pub"]));
+    ok(sigil(
+        &dir,
+        &["vault", "track", "old.txt", "--to", "alice.sgk.pub"],
+    ));
     let stripped: String = chart(&dir, "old.txt")
         .lines()
         .filter(|l| !l.starts_with("to="))
@@ -128,7 +194,10 @@ fn plain_vault_chart_unchanged_and_legacy_guard() {
     let e = fails(sigil(&dir, &["vault", "commit", "old.txt"]));
     assert!(e.contains("encrypt-to") && e.contains("--to"), "{e}");
     // Passing --to once heals it; later commits remember.
-    ok(sigil(&dir, &["vault", "commit", "old.txt", "--to", "alice.sgk.pub"]));
+    ok(sigil(
+        &dir,
+        &["vault", "commit", "old.txt", "--to", "alice.sgk.pub"],
+    ));
     fs::write(dir.join("old.txt"), b"o3").unwrap();
     ok(sigil(&dir, &["vault", "commit", "old.txt"]));
     fails(sigil(&dir, &["vault", "restore", "old.txt"]));
@@ -142,14 +211,20 @@ fn folder_vault_remembers_recipients() {
     fs::create_dir_all(dir.join("photos/sub")).unwrap();
     fs::write(dir.join("photos/a.txt"), b"alpha").unwrap();
     fs::write(dir.join("photos/sub/b.txt"), b"beta").unwrap();
-    ok(sigil(&dir, &["vault", "track", "photos", "--to", "alice.sgk.pub"]));
+    ok(sigil(
+        &dir,
+        &["vault", "track", "photos", "--to", "alice.sgk.pub"],
+    ));
     assert!(chart(&dir, "photos").contains("\nto="));
     fs::write(dir.join("photos/a.txt"), b"alpha two").unwrap();
     let out = ok(sigil(&dir, &["vault", "commit", "photos"]));
     assert!(out.contains("v2") && out.contains("(remembered)"), "{out}");
     fs::remove_dir_all(dir.join("photos")).unwrap();
     fails(sigil(&dir, &["vault", "restore", "photos"]));
-    ok(sigil(&dir, &["vault", "restore", "photos", "--identity", "alice.sgk"]));
+    ok(sigil(
+        &dir,
+        &["vault", "restore", "photos", "--identity", "alice.sgk"],
+    ));
     assert_eq!(fs::read(dir.join("photos/a.txt")).unwrap(), b"alpha two");
     let _ = fs::remove_dir_all(&dir);
 }

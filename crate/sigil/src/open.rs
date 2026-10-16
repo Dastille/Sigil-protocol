@@ -76,7 +76,10 @@ fn first_file(root: &Path) -> Option<PathBuf> {
 
 fn launch(path: &Path) -> Result<()> {
     let r = if cfg!(windows) {
-        Command::new("cmd").args(["/C", "start", ""]).arg(path).status()
+        Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .status()
     } else if cfg!(target_os = "macos") {
         Command::new("open").arg(path).status()
     } else {

@@ -89,21 +89,40 @@ impl DoctorReport {
             self.root.display(),
             self.kind,
             self.layout,
-            self.container_version.map(|v| format!(" format {v}")).unwrap_or_default()
+            self.container_version
+                .map(|v| format!(" format {v}"))
+                .unwrap_or_default()
         );
         for f in &self.fixed {
             s.push_str(&format!("  fixed: {f}\n"));
         }
         for f in &self.findings {
-            s.push_str(&format!("  {:<5} {:<18} {}: {}\n", f.severity.label(), f.code, f.subject, f.message));
+            s.push_str(&format!(
+                "  {:<5} {:<18} {}: {}\n",
+                f.severity.label(),
+                f.code,
+                f.subject,
+                f.message
+            ));
             if let Some(h) = &f.hint {
                 s.push_str(&format!("        → {h}\n"));
             }
         }
-        let (e, w, i) = (self.count(Severity::Error), self.count(Severity::Warn), self.count(Severity::Info));
+        let (e, w, i) = (
+            self.count(Severity::Error),
+            self.count(Severity::Warn),
+            self.count(Severity::Info),
+        );
         s.push_str(&format!("verified {} member(s)\n", self.verified));
         s.push_str(&match self.exit_code() {
-            0 => format!("result: healthy{}\n", if i > 0 { format!(" ({i} note(s))") } else { String::new() }),
+            0 => format!(
+                "result: healthy{}\n",
+                if i > 0 {
+                    format!(" ({i} note(s))")
+                } else {
+                    String::new()
+                }
+            ),
             1 => format!("result: warnings ({w} warning(s), {i} note(s)) — exit 1\n"),
             _ => format!("result: PROBLEMS ({e} error(s), {w} warning(s)) — exit 2\n"),
         });
@@ -181,12 +200,30 @@ pub struct DoctorOpts<'a> {
 
 impl Default for DoctorOpts<'_> {
     fn default() -> Self {
-        DoctorOpts { pass: None, identities: &[], quick: false, fix: false, temp_age_secs: gc::DEFAULT_TEMP_AGE_SECS }
+        DoctorOpts {
+            pass: None,
+            identities: &[],
+            quick: false,
+            fix: false,
+            temp_age_secs: gc::DEFAULT_TEMP_AGE_SECS,
+        }
     }
 }
 
-fn f(sev: Severity, code: &'static str, subject: impl Into<String>, msg: impl Into<String>, hint: Option<String>) -> Finding {
-    Finding { severity: sev, code, subject: subject.into(), message: msg.into(), hint }
+fn f(
+    sev: Severity,
+    code: &'static str,
+    subject: impl Into<String>,
+    msg: impl Into<String>,
+    hint: Option<String>,
+) -> Finding {
+    Finding {
+        severity: sev,
+        code,
+        subject: subject.into(),
+        message: msg.into(),
+        hint,
+    }
 }
 
 /// Outcome of verifying one seal / star.
@@ -209,17 +246,23 @@ pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
             } else if live < n || recovered {
                 Health::Mendable(format!(
                     "{live}/{n} shards intact (need {k}){}",
-                    if recovered { ", header recovered from keystone" } else { "" }
+                    if recovered {
+                        ", header recovered from keystone"
+                    } else {
+                        ""
+                    }
                 ))
             } else if !merkle_ok {
-                Health::Damaged("all shards present but Merkle root differs (corrupt shard data)".into())
+                Health::Damaged(
+                    "all shards present but Merkle root differs (corrupt shard data)".into(),
+                )
             } else {
                 // Every shard has one good copy, but Reflection / Seal keep redundant embers: if
                 // the repaired form differs byte-for-byte, some copy has rotted (still safe today).
                 match crate::mend_bytes(bytes) {
-                    Ok(healed) if healed != bytes => {
-                        Health::Mendable("redundant shard copies are damaged (data still intact)".into())
-                    }
+                    Ok(healed) if healed != bytes => Health::Mendable(
+                        "redundant shard copies are damaged (data still intact)".into(),
+                    ),
                     Ok(_) => Health::Ok,
                     Err(e) => Health::Damaged(format!("repair pass failed: {e}")),
                 }
@@ -238,7 +281,10 @@ fn health_work_pack(path: &Path) -> Health {
     let _ = fs::remove_file(&tmp);
     match r {
         Ok(rep) if rep.mended.is_empty() => Health::Ok,
-        Ok(rep) => Health::Mendable(format!("{} chunk star(s) torn but healable", rep.mended.len())),
+        Ok(rep) => Health::Mendable(format!(
+            "{} chunk star(s) torn but healable",
+            rep.mended.len()
+        )),
         Err(e) => Health::Damaged(e.to_string()),
     }
 }
@@ -262,7 +308,11 @@ fn health_file(path: &Path) -> Health {
             let h = if star.starts_with(&crate::work::WORK_MAGIC) {
                 let tmp = temp_path("member");
                 let ok = fs::write(&tmp, &star).is_ok();
-                let h = if ok { health_work_pack(&tmp) } else { Health::Ok };
+                let h = if ok {
+                    health_work_pack(&tmp)
+                } else {
+                    Health::Ok
+                };
                 let _ = fs::remove_file(&tmp);
                 h
             } else {
@@ -270,7 +320,9 @@ fn health_file(path: &Path) -> Health {
             };
             match (&h, &worst) {
                 (Health::Damaged(m), _) => return Health::Damaged(format!("{}: {m}", e.path)),
-                (Health::Mendable(m), Health::Ok) => worst = Health::Mendable(format!("{}: {m}", e.path)),
+                (Health::Mendable(m), Health::Ok) => {
+                    worst = Health::Mendable(format!("{}: {m}", e.path))
+                }
                 _ => {}
             }
         }
@@ -310,18 +362,61 @@ fn push_health(rep: &mut DoctorReport, subject: &str, path: &Path, mend_target: 
 fn add_gc_findings(rep: &mut DoctorReport, g: &gc::GcReport, root: &Path) {
     for i in &g.items {
         let (code, msg, hint): (&'static str, String, Option<String>) = match i.kind {
-            GcKind::OrphanStar => ("orphan-star", format!("star no list entry uses ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
-            GcKind::OrphanVersion => ("orphan-version", format!("version seal the CHART does not list ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
-            GcKind::DuplicateStar => ("duplicate-star", format!("redundant copy of a star ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
-            GcKind::Temp => ("temp-file", "abandoned temp file".into(), Some("sigil gc --apply".into())),
-            GcKind::StaleStaging => ("stale-staging", "interrupted `sigil tidy` staging folder".into(), Some("sigil gc --apply".into())),
-            GcKind::OrphanSegment => ("orphan-segment", format!("segment no INDEX entry uses ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
-            GcKind::DeletedSegment => ("deleted-segment", format!("segment a tombstone deleted, still on disk ({} bytes)", i.bytes), Some("sigil log compact --apply (or sigil gc --apply)".into())),
-            GcKind::SupersededSegment => ("superseded-segment", format!("segment merged into a compaction segment ({} bytes)", i.bytes), Some("sigil gc --apply".into())),
-            GcKind::DeadKey => ("dead-key", "key ring record(s) of segments that are deleted, merged away or shredded".into(), Some("sigil gc --apply".into())),
+            GcKind::OrphanStar => (
+                "orphan-star",
+                format!("star no list entry uses ({} bytes)", i.bytes),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::OrphanVersion => (
+                "orphan-version",
+                format!("version seal the CHART does not list ({} bytes)", i.bytes),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::DuplicateStar => (
+                "duplicate-star",
+                format!("redundant copy of a star ({} bytes)", i.bytes),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::Temp => (
+                "temp-file",
+                "abandoned temp file".into(),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::StaleStaging => (
+                "stale-staging",
+                "interrupted `sigil tidy` staging folder".into(),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::OrphanSegment => (
+                "orphan-segment",
+                format!("segment no INDEX entry uses ({} bytes)", i.bytes),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::DeletedSegment => (
+                "deleted-segment",
+                format!(
+                    "segment a tombstone deleted, still on disk ({} bytes)",
+                    i.bytes
+                ),
+                Some("sigil log compact --apply (or sigil gc --apply)".into()),
+            ),
+            GcKind::SupersededSegment => (
+                "superseded-segment",
+                format!(
+                    "segment merged into a compaction segment ({} bytes)",
+                    i.bytes
+                ),
+                Some("sigil gc --apply".into()),
+            ),
+            GcKind::DeadKey => (
+                "dead-key",
+                "key ring record(s) of segments that are deleted, merged away or shredded".into(),
+                Some("sigil gc --apply".into()),
+            ),
             GcKind::EmptyDir => continue,
         };
-        rep.findings.push(f(Severity::Warn, code, rel(root, &i.path), msg, hint));
+        rep.findings
+            .push(f(Severity::Warn, code, rel(root, &i.path), msg, hint));
     }
 }
 
@@ -335,7 +430,12 @@ pub fn doctor(path: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
         if probe.layout == "old layout" {
             match container::tidy(
                 &path,
-                &container::TidyOpts { dry_run: false, pass: opts.pass, identities: opts.identities, fault: None },
+                &container::TidyOpts {
+                    dry_run: false,
+                    pass: opts.pass,
+                    identities: opts.identities,
+                    fault: None,
+                },
             ) {
                 Ok(t) if !t.already => {
                     fixed.push(format!("tidied {} → {}", t.from.display(), t.to.display()));
@@ -348,11 +448,23 @@ pub fn doctor(path: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
         // Safe fix 2: gc --apply (orphans, duplicates, abandoned temp files).
         if let Ok(g) = gc::gc(
             &path,
-            &GcOpts { apply: true, pass: opts.pass, identities: opts.identities, temp_age_secs: opts.temp_age_secs },
+            &GcOpts {
+                apply: true,
+                pass: opts.pass,
+                identities: opts.identities,
+                temp_age_secs: opts.temp_age_secs,
+            },
         ) {
             let n = g.removed_count();
             if n > 0 {
-                fixed.push(format!("gc removed {n} orphan/temp item(s) ({} bytes)", g.items.iter().filter(|i| i.removed).map(|i| i.bytes).sum::<u64>()));
+                fixed.push(format!(
+                    "gc removed {n} orphan/temp item(s) ({} bytes)",
+                    g.items
+                        .iter()
+                        .filter(|i| i.removed)
+                        .map(|i| i.bytes)
+                        .sum::<u64>()
+                ));
             }
         }
     }
@@ -373,7 +485,10 @@ fn manifest_findings(rep: &mut DoctorReport, dir: &Path, want_kind: &str) {
                     Severity::Error,
                     "manifest-kind",
                     container::CONTAINER_FILE,
-                    format!("manifest says kind={} but the folder holds a {want_kind}", m.kind),
+                    format!(
+                        "manifest says kind={} but the folder holds a {want_kind}",
+                        m.kind
+                    ),
                     None,
                 ));
             }
@@ -383,7 +498,10 @@ fn manifest_findings(rep: &mut DoctorReport, dir: &Path, want_kind: &str) {
             "manifest",
             container::CONTAINER_FILE,
             e.to_string(),
-            Some("upgrade sigil if the container is newer; otherwise restore CONTAINER from a copy".into()),
+            Some(
+                "upgrade sigil if the container is newer; otherwise restore CONTAINER from a copy"
+                    .into(),
+            ),
         )),
     }
 }
@@ -434,7 +552,11 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     let mut rep = DoctorReport {
         kind: "vault".into(),
         root: vdir.to_path_buf(),
-        layout: if is_container { "container".into() } else { "old layout".into() },
+        layout: if is_container {
+            "container".into()
+        } else {
+            "old layout".into()
+        },
         ..Default::default()
     };
     if is_container {
@@ -445,12 +567,24 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     let chart = match crate::vault::load_chart(vdir) {
         Ok(c) => c,
         Err(e) => {
-            rep.findings.push(f(Severity::Error, "chart", crate::vault::CHART_NAME, e.to_string(), Some("restore CHART from a copy; seals are still on disk".into())));
+            rep.findings.push(f(
+                Severity::Error,
+                "chart",
+                crate::vault::CHART_NAME,
+                e.to_string(),
+                Some("restore CHART from a copy; seals are still on disk".into()),
+            ));
             return Ok(rep);
         }
     };
     if !chart.versions.iter().any(|v| v.n == chart.tip) {
-        rep.findings.push(f(Severity::Error, "tip-missing", crate::vault::CHART_NAME, format!("tip v{} is not listed", chart.tip), None));
+        rep.findings.push(f(
+            Severity::Error,
+            "tip-missing",
+            crate::vault::CHART_NAME,
+            format!("tip v{} is not listed", chart.tip),
+            None,
+        ));
     }
     let hot: HashSet<u32> = chart.versions.iter().map(|v| v.n).collect();
     for v in &chart.versions {
@@ -495,8 +629,20 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     if let Some(live) = crate::vault::resolve_paths(vdir).ok().map(|(l, _)| l) {
         if let Ok(st) = crate::vault::status(&live) {
             match st.drift {
-                crate::vault::Drift::Changed => rep.findings.push(f(Severity::Info, "live-changed", live.display().to_string(), "live file differs from the tip (uncommitted edits)", Some("sigil vault commit".into()))),
-                crate::vault::Drift::MissingLive => rep.findings.push(f(Severity::Info, "live-missing", live.display().to_string(), "live path is gone; the vault still holds every version", Some("sigil vault restore".into()))),
+                crate::vault::Drift::Changed => rep.findings.push(f(
+                    Severity::Info,
+                    "live-changed",
+                    live.display().to_string(),
+                    "live file differs from the tip (uncommitted edits)",
+                    Some("sigil vault commit".into()),
+                )),
+                crate::vault::Drift::MissingLive => rep.findings.push(f(
+                    Severity::Info,
+                    "live-missing",
+                    live.display().to_string(),
+                    "live path is gone; the vault still holds every version",
+                    Some("sigil vault restore".into()),
+                )),
                 _ => {}
             }
         }
@@ -505,18 +651,42 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     let cold = vdir.join(container::COLD_DIR);
     let mut cold_versions: HashSet<u32> = HashSet::new();
     if is_container && cold.is_dir() {
-        let mut ents: Vec<PathBuf> = fs::read_dir(&cold).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        let mut ents: Vec<PathBuf> = fs::read_dir(&cold)
+            .map(|r| r.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default();
         ents.sort();
         for p in ents {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-            let Some(n) = name.strip_prefix('v').and_then(|d| d.parse::<u32>().ok()).filter(|_| p.is_dir()) else {
-                rep.findings.push(f(Severity::Info, "cold-unknown", rel(vdir, &p), "not a cold kit folder (vN/); left alone", None));
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let Some(n) = name
+                .strip_prefix('v')
+                .and_then(|d| d.parse::<u32>().ok())
+                .filter(|_| p.is_dir())
+            else {
+                rep.findings.push(f(
+                    Severity::Info,
+                    "cold-unknown",
+                    rel(vdir, &p),
+                    "not a cold kit folder (vN/); left alone",
+                    None,
+                ));
                 continue;
             };
             cold_versions.insert(n);
             let subject = rel(vdir, &p);
             if hot.contains(&n) {
-                rep.findings.push(f(Severity::Info, "cold-stale", subject.clone(), format!("v{n} is still hot in the chart; this cold copy is redundant"), Some(format!("safe to delete {subject} by hand if you do not want the extra copy"))));
+                rep.findings.push(f(
+                    Severity::Info,
+                    "cold-stale",
+                    subject.clone(),
+                    format!("v{n} is still hot in the chart; this cold copy is redundant"),
+                    Some(format!(
+                        "safe to delete {subject} by hand if you do not want the extra copy"
+                    )),
+                ));
             }
             check_cold_kit(&mut rep, &p, &subject, opts.quick);
         }
@@ -524,9 +694,15 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     // History that left the chart without a cold kit.
     let max = chart.versions.iter().map(|v| v.n).max().unwrap_or(0);
     let light = matches!(chart.retention, crate::vault::RetentionPolicy::Light { .. });
-    let gaps: Vec<u32> = (1..=max).filter(|n| !hot.contains(n) && !cold_versions.contains(n)).collect();
+    let gaps: Vec<u32> = (1..=max)
+        .filter(|n| !hot.contains(n) && !cold_versions.contains(n))
+        .collect();
     if !gaps.is_empty() && light {
-        let list = gaps.iter().map(|n| format!("v{n}")).collect::<Vec<_>>().join(", ");
+        let list = gaps
+            .iter()
+            .map(|n| format!("v{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let uses_cold = !cold_versions.is_empty();
         rep.findings.push(f(
             if uses_cold { Severity::Warn } else { Severity::Info },
@@ -537,7 +713,15 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
         ));
     }
     // Orphans / temp files, shared with gc.
-    if let Ok(g) = gc::gc(vdir, &GcOpts { apply: false, pass: opts.pass, identities: opts.identities, temp_age_secs: opts.temp_age_secs }) {
+    if let Ok(g) = gc::gc(
+        vdir,
+        &GcOpts {
+            apply: false,
+            pass: opts.pass,
+            identities: opts.identities,
+            temp_age_secs: opts.temp_age_secs,
+        },
+    ) {
         add_gc_findings(&mut rep, &g, vdir);
     }
     Ok(rep)
@@ -546,14 +730,31 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
 fn check_cold_kit(rep: &mut DoctorReport, dir: &Path, subject: &str, quick: bool) {
     if crate::kit::is_kit_dir(dir) {
         let usbs = fs::read_dir(dir)
-            .map(|r| r.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("usb-") && e.path().is_dir()).count())
+            .map(|r| {
+                r.flatten()
+                    .filter(|e| {
+                        e.file_name().to_string_lossy().starts_with("usb-") && e.path().is_dir()
+                    })
+                    .count()
+            })
             .unwrap_or(0);
         let want = fs::read_to_string(dir.join(crate::kit::KIT_MANIFEST))
             .ok()
-            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("drives=").and_then(|d| d.trim().parse::<usize>().ok())))
+            .and_then(|t| {
+                t.lines().find_map(|l| {
+                    l.strip_prefix("drives=")
+                        .and_then(|d| d.trim().parse::<usize>().ok())
+                })
+            })
             .unwrap_or(usbs);
         match crate::kit::mend(dir) {
-            Err(e) => rep.findings.push(f(Severity::Error, "cold-broken", subject, format!("cold kit cannot be rebuilt: {e}"), Some("copy the missing usb-* folders back under the kit".into()))),
+            Err(e) => rep.findings.push(f(
+                Severity::Error,
+                "cold-broken",
+                subject,
+                format!("cold kit cannot be rebuilt: {e}"),
+                Some("copy the missing usb-* folders back under the kit".into()),
+            )),
             Ok(bytes) => {
                 rep.verified += 1;
                 if usbs < want {
@@ -561,8 +762,17 @@ fn check_cold_kit(rep: &mut DoctorReport, dir: &Path, subject: &str, quick: bool
                 } else if !quick {
                     match health_bytes(&bytes) {
                         Health::Ok => {}
-                        Health::Mendable(m) => rep.findings.push(f(Severity::Warn, "cold-degraded", subject, format!("rebuilt seal is damaged but repairable: {m}"), None)),
-                        Health::Damaged(m) => rep.findings.push(f(Severity::Error, "cold-broken", subject, m, None)),
+                        Health::Mendable(m) => rep.findings.push(f(
+                            Severity::Warn,
+                            "cold-degraded",
+                            subject,
+                            format!("rebuilt seal is damaged but repairable: {m}"),
+                            None,
+                        )),
+                        Health::Damaged(m) => {
+                            rep.findings
+                                .push(f(Severity::Error, "cold-broken", subject, m, None))
+                        }
                     }
                 }
             }
@@ -571,17 +781,36 @@ fn check_cold_kit(rep: &mut DoctorReport, dir: &Path, subject: &str, quick: bool
     }
     // Plain archive copy (+ ARCHIVE note).
     let seals: Vec<PathBuf> = fs::read_dir(dir)
-        .map(|r| r.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e == "sg1").unwrap_or(false)).collect())
+        .map(|r| {
+            r.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|e| e == "sg1").unwrap_or(false))
+                .collect()
+        })
         .unwrap_or_default();
     if seals.is_empty() {
-        rep.findings.push(f(Severity::Warn, "cold-broken", subject, "cold folder holds neither a kit (KIT) nor a plain .sg1 archive", Some("the cold copy is empty; re-prune from a backup or delete the folder".into())));
+        rep.findings.push(f(
+            Severity::Warn,
+            "cold-broken",
+            subject,
+            "cold folder holds neither a kit (KIT) nor a plain .sg1 archive",
+            Some("the cold copy is empty; re-prune from a backup or delete the folder".into()),
+        ));
         return;
     }
     for s in seals {
         if quick {
             rep.verified += 1;
         } else {
-            push_health(rep, &format!("{subject}/{}", s.file_name().and_then(|n| n.to_str()).unwrap_or("")), &s, &s.display().to_string());
+            push_health(
+                rep,
+                &format!(
+                    "{subject}/{}",
+                    s.file_name().and_then(|n| n.to_str()).unwrap_or("")
+                ),
+                &s,
+                &s.display().to_string(),
+            );
         }
     }
 }
@@ -591,7 +820,11 @@ fn analyze_sky(sky: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     let mut rep = DoctorReport {
         kind: "constellation".into(),
         root: sky.to_path_buf(),
-        layout: if is_container { "container".into() } else { "old layout".into() },
+        layout: if is_container {
+            "container".into()
+        } else {
+            "old layout".into()
+        },
         ..Default::default()
     };
     if is_container {
@@ -600,7 +833,13 @@ fn analyze_sky(sky: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
         old_layout_finding(&mut rep);
     }
     let Some(card) = crate::constellation::find_card(sky) else {
-        rep.findings.push(f(Severity::Error, "card-missing", "card", "no constellation card (list) in this folder", None));
+        rep.findings.push(f(
+            Severity::Error,
+            "card-missing",
+            "card",
+            "no constellation card (list) in this folder",
+            None,
+        ));
         return Ok(rep);
     };
     let chart = crate::constellation::load_chart_from_mark(&card, opts.pass, opts.identities);
@@ -635,7 +874,15 @@ fn analyze_sky(sky: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
                     }
                 }
             }
-            if let Ok(g) = gc::gc(sky, &GcOpts { apply: false, pass: opts.pass, identities: opts.identities, temp_age_secs: opts.temp_age_secs }) {
+            if let Ok(g) = gc::gc(
+                sky,
+                &GcOpts {
+                    apply: false,
+                    pass: opts.pass,
+                    identities: opts.identities,
+                    temp_age_secs: opts.temp_age_secs,
+                },
+            ) {
                 add_gc_findings(&mut rep, &g, sky);
             }
         }
@@ -668,7 +915,9 @@ fn analyze_sky(sky: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
 }
 
 fn walk_sg1(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut ents: Vec<PathBuf> = fs::read_dir(dir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    let mut ents: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|r| r.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
     ents.sort();
     for p in ents {
         if p.is_dir() {

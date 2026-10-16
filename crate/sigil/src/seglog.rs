@@ -67,7 +67,10 @@ fn io(e: std::io::Error) -> crate::Error {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +101,9 @@ fn resolve_dir(path: &Path) -> Option<PathBuf> {
     let path = path.components().as_path().to_path_buf();
     for cand in [path.clone(), container::with_suffix(&path)] {
         if container::is_container(&cand)
-            && container::read_manifest(&cand).map(|m| m.kind == KIND).unwrap_or(false)
+            && container::read_manifest(&cand)
+                .map(|m| m.kind == KIND)
+                .unwrap_or(false)
         {
             return Some(cand);
         }
@@ -109,7 +114,10 @@ fn resolve_dir(path: &Path) -> Option<PathBuf> {
 impl Log {
     pub fn open(path: &Path) -> Result<Log> {
         let dir = resolve_dir(path).ok_or_else(|| {
-            err(format!("{} is not a segment log (`sigil log init` creates one)", path.display()))
+            err(format!(
+                "{} is not a segment log (`sigil log init` creates one)",
+                path.display()
+            ))
         })?;
         Self::open_dir(&dir)
     }
@@ -117,9 +125,17 @@ impl Log {
     fn open_dir(dir: &Path) -> Result<Log> {
         let m = container::read_manifest(dir)?;
         if m.kind != KIND {
-            return Err(err(format!("{} is a {} container, not a segment log", dir.display(), m.kind)));
+            return Err(err(format!(
+                "{} is a {} container, not a segment log",
+                dir.display(),
+                m.kind
+            )));
         }
-        let fmt = m.extra.get("log").and_then(|v| v.trim().parse::<u32>().ok()).unwrap_or(0);
+        let fmt = m
+            .extra
+            .get("log")
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .unwrap_or(0);
         if fmt == 0 {
             return Err(err("segment log manifest has no log=N"));
         }
@@ -128,7 +144,11 @@ impl Log {
                 "segment log format {fmt} is newer than this sigil understands ({LOG_FORMAT}); upgrade sigil"
             )));
         }
-        let id = m.extra.get("log-id").cloned().ok_or_else(|| err("segment log manifest has no log-id"))?;
+        let id = m
+            .extra
+            .get("log-id")
+            .cloned()
+            .ok_or_else(|| err("segment log manifest has no log-id"))?;
         let signer = match m.extra.get("signer") {
             Some(h) => Some(parse_hex32(h).ok_or_else(|| err("bad signer= in manifest"))?),
             None => None,
@@ -141,7 +161,14 @@ impl Log {
         if segkeys && fmt < 3 {
             return Err(err("segment log manifest has segkeys=1 but log<3"));
         }
-        Ok(Log { dir: dir.to_path_buf(), name: m.name, id, signer, format: fmt, segkeys })
+        Ok(Log {
+            dir: dir.to_path_buf(),
+            name: m.name,
+            id,
+            signer,
+            format: fmt,
+            segkeys,
+        })
     }
 
     pub fn segment_path(&self, seq: u64) -> PathBuf {
@@ -187,14 +214,22 @@ pub enum Op {
     /// `op=tomb`: marks earlier segments (by their seq) as deleted. No segment file.
     /// `shred`: a crypto-shred (`shred=1`, segment-keys logs only): the key of every named
     /// segment's file is destroyed, so its data is unrecoverable, not just hidden.
-    Tomb { del: Vec<(u64, u64)>, reason: Option<String>, shred: bool },
+    Tomb {
+        del: Vec<(u64, u64)>,
+        reason: Option<String>,
+        shred: bool,
+    },
     /// `op=compact`: a merged replacement segment holding the plain bytes of the earlier
     /// segments `of` (ascending seq, concatenated). Original entries stay in the INDEX.
     Compact { of: Vec<(u64, u64)> },
     /// `op=signer` (log=4): the signer in effect hands the log over to `to`. `sig` is `from`'s
     /// Ed25519 signature over the handover statement (`handover_message`). No segment file. The
     /// HEAD covering this entry is still signed by `from`; every later HEAD by `to`.
-    Signer { from: [u8; 32], to: [u8; 32], sig: [u8; 64] },
+    Signer {
+        from: [u8; 32],
+        to: [u8; 32],
+        sig: [u8; 64],
+    },
 }
 
 /// One INDEX line.
@@ -220,7 +255,22 @@ impl Entry {
             .split_whitespace()
             .filter_map(|t| t.split_once('=').map(|(k, _)| k))
             .filter(|k| {
-                !matches!(*k, "seq" | "t" | "size" | "sha" | "op" | "del" | "reason" | "of" | "shred" | "src" | "from" | "to" | "sig")
+                !matches!(
+                    *k,
+                    "seq"
+                        | "t"
+                        | "size"
+                        | "sha"
+                        | "op"
+                        | "del"
+                        | "reason"
+                        | "of"
+                        | "shred"
+                        | "src"
+                        | "from"
+                        | "to"
+                        | "sig"
+                )
             })
             .collect()
     }
@@ -268,7 +318,16 @@ pub fn parse_ranges(s: &str) -> Option<Vec<(u64, u64)>> {
 }
 
 pub fn fmt_ranges(r: &[(u64, u64)]) -> String {
-    r.iter().map(|&(a, b)| if a == b { a.to_string() } else { format!("{a}-{b}") }).collect::<Vec<_>>().join(",")
+    r.iter()
+        .map(|&(a, b)| {
+            if a == b {
+                a.to_string()
+            } else {
+                format!("{a}-{b}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Collapse an ascending list of seqs into ranges.
@@ -376,7 +435,10 @@ impl State {
     /// Fold one more entry (must be the next one); `Err` = the line is structurally invalid.
     pub fn apply(&mut self, e: &Entry) -> std::result::Result<(), (&'static str, String)> {
         if e.seq != self.kinds.len() as u64 + 1 {
-            return Err(("index-seq", format!("expected seq {}, found {}", self.kinds.len() + 1, e.seq)));
+            return Err((
+                "index-seq",
+                format!("expected seq {}, found {}", self.kinds.len() + 1, e.seq),
+            ));
         }
         match &e.op {
             Op::Seg => {
@@ -386,19 +448,37 @@ impl State {
             Op::Tomb { del, shred, .. } => {
                 for &(a, b) in del {
                     if b >= e.seq {
-                        return Err(("index-tombstone", format!("seq {}: tombstone names seq {b}, which is not earlier", e.seq)));
+                        return Err((
+                            "index-tombstone",
+                            format!(
+                                "seq {}: tombstone names seq {b}, which is not earlier",
+                                e.seq
+                            ),
+                        ));
                     }
                     for s in a..=b {
                         if self.kinds[s as usize - 1] != K::Seg {
-                            return Err(("index-tombstone", format!("seq {}: tombstone names seq {s}, which is not a segment entry", e.seq)));
+                            return Err((
+                                "index-tombstone",
+                                format!(
+                                    "seq {}: tombstone names seq {s}, which is not a segment entry",
+                                    e.seq
+                                ),
+                            ));
                         }
                         if *shred {
                             // an earlier plain tombstone may be hardened into a shred, a shred is final
                             if self.shredded.contains_key(&s) {
-                                return Err(("index-shred", format!("seq {}: seq {s} was already shredded", e.seq)));
+                                return Err((
+                                    "index-shred",
+                                    format!("seq {}: seq {s} was already shredded", e.seq),
+                                ));
                             }
                         } else if self.deleted.contains_key(&s) {
-                            return Err(("index-tombstone", format!("seq {}: seq {s} was already deleted", e.seq)));
+                            return Err((
+                                "index-tombstone",
+                                format!("seq {}: seq {s} was already deleted", e.seq),
+                            ));
                         }
                     }
                 }
@@ -406,9 +486,14 @@ impl State {
                 if *shred {
                     // One key seals a whole file. A compaction segment's key cannot be destroyed for
                     // some of its batches only: every live batch in the file must be named.
-                    let holders: std::collections::BTreeSet<u64> = named.iter().map(|s| self.holder_of(*s)).collect();
+                    let holders: std::collections::BTreeSet<u64> =
+                        named.iter().map(|s| self.holder_of(*s)).collect();
                     for &h in &holders {
-                        if let Some(m) = self.live_members(h).into_iter().find(|m| !named.contains(m)) {
+                        if let Some(m) = self
+                            .live_members(h)
+                            .into_iter()
+                            .find(|m| !named.contains(m))
+                        {
                             return Err((
                                 "index-shred",
                                 format!("seq {}: shred of the file of entry {h} leaves live batch {m} unnamed (they share one key)", e.seq),
@@ -417,7 +502,11 @@ impl State {
                     }
                     for &h in &holders {
                         self.shred_holders.insert(h);
-                        let held: Vec<u64> = self.members_of(h).into_iter().filter(|m| self.holder_of(*m) == h).collect();
+                        let held: Vec<u64> = self
+                            .members_of(h)
+                            .into_iter()
+                            .filter(|m| self.holder_of(*m) == h)
+                            .collect();
                         for m in held {
                             self.shredded.entry(m).or_insert(e.seq);
                             self.deleted.entry(m).or_insert(e.seq);
@@ -432,7 +521,10 @@ impl State {
             }
             Op::Compact { of } => {
                 if of.iter().any(|r| r.1 >= e.seq) {
-                    return Err(("index-compact", format!("seq {}: compaction names a seq that is not earlier", e.seq)));
+                    return Err((
+                        "index-compact",
+                        format!("seq {}: compaction names a seq that is not earlier", e.seq),
+                    ));
                 }
                 let mut total = 0u64;
                 for s in expand(of) {
@@ -440,12 +532,24 @@ impl State {
                         return Err(("index-compact", format!("seq {}: compaction names seq {s}, which is not an earlier segment entry", e.seq)));
                     }
                     if self.deleted.contains_key(&s) {
-                        return Err(("index-compact", format!("seq {}: compaction includes seq {s}, which is deleted", e.seq)));
+                        return Err((
+                            "index-compact",
+                            format!(
+                                "seq {}: compaction includes seq {s}, which is deleted",
+                                e.seq
+                            ),
+                        ));
                     }
                     total += self.sizes[s as usize - 1];
                 }
                 if total != e.size {
-                    return Err(("index-compact", format!("seq {}: size {} is not the sum of its members ({total})", e.seq, e.size)));
+                    return Err((
+                        "index-compact",
+                        format!(
+                            "seq {}: size {} is not the sum of its members ({total})",
+                            e.seq, e.size
+                        ),
+                    ));
                 }
                 let m = expand(of);
                 for &s in &m {
@@ -459,7 +563,10 @@ impl State {
                 // Who may hand over (the signer in effect) is checked against the log's pin and the
                 // signature in `read_index`; structurally a handover only has to name a new key.
                 if from == to {
-                    return Err(("index-signer", format!("seq {}: signer handover to the same key", e.seq)));
+                    return Err((
+                        "index-signer",
+                        format!("seq {}: signer handover to the same key", e.seq),
+                    ));
                 }
                 self.handovers.push((e.seq, *from, *to));
                 self.kinds.push(K::Signer);
@@ -543,12 +650,18 @@ impl State {
 
     /// Members of `h` that are live and whose data is in `h`'s file.
     pub fn live_members(&self, h: u64) -> Vec<u64> {
-        self.members_of(h).into_iter().filter(|m| self.holder_of(*m) == h && !self.deleted.contains_key(m)).collect()
+        self.members_of(h)
+            .into_iter()
+            .filter(|m| self.holder_of(*m) == h && !self.deleted.contains_key(m))
+            .collect()
     }
 
     /// Members whose data is in `h`'s file but which are deleted (still on disk).
     pub fn deleted_members(&self, h: u64) -> Vec<u64> {
-        self.members_of(h).into_iter().filter(|m| self.holder_of(*m) == h && self.deleted.contains_key(m)).collect()
+        self.members_of(h)
+            .into_iter()
+            .filter(|m| self.holder_of(*m) == h && self.deleted.contains_key(m))
+            .collect()
     }
 
     pub fn slot(&self, h: u64) -> Slot {
@@ -584,7 +697,11 @@ impl State {
 
     /// Segments that are not deleted (live data batches).
     pub fn live_count(&self) -> usize {
-        self.kinds.iter().enumerate().filter(|(i, k)| **k == K::Seg && !self.deleted.contains_key(&(*i as u64 + 1))).count()
+        self.kinds
+            .iter()
+            .enumerate()
+            .filter(|(i, k)| **k == K::Seg && !self.deleted.contains_key(&(*i as u64 + 1)))
+            .count()
     }
 }
 
@@ -618,10 +735,17 @@ pub struct ParsedIndex {
     pub error: Option<(usize, &'static str, String)>,
 }
 
-fn parse_line(line: &str, want_seq: u64, prev: &[u8; 32]) -> std::result::Result<Entry, (&'static str, String)> {
-    let pos = line.rfind(" chain=").ok_or(("index-line", "no chain= field".to_string()))?;
+fn parse_line(
+    line: &str,
+    want_seq: u64,
+    prev: &[u8; 32],
+) -> std::result::Result<Entry, (&'static str, String)> {
+    let pos = line
+        .rfind(" chain=")
+        .ok_or(("index-line", "no chain= field".to_string()))?;
     let body = &line[..pos];
-    let chain = parse_hex32(&line[pos + 7..]).ok_or(("index-line", "bad chain= value".to_string()))?;
+    let chain =
+        parse_hex32(&line[pos + 7..]).ok_or(("index-line", "bad chain= value".to_string()))?;
     let mut kv: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
     for t in body.split_whitespace() {
         if let Some((k, v)) = t.split_once('=') {
@@ -638,11 +762,16 @@ fn parse_line(line: &str, want_seq: u64, prev: &[u8; 32]) -> std::result::Result
         None => {
             let size = kv.get("size").and_then(|v| v.parse::<u64>().ok());
             let sha = kv.get("sha").and_then(|v| parse_hex32(v));
-            let (Some(size), Some(sha)) = (size, sha) else { return Err(bad("size/sha")) };
+            let (Some(size), Some(sha)) = (size, sha) else {
+                return Err(bad("size/sha"));
+            };
             (size, sha, Op::Seg)
         }
         Some("tomb") => {
-            let del = kv.get("del").and_then(|v| parse_ranges(v)).ok_or_else(|| bad("del= (seq ranges)"))?;
+            let del = kv
+                .get("del")
+                .and_then(|v| parse_ranges(v))
+                .ok_or_else(|| bad("del= (seq ranges)"))?;
             let reason = match kv.get("reason") {
                 Some(r) => Some(dec_reason(r).ok_or_else(|| bad("reason="))?),
                 None => None,
@@ -658,7 +787,9 @@ fn parse_line(line: &str, want_seq: u64, prev: &[u8; 32]) -> std::result::Result
             let size = kv.get("size").and_then(|v| v.parse::<u64>().ok());
             let sha = kv.get("sha").and_then(|v| parse_hex32(v));
             let of = kv.get("of").and_then(|v| parse_ranges(v));
-            let (Some(size), Some(sha), Some(of)) = (size, sha, of) else { return Err(bad("size/sha/of")) };
+            let (Some(size), Some(sha), Some(of)) = (size, sha, of) else {
+                return Err(bad("size/sha/of"));
+            };
             (size, sha, Op::Compact { of })
         }
         Some("signer") => {
@@ -671,16 +802,30 @@ fn parse_line(line: &str, want_seq: u64, prev: &[u8; 32]) -> std::result::Result
             (0, [0u8; 32], Op::Signer { from, to, sig })
         }
         Some(other) => {
-            return Err(("index-op", format!("entry type op={other} is not known to this sigil; upgrade sigil")));
+            return Err((
+                "index-op",
+                format!("entry type op={other} is not known to this sigil; upgrade sigil"),
+            ));
         }
     };
     if seq != want_seq {
         return Err(("index-seq", format!("expected seq {want_seq}, found {seq}")));
     }
     if chain_hash(prev, body) != chain {
-        return Err(("index-chain", format!("seq {seq}: chain hash does not match (entry or an earlier one was altered)")));
+        return Err((
+            "index-chain",
+            format!("seq {seq}: chain hash does not match (entry or an earlier one was altered)"),
+        ));
     }
-    Ok(Entry { seq, time, size, sha, chain, op, body: body.to_string() })
+    Ok(Entry {
+        seq,
+        time,
+        size,
+        sha,
+        chain,
+        op,
+        body: body.to_string(),
+    })
 }
 
 pub fn parse_index(text: &str, genesis: &[u8; 32]) -> ParsedIndex {
@@ -689,14 +834,20 @@ pub fn parse_index(text: &str, genesis: &[u8; 32]) -> ParsedIndex {
     let mut offset = 0u64;
     let mut lines = text.split_inclusive('\n').enumerate().peekable();
     match lines.next() {
-        Some((_, l)) if l.trim_end() == INDEX_MAGIC && l.ends_with('\n') => offset += l.len() as u64,
+        Some((_, l)) if l.trim_end() == INDEX_MAGIC && l.ends_with('\n') => {
+            offset += l.len() as u64
+        }
         Some((_, l)) if l.trim_end() == INDEX_MAGIC => {
             out.torn = true;
             out.good_len = 0;
             return out;
         }
         _ => {
-            out.error = Some((1, "index-line", format!("not a sigil log INDEX (first line must be {INDEX_MAGIC})")));
+            out.error = Some((
+                1,
+                "index-line",
+                format!("not a sigil log INDEX (first line must be {INDEX_MAGIC})"),
+            ));
             return out;
         }
     }
@@ -712,7 +863,8 @@ pub fn parse_index(text: &str, genesis: &[u8; 32]) -> ParsedIndex {
             out.good_len = offset;
             continue;
         }
-        let parsed = parse_line(line, out.entries.len() as u64 + 1, &prev).and_then(|e| out.state.apply(&e).map(|_| e));
+        let parsed = parse_line(line, out.entries.len() as u64 + 1, &prev)
+            .and_then(|e| out.state.apply(&e).map(|_| e));
         match parsed {
             Ok(e) => {
                 prev = e.chain;
@@ -771,21 +923,35 @@ impl Head {
         if lines.next().map(str::trim) != Some(HEAD_MAGIC) {
             return Err(err("not a sigil log HEAD"));
         }
-        let (mut seq, mut chain, mut root, mut time, mut signer, mut sig) = (None, None, None, None, None, None);
+        let (mut seq, mut chain, mut root, mut time, mut signer, mut sig) =
+            (None, None, None, None, None, None);
         for l in lines {
-            let Some((k, v)) = l.trim().split_once('=') else { continue };
+            let Some((k, v)) = l.trim().split_once('=') else {
+                continue;
+            };
             match k {
                 "seq" => seq = v.parse::<u64>().ok(),
                 "chain" => chain = parse_hex32(v),
                 "root" => root = parse_hex32(v),
                 "t" => time = v.parse::<u64>().ok(),
                 "signer" => signer = parse_hex32(v),
-                "sig" => sig = hex::decode(v.trim()).ok().and_then(|b| <[u8; 64]>::try_from(b).ok()),
+                "sig" => {
+                    sig = hex::decode(v.trim())
+                        .ok()
+                        .and_then(|b| <[u8; 64]>::try_from(b).ok())
+                }
                 _ => {}
             }
         }
         match (seq, chain, root, time) {
-            (Some(seq), Some(chain), Some(root), Some(time)) => Ok(Head { seq, chain, root, time, signer, sig }),
+            (Some(seq), Some(chain), Some(root), Some(time)) => Ok(Head {
+                seq,
+                chain,
+                root,
+                time,
+                signer,
+                sig,
+            }),
             _ => Err(err("HEAD is missing seq/chain/root/t")),
         }
     }
@@ -794,7 +960,9 @@ impl Head {
         let (pk, sig) = (self.signer?, self.sig?);
         let vk = VerifyingKey::from_bytes(&pk).ok();
         Some(match vk {
-            Some(vk) => vk.verify(&self.message(id), &Signature::from_bytes(&sig)).is_ok(),
+            Some(vk) => vk
+                .verify(&self.message(id), &Signature::from_bytes(&sig))
+                .is_ok(),
             None => false,
         })
     }
@@ -803,7 +971,10 @@ impl Head {
 fn make_head(log: &Log, entries: &[Entry], sign: Option<&Identity>) -> Head {
     let mut h = Head {
         seq: entries.len() as u64,
-        chain: entries.last().map(|e| e.chain).unwrap_or_else(|| log.genesis()),
+        chain: entries
+            .last()
+            .map(|e| e.chain)
+            .unwrap_or_else(|| log.genesis()),
         root: root_of(entries),
         time: now(),
         signer: None,
@@ -835,13 +1006,29 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
 /// What the outgoing signer signs in a handover entry: bound to the log, the entry's position and
 /// both keys, so it cannot be replayed into another log or at another seq.
 pub(crate) fn handover_message(id: &str, seq: u64, from: &[u8; 32], to: &[u8; 32]) -> Vec<u8> {
-    format!("sigil-log-signer-v1\nid={id}\nseq={seq}\nfrom={}\nto={}\n", hex32(from), hex32(to)).into_bytes()
+    format!(
+        "sigil-log-signer-v1\nid={id}\nseq={seq}\nfrom={}\nto={}\n",
+        hex32(from),
+        hex32(to)
+    )
+    .into_bytes()
 }
 
 /// `sig` is `from`'s valid signature over the handover statement.
-pub(crate) fn handover_sig_ok(id: &str, seq: u64, from: &[u8; 32], to: &[u8; 32], sig: &[u8; 64]) -> bool {
+pub(crate) fn handover_sig_ok(
+    id: &str,
+    seq: u64,
+    from: &[u8; 32],
+    to: &[u8; 32],
+    sig: &[u8; 64],
+) -> bool {
     match VerifyingKey::from_bytes(from) {
-        Ok(vk) => vk.verify(&handover_message(id, seq, from, to), &Signature::from_bytes(sig)).is_ok(),
+        Ok(vk) => vk
+            .verify(
+                &handover_message(id, seq, from, to),
+                &Signature::from_bytes(sig),
+            )
+            .is_ok(),
         Err(_) => false,
     }
 }
@@ -851,14 +1038,21 @@ pub(crate) fn handover_sig_ok(id: &str, seq: u64, from: &[u8; 32], to: &[u8; 32]
 fn handover_problem(log: &Log, entries: &[Entry]) -> Option<(usize, String)> {
     let mut cur = log.signer;
     for (i, e) in entries.iter().enumerate() {
-        let Op::Signer { from, to, sig } = &e.op else { continue };
+        let Op::Signer { from, to, sig } = &e.op else {
+            continue;
+        };
         let Some(c) = cur else {
             return Some((i, format!("seq {}: signer handover in a log that was created unsigned (no signer pinned at init)", e.seq)));
         };
         if *from != c {
             return Some((
                 i,
-                format!("seq {}: handover is from {}… but the signer at that point is {}…", e.seq, &hex32(from)[..16], &hex32(&c)[..16]),
+                format!(
+                    "seq {}: handover is from {}… but the signer at that point is {}…",
+                    e.seq,
+                    &hex32(from)[..16],
+                    &hex32(&c)[..16]
+                ),
             ));
         }
         if !handover_sig_ok(&log.id, e.seq, from, to, sig) {
@@ -874,7 +1068,9 @@ fn handover_problem(log: &Log, entries: &[Entry]) -> Option<(usize, String)> {
 /// vouched for by the outgoing key). Empty for an unsigned log. Assumes the entries passed
 /// `read_index` (handovers validated).
 pub(crate) fn signer_chain(log: &Log, entries: &[Entry], n: usize) -> Vec<[u8; 32]> {
-    let Some(pin) = log.signer else { return Vec::new() };
+    let Some(pin) = log.signer else {
+        return Vec::new();
+    };
     let mut chain = vec![pin];
     for e in entries.iter().take_while(|e| (e.seq as usize) < n) {
         if let Op::Signer { to, .. } = &e.op {
@@ -900,7 +1096,15 @@ fn read_index(log: &Log) -> Result<ParsedIndex> {
             idx.entries.truncate(i);
             idx.state = State::build(&idx.entries);
             if idx.error.is_none() {
-                idx.error = Some((i + 2, "log-format", format!("INDEX has a signer handover at seq {} but the manifest says log={}", i + 1, log.format)));
+                idx.error = Some((
+                    i + 2,
+                    "log-format",
+                    format!(
+                        "INDEX has a signer handover at seq {} but the manifest says log={}",
+                        i + 1,
+                        log.format
+                    ),
+                ));
             }
         }
     }
@@ -962,7 +1166,11 @@ fn trusted_len(log: &Log, idx: &ParsedIndex) -> usize {
             if hs > n {
                 return 0;
             }
-            let chain_ok = if hs == 0 { h.chain == log.genesis() } else { idx.entries[hs - 1].chain == h.chain };
+            let chain_ok = if hs == 0 {
+                h.chain == log.genesis()
+            } else {
+                idx.entries[hs - 1].chain == h.chain
+            };
             if !chain_ok || root_of(&idx.entries[..hs]) != h.root {
                 return 0;
             }
@@ -983,7 +1191,11 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
     if !p.is_file() {
         return None;
     }
-    Some(fs::read_to_string(&p).map_err(io).and_then(|t| Head::parse(&t)))
+    Some(
+        fs::read_to_string(&p)
+            .map_err(io)
+            .and_then(|t| Head::parse(&t)),
+    )
 }
 
 mod adopt;
@@ -994,11 +1206,11 @@ mod rotate;
 mod shred;
 pub use adopt::*;
 pub use compact::*;
+use keyring::RingCache;
+pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
 pub use proof::*;
 pub use rotate::*;
 pub use shred::*;
-pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
-use keyring::RingCache;
 
 // ---------------------------------------------------------------------------
 // init / append
@@ -1021,11 +1233,20 @@ pub fn init(path: &Path, sign: Option<&Identity>) -> Result<Log> {
 /// Like `init`; `segment_keys` opts into per-segment keys (slice 3, makes the log `log=3`).
 pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Result<Log> {
     let dir = dir_for_init(path);
-    if dir.exists() && fs::read_dir(&dir).map(|mut r| r.next().is_some()).unwrap_or(true) {
-        return Err(err(format!("{} already exists and is not empty; refusing", dir.display())));
+    if dir.exists()
+        && fs::read_dir(&dir)
+            .map(|mut r| r.next().is_some())
+            .unwrap_or(true)
+    {
+        return Err(err(format!(
+            "{} already exists and is not empty; refusing",
+            dir.display()
+        )));
     }
     let name = container::strip_suffix(
-        dir.file_name().and_then(|n| n.to_str()).ok_or_else(|| err("bad log name"))?,
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| err("bad log name"))?,
     )
     .to_string();
     let mut raw = [0u8; 16];
@@ -1042,13 +1263,27 @@ pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Re
         m.extra.insert("segkeys".into(), "1".into());
     }
     m.extra.insert("log-id".into(), id.clone());
-    let signer = sign.map(|i| SigningKey::from_bytes(&i.ed25519_seed).verifying_key().to_bytes());
+    let signer = sign.map(|i| {
+        SigningKey::from_bytes(&i.ed25519_seed)
+            .verifying_key()
+            .to_bytes()
+    });
     if let Some(pk) = &signer {
         m.extra.insert("signer".into(), hex32(pk));
     }
-    let log = Log { dir: dir.clone(), name, id, signer, format, segkeys: segment_keys };
+    let log = Log {
+        dir: dir.clone(),
+        name,
+        id,
+        signer,
+        format,
+        segkeys: segment_keys,
+    };
     write_atomic(&dir.join(INDEX_FILE), format!("{INDEX_MAGIC}\n").as_bytes())?;
-    write_atomic(&dir.join(HEAD_FILE), make_head(&log, &[], sign).render().as_bytes())?;
+    write_atomic(
+        &dir.join(HEAD_FILE),
+        make_head(&log, &[], sign).render().as_bytes(),
+    )?;
     // The manifest goes last: only a complete log is recognised as a container.
     container::write_manifest(&dir, &m)?;
     Ok(log)
@@ -1086,7 +1321,12 @@ pub struct AppendOpts<'a> {
 
 impl Default for AppendOpts<'_> {
     fn default() -> Self {
-        AppendOpts { mode: Mode::Reflection, pass: None, recipients: &[], identity: None }
+        AppendOpts {
+            mode: Mode::Reflection,
+            pass: None,
+            recipients: &[],
+            identity: None,
+        }
     }
 }
 
@@ -1120,10 +1360,18 @@ fn signer_gate(log: &Log, identity: Option<&Identity>) -> Result<()> {
 fn signer_gate_at(log: &Log, entries: &[Entry], identity: Option<&Identity>) -> Result<()> {
     let current = signer_for(log, entries, entries.len() + 1);
     match (current, identity) {
-        (Some(_), None) => Err(err("this log is signed: give the signing key with --identity KEY.sgk")),
-        (None, Some(_)) => Err(err("this log was created unsigned (no --identity at init); appends cannot sign it")),
+        (Some(_), None) => Err(err(
+            "this log is signed: give the signing key with --identity KEY.sgk",
+        )),
+        (None, Some(_)) => Err(err(
+            "this log was created unsigned (no --identity at init); appends cannot sign it",
+        )),
         (Some(pk), Some(id)) => {
-            if SigningKey::from_bytes(&id.ed25519_seed).verifying_key().to_bytes() != pk {
+            if SigningKey::from_bytes(&id.ed25519_seed)
+                .verifying_key()
+                .to_bytes()
+                != pk
+            {
                 if Some(pk) == log.signer {
                     return Err(err("--identity is not the key this log is pinned to"));
                 }
@@ -1143,7 +1391,9 @@ fn prepare_write(log: &Log) -> Result<(ParsedIndex, Vec<String>)> {
     let mut notes = Vec::new();
     let idx = read_index(log)?;
     if let Some((line, _, msg)) = &idx.error {
-        return Err(err(format!("INDEX is damaged at line {line} ({msg}); run `sigil log verify` — refusing to write")));
+        return Err(err(format!(
+            "INDEX is damaged at line {line} ({msg}); run `sigil log verify` — refusing to write"
+        )));
     }
     let n = idx.entries.len();
     match read_head(log) {
@@ -1155,7 +1405,9 @@ fn prepare_write(log: &Log) -> Result<(ParsedIndex, Vec<String>)> {
                 )));
             }
             if h.seq > 0 && idx.entries[h.seq as usize - 1].chain != h.chain {
-                return Err(err("HEAD does not match INDEX; refusing to write (run `sigil log verify`)"));
+                return Err(err(
+                    "HEAD does not match INDEX; refusing to write (run `sigil log verify`)",
+                ));
             }
             if (h.seq as usize) < n {
                 notes.push(format!(
@@ -1195,7 +1447,12 @@ fn raise_format(log: &mut Log, to: u32) -> Result<()> {
 
 /// Append chained lines (bodies without ` chain=`) to INDEX in one write + fsync, then rewrite
 /// HEAD. Returns the new full entry list and HEAD.
-fn commit(log: &Log, idx: ParsedIndex, bodies: &[String], identity: Option<&Identity>) -> Result<(Vec<Entry>, Head)> {
+fn commit(
+    log: &Log,
+    idx: ParsedIndex,
+    bodies: &[String],
+    identity: Option<&Identity>,
+) -> Result<(Vec<Entry>, Head)> {
     let entries = commit_index(log, idx, bodies)?;
     let head = commit_head(log, &entries, identity)?;
     Ok((entries, head))
@@ -1206,7 +1463,10 @@ fn commit_index(log: &Log, idx: ParsedIndex, bodies: &[String]) -> Result<Vec<En
     let mut entries = idx.entries;
     let mut text = String::new();
     for body in bodies {
-        let prev = entries.last().map(|e| e.chain).unwrap_or_else(|| log.genesis());
+        let prev = entries
+            .last()
+            .map(|e| e.chain)
+            .unwrap_or_else(|| log.genesis());
         let chain = chain_hash(&prev, body);
         let line = format!("{body} chain={}", hex32(&chain));
         let e = parse_line(&line, entries.len() as u64 + 1, &prev)
@@ -1217,9 +1477,15 @@ fn commit_index(log: &Log, idx: ParsedIndex, bodies: &[String]) -> Result<Vec<En
     }
     {
         let ipath = log.dir.join(INDEX_FILE);
-        let f = fs::OpenOptions::new().write(true).open(&ipath).map_err(io)?;
+        let f = fs::OpenOptions::new()
+            .write(true)
+            .open(&ipath)
+            .map_err(io)?;
         f.set_len(idx.good_len).map_err(io)?;
-        let mut f = fs::OpenOptions::new().append(true).open(&ipath).map_err(io)?;
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(&ipath)
+            .map_err(io)?;
         f.write_all(text.as_bytes()).map_err(io)?;
         f.sync_all().map_err(io)?;
     }
@@ -1323,11 +1589,23 @@ pub fn list(path: &Path) -> Result<Listing> {
     let log = Log::open(path)?;
     let idx = read_index(&log)?;
     if let Some((line, _, msg)) = &idx.error {
-        return Err(err(format!("INDEX is damaged at line {line}: {msg} (run `sigil log verify`)")));
+        return Err(err(format!(
+            "INDEX is damaged at line {line}: {msg} (run `sigil log verify`)"
+        )));
     }
-    let present = idx.entries.iter().map(|e| e.has_file() && log.segment_path(e.seq).is_file()).collect();
+    let present = idx
+        .entries
+        .iter()
+        .map(|e| e.has_file() && log.segment_path(e.seq).is_file())
+        .collect();
     let head = read_head(&log).and_then(|h| h.ok());
-    Ok(Listing { log, entries: idx.entries, state: idx.state, head, present })
+    Ok(Listing {
+        log,
+        entries: idx.entries,
+        state: idx.state,
+        head,
+        present,
+    })
 }
 
 /// ISO-8601 UTC from unix seconds (no external time crate).
@@ -1344,7 +1622,12 @@ pub fn iso_utc(t: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 impl Listing {
@@ -1365,15 +1648,27 @@ impl Listing {
             s.push_str(&format!(
                 "  [log={}:{} {} deleted, {} tombstone(s), {} compaction(s){}]",
                 self.log.format,
-                if self.log.segkeys { " per-segment keys," } else { "" },
+                if self.log.segkeys {
+                    " per-segment keys,"
+                } else {
+                    ""
+                },
                 st.deleted_count(),
                 st.tomb_count(),
                 st.compact_count(),
-                if self.log.segkeys { format!(", {} shredded", st.shred_count()) } else { String::new() }
+                if self.log.segkeys {
+                    format!(", {} shredded", st.shred_count())
+                } else {
+                    String::new()
+                }
             ));
         }
         if !st.handovers().is_empty() {
-            s.push_str(&format!("  [log={}: signer handed over {} time(s)]", self.log.format, st.handovers().len()));
+            s.push_str(&format!(
+                "  [log={}: signer handed over {} time(s)]",
+                self.log.format,
+                st.handovers().len()
+            ));
         }
         s.push('\n');
         s.push_str("  seq  time (UTC)            size        sha256            segment\n");
@@ -1414,18 +1709,35 @@ impl Listing {
                     &hex32(to)[..16]
                 ),
             };
-            s.push_str(&format!("  {:<4} {}  {:<10}  {:<17}  {}\n", e.seq, iso_utc(e.time), size, sha, what));
+            s.push_str(&format!(
+                "  {:<4} {}  {:<10}  {:<17}  {}\n",
+                e.seq,
+                iso_utc(e.time),
+                size,
+                sha,
+                what
+            ));
         }
         if let Some(h) = head {
             s.push_str(&format!("head: seq {}  root {}\n", h.seq, hex32(&h.root)));
-            s.push_str(&format!("anchor (pin elsewhere, check with `verify --anchor`): {}:{}\n", h.seq, hex32(&h.root)));
+            s.push_str(&format!(
+                "anchor (pin elsewhere, check with `verify --anchor`): {}:{}\n",
+                h.seq,
+                hex32(&h.root)
+            ));
         }
         let pend: u64 = self
             .present
             .iter()
             .enumerate()
             .filter(|(_, p)| **p)
-            .map(|(i, _)| st.deleted_members(i as u64 + 1).iter().filter(|m| !st.is_shredded(**m)).map(|m| st.size_of(*m)).sum::<u64>())
+            .map(|(i, _)| {
+                st.deleted_members(i as u64 + 1)
+                    .iter()
+                    .filter(|m| !st.is_shredded(**m))
+                    .map(|m| st.size_of(*m))
+                    .sum::<u64>()
+            })
             .sum();
         if pend > 0 {
             s.push_str(&format!("{pend} byte(s) of deleted data are still on disk: `sigil log compact --apply` erases them\n"));
@@ -1441,26 +1753,36 @@ pub struct ReadOpts<'a> {
 
 /// Plain bytes of one segment file (a plain segment or a compaction segment), checked against
 /// the INDEX (hash and size). Also reports whether keys were needed to open it.
-fn read_holder(log: &Log, ring: &mut RingCache, e: &Entry, opts: &ReadOpts<'_>) -> Result<(Vec<u8>, bool)> {
+fn read_holder(
+    log: &Log,
+    ring: &mut RingCache,
+    e: &Entry,
+    opts: &ReadOpts<'_>,
+) -> Result<(Vec<u8>, bool)> {
     let p = log.segment_path(e.seq);
     let file = fs::read(&p).map_err(|er| err(format!("segment {} unreadable: {er}", e.seq)))?;
     let (plain, keyed) = if log.segkeys {
         // every segment of such a log has its own key, wrapped in the key ring
         let id = ring.identity(e.seq, opts.pass, opts.identities)?;
-        let plain = crate::unseal_ex_keys(&file, None, &[], &[id]).map_err(|er| err(format!("segment {}: {er}", e.seq)))?;
+        let plain = crate::unseal_ex_keys(&file, None, &[], &[id])
+            .map_err(|er| err(format!("segment {}: {er}", e.seq)))?;
         (plain, true)
     } else {
         // Try without keys first: it tells whether the segment is protected at all.
         match crate::unseal_ex_keys(&file, None, &[], &[]) {
             Ok(p) => (p, false),
             Err(_) => (
-                crate::unseal_ex_keys(&file, opts.pass, &[], opts.identities).map_err(|er| err(format!("segment {}: {er}", e.seq)))?,
+                crate::unseal_ex_keys(&file, opts.pass, &[], opts.identities)
+                    .map_err(|er| err(format!("segment {}: {er}", e.seq)))?,
                 true,
             ),
         }
     };
     if sha256(&plain) != e.sha || plain.len() as u64 != e.size {
-        return Err(err(format!("segment {} does not match the index (substituted or altered)", e.seq)));
+        return Err(err(format!(
+            "segment {} does not match the index (substituted or altered)",
+            e.seq
+        )));
     }
     Ok((plain, keyed))
 }
@@ -1484,7 +1806,15 @@ struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     fn new(log: &'a Log, entries: &'a [Entry], state: &'a State, opts: &'a ReadOpts<'a>) -> Self {
-        Reader { log, entries, state, opts, cache: None, ring: RingCache::new(log), keyed_seen: false }
+        Reader {
+            log,
+            entries,
+            state,
+            opts,
+            cache: None,
+            ring: RingCache::new(log),
+            keyed_seen: false,
+        }
     }
 
     fn member(&mut self, seq: u64) -> Result<Vec<u8>> {
@@ -1496,7 +1826,12 @@ impl<'a> Reader<'a> {
             return Ok(p);
         }
         if self.cache.as_ref().map(|c| c.0) != Some(h) {
-            let (p, k) = read_holder(self.log, &mut self.ring, &self.entries[h as usize - 1], self.opts)?;
+            let (p, k) = read_holder(
+                self.log,
+                &mut self.ring,
+                &self.entries[h as usize - 1],
+                self.opts,
+            )?;
             self.keyed_seen |= k;
             self.cache = Some((h, p));
         }
@@ -1505,15 +1840,23 @@ impl<'a> Reader<'a> {
         for m in self.state.members_of(h) {
             let sz = self.state.size_of(m) as usize;
             if m == seq {
-                let part = plain.get(off..off + sz).ok_or_else(|| err(format!("compaction segment {h} is shorter than its members")))?;
+                let part = plain.get(off..off + sz).ok_or_else(|| {
+                    err(format!(
+                        "compaction segment {h} is shorter than its members"
+                    ))
+                })?;
                 if sha256(part) != e.sha {
-                    return Err(err(format!("segment {seq} (inside compaction segment {h}) does not match the index")));
+                    return Err(err(format!(
+                        "segment {seq} (inside compaction segment {h}) does not match the index"
+                    )));
                 }
                 return Ok(part.to_vec());
             }
             off += sz;
         }
-        Err(err(format!("segment {seq} is not inside compaction segment {h}")))
+        Err(err(format!(
+            "segment {seq} is not inside compaction segment {h}"
+        )))
     }
 }
 
@@ -1538,14 +1881,18 @@ pub struct ReadOut {
 fn deleted_msg(entries: &[Entry], st: &State, seq: u64) -> String {
     if let Some(t) = st.shredded_by(seq) {
         let reason = match entries.get(t as usize - 1).map(|e| &e.op) {
-            Some(Op::Tomb { reason: Some(r), .. }) => format!(" (reason: {r})"),
+            Some(Op::Tomb {
+                reason: Some(r), ..
+            }) => format!(" (reason: {r})"),
             _ => String::new(),
         };
         return format!("segment {seq} was crypto-shredded by entry #{t}{reason}; its key is destroyed and its data cannot be recovered");
     }
     let t = st.deleted_by(seq).unwrap_or(0);
     let reason = match entries.get(t as usize - 1).map(|e| &e.op) {
-        Some(Op::Tomb { reason: Some(r), .. }) => format!(" (reason: {r})"),
+        Some(Op::Tomb {
+            reason: Some(r), ..
+        }) => format!(" (reason: {r})"),
         _ => String::new(),
     };
     format!("segment {seq} was deleted by tombstone #{t}{reason}; its data is no longer part of this log")
@@ -1554,20 +1901,37 @@ fn deleted_msg(entries: &[Entry], st: &State, seq: u64) -> String {
 /// Read segments `from..=to` (1-based, inclusive) after checking INDEX and HEAD integrity.
 /// Entries that are not data (tombstone / compaction records) are never returned; deleted
 /// segments follow `mode`.
-pub fn read_range(path: &Path, from: u64, to: u64, opts: &ReadOpts<'_>, mode: ReadMode) -> Result<ReadOut> {
+pub fn read_range(
+    path: &Path,
+    from: u64,
+    to: u64,
+    opts: &ReadOpts<'_>,
+    mode: ReadMode,
+) -> Result<ReadOut> {
     let log = Log::open(path)?;
     let loaded = load(&log, &CheckOpts::default());
-    if let Some(f) = loaded.findings.iter().find(|f| f.severity == Severity::Error) {
-        return Err(err(format!("refusing to read: {} {}: {}", f.code, f.subject, f.message)));
+    if let Some(f) = loaded
+        .findings
+        .iter()
+        .find(|f| f.severity == Severity::Error)
+    {
+        return Err(err(format!(
+            "refusing to read: {} {}: {}",
+            f.code, f.subject, f.message
+        )));
     }
     let entries = &loaded.index.entries;
     let st = &loaded.index.state;
     let n = entries.len() as u64;
     if from == 0 || to < from {
-        return Err(err("segment numbers start at 1 and --from must not exceed --to"));
+        return Err(err(
+            "segment numbers start at 1 and --from must not exceed --to",
+        ));
     }
     if to > n {
-        return Err(err(format!("segment {to} does not exist (the log has {n})")));
+        return Err(err(format!(
+            "segment {to} does not exist (the log has {n})"
+        )));
     }
     let mut out = ReadOut::default();
     let mut rd = Reader::new(&log, entries, st, opts);
@@ -1577,7 +1941,9 @@ pub fn read_range(path: &Path, from: u64, to: u64, opts: &ReadOpts<'_>, mode: Re
                 return Err(err(if st.is_tomb(seq) {
                     format!("entry {seq} is a tombstone record, not data (see `sigil log ls`)")
                 } else if st.is_signer(seq) {
-                    format!("entry {seq} is a signer handover record, not data (see `sigil log ls`)")
+                    format!(
+                        "entry {seq} is a signer handover record, not data (see `sigil log ls`)"
+                    )
                 } else {
                     format!("entry {seq} is a compaction record; read the original segments it covers (see `sigil log ls`)")
                 }));
@@ -1615,7 +1981,14 @@ pub struct CheckOpts<'a> {
 
 impl Default for CheckOpts<'_> {
     fn default() -> Self {
-        CheckOpts { pass: None, identities: &[], quick: true, signer: None, anchors: &[], temp_age_secs: crate::gc::DEFAULT_TEMP_AGE_SECS }
+        CheckOpts {
+            pass: None,
+            identities: &[],
+            quick: true,
+            signer: None,
+            anchors: &[],
+            temp_age_secs: crate::gc::DEFAULT_TEMP_AGE_SECS,
+        }
     }
 }
 
@@ -1627,8 +2000,20 @@ struct Loaded {
     trusted: usize,
 }
 
-fn fnd(sev: Severity, code: &'static str, subject: impl Into<String>, msg: impl Into<String>, hint: Option<&str>) -> Finding {
-    Finding { severity: sev, code, subject: subject.into(), message: msg.into(), hint: hint.map(String::from) }
+fn fnd(
+    sev: Severity,
+    code: &'static str,
+    subject: impl Into<String>,
+    msg: impl Into<String>,
+    hint: Option<&str>,
+) -> Finding {
+    Finding {
+        severity: sev,
+        code,
+        subject: subject.into(),
+        message: msg.into(),
+        hint: hint.map(String::from),
+    }
 }
 
 /// INDEX chain + HEAD checks (no segment files are touched).
@@ -1637,8 +2022,19 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
     let index = match read_index(log) {
         Ok(i) => i,
         Err(e) => {
-            findings.push(fnd(Severity::Error, "index-missing", INDEX_FILE, e.to_string(), Some("restore INDEX from a copy; segments are still on disk")));
-            return Loaded { index: ParsedIndex::default(), head: None, findings, trusted: 0 };
+            findings.push(fnd(
+                Severity::Error,
+                "index-missing",
+                INDEX_FILE,
+                e.to_string(),
+                Some("restore INDEX from a copy; segments are still on disk"),
+            ));
+            return Loaded {
+                index: ParsedIndex::default(),
+                head: None,
+                findings,
+                trusted: 0,
+            };
         }
     };
     if let Some((line, code, msg)) = &index.error {
@@ -1651,14 +2047,24 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
         ));
     }
     if index.torn {
-        findings.push(fnd(Severity::Warn, "index-torn", INDEX_FILE, "last INDEX line is incomplete (crash during append); ignored", Some("the next append trims it")));
+        findings.push(fnd(
+            Severity::Warn,
+            "index-torn",
+            INDEX_FILE,
+            "last INDEX line is incomplete (crash during append); ignored",
+            Some("the next append trims it"),
+        ));
     }
     let n = index.entries.len() as u64;
     let broken = index.error.is_some();
     let head = match read_head(log) {
         None => {
             findings.push(fnd(
-                if log.signer.is_some() { Severity::Error } else { Severity::Warn },
+                if log.signer.is_some() {
+                    Severity::Error
+                } else {
+                    Severity::Warn
+                },
                 "head-missing",
                 HEAD_FILE,
                 "no HEAD checkpoint",
@@ -1679,7 +2085,10 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
                     Severity::Error,
                     "head-truncated",
                     HEAD_FILE,
-                    format!("HEAD covers {} entries but INDEX has only {n}: entries were cut off", h.seq),
+                    format!(
+                        "HEAD covers {} entries but INDEX has only {n}: entries were cut off",
+                        h.seq
+                    ),
                     Some("restore INDEX from a copy; do not append or gc until then"),
                 ));
             }
@@ -1690,9 +2099,24 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
                 index.entries[h.seq as usize - 1].chain == h.chain
             };
             if !consistent {
-                findings.push(fnd(Severity::Error, "head-mismatch", HEAD_FILE, format!("HEAD's chain at seq {} differs from INDEX (history rewritten)", h.seq), None));
+                findings.push(fnd(
+                    Severity::Error,
+                    "head-mismatch",
+                    HEAD_FILE,
+                    format!(
+                        "HEAD's chain at seq {} differs from INDEX (history rewritten)",
+                        h.seq
+                    ),
+                    None,
+                ));
             } else if root_of(&index.entries[..h.seq as usize]) != h.root {
-                findings.push(fnd(Severity::Error, "head-root", HEAD_FILE, "HEAD's Merkle root does not match the INDEX entries", None));
+                findings.push(fnd(
+                    Severity::Error,
+                    "head-root",
+                    HEAD_FILE,
+                    "HEAD's Merkle root does not match the INDEX entries",
+                    None,
+                ));
             } else if h.seq < n {
                 findings.push(fnd(
                     Severity::Warn,
@@ -1703,7 +2127,11 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
                 ));
             }
         }
-        let chain = signer_chain(log, &index.entries, (h.seq as usize).min(index.entries.len()));
+        let chain = signer_chain(
+            log,
+            &index.entries,
+            (h.seq as usize).min(index.entries.len()),
+        );
         let expect = chain.last().copied();
         match (h.signature_ok(&log.id), h.signer, expect) {
             (Some(false), _, _) => findings.push(fnd(Severity::Error, "head-signature", HEAD_FILE, "HEAD signature does not verify (altered, or from another log)", None)),
@@ -1743,7 +2171,12 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
         }
     }
     let trusted = trusted_len(log, &index);
-    Loaded { index, head, findings, trusted }
+    Loaded {
+        index,
+        head,
+        findings,
+        trusted,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1790,13 +2223,23 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     let log = match Log::open_dir(&dir) {
         Ok(l) => l,
         Err(e) => {
-            rep.findings.push(fnd(Severity::Error, "manifest", container::CONTAINER_FILE, e.to_string(), Some("upgrade sigil if the log format is newer")));
+            rep.findings.push(fnd(
+                Severity::Error,
+                "manifest",
+                container::CONTAINER_FILE,
+                e.to_string(),
+                Some("upgrade sigil if the log format is newer"),
+            ));
             return Ok(rep);
         }
     };
     let loaded = load(&log, opts);
     rep.findings.extend(loaded.findings);
-    rep.signed = loaded.head.as_ref().map(|h| h.sig.is_some()).unwrap_or(false);
+    rep.signed = loaded
+        .head
+        .as_ref()
+        .map(|h| h.sig.is_some())
+        .unwrap_or(false);
     let trusted = loaded.trusted;
     let st = loaded.index.state;
     let entries = loaded.index.entries;
@@ -1837,7 +2280,12 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             Severity::Info,
             "tombstones",
             "INDEX",
-            format!("{} segment(s) deleted by {} tombstone(s) (log={})", st.deleted_count(), st.tomb_count(), log.format),
+            format!(
+                "{} segment(s) deleted by {} tombstone(s) (log={})",
+                st.deleted_count(),
+                st.tomb_count(),
+                log.format
+            ),
             None,
         ));
     }
@@ -1860,7 +2308,11 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
         }
         let p = log.segment_path(e.seq);
         let subject = p.strip_prefix(&dir).unwrap_or(&p).display().to_string();
-        let slot = if e.seq as usize > trusted { Slot::Needed } else { st_t.slot(e.seq) };
+        let slot = if e.seq as usize > trusted {
+            Slot::Needed
+        } else {
+            st_t.slot(e.seq)
+        };
         if slot != Slot::Needed {
             if let Ok(md) = fs::metadata(&p) {
                 if slot == Slot::DeadDeleted && st_t.key_shredded(e.seq) {
@@ -1886,7 +2338,8 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                         "sigil gc --apply",
                     )
                 };
-                rep.findings.push(fnd(Severity::Warn, code, subject, msg, Some(hint)));
+                rep.findings
+                    .push(fnd(Severity::Warn, code, subject, msg, Some(hint)));
             }
             continue;
         }
@@ -1908,7 +2361,13 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
         let bytes = match fs::read(&p) {
             Ok(b) => b,
             Err(_) => {
-                rep.findings.push(fnd(Severity::Error, "segment-missing", subject, format!("index entry {} has no segment file", e.seq), Some("restore the segment from a copy (any copy of the sealed .sg1 works)")));
+                rep.findings.push(fnd(
+                    Severity::Error,
+                    "segment-missing",
+                    subject,
+                    format!("index entry {} has no segment file", e.seq),
+                    Some("restore the segment from a copy (any copy of the sealed .sg1 works)"),
+                ));
                 continue;
             }
         };
@@ -1920,7 +2379,13 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                 continue;
             }
             None => {
-                rep.findings.push(fnd(Severity::Error, "bit-rot-unrecoverable", subject.clone(), "not readable as a mark", Some("restore this segment from another copy")));
+                rep.findings.push(fnd(
+                    Severity::Error,
+                    "bit-rot-unrecoverable",
+                    subject.clone(),
+                    "not readable as a mark",
+                    Some("restore this segment from another copy"),
+                ));
                 continue;
             }
             _ => {}
@@ -1928,16 +2393,29 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
         if !opts.quick {
             match health_bytes(&bytes) {
                 Health::Ok => {}
-                Health::Mendable(m) => rep.findings.push(fnd(Severity::Warn, "bit-rot", subject.clone(), format!("{m} — repairable"), Some("sigil log mend PATH"))),
+                Health::Mendable(m) => rep.findings.push(fnd(
+                    Severity::Warn,
+                    "bit-rot",
+                    subject.clone(),
+                    format!("{m} — repairable"),
+                    Some("sigil log mend PATH"),
+                )),
                 Health::Damaged(m) => {
-                    rep.findings.push(fnd(Severity::Error, "bit-rot-unrecoverable", subject.clone(), m, Some("restore this segment from another copy")));
+                    rep.findings.push(fnd(
+                        Severity::Error,
+                        "bit-rot-unrecoverable",
+                        subject.clone(),
+                        m,
+                        Some("restore this segment from another copy"),
+                    ));
                     continue;
                 }
             }
         }
         if keyed {
             let opened = if log.segkeys {
-                ring.identity(e.seq, opts.pass, opts.identities).and_then(|id| crate::unseal_ex_keys(&bytes, None, &[], &[id]))
+                ring.identity(e.seq, opts.pass, opts.identities)
+                    .and_then(|id| crate::unseal_ex_keys(&bytes, None, &[], &[id]))
             } else {
                 crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities)
             };
@@ -1948,7 +2426,10 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                         let mut off = 0usize;
                         for m in st.members_of(e.seq) {
                             let sz = st.size_of(m) as usize;
-                            let ok = plain.get(off..off + sz).map(|part| sha256(part) == entries[m as usize - 1].sha).unwrap_or(false);
+                            let ok = plain
+                                .get(off..off + sz)
+                                .map(|part| sha256(part) == entries[m as usize - 1].sha)
+                                .unwrap_or(false);
                             if !ok {
                                 rep.findings.push(fnd(Severity::Error, "segment-content", subject.clone(), format!("compaction segment {} does not hold original segment {m} as the index recorded it", e.seq), None));
                             }
@@ -1956,8 +2437,26 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                         }
                     }
                 }
-                Ok(_) => rep.findings.push(fnd(Severity::Error, "segment-content", subject, format!("segment {} unseals to bytes that differ from the index", e.seq), None)),
-                Err(er) => rep.findings.push(fnd(Severity::Error, "segment-unseal", subject, format!("segment {} cannot be opened with the given keys: {er}", e.seq), None)),
+                Ok(_) => rep.findings.push(fnd(
+                    Severity::Error,
+                    "segment-content",
+                    subject,
+                    format!(
+                        "segment {} unseals to bytes that differ from the index",
+                        e.seq
+                    ),
+                    None,
+                )),
+                Err(er) => rep.findings.push(fnd(
+                    Severity::Error,
+                    "segment-unseal",
+                    subject,
+                    format!(
+                        "segment {} cannot be opened with the given keys: {er}",
+                        e.seq
+                    ),
+                    None,
+                )),
             }
         }
     }
@@ -1968,10 +2467,37 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     let extras = scan_extras(&log, &entries, trusted, opts.temp_age_secs);
     for x in &extras {
         match x.kind {
-            ExtraKind::Orphan => rep.findings.push(fnd(Severity::Warn, "orphan-segment", x.rel(&dir), format!("segment no INDEX entry uses ({} bytes): a crashed append", x.bytes), Some("sigil gc --apply"))),
-            ExtraKind::Recent => rep.findings.push(fnd(Severity::Info, "recent-segment", x.rel(&dir), "unindexed but recent: an append may be in progress", None)),
-            ExtraKind::Temp => rep.findings.push(fnd(Severity::Warn, "temp-file", x.rel(&dir), "abandoned temp file", Some("sigil gc --apply"))),
-            ExtraKind::Unknown => rep.findings.push(fnd(Severity::Info, "unknown-file", x.rel(&dir), "not part of a segment log; left alone", None)),
+            ExtraKind::Orphan => rep.findings.push(fnd(
+                Severity::Warn,
+                "orphan-segment",
+                x.rel(&dir),
+                format!(
+                    "segment no INDEX entry uses ({} bytes): a crashed append",
+                    x.bytes
+                ),
+                Some("sigil gc --apply"),
+            )),
+            ExtraKind::Recent => rep.findings.push(fnd(
+                Severity::Info,
+                "recent-segment",
+                x.rel(&dir),
+                "unindexed but recent: an append may be in progress",
+                None,
+            )),
+            ExtraKind::Temp => rep.findings.push(fnd(
+                Severity::Warn,
+                "temp-file",
+                x.rel(&dir),
+                "abandoned temp file",
+                Some("sigil gc --apply"),
+            )),
+            ExtraKind::Unknown => rep.findings.push(fnd(
+                Severity::Info,
+                "unknown-file",
+                x.rel(&dir),
+                "not part of a segment log; left alone",
+                None,
+            )),
             ExtraKind::Stale(_) | ExtraKind::EmptyDir => {}
         }
     }
@@ -1980,7 +2506,15 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
 
 /// Key ring checks of a segment-keys log (needs no key): every needed segment has its record, no
 /// record outlives its segment, a shred is complete, the shards are healthy.
-fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: usize, opts: &CheckOpts<'_>, rep: &mut CheckReport) {
+fn check_keys(
+    log: &Log,
+    entries: &[Entry],
+    st: &State,
+    st_t: &State,
+    trusted: usize,
+    opts: &CheckOpts<'_>,
+    rep: &mut CheckReport,
+) {
     let scan = keyring::scan(log);
     let mut present = std::collections::BTreeSet::new();
     let mut unreadable = std::collections::BTreeSet::new();
@@ -1993,8 +2527,20 @@ fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: u
                     if let Ok(bytes) = fs::read(keyring::shard_path(&log.dir, *shard)) {
                         match health_bytes(&bytes) {
                             Health::Ok => {}
-                            Health::Mendable(m) => rep.findings.push(fnd(Severity::Warn, "bit-rot", rel, format!("{m} — repairable"), Some("sigil log mend PATH"))),
-                            Health::Damaged(m) => rep.findings.push(fnd(Severity::Error, "bit-rot-unrecoverable", rel, m, Some("restore the key ring shard from a copy"))),
+                            Health::Mendable(m) => rep.findings.push(fnd(
+                                Severity::Warn,
+                                "bit-rot",
+                                rel,
+                                format!("{m} — repairable"),
+                                Some("sigil log mend PATH"),
+                            )),
+                            Health::Damaged(m) => rep.findings.push(fnd(
+                                Severity::Error,
+                                "bit-rot-unrecoverable",
+                                rel,
+                                m,
+                                Some("restore the key ring shard from a copy"),
+                            )),
                         }
                     }
                 }
@@ -2016,7 +2562,10 @@ fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: u
                 Severity::Error,
                 "key-missing",
                 format!("{KEYS_DIR}/{:04}.sg1", keyring::shard_of(e.seq)),
-                format!("segment {} has no key in the key ring: it cannot be opened", e.seq),
+                format!(
+                    "segment {} has no key in the key ring: it cannot be opened",
+                    e.seq
+                ),
                 Some("restore the key ring from a copy; a destroyed key cannot be recreated"),
             ));
         } else if !needed && has {
@@ -2039,7 +2588,10 @@ fn check_keys(log: &Log, entries: &[Entry], st: &State, st_t: &State, trusted: u
             }
         }
     }
-    for seq in present.iter().filter(|s| **s as usize > entries.len() || !st.has_file(**s)) {
+    for seq in present
+        .iter()
+        .filter(|s| **s as usize > entries.len() || !st.has_file(**s))
+    {
         rep.findings.push(fnd(
             Severity::Warn,
             "orphan-key",
@@ -2076,7 +2628,11 @@ pub(crate) struct Extra {
 
 impl Extra {
     fn rel(&self, root: &Path) -> String {
-        self.path.strip_prefix(root).unwrap_or(&self.path).display().to_string()
+        self.path
+            .strip_prefix(root)
+            .unwrap_or(&self.path)
+            .display()
+            .to_string()
     }
 }
 
@@ -2093,7 +2649,9 @@ fn old_enough(p: &Path, secs: u64) -> bool {
 }
 
 fn sorted(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = fs::read_dir(dir).map(|r| r.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    let mut v: Vec<PathBuf> = fs::read_dir(dir)
+        .map(|r| r.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
     v.sort();
     v
 }
@@ -2114,8 +2672,15 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
     let mut out = Vec::new();
     let sz = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
     for p in sorted(&log.dir) {
-        let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        if matches!(n.as_str(), container::CONTAINER_FILE | INDEX_FILE | HEAD_FILE) {
+        let n = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if matches!(
+            n.as_str(),
+            container::CONTAINER_FILE | INDEX_FILE | HEAD_FILE
+        ) {
             continue;
         }
         if p.is_dir() && (n == SEGMENTS_DIR || (n == KEYS_DIR && log.segkeys)) {
@@ -2123,27 +2688,47 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
         }
         if p.is_file() && (n.ends_with(".part") || n == LOCK_FILE) {
             if old_enough(&p, temp_age) {
-                out.push(Extra { bytes: sz(&p), path: p, kind: ExtraKind::Temp });
+                out.push(Extra {
+                    bytes: sz(&p),
+                    path: p,
+                    kind: ExtraKind::Temp,
+                });
             }
             continue;
         }
-        out.push(Extra { bytes: 0, path: p, kind: ExtraKind::Unknown });
+        out.push(Extra {
+            bytes: 0,
+            path: p,
+            kind: ExtraKind::Unknown,
+        });
     }
     if log.segkeys {
         for p in sorted(&log.dir.join(KEYS_DIR)) {
             let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if n.ends_with(".part") && p.is_file() {
                 if old_enough(&p, temp_age) {
-                    out.push(Extra { bytes: sz(&p), path: p, kind: ExtraKind::Temp });
+                    out.push(Extra {
+                        bytes: sz(&p),
+                        path: p,
+                        kind: ExtraKind::Temp,
+                    });
                 }
             } else if keyring::shard_of_file(&p).is_none() || !p.is_file() {
-                out.push(Extra { bytes: 0, path: p, kind: ExtraKind::Unknown });
+                out.push(Extra {
+                    bytes: 0,
+                    path: p,
+                    kind: ExtraKind::Unknown,
+                });
             }
         }
     }
     for shard in sorted(&log.dir.join(SEGMENTS_DIR)) {
         if !shard.is_dir() {
-            out.push(Extra { bytes: 0, path: shard, kind: ExtraKind::Unknown });
+            out.push(Extra {
+                bytes: 0,
+                path: shard,
+                kind: ExtraKind::Unknown,
+            });
             continue;
         }
         let files = sorted(&shard);
@@ -2152,7 +2737,11 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
             let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if n.ends_with(".part") && p.is_file() {
                 if old_enough(p, temp_age) {
-                    out.push(Extra { bytes: sz(p), path: p.clone(), kind: ExtraKind::Temp });
+                    out.push(Extra {
+                        bytes: sz(p),
+                        path: p.clone(),
+                        kind: ExtraKind::Temp,
+                    });
                 } else {
                     live += 1;
                 }
@@ -2161,24 +2750,44 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
             match seg_seq(p) {
                 Some(s) if s >= 1 && s <= entries && st_all.has_file(s) => {
                     if (s as usize) <= trusted && !matches!(st_t.slot(s), Slot::Needed) {
-                        out.push(Extra { bytes: sz(p), path: p.clone(), kind: ExtraKind::Stale(st_t.slot(s)) });
+                        out.push(Extra {
+                            bytes: sz(p),
+                            path: p.clone(),
+                            kind: ExtraKind::Stale(st_t.slot(s)),
+                        });
                     } else {
                         live += 1;
                     }
                 }
                 Some(_) => {
                     live += 1;
-                    let kind = if old_enough(p, temp_age) { ExtraKind::Orphan } else { ExtraKind::Recent };
-                    out.push(Extra { bytes: sz(p), path: p.clone(), kind });
+                    let kind = if old_enough(p, temp_age) {
+                        ExtraKind::Orphan
+                    } else {
+                        ExtraKind::Recent
+                    };
+                    out.push(Extra {
+                        bytes: sz(p),
+                        path: p.clone(),
+                        kind,
+                    });
                 }
                 None => {
                     live += 1;
-                    out.push(Extra { bytes: 0, path: p.clone(), kind: ExtraKind::Unknown });
+                    out.push(Extra {
+                        bytes: 0,
+                        path: p.clone(),
+                        kind: ExtraKind::Unknown,
+                    });
                 }
             }
         }
         if live == 0 {
-            out.push(Extra { bytes: 0, path: shard, kind: ExtraKind::EmptyDir });
+            out.push(Extra {
+                bytes: 0,
+                path: shard,
+                kind: ExtraKind::EmptyDir,
+            });
         }
     }
     out
@@ -2214,9 +2823,15 @@ pub(crate) fn gc_gate(log: &Log) -> Result<GcGate> {
     let trusted = trusted_len(log, &idx);
     let st = State::build(&idx.entries[..trusted]);
     let kept = (1..=idx.entries.len() as u64)
-        .filter(|s| (*s as usize) > trusted && idx.state.has_file(*s) || st.slot(*s) == Slot::Needed)
+        .filter(|s| {
+            (*s as usize) > trusted && idx.state.has_file(*s) || st.slot(*s) == Slot::Needed
+        })
         .count();
-    Ok(GcGate { entries: idx.entries, trusted, kept })
+    Ok(GcGate {
+        entries: idx.entries,
+        trusted,
+        kept,
+    })
 }
 
 /// Key records nothing needs any more: beyond the INDEX (crashed append / compaction), or of a
@@ -2226,7 +2841,11 @@ pub(crate) fn dead_keys(log: &Log, gate: &GcGate) -> Result<Vec<u64>> {
     let mut dead = Vec::new();
     let st_t = State::build(&gate.entries[..gate.trusted]);
     for (shard, r) in keyring::scan(log) {
-        let set = r.map_err(|m| err(format!("key ring shard {shard:04} is unreadable ({m}); keys were not examined")))?;
+        let set = r.map_err(|m| {
+            err(format!(
+                "key ring shard {shard:04} is unreadable ({m}); keys were not examined"
+            ))
+        })?;
         for s in set {
             let beyond = s as usize > gate.entries.len();
             if beyond || (s as usize <= gate.trusted && st_t.slot(s) != Slot::Needed) {
@@ -2272,7 +2891,9 @@ pub fn mend(path: &Path) -> Result<MendReport> {
     let log = Log::open(path)?;
     let idx = read_index(&log)?;
     if let Some((line, _, msg)) = &idx.error {
-        return Err(err(format!("INDEX is damaged at line {line} ({msg}); run `sigil log verify`")));
+        return Err(err(format!(
+            "INDEX is damaged at line {line} ({msg}); run `sigil log verify`"
+        )));
     }
     let mut rep = MendReport::default();
     for e in &idx.entries {
@@ -2291,9 +2912,14 @@ pub fn mend(path: &Path) -> Result<MendReport> {
             Health::Damaged(m) => rep.unrecoverable.push((e.seq, m)),
             Health::Mendable(_) => match crate::mend_bytes(&bytes) {
                 Ok(healed) => {
-                    let good = crate::locate_header(&healed).map(|(h, _, _)| h.digest == e.sha).unwrap_or(false);
+                    let good = crate::locate_header(&healed)
+                        .map(|(h, _, _)| h.digest == e.sha)
+                        .unwrap_or(false);
                     if !good {
-                        rep.unrecoverable.push((e.seq, "mended star does not carry the indexed true-name".into()));
+                        rep.unrecoverable.push((
+                            e.seq,
+                            "mended star does not carry the indexed true-name".into(),
+                        ));
                     } else if healed != bytes {
                         write_atomic(&p, &healed)?;
                         rep.mended.push(e.seq);
@@ -2351,18 +2977,33 @@ mod tests {
         // torn tail
         let torn = format!("{INDEX_MAGIC}\n{l1}seq=2 t=5");
         let p = parse_index(&torn, &g);
-        assert!(p.torn && p.entries.len() == 1 && p.good_len as usize == INDEX_MAGIC.len() + 1 + l1.len());
+        assert!(
+            p.torn
+                && p.entries.len() == 1
+                && p.good_len as usize == INDEX_MAGIC.len() + 1 + l1.len()
+        );
     }
 
     #[test]
     fn ranges_and_reasons_round_trip() {
-        assert_eq!(parse_ranges("1-4,6,8-9"), Some(vec![(1, 4), (6, 6), (8, 9)]));
+        assert_eq!(
+            parse_ranges("1-4,6,8-9"),
+            Some(vec![(1, 4), (6, 6), (8, 9)])
+        );
         assert_eq!(fmt_ranges(&[(1, 4), (6, 6), (8, 9)]), "1-4,6,8-9");
         assert_eq!(compress(&[1, 2, 3, 5, 7, 8]), vec![(1, 3), (5, 5), (7, 8)]);
-        for bad in ["", "0", "3-2", "2,2", "4,1", "1-3,3", "a", "1-", "-1", "1,,2"] {
+        for bad in [
+            "", "0", "3-2", "2,2", "4,1", "1-3,3", "a", "1-", "-1", "1,,2",
+        ] {
             assert_eq!(parse_ranges(bad), None, "{bad:?}");
         }
-        for r in ["", "plain", "with space and = sign", "100% sure\nnewline", "ünï/cødé: ok, fine"] {
+        for r in [
+            "",
+            "plain",
+            "with space and = sign",
+            "100% sure\nnewline",
+            "ünï/cødé: ok, fine",
+        ] {
             let e = enc_reason(r);
             assert!(!e.contains(char::is_whitespace) && !e.contains('='), "{e}");
             assert_eq!(dec_reason(&e).as_deref(), Some(r));
@@ -2404,8 +3045,18 @@ mod tests {
         assert_eq!(st.slot(2), Slot::DeadDeleted);
         assert_eq!(st.slot(4), Slot::NoFile);
         assert_eq!(st.slot(5), Slot::Needed);
-        assert_eq!((st.deleted_count(), st.tomb_count(), st.compact_count(), st.live_count()), (1, 1, 1, 2));
-        assert!(matches!(&p.entries[3].op, Op::Tomb { reason: Some(r), .. } if r == "gdpr request"));
+        assert_eq!(
+            (
+                st.deleted_count(),
+                st.tomb_count(),
+                st.compact_count(),
+                st.live_count()
+            ),
+            (1, 1, 1, 2)
+        );
+        assert!(
+            matches!(&p.entries[3].op, Op::Tomb { reason: Some(r), .. } if r == "gdpr request")
+        );
         assert!(p.entries[3].extra_keys().is_empty());
         // a later tombstone of a compacted member makes the holder dirty, not dead
         let t6 = "seq=6 t=8 op=tomb del=3";
@@ -2428,24 +3079,46 @@ mod tests {
             ("seq=3 t=1 op=tomb".into(), "index-line"),
             ("seq=3 t=1 op=tomb del=2-1".into(), "index-line"),
             ("seq=3 t=1 op=unknown".into(), "index-op"),
-            (format!("seq=3 t=1 size=7 sha={sh} op=compact of=1-2"), "index-compact"), // size != 6
-            (format!("seq=3 t=1 size=6 sha={sh} op=compact of=1-5"), "index-compact"),
-            (format!("seq=3 t=1 size=6 sha={sh} op=compact of=3"), "index-compact"),
-            (format!("seq=3 t=1 size=6 sha={sh} op=compact"), "index-line"),
-            (format!("seq=4 t=1 size=6 sha={sh} op=compact of=1-2"), "index-seq"),
+            (
+                format!("seq=3 t=1 size=7 sha={sh} op=compact of=1-2"),
+                "index-compact",
+            ), // size != 6
+            (
+                format!("seq=3 t=1 size=6 sha={sh} op=compact of=1-5"),
+                "index-compact",
+            ),
+            (
+                format!("seq=3 t=1 size=6 sha={sh} op=compact of=3"),
+                "index-compact",
+            ),
+            (
+                format!("seq=3 t=1 size=6 sha={sh} op=compact"),
+                "index-line",
+            ),
+            (
+                format!("seq=4 t=1 size=6 sha={sh} op=compact of=1-2"),
+                "index-seq",
+            ),
         ];
         for (body, code) in cases {
             let p = parse_index(&chained(&g, &[&s1, &s2, &body]), &g);
             let e = p.error.unwrap_or_else(|| panic!("{body} accepted"));
             assert_eq!(e.1, code, "{body}: {e:?}");
-            assert_eq!(p.entries.len(), 2, "entries before the bad line stay listed");
+            assert_eq!(
+                p.entries.len(),
+                2,
+                "entries before the bad line stay listed"
+            );
         }
         // tombstone of an already deleted seq, compaction including a deleted seq, tombstone of a tombstone
         let t3 = "seq=3 t=1 op=tomb del=1";
         for (body, code) in [
             ("seq=4 t=1 op=tomb del=1", "index-tombstone"),
             ("seq=4 t=1 op=tomb del=3", "index-tombstone"),
-            (&*format!("seq=4 t=1 size=6 sha={sh} op=compact of=1-2"), "index-compact"),
+            (
+                &*format!("seq=4 t=1 size=6 sha={sh} op=compact of=1-2"),
+                "index-compact",
+            ),
         ] {
             let p = parse_index(&chained(&g, &[&s1, &s2, t3, body]), &g);
             assert_eq!(p.error.unwrap().1, code, "{body}");
@@ -2464,14 +3137,26 @@ mod tests {
         assert!(p.error.is_none(), "{:?}", p.error);
         let st = &p.state;
         assert!(p.entries[3].is_shred() && p.entries[3].extra_keys().is_empty());
-        assert_eq!((st.deleted_by(2), st.shredded_by(2), st.is_shredded(1)), (Some(4), Some(4), false));
+        assert_eq!(
+            (st.deleted_by(2), st.shredded_by(2), st.is_shredded(1)),
+            (Some(4), Some(4), false)
+        );
         assert!(st.key_shredded(2) && !st.key_shredded(1));
-        assert_eq!((st.slot(2), st.slot(1), st.shred_count(), st.deleted_count()), (Slot::DeadDeleted, Slot::Needed, 1, 1));
+        assert_eq!(
+            (st.slot(2), st.slot(1), st.shred_count(), st.deleted_count()),
+            (Slot::DeadDeleted, Slot::Needed, 1, 1)
+        );
         // a plain tombstone may be hardened into a shred; a shred is final
         let t4p = "seq=4 t=6 op=tomb del=2";
-        let p = parse_index(&chained(&g, &[&s1, &s2, &s3, t4p, "seq=5 t=7 op=tomb del=2 shred=1"]), &g);
+        let p = parse_index(
+            &chained(&g, &[&s1, &s2, &s3, t4p, "seq=5 t=7 op=tomb del=2 shred=1"]),
+            &g,
+        );
         assert!(p.error.is_none(), "{:?}", p.error);
-        assert_eq!((p.state.deleted_by(2), p.state.shredded_by(2)), (Some(4), Some(5)));
+        assert_eq!(
+            (p.state.deleted_by(2), p.state.shredded_by(2)),
+            (Some(4), Some(5))
+        );
         for (bodies, code) in [
             (vec![t4, "seq=5 t=7 op=tomb del=2 shred=1"], "index-shred"),
             (vec![t4, "seq=5 t=7 op=tomb del=2"], "index-tombstone"),
@@ -2480,20 +3165,42 @@ mod tests {
         ] {
             let mut all = vec![s1.as_str(), s2.as_str(), s3.as_str()];
             all.extend(bodies.iter().copied());
-            let e = parse_index(&chained(&g, &all), &g).error.unwrap_or_else(|| panic!("{bodies:?} accepted"));
+            let e = parse_index(&chained(&g, &all), &g)
+                .error
+                .unwrap_or_else(|| panic!("{bodies:?} accepted"));
             assert_eq!(e.1, code, "{bodies:?}: {e:?}");
         }
         // one key per file: a compaction segment's batches can only be shredded together
         let c4 = format!("seq=4 t=6 size=6 sha={sh} op=compact of=1-2");
-        let part = parse_index(&chained(&g, &[&s1, &s2, &s3, &c4, "seq=5 t=7 op=tomb del=1 shred=1"]), &g);
+        let part = parse_index(
+            &chained(&g, &[&s1, &s2, &s3, &c4, "seq=5 t=7 op=tomb del=1 shred=1"]),
+            &g,
+        );
         assert_eq!(part.error.unwrap().1, "index-shred");
-        let all = parse_index(&chained(&g, &[&s1, &s2, &s3, &c4, "seq=5 t=7 op=tomb del=1-2 shred=1"]), &g);
+        let all = parse_index(
+            &chained(
+                &g,
+                &[&s1, &s2, &s3, &c4, "seq=5 t=7 op=tomb del=1-2 shred=1"],
+            ),
+            &g,
+        );
         assert!(all.error.is_none(), "{:?}", all.error);
-        assert!(all.state.key_shredded(4) && all.state.is_shredded(1) && all.state.is_shredded(2) && !all.state.is_shredded(3));
+        assert!(
+            all.state.key_shredded(4)
+                && all.state.is_shredded(1)
+                && all.state.is_shredded(2)
+                && !all.state.is_shredded(3)
+        );
         assert_eq!(all.state.slot(4), Slot::DeadDeleted);
         // an already-deleted sibling does not have to be named again, but it is shredded with the file
         let t5 = "seq=5 t=7 op=tomb del=1";
-        let sib = parse_index(&chained(&g, &[&s1, &s2, &s3, &c4, t5, "seq=6 t=8 op=tomb del=2 shred=1"]), &g);
+        let sib = parse_index(
+            &chained(
+                &g,
+                &[&s1, &s2, &s3, &c4, t5, "seq=6 t=8 op=tomb del=2 shred=1"],
+            ),
+            &g,
+        );
         assert!(sib.error.is_none(), "{:?}", sib.error);
         assert!(sib.state.is_shredded(1) && sib.state.is_shredded(2));
     }
@@ -2501,61 +3208,121 @@ mod tests {
     #[test]
     fn head_roundtrip_and_signature() {
         let id = Identity::generate().unwrap();
-        let log = Log { dir: PathBuf::new(), name: "x".into(), id: "ab".repeat(16), signer: None, format: 1, segkeys: false };
+        let log = Log {
+            dir: PathBuf::new(),
+            name: "x".into(),
+            id: "ab".repeat(16),
+            signer: None,
+            format: 1,
+            segkeys: false,
+        };
         let h = make_head(&log, &[], Some(&id));
         let back = Head::parse(&h.render()).unwrap();
         assert_eq!(back, h);
         assert_eq!(back.signature_ok(&log.id), Some(true));
-        assert_eq!(back.signature_ok("another-log-id"), Some(false), "signature is bound to the log id");
+        assert_eq!(
+            back.signature_ok("another-log-id"),
+            Some(false),
+            "signature is bound to the log id"
+        );
         assert_eq!(make_head(&log, &[], None).signature_ok(&log.id), None);
     }
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sigil-rotate-unit-{tag}-{}", std::process::id()));
+        let d =
+            std::env::temp_dir().join(format!("sigil-rotate-unit-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
     }
 
     fn pk(i: &Identity) -> [u8; 32] {
-        SigningKey::from_bytes(&i.ed25519_seed).verifying_key().to_bytes()
+        SigningKey::from_bytes(&i.ed25519_seed)
+            .verifying_key()
+            .to_bytes()
     }
 
     /// Append a hand-made line with a valid chain hash (what someone with file access can do).
     fn push_line(log: &Log, body: &str) {
         let p = log.dir.join(INDEX_FILE);
         let text = fs::read_to_string(&p).unwrap();
-        let prev = parse_index(&text, &log.genesis()).entries.last().map(|e| e.chain).unwrap_or_else(|| log.genesis());
-        fs::write(&p, format!("{text}{body} chain={}\n", hex32(&chain_hash(&prev, body)))).unwrap();
+        let prev = parse_index(&text, &log.genesis())
+            .entries
+            .last()
+            .map(|e| e.chain)
+            .unwrap_or_else(|| log.genesis());
+        fs::write(
+            &p,
+            format!("{text}{body} chain={}\n", hex32(&chain_hash(&prev, body))),
+        )
+        .unwrap();
     }
 
     fn handover_body(log: &Log, seq: u64, by: &Identity, from: &[u8; 32], to: &[u8; 32]) -> String {
-        let sig = SigningKey::from_bytes(&by.ed25519_seed).sign(&handover_message(&log.id, seq, from, to)).to_bytes();
-        format!("seq={seq} t=9 op=signer from={} to={} sig={}", hex32(from), hex32(to), hex::encode(sig))
+        let sig = SigningKey::from_bytes(&by.ed25519_seed)
+            .sign(&handover_message(&log.id, seq, from, to))
+            .to_bytes();
+        format!(
+            "seq={seq} t=9 op=signer from={} to={} sig={}",
+            hex32(from),
+            hex32(to),
+            hex::encode(sig)
+        )
     }
 
     fn codes(path: &Path, signer: Option<[u8; 32]>) -> Vec<&'static str> {
-        let rep = check(path, &CheckOpts { signer, ..Default::default() }).unwrap();
-        rep.findings.iter().filter(|f| f.severity == Severity::Error).map(|f| f.code).collect()
+        let rep = check(
+            path,
+            &CheckOpts {
+                signer,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rep.findings
+            .iter()
+            .filter(|f| f.severity == Severity::Error)
+            .map(|f| f.code)
+            .collect()
     }
 
     fn signed_append(path: &Path, data: &[u8], id: &Identity) -> Result<AppendReport> {
-        append(path, data, &AppendOpts { identity: Some(id), mode: Mode::Glyph, ..Default::default() })
+        append(
+            path,
+            data,
+            &AppendOpts {
+                identity: Some(id),
+                mode: Mode::Glyph,
+                ..Default::default()
+            },
+        )
     }
 
     #[test]
     fn signer_rotation_follows_the_chain_of_handovers() {
-        let (a, b, c) = (Identity::generate().unwrap(), Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (a, b, c) = (
+            Identity::generate().unwrap(),
+            Identity::generate().unwrap(),
+            Identity::generate().unwrap(),
+        );
         let d = tmpdir("chain");
         let path = d.join("ev");
         init(&path, Some(&a)).unwrap();
         signed_append(&path, b"one", &a).unwrap();
         signed_append(&path, b"two", &a).unwrap();
-        assert_eq!(Log::open(&path).unwrap().format, 1, "a log that is never rotated keeps its format");
+        assert_eq!(
+            Log::open(&path).unwrap().format,
+            1,
+            "a log that is never rotated keeps its format"
+        );
         let r = rotate_signer(&path, &a, pk(&b)).unwrap();
         assert_eq!((r.entry, r.from, r.to, r.handovers), (3, pk(&a), pk(&b), 1));
         let log = Log::open(&path).unwrap();
-        assert_eq!((log.format, log.signer), (4, Some(pk(&a))), "manifest raised to log=4; signer= stays the init pin");
+        assert_eq!(
+            (log.format, log.signer),
+            (4, Some(pk(&a))),
+            "manifest raised to log=4; signer= stays the init pin"
+        );
         let entries = read_index(&log).unwrap().entries;
         // the handover's own HEAD is the outgoing key's; every later one the new key's
         assert_eq!(signer_for(&log, &entries, 3), Some(pk(&a)));
@@ -2566,27 +3333,59 @@ mod tests {
         // the old key may no longer write; the new one must
         let e = signed_append(&path, b"three", &a).unwrap_err().to_string();
         assert!(e.contains("current signer"), "{e}");
-        assert!(rotate_signer(&path, &a, pk(&c)).is_err(), "the outgoing key cannot hand over twice");
+        assert!(
+            rotate_signer(&path, &a, pk(&c)).is_err(),
+            "the outgoing key cannot hand over twice"
+        );
         signed_append(&path, b"three", &b).unwrap();
         assert_eq!(read_head(&log).unwrap().unwrap().signer, Some(pk(&b)));
         assert!(codes(&path, None).is_empty());
-        assert!(codes(&path, Some(pk(&a))).is_empty(), "--signer may name the init key");
+        assert!(
+            codes(&path, Some(pk(&a))).is_empty(),
+            "--signer may name the init key"
+        );
         assert!(codes(&path, Some(pk(&b))).is_empty());
         assert_eq!(codes(&path, Some(pk(&c))), vec!["head-signer"]);
         let rep = check(&path, &CheckOpts::default()).unwrap();
         assert!(rep.findings.iter().any(|f| f.code == "signer-handovers") && rep.handovers == 1);
         // a chain of two; refusals
-        assert!(rotate_signer(&path, &b, pk(&b)).unwrap_err().to_string().contains("already"));
-        for junk in [[0xffu8; 32], [0u8; 32], { let mut k = [0u8; 32]; k[0] = 1; k }] {
-            assert!(rotate_signer(&path, &b, junk).unwrap_err().to_string().contains("not a valid"), "{junk:?}");
+        assert!(rotate_signer(&path, &b, pk(&b))
+            .unwrap_err()
+            .to_string()
+            .contains("already"));
+        for junk in [[0xffu8; 32], [0u8; 32], {
+            let mut k = [0u8; 32];
+            k[0] = 1;
+            k
+        }] {
+            assert!(
+                rotate_signer(&path, &b, junk)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not a valid"),
+                "{junk:?}"
+            );
         }
         rotate_signer(&path, &b, pk(&c)).unwrap();
         signed_append(&path, b"four", &c).unwrap();
         let entries = read_index(&log).unwrap().entries;
-        assert_eq!(signer_chain(&log, &entries, entries.len() + 1), vec![pk(&a), pk(&b), pk(&c)]);
+        assert_eq!(
+            signer_chain(&log, &entries, entries.len() + 1),
+            vec![pk(&a), pk(&b), pk(&c)]
+        );
         assert!(codes(&path, Some(pk(&a))).is_empty() && codes(&path, Some(pk(&b))).is_empty());
         // records hold no file: gc / doctor / mend do not miss one
-        assert!(check(&path, &CheckOpts { quick: false, ..Default::default() }).unwrap().findings.iter().all(|f| f.severity != Severity::Error));
+        assert!(check(
+            &path,
+            &CheckOpts {
+                quick: false,
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .findings
+        .iter()
+        .all(|f| f.severity != Severity::Error));
         assert!(mend(&path).unwrap().missing.is_empty());
         let ls = list(&path).unwrap();
         assert_eq!(ls.present.iter().filter(|p| **p).count(), 4);
@@ -2596,14 +3395,26 @@ mod tests {
 
     #[test]
     fn forged_misplaced_or_unsigned_handovers_are_refused() {
-        let (a, b, eve) = (Identity::generate().unwrap(), Identity::generate().unwrap(), Identity::generate().unwrap());
+        let (a, b, eve) = (
+            Identity::generate().unwrap(),
+            Identity::generate().unwrap(),
+            Identity::generate().unwrap(),
+        );
         let d = tmpdir("forged");
         let fresh = |name: &str, sign: Option<&Identity>| -> (PathBuf, Log) {
             let p = d.join(name);
             init(&p, sign).unwrap();
             match sign {
                 Some(id) => signed_append(&p, b"x", id).unwrap(),
-                None => append(&p, b"x", &AppendOpts { mode: Mode::Glyph, ..Default::default() }).unwrap(),
+                None => append(
+                    &p,
+                    b"x",
+                    &AppendOpts {
+                        mode: Mode::Glyph,
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
             };
             let mut log = Log::open(&p).unwrap();
             raise_format(&mut log, 4).unwrap();
@@ -2613,7 +3424,10 @@ mod tests {
         let (p, log) = fresh("eve", Some(&a));
         push_line(&log, &handover_body(&log, 2, &eve, &pk(&a), &pk(&eve)));
         assert!(codes(&p, None).contains(&"index-signer"));
-        assert!(signed_append(&p, b"y", &eve).is_err() && signed_append(&p, b"y", &a).is_err(), "writers refuse a damaged INDEX");
+        assert!(
+            signed_append(&p, b"y", &eve).is_err() && signed_append(&p, b"y", &a).is_err(),
+            "writers refuse a damaged INDEX"
+        );
         // Eve hands over from herself (not the signer in effect)
         let (p, log) = fresh("notcur", Some(&a));
         push_line(&log, &handover_body(&log, 2, &eve, &pk(&eve), &pk(&b)));
@@ -2630,7 +3444,14 @@ mod tests {
         assert!(rotate_signer(&p, &a, pk(&b)).is_err());
         // no signature at all is not a handover
         let (p, log) = fresh("nosig", Some(&a));
-        push_line(&log, &format!("seq=2 t=9 op=signer from={} to={}", hex32(&pk(&a)), hex32(&pk(&b))));
+        push_line(
+            &log,
+            &format!(
+                "seq=2 t=9 op=signer from={} to={}",
+                hex32(&pk(&a)),
+                hex32(&pk(&b))
+            ),
+        );
         assert!(codes(&p, None).contains(&"index-line"));
         // a valid handover under a manifest older than log=4
         let p = d.join("oldfmt");

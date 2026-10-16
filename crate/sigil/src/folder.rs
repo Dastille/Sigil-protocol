@@ -82,7 +82,9 @@ pub fn inscribe_dir_to(
     let mut writer = BufWriter::new(File::create(output).map_err(io)?);
     writer.write_all(&DIR_MAGIC).map_err(io)?;
     writer.write_all(&[1u8]).map_err(io)?;
-    writer.write_all(&(files.len() as u32).to_le_bytes()).map_err(io)?;
+    writer
+        .write_all(&(files.len() as u32).to_le_bytes())
+        .map_err(io)?;
     let mut total = 0u64;
     for path in &files {
         let rel = rel(root, path);
@@ -91,10 +93,34 @@ pub fn inscribe_dir_to(
         let file_pass = pass_for(&rel, pass, wards);
         let star = if size <= chunk as u64 {
             let data = fs::read(path).map_err(io)?;
-            seal_kn_to(&data, mode, file_pass.as_deref(), &rel, false, covenant, geas, None, DEFAULT_PIECE, recipients)?
+            seal_kn_to(
+                &data,
+                mode,
+                file_pass.as_deref(),
+                &rel,
+                false,
+                covenant,
+                geas,
+                None,
+                DEFAULT_PIECE,
+                recipients,
+            )?
         } else {
             let tmp = output.with_extension(&format!("tmp-{rel}", rel = rel.replace('/', "_")));
-            crate::work::inscribe_path_to(path, &tmp, mode, file_pass.as_deref(), covenant, geas, chunk, None, DEFAULT_PIECE, crate::work::DEFAULT_OVERTURE_MB, None, recipients)?;
+            crate::work::inscribe_path_to(
+                path,
+                &tmp,
+                mode,
+                file_pass.as_deref(),
+                covenant,
+                geas,
+                chunk,
+                None,
+                DEFAULT_PIECE,
+                crate::work::DEFAULT_OVERTURE_MB,
+                None,
+                recipients,
+            )?;
             let packed = fs::read(&tmp).map_err(io)?;
             let _ = fs::remove_file(&tmp);
             packed
@@ -103,14 +129,21 @@ pub fn inscribe_dir_to(
         let nlen = (pb.len().min(65535)) as u16;
         writer.write_all(&nlen.to_le_bytes()).map_err(io)?;
         writer.write_all(&pb[..nlen as usize]).map_err(io)?;
-        writer.write_all(&(star.len() as u64).to_le_bytes()).map_err(io)?;
+        writer
+            .write_all(&(star.len() as u64).to_le_bytes())
+            .map_err(io)?;
         writer.write_all(&star).map_err(io)?;
     }
     writer.flush().map_err(io)?;
     Ok((files.len() as u32, total))
 }
 
-pub fn unseal_dir(input: &Path, dest: &Path, pass: Option<&str>, companions: &[Vec<u8>]) -> Result<u32> {
+pub fn unseal_dir(
+    input: &Path,
+    dest: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+) -> Result<u32> {
     unseal_dir_only(input, dest, pass, companions, &[], &[])
 }
 
@@ -144,7 +177,10 @@ pub fn unseal_dir_only_keys(
     let mut ver = [0u8; 1];
     reader.read_exact(&mut ver).map_err(io)?;
     if ver[0] != 1 {
-        return Err(crate::Error::Msg(format!("unknown folder pack version {}", ver[0])));
+        return Err(crate::Error::Msg(format!(
+            "unknown folder pack version {}",
+            ver[0]
+        )));
     }
     let mut nbuf = [0u8; 4];
     reader.read_exact(&mut nbuf).map_err(io)?;
@@ -158,7 +194,9 @@ pub fn unseal_dir_only_keys(
         reader.read_exact(&mut name).map_err(io)?;
         let rel = String::from_utf8_lossy(&name).into_owned();
         if rel.contains("..") || Path::new(&rel).is_absolute() {
-            return Err(crate::Error::Msg("refusing unsafe path in folder pack".into()));
+            return Err(crate::Error::Msg(
+                "refusing unsafe path in folder pack".into(),
+            ));
         }
         let mut sl = [0u8; 8];
         reader.read_exact(&mut sl).map_err(io)?;
@@ -175,10 +213,21 @@ pub fn unseal_dir_only_keys(
         if star.starts_with(&crate::work::WORK_MAGIC) {
             let tmp = out_path.with_extension("sgwk");
             fs::write(&tmp, &star).map_err(io)?;
-            crate::work::unseal_path_keys(&tmp, &out_path, pass_for(&rel, pass, wards).as_deref(), companions, identities)?;
+            crate::work::unseal_path_keys(
+                &tmp,
+                &out_path,
+                pass_for(&rel, pass, wards).as_deref(),
+                companions,
+                identities,
+            )?;
             let _ = fs::remove_file(&tmp);
         } else {
-            let plain = unseal_ex_keys(&star, pass_for(&rel, pass, wards).as_deref(), companions, identities)?;
+            let plain = unseal_ex_keys(
+                &star,
+                pass_for(&rel, pass, wards).as_deref(),
+                companions,
+                identities,
+            )?;
             fs::write(&out_path, plain).map_err(io)?;
         }
         got += 1;
@@ -221,7 +270,9 @@ pub fn unseal_dir_mend_keys(
     for (rel, star) in entries {
         let mut star = star;
         if rel.contains("..") || Path::new(&rel).is_absolute() {
-            return Err(crate::Error::Msg("refusing unsafe path in folder pack".into()));
+            return Err(crate::Error::Msg(
+                "refusing unsafe path in folder pack".into(),
+            ));
         }
         let want = wanted(&rel, only);
         if want {
@@ -321,7 +372,10 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         return Err(crate::Error::Msg("not a folder pack (SGDR)".into()));
     }
     if raw[4] != 1 {
-        return Err(crate::Error::Msg(format!("unknown folder pack version {}", raw[4])));
+        return Err(crate::Error::Msg(format!(
+            "unknown folder pack version {}",
+            raw[4]
+        )));
     }
     let n = u32::from_le_bytes(raw[5..9].try_into().unwrap());
     let mut off = 9usize;
@@ -333,14 +387,18 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         let nlen = u16::from_le_bytes(raw[off..off + 2].try_into().unwrap()) as usize;
         off += 2;
         if off + nlen + 8 > raw.len() {
-            return Err(crate::Error::Msg("truncated folder pack (name/star len)".into()));
+            return Err(crate::Error::Msg(
+                "truncated folder pack (name/star len)".into(),
+            ));
         }
         let name = String::from_utf8_lossy(&raw[off..off + nlen]).into_owned();
         off += nlen;
         let slen = u64::from_le_bytes(raw[off..off + 8].try_into().unwrap()) as usize;
         off += 8;
         if off + slen > raw.len() {
-            return Err(crate::Error::Msg("truncated folder pack (star bytes)".into()));
+            return Err(crate::Error::Msg(
+                "truncated folder pack (star bytes)".into(),
+            ));
         }
         let star = raw[off..off + slen].to_vec();
         off += slen;
@@ -365,7 +423,6 @@ fn encode_sgdr(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-
 fn pass_for(rel: &str, default: Option<&str>, wards: &[(String, String)]) -> Option<String> {
     for (p, w) in wards {
         if p == rel {
@@ -381,7 +438,9 @@ fn wanted(rel: &str, only: &[String]) -> bool {
     }
     only.iter().any(|p| {
         let p = p.trim().trim_start_matches("./");
-        rel == p || rel.starts_with(&(p.to_string() + "/")) || (p.ends_with('/') && rel.starts_with(p))
+        rel == p
+            || rel.starts_with(&(p.to_string() + "/"))
+            || (p.ends_with('/') && rel.starts_with(p))
     })
 }
 
@@ -447,7 +506,10 @@ pub fn list_dir_pack(input: &Path) -> Result<Vec<DirEntry>> {
     let mut ver = [0u8; 1];
     reader.read_exact(&mut ver).map_err(io)?;
     if ver[0] != 1 {
-        return Err(crate::Error::Msg(format!("unknown folder pack version {}", ver[0])));
+        return Err(crate::Error::Msg(format!(
+            "unknown folder pack version {}",
+            ver[0]
+        )));
     }
     let mut nbuf = [0u8; 4];
     reader.read_exact(&mut nbuf).map_err(io)?;
@@ -477,7 +539,12 @@ pub fn list_dir_pack(input: &Path) -> Result<Vec<DirEntry>> {
             reader.read_exact(&mut buf[..take]).map_err(io)?;
             left -= take as u64;
         }
-        entries.push(DirEntry { path, orig, nest, digest });
+        entries.push(DirEntry {
+            path,
+            orig,
+            nest,
+            digest,
+        });
     }
     Ok(entries)
 }
@@ -491,9 +558,7 @@ fn peek_orig(peek: &[u8]) -> Option<u64> {
         }
         return None;
     }
-    crate::locate_header(peek)
-        .ok()
-        .map(|(h, _, _)| h.orig_len)
+    crate::locate_header(peek).ok().map(|(h, _, _)| h.orig_len)
 }
 
 pub fn is_dir_pack(path: &Path) -> bool {
@@ -543,7 +608,10 @@ pub fn read_dir_entry_star(input: &Path, want: &str) -> Result<Vec<u8>> {
     let mut ver = [0u8; 1];
     reader.read_exact(&mut ver).map_err(io)?;
     if ver[0] != 1 {
-        return Err(crate::Error::Msg(format!("unknown folder pack version {}", ver[0])));
+        return Err(crate::Error::Msg(format!(
+            "unknown folder pack version {}",
+            ver[0]
+        )));
     }
     let mut nbuf = [0u8; 4];
     reader.read_exact(&mut nbuf).map_err(io)?;

@@ -4,8 +4,11 @@ mod boot;
 mod cdc;
 mod chaos;
 mod constellation;
+pub mod container;
+pub mod doctor;
 mod folder;
 mod fountain;
+pub mod gc;
 mod gf;
 mod header;
 mod keys;
@@ -13,18 +16,15 @@ mod kit;
 mod mds;
 mod merkle;
 mod mount;
+pub mod names;
 mod nest;
 mod open;
-pub mod container;
-pub mod doctor;
-pub mod gc;
-pub mod names;
 pub mod passkey;
-mod pieces;
 pub mod pgp;
-pub mod seglog;
+mod pieces;
 mod rs;
 mod rs_ref;
+pub mod seglog;
 
 /// Benchmark / oracle hooks for the RS codec (not a stable API).
 #[doc(hidden)]
@@ -51,24 +51,48 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
 pub use attest::{attest, keygen as attest_keygen, talisman_pass, verify_attestation};
-pub use boot::{copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, mend_boot, mend_scan, prepare_boot, BootFind, BootOutcome};
-pub use constellation::{
-    add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input, is_constellation_mark,
-    pack_atlas, pack_atlas_chart, pack_atlas_keys, scry_chart, scry_constellation, scry_constellation_keys, unseal_constellation,
-    remove_members as constellation_remove, unseal_constellation_keys, AddOpts, AddReport, Chart,
-    RemoveOpts as ConstellationRemoveOpts, RemoveReport as ConstellationRemoveReport,
+pub use boot::{
+    copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, mend_boot, mend_scan,
+    prepare_boot, BootFind, BootOutcome,
 };
-pub use folder::{inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name, read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry};
-pub use nest::{
-    is_nestable_bytes, kind_of_bytes, path_extract, path_extract_keys, path_list, path_walk,
-    path_walk_keys, refuse_if_cycle, NestKind, PathEntry, PathView, MAX_NEST_DEPTH,
+pub use cdc::{
+    chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile,
+    DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA,
+};
+pub use constellation::{
+    add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input,
+    is_constellation_mark, pack_atlas, pack_atlas_chart, pack_atlas_keys,
+    remove_members as constellation_remove, scry_chart, scry_constellation,
+    scry_constellation_keys, unseal_constellation, unseal_constellation_keys, AddOpts, AddReport,
+    Chart, RemoveOpts as ConstellationRemoveOpts, RemoveReport as ConstellationRemoveReport,
+};
+pub use folder::{
+    inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name,
+    read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_mend_keys, unseal_dir_only,
+    unseal_dir_only_keys, DirEntry,
 };
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
-pub use header::{locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION};
-pub use merkle::merkle_root;
+pub use header::{
+    locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION,
+};
+pub use keys::{
+    keygen_ecc, keygen_legacy, resolve_recipient, Identity, PublicIdentity, ID_MAGIC, PUB_MAGIC,
+    SGTO_MAGIC,
+};
+pub use kit::{
+    is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST,
+};
 pub use mds::{
     backend_by_name, default_backend, format_bakeoff_report, run_bakeoff, CauchyRs, MdsBackend,
     MdsBenchRow, VandermondeRs,
+};
+pub use merkle::merkle_root;
+pub use mount::{
+    fuse_available, mount_fuse, run_mount, run_mount_keys, umount as umount_path, VaultFs,
+};
+pub use nest::{
+    is_nestable_bytes, kind_of_bytes, path_extract, path_extract_keys, path_list, path_walk,
+    path_walk_keys, refuse_if_cycle, NestKind, PathEntry, PathView, MAX_NEST_DEPTH,
 };
 pub use open::{run_open, run_open_keys};
 pub use pieces::{
@@ -76,45 +100,36 @@ pub use pieces::{
     mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
     VESSEL,
 };
-pub use keys::{
-    keygen_ecc, keygen_legacy, resolve_recipient, Identity, PublicIdentity, ID_MAGIC, PUB_MAGIC,
-    SGTO_MAGIC,
+pub use show::run_showing;
+pub use vault::tip_seal_path as vault_tip_seal_path;
+pub use vault::{
+    cold_here as vault_cold_here, commit_ex as vault_commit_ex,
+    commit_from_export_ex as vault_commit_from_export_ex,
+    format_recipients as vault_format_recipients, get_recipients as vault_get_recipients,
+    remove_version as vault_remove_version, restore_ex as vault_restore_ex,
+    set_recipients as vault_set_recipients, track_ex as vault_track_ex,
+    tree_digest as vault_tree_digest, ChartKind as VaultChartKind,
+    RemoveVersionReport as VaultRemoveVersionReport,
 };
-pub use kit::{is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST};
 pub use vault::{
     commit as vault_commit, commit_from_export as vault_commit_from_export,
     dirty_meta_for as vault_dirty_meta_for, format_retention as vault_format_retention,
     format_status as vault_format_status, format_versions as vault_format_versions,
     get_retention as vault_get_retention, list_versions as vault_list_versions,
     maybe_prune_after_commit as vault_maybe_prune_after_commit, prune as vault_prune,
-    prune_with as vault_prune_with, restore as vault_restore,
-    set_retention as vault_set_retention, status as vault_status, track as vault_track,
-    vault_dir_for, CommitReport as VaultCommitReport, DirtyMeta as VaultDirtyMeta,
-    Drift as VaultDrift, PruneReport as VaultPruneReport, RestoreReport as VaultRestoreReport,
-    RetentionPolicy as VaultRetention, StatusReport as VaultStatusReport,
-    TrackReport as VaultTrackReport, CHART_NAME as VAULT_CHART, DIRTY_NAME as VAULT_DIRTY,
-    VAULT_SUFFIX,
+    prune_with as vault_prune_with, restore as vault_restore, set_retention as vault_set_retention,
+    status as vault_status, track as vault_track, vault_dir_for, CommitReport as VaultCommitReport,
+    DirtyMeta as VaultDirtyMeta, Drift as VaultDrift, PruneReport as VaultPruneReport,
+    RestoreReport as VaultRestoreReport, RetentionPolicy as VaultRetention,
+    StatusReport as VaultStatusReport, TrackReport as VaultTrackReport, CHART_NAME as VAULT_CHART,
+    DIRTY_NAME as VAULT_DIRTY, VAULT_SUFFIX,
 };
-pub use cdc::{chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile, DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA};
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_path_to, inscribe_stars_dir,
-    inscribe_stars_dir_to, is_work_pack, mend_pack_path, overture_report, payload_name, read_facet_digests,
-    scry_facets, scry_path, suggested_output_name, unseal_path, unseal_path_keys, unseal_range,
-    unseal_range_keys, unseal_star_at, unseal_star_at_keys, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
-    PackMendReport, OVERTURE, WORK_MAGIC,
-};
-pub use show::run_showing;
-pub use mount::{
-    fuse_available, mount_fuse, run_mount, run_mount_keys, umount as umount_path, VaultFs,
-};
-pub use vault::tip_seal_path as vault_tip_seal_path;
-pub use vault::{
-    commit_ex as vault_commit_ex, commit_from_export_ex as vault_commit_from_export_ex,
-    restore_ex as vault_restore_ex, track_ex as vault_track_ex, tree_digest as vault_tree_digest,
-    ChartKind as VaultChartKind,
-    format_recipients as vault_format_recipients, get_recipients as vault_get_recipients,
-    set_recipients as vault_set_recipients, cold_here as vault_cold_here,
-    remove_version as vault_remove_version, RemoveVersionReport as VaultRemoveVersionReport,
+    inscribe_stars_dir_to, is_work_pack, mend_pack_path, overture_report, payload_name,
+    read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
+    unseal_path_keys, unseal_range, unseal_range_keys, unseal_star_at, unseal_star_at_keys,
+    PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
@@ -257,7 +272,13 @@ fn derive_key(pass: &str, salt: &[u8]) -> [u8; 32] {
     key
 }
 
-pub fn seal(data: &[u8], mode: Mode, pass: Option<&str>, name: &str, graph: bool) -> Result<Vec<u8>> {
+pub fn seal(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+) -> Result<Vec<u8>> {
     seal_ex(data, mode, pass, name, graph, "", &[])
 }
 
@@ -270,7 +291,17 @@ pub fn seal_ex(
     covenant: &str,
     geas: &[[u8; 32]],
 ) -> Result<Vec<u8>> {
-    seal_kn(data, mode, pass, name, graph, covenant, geas, None, DEFAULT_PIECE)
+    seal_kn(
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        None,
+        DEFAULT_PIECE,
+    )
 }
 
 pub fn seal_kn(
@@ -284,7 +315,18 @@ pub fn seal_kn(
     shards: Option<u8>,
     piece_bytes: u32,
 ) -> Result<Vec<u8>> {
-    seal_kn_to(data, mode, pass, name, graph, covenant, geas, shards, piece_bytes, &[])
+    seal_kn_to(
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        &[],
+    )
 }
 
 /// Like `seal_kn`, with optional encrypt-to recipients (`--to`).
@@ -329,7 +371,17 @@ pub fn seal_kn_mds(
     mds_be: &dyn mds::MdsBackend,
 ) -> Result<Vec<u8>> {
     seal_kn_mds_to(
-        data, mode, pass, name, graph, covenant, geas, shards, piece_bytes, mds_be, &[],
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        mds_be,
+        &[],
     )
 }
 
@@ -495,7 +547,9 @@ pub fn unseal_ex_mds_keys(
             let have: Vec<[u8; 32]> = companions.iter().map(|c| sha256(c)).collect();
             for n in &need {
                 if !have.iter().any(|hsh| hsh == n) {
-                    return Err(Error::Msg("Geas not met — companion missing or changed.".into()));
+                    return Err(Error::Msg(
+                        "Geas not met — companion missing or changed.".into(),
+                    ));
                 }
             }
         }
@@ -519,9 +573,7 @@ pub fn unseal_ex_mds_keys(
                 Ok(cek) => cek,
                 Err(e) => {
                     if identities.is_empty() && p.is_empty() {
-                        return Err(Error::Msg(
-                            "passphrase or --identity required".into(),
-                        ));
+                        return Err(Error::Msg("passphrase or --identity required".into()));
                     }
                     return Err(e);
                 }
@@ -627,7 +679,9 @@ mod tests {
     /// beyond the parity budget are refused, never returned as wrong bytes.
     #[test]
     fn rs_fast_path_fails_closed() {
-        let msg: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(2654435761) >> 11) as u8).collect();
+        let msg: Vec<u8> = (0..300_000u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 11) as u8)
+            .collect();
         for pass in [None, Some("correct horse")] {
             let bytes = seal(&msg, Mode::Seal, pass, "big.bin", false).unwrap();
             assert_eq!(unseal(&bytes, pass).unwrap(), msg);
@@ -642,7 +696,11 @@ mod tests {
             }
             let h = read_header(&bytes).unwrap();
             let stride = header::shard_stride(&h);
-            let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+            let prefix = if h.keystone() {
+                KEYSTONE_SPAN
+            } else {
+                HEADER_SIZE
+            };
             // Bit flips in every shard body: more damage than parity can repair.
             let mut flipped = bytes.clone();
             for i in 0..h.n as usize {
@@ -683,7 +741,11 @@ mod tests {
         let h = read_header(&bytes).unwrap();
         let mut torn = bytes.clone();
         let stride = header::shard_stride(&h);
-        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        let prefix = if h.keystone() {
+            KEYSTONE_SPAN
+        } else {
+            HEADER_SIZE
+        };
         for i in 0..8 {
             let off = prefix + i * stride;
             torn[off..off + stride].fill(0);
@@ -737,8 +799,20 @@ mod tests {
         f.write_all(&payload).unwrap();
         drop(f);
         let pack = dir.join("out.sgwk");
-        let (orig, stars, work) =
-            crate::work::inscribe_path(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, None, crate::DEFAULT_PIECE, 1, None).unwrap();
+        let (orig, stars, work) = crate::work::inscribe_path(
+            &src,
+            &pack,
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            crate::DEFAULT_PIECE,
+            1,
+            None,
+        )
+        .unwrap();
         assert!(work);
         assert_eq!(orig, payload.len() as u64);
         assert!(stars > 1);
@@ -773,7 +847,17 @@ mod tests {
         std::fs::write(src.join("a.txt"), b"alpha").unwrap();
         std::fs::write(src.join("sub/b.txt"), b"beta-file").unwrap();
         let pack = dir.join("tree.sg1");
-        let (n, _) = crate::folder::inscribe_dir(&src, &pack, Mode::Reflection, None, "", &[], 4 * 1024 * 1024, &[]).unwrap();
+        let (n, _) = crate::folder::inscribe_dir(
+            &src,
+            &pack,
+            Mode::Reflection,
+            None,
+            "",
+            &[],
+            4 * 1024 * 1024,
+            &[],
+        )
+        .unwrap();
         assert_eq!(n, 2);
         let dest = dir.join("out");
         crate::folder::unseal_dir(&pack, &dest, None, &[]).unwrap();
@@ -784,7 +868,8 @@ mod tests {
         assert!(listing.contains("file  sub/b.txt"), "{listing}");
         assert!(listing.contains("dir   sub/"), "{listing}");
         let one = dir.join("one");
-        let n = crate::folder::unseal_dir_only(&pack, &one, None, &[], &["sub/b.txt".into()], &[]).unwrap();
+        let n = crate::folder::unseal_dir_only(&pack, &one, None, &[], &["sub/b.txt".into()], &[])
+            .unwrap();
         assert_eq!(n, 1);
         assert_eq!(std::fs::read(one.join("sub/b.txt")).unwrap(), b"beta-file");
         assert!(!one.join("a.txt").exists());
@@ -811,7 +896,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(std::fs::read(mixed.join("a.txt")).unwrap(), b"alpha");
-        assert_eq!(std::fs::read(mixed.join("sub/b.txt")).unwrap(), b"beta-file");
+        assert_eq!(
+            std::fs::read(mixed.join("sub/b.txt")).unwrap(),
+            b"beta-file"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -863,7 +951,11 @@ mod tests {
         crate::pieces::deluge(&bytes, 8, &c, true, Some(80)).unwrap();
         // C's folder: 4 from A (40-43) + 4 from B (80-83) = 8 for Seal
         for i in 40..44u8 {
-            std::fs::copy(a.join(format!("piece-{i:03}.sgp")), c.join(format!("piece-{i:03}.sgp"))).unwrap();
+            std::fs::copy(
+                a.join(format!("piece-{i:03}.sgp")),
+                c.join(format!("piece-{i:03}.sgp")),
+            )
+            .unwrap();
         }
         for i in 84..88u8 {
             let _ = std::fs::remove_file(c.join(format!("piece-{i:03}.sgp")));
@@ -900,10 +992,22 @@ mod tests {
     #[test]
     fn choose_kn_scales() {
         assert_eq!(choose_kn(Mode::Seal, 1_000, DEFAULT_PIECE, None), (8, 16));
-        assert_eq!(choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, None), (16, 32));
-        assert_eq!(choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, Some(64)), (32, 64));
-        assert_eq!(choose_kn(Mode::Reflection, 1_000, DEFAULT_PIECE, None), (12, 16));
-        assert_eq!(choose_kn(Mode::Glyph, 99_000_000, DEFAULT_PIECE, None), (16, 16));
+        assert_eq!(
+            choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, None),
+            (16, 32)
+        );
+        assert_eq!(
+            choose_kn(Mode::Seal, 64 * 1024 * 1024, DEFAULT_PIECE, Some(64)),
+            (32, 64)
+        );
+        assert_eq!(
+            choose_kn(Mode::Reflection, 1_000, DEFAULT_PIECE, None),
+            (12, 16)
+        );
+        assert_eq!(
+            choose_kn(Mode::Glyph, 99_000_000, DEFAULT_PIECE, None),
+            (16, 16)
+        );
     }
 
     #[test]
@@ -926,7 +1030,20 @@ mod tests {
         let src = dir.join("notes.txt");
         std::fs::write(&src, b"keep my name").unwrap();
         let packed = dir.join("notes.sg1");
-        inscribe_path(&src, &packed, Mode::Glyph, None, "", &[], DEFAULT_CHUNK, None, 0, 64, None).unwrap();
+        inscribe_path(
+            &src,
+            &packed,
+            Mode::Glyph,
+            None,
+            "",
+            &[],
+            DEFAULT_CHUNK,
+            None,
+            0,
+            64,
+            None,
+        )
+        .unwrap();
         assert_eq!(suggested_output_name(&packed), "notes.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -938,7 +1055,11 @@ mod tests {
         let h = read_header(&bytes).unwrap();
         let mut torn = bytes.clone();
         let stride = header::shard_stride(&h);
-        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        let prefix = if h.keystone() {
+            KEYSTONE_SPAN
+        } else {
+            HEADER_SIZE
+        };
         // Smash half the shards (Seal budget = 8 of 16).
         for i in 0..8 {
             let off = prefix + i * stride;
@@ -960,7 +1081,11 @@ mod tests {
         let h = read_header(&bytes).unwrap();
         let mut torn = bytes.clone();
         let stride = header::shard_stride(&h);
-        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        let prefix = if h.keystone() {
+            KEYSTONE_SPAN
+        } else {
+            HEADER_SIZE
+        };
         torn[prefix..prefix + stride].fill(0);
         torn[prefix] = 3;
         assert!(crate::pieces::mend_bytes(&torn).is_err());
@@ -978,7 +1103,8 @@ mod tests {
         let h = read_header(&bytes).unwrap();
         let stride = header::shard_stride(&h);
         let prefix = header::body_prefix(&h);
-        let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let lead =
+            if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
         let sl = h.shard_len as usize;
         let mut torn = bytes.clone();
         // Wipe 8 shards (Seal budget edge): indices 0..7 gone.
@@ -1013,7 +1139,8 @@ mod tests {
         let h = read_header(&bytes).unwrap();
         let stride = header::shard_stride(&h);
         let prefix = header::body_prefix(&h);
-        let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let lead =
+            if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
         let sl = h.shard_len as usize;
         let mut torn = bytes.clone();
         // Destroy 9 shards so even soft present count may be tight; flip body bytes on all survivors.
@@ -1058,7 +1185,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("in.bin");
         let payload: Vec<u8> = (0..900_000u32).map(|i| (i % 251) as u8).collect();
-        std::fs::File::create(&src).unwrap().write_all(&payload).unwrap();
+        std::fs::File::create(&src)
+            .unwrap()
+            .write_all(&payload)
+            .unwrap();
         let pack = dir.join("out.sgwk");
         let fine = crate::CdcProfile {
             name: "test",
@@ -1122,14 +1252,21 @@ mod tests {
         // Wipe data shards 0..7 so decode must use Cauchy parity — Vandermonde then fails.
         let h = read_header(&bytes).unwrap();
         let stride = header::shard_stride(&h);
-        let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+        let prefix = if h.keystone() {
+            KEYSTONE_SPAN
+        } else {
+            HEADER_SIZE
+        };
         let mut torn = bytes.clone();
         for i in 0..8 {
             let off = prefix + i * stride;
             torn[off..off + stride].fill(0);
             torn[off] = 3;
         }
-        assert!(unseal(&torn, None).is_err(), "Vandermonde must not decode Cauchy parity");
+        assert!(
+            unseal(&torn, None).is_err(),
+            "Vandermonde must not decode Cauchy parity"
+        );
         let healed = unseal_ex_mds(&torn, None, &[], &be).unwrap();
         assert_eq!(healed, msg);
     }
@@ -1148,7 +1285,10 @@ mod tests {
         };
         let mut payload: Vec<u8> = (0..900_000u32).map(|i| ((i * 13) % 251) as u8).collect();
         let src = dir.join("a.bin");
-        std::fs::File::create(&src).unwrap().write_all(&payload).unwrap();
+        std::fs::File::create(&src)
+            .unwrap()
+            .write_all(&payload)
+            .unwrap();
         let pack_a = dir.join("a.sgwk");
         let (_, stars_a, work_a) = crate::work::inscribe_path(
             &src,
@@ -1170,7 +1310,10 @@ mod tests {
         for i in 0..64 {
             payload[mid + i] ^= 0xa5;
         }
-        std::fs::File::create(&src).unwrap().write_all(&payload).unwrap();
+        std::fs::File::create(&src)
+            .unwrap()
+            .write_all(&payload)
+            .unwrap();
         let pack_b = dir.join("b.sgwk");
         crate::work::inscribe_path(
             &src,
@@ -1241,7 +1384,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unseal_ex_keys(&bytes, None, &[], &[alice]).unwrap(), msg);
-        assert_eq!(unseal_ex_keys(&bytes, Some("ward-pass"), &[], &[]).unwrap(), msg);
+        assert_eq!(
+            unseal_ex_keys(&bytes, Some("ward-pass"), &[], &[]).unwrap(),
+            msg
+        );
         assert!(unseal_ex_keys(&bytes, Some("wrong"), &[], &[]).is_err());
     }
 
@@ -1277,15 +1423,19 @@ mod tests {
         )
         .unwrap();
         let dest = dir.join("out");
-        let n = crate::folder::unseal_dir_only_keys(
-            &pack, &dest, None, &[], &[], &[], &[alice],
-        )
-        .unwrap();
+        let n = crate::folder::unseal_dir_only_keys(&pack, &dest, None, &[], &[], &[], &[alice])
+            .unwrap();
         assert_eq!(n, 2);
         assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"alpha-to");
         assert_eq!(std::fs::read(dest.join("sub/b.txt")).unwrap(), b"beta-to");
         assert!(crate::folder::unseal_dir_only_keys(
-            &pack, &dir.join("bad"), None, &[], &[], &[], &[bob],
+            &pack,
+            &dir.join("bad"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[bob],
         )
         .is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1359,10 +1509,14 @@ mod tests {
         let mark = dir.join("outer.sg1");
         std::fs::write(&mark, &outer).unwrap();
         let view = crate::path_walk_keys(&mark, &[], None, &[], 8, &[alice.clone()]).unwrap();
-        assert!(view.nest_payload, "outer encrypt-to mark should advertise nested payload");
+        assert!(
+            view.nest_payload,
+            "outer encrypt-to mark should advertise nested payload"
+        );
         // --into . unwraps outer → inner .sg1 bytes (still a seal); then identity-unseal leaf.
         let dest = dir.join("inner.sg1");
-        crate::path_extract_keys(&mark, &[".".into()], &dest, None, &[], 8, &[alice.clone()]).unwrap();
+        crate::path_extract_keys(&mark, &[".".into()], &dest, None, &[], 8, &[alice.clone()])
+            .unwrap();
         let leaf = unseal_ex_keys(&std::fs::read(&dest).unwrap(), None, &[], &[alice]).unwrap();
         assert_eq!(leaf, b"nested-clear");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1384,6 +1538,4 @@ mod tests {
         assert_eq!(pk.len(), 32);
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-
 }

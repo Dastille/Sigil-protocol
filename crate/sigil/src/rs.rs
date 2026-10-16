@@ -110,7 +110,11 @@ fn split_padded(payload: &[u8], k: usize) -> (usize, Vec<Vec<u8>>) {
 
 fn encode_shards_ex(payload: &[u8], k: usize, n: usize, systematic: bool) -> Vec<Vec<u8>> {
     let (shard_len, data) = split_padded(payload, k);
-    let rows: Vec<usize> = if systematic { (k..n).collect() } else { (0..n).collect() };
+    let rows: Vec<usize> = if systematic {
+        (k..n).collect()
+    } else {
+        (0..n).collect()
+    };
     let m = encode_matrix(k, &rows, systematic);
     let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
     let mut computed = vec![vec![0u8; shard_len]; rows.len()];
@@ -247,7 +251,6 @@ pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8
     Ok(out)
 }
 
-
 /// Soft-RS stripe width within a shard payload (v0).
 pub const SOFT_STRIPE: usize = 4096;
 
@@ -345,8 +348,7 @@ fn decode_graded_with_mask(
             })
             .collect();
         {
-            let mut outs: Vec<&mut [u8]> =
-                out_rows.iter_mut().map(|r| &mut r[..b - a]).collect();
+            let mut outs: Vec<&mut [u8]> = out_rows.iter_mut().map(|r| &mut r[..b - a]).collect();
             gf::matrix_apply(m, &ins, &mut outs);
         }
         for (i, row) in out_rows.iter().enumerate() {
@@ -433,9 +435,7 @@ where
         if use_parts.len() < k {
             continue;
         }
-        if let Ok(payload) =
-            decode_graded_with_mask(&use_parts, k, payload_len, systematic, &[])
-        {
+        if let Ok(payload) = decode_graded_with_mask(&use_parts, k, payload_len, systematic, &[]) {
             if accept(&payload) {
                 return Ok(payload);
             }
@@ -473,11 +473,8 @@ where
         for (a_i, &a) in soft_idx.iter().enumerate() {
             for &b in soft_idx.iter().skip(a_i + 1) {
                 for st in 0..n_stripes {
-                    let use_parts: Vec<SoftPart> = parts
-                        .iter()
-                        .filter(|p| p.index != a)
-                        .cloned()
-                        .collect();
+                    let use_parts: Vec<SoftPart> =
+                        parts.iter().filter(|p| p.index != a).cloned().collect();
                     if use_parts.len() < k {
                         continue;
                     }
@@ -524,7 +521,10 @@ mod tests {
         for i in 0..8 {
             o1[i] = None;
         }
-        assert_eq!(decode_shards(&o1, 8, payload.len(), false).unwrap(), payload);
+        assert_eq!(
+            decode_shards(&o1, 8, payload.len(), false).unwrap(),
+            payload
+        );
     }
 
     #[test]
@@ -629,8 +629,16 @@ mod tests {
         for _ in 0..300 {
             let (k, n, len) = random_shape(&mut r);
             let p = r.bytes(len);
-            assert_eq!(encode_shards(&p, k, n), rs_ref::encode_shards(&p, k, n), "v2 k={k} n={n} len={len}");
-            assert_eq!(encode_shards_v1(&p, k, n), rs_ref::encode_shards_v1(&p, k, n), "v1 k={k} n={n} len={len}");
+            assert_eq!(
+                encode_shards(&p, k, n),
+                rs_ref::encode_shards(&p, k, n),
+                "v2 k={k} n={n} len={len}"
+            );
+            assert_eq!(
+                encode_shards_v1(&p, k, n),
+                rs_ref::encode_shards_v1(&p, k, n),
+                "v1 k={k} n={n} len={len}"
+            );
             let idx = r.below(n);
             for sys in [true, false] {
                 assert_eq!(
@@ -644,10 +652,20 @@ mod tests {
     #[test]
     fn prop_encode_matches_oracle_large_k() {
         let mut r = Rng(77);
-        for &(k, n) in &[(127usize, 254usize), (189, 252), (200, 255), (12, 16), (15, 20)] {
+        for &(k, n) in &[
+            (127usize, 254usize),
+            (189, 252),
+            (200, 255),
+            (12, 16),
+            (15, 20),
+        ] {
             let extra = r.below(k);
             let p = r.bytes(k * 37 + extra);
-            assert_eq!(encode_shards(&p, k, n), rs_ref::encode_shards(&p, k, n), "k={k} n={n}");
+            assert_eq!(
+                encode_shards(&p, k, n),
+                rs_ref::encode_shards(&p, k, n),
+                "k={k} n={n}"
+            );
         }
     }
 
@@ -658,15 +676,21 @@ mod tests {
             let (k, n, len) = random_shape(&mut r);
             let p = r.bytes(len);
             for sys in [true, false] {
-                let shards = if sys { encode_shards(&p, k, n) } else { encode_shards_v1(&p, k, n) };
+                let shards = if sys {
+                    encode_shards(&p, k, n)
+                } else {
+                    encode_shards_v1(&p, k, n)
+                };
                 // random subset, random order, sometimes duplicates or extras
                 let mut idx: Vec<usize> = (0..n).collect();
                 for i in (1..idx.len()).rev() {
                     idx.swap(i, r.below(i + 1));
                 }
                 let keep = k + r.below(n - k + 1);
-                let mut parts: Vec<(usize, Vec<u8>)> =
-                    idx[..keep].iter().map(|&i| (i, shards[i].clone())).collect();
+                let mut parts: Vec<(usize, Vec<u8>)> = idx[..keep]
+                    .iter()
+                    .map(|&i| (i, shards[i].clone()))
+                    .collect();
                 if r.below(4) == 0 && !parts.is_empty() {
                     let d = parts[0].clone();
                     parts.insert(r.below(parts.len()), d);
@@ -688,8 +712,11 @@ mod tests {
             let (k, n, len) = random_shape(&mut r);
             let p = r.bytes(len);
             let shards = encode_shards(&p, k, n);
-            let mut parts: Vec<(usize, Vec<u8>)> =
-                (0..n).rev().take(k).map(|i| (i, shards[i].clone())).collect();
+            let mut parts: Vec<(usize, Vec<u8>)> = (0..n)
+                .rev()
+                .take(k)
+                .map(|i| (i, shards[i].clone()))
+                .collect();
             let j = r.below(parts.len());
             match r.below(3) {
                 0 if !parts[j].1.is_empty() => {
@@ -731,7 +758,11 @@ mod tests {
                     let b = r.below(body.len());
                     body[b] ^= 0x41;
                 }
-                parts.push(SoftPart { index: i, body, hard });
+                parts.push(SoftPart {
+                    index: i,
+                    body,
+                    hard,
+                });
             }
             let stripes = shard_len_of(&parts).div_ceil(SOFT_STRIPE).max(1);
             let mut mask = Vec::new();

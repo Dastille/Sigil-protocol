@@ -14,7 +14,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -25,7 +29,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -52,13 +60,7 @@ fn export_dir_one_file_per_live_segment() {
     fs::create_dir_all(&view).unwrap();
     let out = ok(
         &d,
-        &[
-            "mount",
-            "ev",
-            "mnt",
-            "--export-dir",
-            view.to_str().unwrap(),
-        ],
+        &["mount", "ev", "mnt", "--export-dir", view.to_str().unwrap()],
     );
     assert!(out.contains("3 live segment"), "{out}");
     assert_eq!(fs::read(view.join("0000000001")).unwrap(), b"batch 1\n");
@@ -68,7 +70,15 @@ fn export_dir_one_file_per_live_segment() {
     let c = d.join("ev.sigil");
     assert!(c.join("INDEX").is_file());
     // plain .sg1 mount still works (non-log) in the same binary path
-    ok(&d, &["unseal", c.join("segments/0000/0000000001.sg1").to_str().unwrap(), "-o", "one.txt"]);
+    ok(
+        &d,
+        &[
+            "unseal",
+            c.join("segments/0000/0000000001.sg1").to_str().unwrap(),
+            "-o",
+            "one.txt",
+        ],
+    );
     assert_eq!(fs::read(d.join("one.txt")).unwrap(), b"batch 1\n");
 }
 
@@ -79,7 +89,10 @@ fn export_dir_skips_tombstoned_keeps_compaction_members() {
     for i in 1..=4 {
         append(&d, "ev", &format!("batch {i}\n"));
     }
-    ok(&d, &["log", "tombstone", "ev", "--seq", "2", "--reason", "gone"]);
+    ok(
+        &d,
+        &["log", "tombstone", "ev", "--seq", "2", "--reason", "gone"],
+    );
     ok(&d, &["log", "compact", "ev", "--apply"]);
     let view = d.join("view");
     fs::create_dir_all(&view).unwrap();
@@ -117,13 +130,7 @@ fn export_dir_passphrase_and_missing_key_error() {
     fs::create_dir_all(&bad).unwrap();
     let e = fails(
         &d,
-        &[
-            "mount",
-            "ev",
-            "mnt",
-            "--export-dir",
-            bad.to_str().unwrap(),
-        ],
+        &["mount", "ev", "mnt", "--export-dir", bad.to_str().unwrap()],
     );
     assert!(
         e.to_lowercase().contains("pass")
@@ -157,28 +164,12 @@ fn export_dir_identity_encrypt_to() {
     ok(&d, &["keygen", "-o", "alice.sgk", "--pub-out", "alice.pub"]);
     ok(&d, &["log", "init", "ev"]);
     fs::write(d.join("b.txt"), b"for-alice\n").unwrap();
-    ok(
-        &d,
-        &[
-            "log",
-            "append",
-            "ev",
-            "b.txt",
-            "--to",
-            "alice.pub",
-        ],
-    );
+    ok(&d, &["log", "append", "ev", "b.txt", "--to", "alice.pub"]);
     let bad = d.join("bad");
     fs::create_dir_all(&bad).unwrap();
     fails(
         &d,
-        &[
-            "mount",
-            "ev",
-            "mnt",
-            "--export-dir",
-            bad.to_str().unwrap(),
-        ],
+        &["mount", "ev", "mnt", "--export-dir", bad.to_str().unwrap()],
     );
     let view = d.join("view");
     fs::create_dir_all(&view).unwrap();

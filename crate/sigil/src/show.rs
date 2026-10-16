@@ -1,7 +1,7 @@
 //! Showing: HTTP-range to Plex/Jellyfin. Work packs De-scribe only the slices asked for.
 
-use crate::{index_pack, payload_name, unseal_path, unseal_star_at, Result, WORK_MAGIC};
 use crate::work::StarLoc;
+use crate::{index_pack, payload_name, unseal_path, unseal_star_at, Result, WORK_MAGIC};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -112,10 +112,12 @@ fn handle(
     stage: &Arc<Mutex<Stage>>,
     last: &Arc<Mutex<Instant>>,
 ) -> Result<()> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .ok();
-    let mut reader = BufReader::new(stream.try_clone().map_err(|e| crate::Error::Msg(e.to_string()))?);
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    let mut reader = BufReader::new(
+        stream
+            .try_clone()
+            .map_err(|e| crate::Error::Msg(e.to_string()))?,
+    );
     let mut line = String::new();
     reader
         .read_line(&mut line)
@@ -175,9 +177,12 @@ fn handle(
     let len = meta.len();
     let (start, end) = match range {
         Some((s, e)) => {
-            let end = e.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
+            let end = e
+                .unwrap_or(len.saturating_sub(1))
+                .min(len.saturating_sub(1));
             if s >= len {
-                let _ = stream.write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n");
+                let _ = stream
+                    .write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n");
                 return Ok(());
             }
             (s, end)
@@ -206,7 +211,9 @@ fn handle(
     let mut buf = [0u8; 64 * 1024];
     while left > 0 {
         let n = left.min(buf.len() as u64) as usize;
-        let got = f.read(&mut buf[..n]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let got = f
+            .read(&mut buf[..n])
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
         if got == 0 {
             break;
         }
@@ -242,15 +249,22 @@ fn serve_work(
             let (head, locs) = index_pack(mark)?;
             st.work_len = Some(head.orig_total);
             st.locs = locs;
-            println!("work pack: {} slices, {} bytes — unlocking only what the player reads", st.locs.len(), head.orig_total);
+            println!(
+                "work pack: {} slices, {} bytes — unlocking only what the player reads",
+                st.locs.len(),
+                head.orig_total
+            );
         }
     }
     let len = stage.lock().unwrap().work_len.unwrap_or(0);
     let (start, end) = match range {
         Some((s, e)) => {
-            let end = e.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
+            let end = e
+                .unwrap_or(len.saturating_sub(1))
+                .min(len.saturating_sub(1));
             if s >= len {
-                let _ = stream.write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n");
+                let _ = stream
+                    .write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\n\r\n");
                 return Ok(());
             }
             (s, end)
@@ -295,7 +309,13 @@ fn serve_work(
                 st.stars.insert(loc.index, plain);
             }
         }
-        let plain = stage.lock().unwrap().stars.get(&loc.index).cloned().unwrap_or_default();
+        let plain = stage
+            .lock()
+            .unwrap()
+            .stars
+            .get(&loc.index)
+            .cloned()
+            .unwrap_or_default();
         let inner = (cur - loc.orig_off) as usize;
         let take = ((end - cur + 1) as usize).min(plain.len().saturating_sub(inner));
         stream
@@ -316,6 +336,10 @@ fn parse_range(s: &str) -> Option<(u64, Option<u64>)> {
     let a = parts.next()?.trim();
     let b = parts.next()?.trim();
     let start: u64 = a.parse().ok()?;
-    let end = if b.is_empty() { None } else { Some(b.parse().ok()?) };
+    let end = if b.is_empty() {
+        None
+    } else {
+        Some(b.parse().ok()?)
+    };
     Some((start, end))
 }

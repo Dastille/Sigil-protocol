@@ -17,7 +17,11 @@ fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
 }
 
 fn text(o: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    )
 }
 
 fn ok(dir: &Path, args: &[&str]) -> String {
@@ -28,7 +32,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -89,18 +97,36 @@ fn container_vault_round_trip() {
     assert!(c.join("versions/v1.sg1").is_file());
     assert!(!dir.join("notes.txt.sgv").exists());
     let m = fs::read_to_string(c.join("CONTAINER")).unwrap();
-    assert!(m.starts_with("sigil-container=1\n") && m.contains("kind=vault") && m.contains("name=notes.txt"), "{m}");
+    assert!(
+        m.starts_with("sigil-container=1\n")
+            && m.contains("kind=vault")
+            && m.contains("name=notes.txt"),
+        "{m}"
+    );
 
     fs::write(dir.join("notes.txt"), b"two").unwrap();
     ok(&dir, &["vault", "commit", "notes.txt", "--mode", "glyph"]);
     assert!(c.join("versions/v2.sg1").is_file());
     let s = ok(&dir, &["vault", "status", "notes.txt.sigil"]);
     assert!(s.contains("v2") || s.contains("tip"), "{s}");
-    ok(&dir, &["vault", "restore", "notes.txt", "--version", "1", "--force"]);
+    ok(
+        &dir,
+        &["vault", "restore", "notes.txt", "--version", "1", "--force"],
+    );
     assert_eq!(fs::read(dir.join("notes.txt")).unwrap(), b"one");
     // Only the container sits next to the live file.
-    let names: BTreeSet<_> = fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    assert_eq!(names, ["notes.txt", "notes.txt.sigil"].iter().map(|s| s.to_string()).collect());
+    let names: BTreeSet<_> = fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        ["notes.txt", "notes.txt.sigil"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    );
 
     // Folder vault too.
     fs::create_dir_all(dir.join("photos/sub")).unwrap();
@@ -110,7 +136,10 @@ fn container_vault_round_trip() {
     assert!(dir.join("photos.sigil/versions/v1.sg1").is_file());
     fs::write(dir.join("photos/a.jpg"), b"AAA").unwrap();
     ok(&dir, &["vault", "commit", "photos"]);
-    ok(&dir, &["vault", "restore", "photos", "--version", "1", "--force"]);
+    ok(
+        &dir,
+        &["vault", "restore", "photos", "--version", "1", "--force"],
+    );
     assert_eq!(fs::read(dir.join("photos/a.jpg")).unwrap(), b"aaa");
     let _ = fs::remove_dir_all(&dir);
 }
@@ -121,9 +150,15 @@ fn container_constellation_round_trip() {
     fs::create_dir_all(dir.join("docs/sub")).unwrap();
     fs::write(dir.join("docs/a.txt"), b"alpha").unwrap();
     fs::write(dir.join("docs/sub/b.txt"), b"beta").unwrap();
-    ok(&dir, &["constellation", "add", "Sky", "docs", "--mode", "glyph"]);
+    ok(
+        &dir,
+        &["constellation", "add", "Sky", "docs", "--mode", "glyph"],
+    );
     let c = dir.join("Sky.sigil");
-    assert!(c.join("CONTAINER").is_file() && c.join("Sky.sg1").is_file(), "card at root");
+    assert!(
+        c.join("CONTAINER").is_file() && c.join("Sky.sg1").is_file(),
+        "card at root"
+    );
     assert!(container::star_path(&c, &sigil::sha256(b"alpha")).is_file());
     assert!(container::star_path(&c, &sigil::sha256(b"beta")).is_file());
     assert!(!dir.join("Sky").exists());
@@ -151,9 +186,15 @@ fn old_layouts_still_open_and_stay_old() {
     make_legacy_vault(&dir.join("n.txt"));
     fs::write(dir.join("n.txt"), b"two").unwrap();
     ok(&dir, &["vault", "commit", "n.txt"]);
-    assert!(dir.join("n.txt.sgv/v2.sg1").is_file(), "commit on an old vault stays in .sgv");
+    assert!(
+        dir.join("n.txt.sgv/v2.sg1").is_file(),
+        "commit on an old vault stays in .sgv"
+    );
     assert!(!dir.join("n.txt.sigil").exists());
-    ok(&dir, &["vault", "restore", "n.txt.sgv", "--version", "1", "--force"]);
+    ok(
+        &dir,
+        &["vault", "restore", "n.txt.sgv", "--version", "1", "--force"],
+    );
     assert_eq!(fs::read(dir.join("n.txt")).unwrap(), b"one");
 
     // Existing non-empty folder: constellation stays flat.
@@ -188,7 +229,10 @@ fn tidy_old_vault_clear_pass_and_encrypt_to() {
         assert_eq!(before.len(), 2);
 
         let out = ok(&dir, &["tidy", name, "--dry-run"]);
-        assert!(out.contains("would move") && out.contains("versions/v2.sg1"), "{out}");
+        assert!(
+            out.contains("would move") && out.contains("versions/v2.sg1"),
+            "{out}"
+        );
         assert!(old.join("CHART").is_file() && !dir.join(format!("{name}.sigil")).exists());
 
         let out = ok(&dir, &["tidy", name]);
@@ -242,7 +286,11 @@ fn tidy_old_constellations() {
     let cases: [(&str, Vec<&str>, Vec<&str>); 3] = [
         ("Clear", vec![], vec![]),
         ("Pass", vec!["--pass", "pw"], vec!["--pass", "pw"]),
-        ("To", vec!["--to", "alice.sgk.pub"], vec!["--identity", "alice.sgk"]),
+        (
+            "To",
+            vec!["--to", "alice.sgk.pub"],
+            vec!["--identity", "alice.sgk"],
+        ),
     ];
     for (name, add, open) in cases {
         let sky = flat_sky(&dir, name, &add);
@@ -253,14 +301,20 @@ fn tidy_old_constellations() {
         });
         let before = sg1_hashes(&sky);
         let out = ok(&dir, &["tidy", name, "--dry-run"]);
-        assert!(out.contains("would move") && out.contains("stars/"), "{out}");
+        assert!(
+            out.contains("would move") && out.contains("stars/"),
+            "{out}"
+        );
         assert_eq!(sg1_hashes(&sky), before);
 
         let mut a = vec!["tidy", name];
         a.extend(open.iter());
         let out = ok(&dir, &a);
         assert!(out.contains("list checked"), "{out}");
-        assert!(out.contains("left alone") && out.contains("keep.txt"), "{out}");
+        assert!(
+            out.contains("left alone") && out.contains("keep.txt"),
+            "{out}"
+        );
         let c = dir.join(format!("{name}.sigil"));
         assert_eq!(sg1_hashes(&c), before, "card + stars byte-identical");
         assert!(c.join(format!("{name}.sg1")).is_file() && c.join(format!("{name}.sga")).is_file());
@@ -274,14 +328,29 @@ fn tidy_old_constellations() {
         a.push(&cpath);
         a.extend(open.iter());
         ok(&dir, &a);
-        assert_eq!(fs::read(dir.join(&out_dir).join("sub/b.txt")).unwrap(), b"beta");
+        assert_eq!(
+            fs::read(dir.join(&out_dir).join("sub/b.txt")).unwrap(),
+            b"beta"
+        );
     }
     // Locked card tidied without keys: byte-level verification only, still opens after.
     let sky = flat_sky(&dir, "NoKey", &["--to", "alice.sgk.pub"]);
     let out = ok(&dir, &["tidy", "NoKey"]);
-    assert!(out.contains("fingerprints verified") && !out.contains("list checked"), "{out}");
+    assert!(
+        out.contains("fingerprints verified") && !out.contains("list checked"),
+        "{out}"
+    );
     assert!(sky.join("keep.txt").is_file());
-    let s = ok(&dir, &["constellation", "scry", "NoKey.sigil", "--identity", "alice.sgk"]);
+    let s = ok(
+        &dir,
+        &[
+            "constellation",
+            "scry",
+            "NoKey.sigil",
+            "--identity",
+            "alice.sgk",
+        ],
+    );
     assert!(!s.contains("MISSING"), "{s}");
     let _ = fs::remove_dir_all(&dir);
 }
@@ -302,14 +371,26 @@ fn failed_tidy_leaves_original_intact() {
     let sky_before = fingerprints(&sky);
 
     for fault in [TidyFault::FailAfterCopies(1), TidyFault::CorruptFirstStar] {
-        for (target, snap, src) in [(dir.join("n.txt"), &before, &old), (sky.clone(), &sky_before, &sky)] {
-            let e = container::tidy(&target, &TidyOpts { fault: Some(fault), ..Default::default() });
+        for (target, snap, src) in [
+            (dir.join("n.txt"), &before, &old),
+            (sky.clone(), &sky_before, &sky),
+        ] {
+            let e = container::tidy(
+                &target,
+                &TidyOpts {
+                    fault: Some(fault),
+                    ..Default::default()
+                },
+            );
             let msg = e.err().expect("tidy must fail").to_string();
             if fault == TidyFault::CorruptFirstStar {
                 assert!(msg.contains("fingerprint mismatch"), "{msg}");
             }
             assert_eq!(&fingerprints(src), snap, "original untouched");
-            assert!(!container::with_suffix(&target).exists(), "no container after failure");
+            assert!(
+                !container::with_suffix(&target).exists(),
+                "no container after failure"
+            );
             let leftovers: Vec<_> = fs::read_dir(&dir)
                 .unwrap()
                 .flatten()
@@ -324,7 +405,10 @@ fn failed_tidy_leaves_original_intact() {
     ok(&dir, &["vault", "status", "n.txt"]);
     ok(&dir, &["tidy", "n.txt"]);
     assert!(!dir.join(".tidy-n.txt.sigil").exists());
-    ok(&dir, &["vault", "restore", "n.txt", "--version", "1", "--force"]);
+    ok(
+        &dir,
+        &["vault", "restore", "n.txt", "--version", "1", "--force"],
+    );
     assert_eq!(fs::read(dir.join("n.txt")).unwrap(), b"one");
 
     // Refuses when the target exists.
@@ -338,10 +422,13 @@ fn failed_tidy_leaves_original_intact() {
 
 #[test]
 fn manifest_tolerates_unknown_keys_and_refuses_newer() {
-    let m = container::Manifest::parse("sigil-container=1\nkind=vault\nname=x\nfuture=yes\n").unwrap();
+    let m =
+        container::Manifest::parse("sigil-container=1\nkind=vault\nname=x\nfuture=yes\n").unwrap();
     assert_eq!(m.extra.get("future").map(String::as_str), Some("yes"));
     assert!(m.render().contains("future=yes"));
-    let e = container::Manifest::parse("sigil-container=2\nkind=vault\n").unwrap_err().to_string();
+    let e = container::Manifest::parse("sigil-container=2\nkind=vault\n")
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("newer"), "{e}");
     assert!(container::Manifest::parse("kind=vault\n").is_err());
 }

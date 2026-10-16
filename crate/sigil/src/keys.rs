@@ -81,7 +81,11 @@ impl Identity {
     }
 
     /// Raw key pair (no master), e.g. from `sigil import-pgp`.
-    pub fn from_raw(x25519_sk: [u8; 32], ed25519_seed: [u8; 32], pgp_fpr: Option<[u8; 20]>) -> Self {
+    pub fn from_raw(
+        x25519_sk: [u8; 32],
+        ed25519_seed: [u8; 32],
+        pgp_fpr: Option<[u8; 20]>,
+    ) -> Self {
         Self {
             master: [0u8; 32],
             x25519_sk,
@@ -129,9 +133,8 @@ impl Identity {
 
     /// Load a plain `.sgk`, or a passkey-protected one (`SGKW`) by asking the authenticator.
     pub fn load(path: &Path) -> Result<Self> {
-        let b = zeroize::Zeroizing::new(
-            std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?,
-        );
+        let b =
+            zeroize::Zeroizing::new(std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?);
         if crate::passkey::is_wrapped(&b) {
             return crate::passkey::unlock_bytes(&b)
                 .map_err(|e| Error::Msg(format!("{}: {e}", path.display())));
@@ -141,9 +144,8 @@ impl Identity {
 
     /// Load with an explicit authenticator (tests, or callers that pick a device).
     pub fn load_with(path: &Path, auth: &mut dyn crate::passkey::Authenticator) -> Result<Self> {
-        let b = zeroize::Zeroizing::new(
-            std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?,
-        );
+        let b =
+            zeroize::Zeroizing::new(std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?);
         if crate::passkey::is_wrapped(&b) {
             return crate::passkey::Wrapped::parse(&b)?.unlock(auth);
         }
@@ -212,7 +214,11 @@ pub(crate) fn parse_identity(b: &[u8]) -> Result<Identity> {
         x.copy_from_slice(&b[ID_HEADER..ID_HEADER + 32]);
         e.copy_from_slice(&b[ID_HEADER + 32..ID_HEADER + 64]);
         fpr.copy_from_slice(&b[ID_HEADER + 64..ID_HEADER + 84]);
-        let pgp = if b[5] & ID_FLAG_PGP != 0 { Some(fpr) } else { None };
+        let pgp = if b[5] & ID_FLAG_PGP != 0 {
+            Some(fpr)
+        } else {
+            None
+        };
         return Ok(Identity::from_raw(x, e, pgp));
     }
     if b.len() >= ID_SIZE && b[0..4] == ID_MAGIC {
@@ -407,7 +413,9 @@ pub fn build_sgto(
     salt: &[u8; 16],
 ) -> Result<Vec<u8>> {
     if recipients.is_empty() && pass.map(|p| p.is_empty()).unwrap_or(true) {
-        return Err(Error::Msg("SGTO needs at least one --to or passphrase wrap".into()));
+        return Err(Error::Msg(
+            "SGTO needs at least one --to or passphrase wrap".into(),
+        ));
     }
     let mut body = Vec::new();
     let mut count = 0u8;
@@ -523,8 +531,7 @@ pub fn unwrap_cek(
                     let sk = StaticSecret::from(id.x25519_sk);
                     let eph = XPublic::from(eph_pk);
                     let shared = sk.diffie_hellman(&eph);
-                    let wrap_key =
-                        wrap_key_from_shared(shared.as_bytes(), &eph_pk, &pk.x25519_pk)?;
+                    let wrap_key = wrap_key_from_shared(shared.as_bytes(), &eph_pk, &pk.x25519_pk)?;
                     if let Ok(cek) = aes_unwrap(&wrap_key, &nonce, &tag, ct) {
                         if cek.len() == 32 {
                             let mut out = [0u8; 32];
@@ -542,8 +549,7 @@ pub fn unwrap_cek(
                     let sk = StaticSecret::from(id.x25519_sk);
                     let eph = XPublic::from(eph_pk);
                     let shared = sk.diffie_hellman(&eph);
-                    let wrap_key =
-                        wrap_key_from_shared(shared.as_bytes(), &eph_pk, &pk.x25519_pk)?;
+                    let wrap_key = wrap_key_from_shared(shared.as_bytes(), &eph_pk, &pk.x25519_pk)?;
                     if let Ok(cek) = aes_unwrap(&wrap_key, &nonce, &tag, ct) {
                         if cek.len() == 32 {
                             let mut out = [0u8; 32];

@@ -30,7 +30,12 @@ pub struct ShredReport {
 
 /// Crypto-shred segments of a `--segment-keys` log: record it in the INDEX, destroy the key,
 /// unlink the ciphertext.
-pub fn shred(path: &Path, target: TombTarget, reason: Option<&str>, identity: Option<&Identity>) -> Result<ShredReport> {
+pub fn shred(
+    path: &Path,
+    target: TombTarget,
+    reason: Option<&str>,
+    identity: Option<&Identity>,
+) -> Result<ShredReport> {
     let log = Log::open(path)?;
     if !log.segkeys {
         return Err(err(
@@ -51,10 +56,14 @@ pub fn shred(path: &Path, target: TombTarget, reason: Option<&str>, identity: Op
         TombTarget::Range(a, b) => (a, b),
     };
     if from == 0 || to < from {
-        return Err(err("segment numbers start at 1 and --from must not exceed --to"));
+        return Err(err(
+            "segment numbers start at 1 and --from must not exceed --to",
+        ));
     }
     if to > n {
-        return Err(err(format!("segment {to} does not exist (the log has {n} entries)")));
+        return Err(err(format!(
+            "segment {to} does not exist (the log has {n} entries)"
+        )));
     }
     let (mut targets, mut already) = (Vec::new(), Vec::new());
     for s in from..=to {
@@ -78,21 +87,34 @@ pub fn shred(path: &Path, target: TombTarget, reason: Option<&str>, identity: Op
     }
     if targets.is_empty() {
         return Err(err(match target {
-            TombTarget::Seq(s) => format!("segment {s} is already shredded (entry #{})", st.shredded_by(s).unwrap_or(0)),
-            TombTarget::Range(a, b) => format!("nothing to shred in {a}..{b}: no segment there still has its key"),
+            TombTarget::Seq(s) => format!(
+                "segment {s} is already shredded (entry #{})",
+                st.shredded_by(s).unwrap_or(0)
+            ),
+            TombTarget::Range(a, b) => {
+                format!("nothing to shred in {a}..{b}: no segment there still has its key")
+            }
         }));
     }
     // Segments merged by `compact` share one file and one key: they can only be shredded together.
     for &s in &targets {
         let h = st.holder_of(s);
-        if let Some(m) = st.live_members(h).into_iter().find(|m| !targets.contains(m)) {
+        if let Some(m) = st
+            .live_members(h)
+            .into_iter()
+            .find(|m| !targets.contains(m))
+        {
             return Err(err(format!(
                 "segment {s} sits in compaction segment {h} together with live segment {m}; they share one key. Shred them all together (--from/--to), or `log tombstone` + `log compact --apply` to rewrite the file without it"
             )));
         }
     }
     let seq = n + 1;
-    let mut body = format!("seq={seq} t={} op=tomb del={} shred=1", now(), fmt_ranges(&compress(&targets)));
+    let mut body = format!(
+        "seq={seq} t={} op=tomb del={} shred=1",
+        now(),
+        fmt_ranges(&compress(&targets))
+    );
     if let Some(r) = reason.filter(|r| !r.is_empty()) {
         body.push_str(&format!(" reason={}", enc_reason(r)));
     }
@@ -120,7 +142,11 @@ pub fn shred(path: &Path, target: TombTarget, reason: Option<&str>, identity: Op
         }
     }
     for shard in sorted(&log.dir.join(SEGMENTS_DIR)) {
-        if shard.is_dir() && fs::read_dir(&shard).map(|mut r| r.next().is_none()).unwrap_or(false) {
+        if shard.is_dir()
+            && fs::read_dir(&shard)
+                .map(|mut r| r.next().is_none())
+                .unwrap_or(false)
+        {
             let _ = fs::remove_dir(&shard);
         }
     }

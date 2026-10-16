@@ -48,11 +48,19 @@ type HandoverFields = (u64, [u8; 32], [u8; 32], [u8; 64]);
 /// The fields of a handover INDEX line (no chain check: it needs no neighbour).
 fn parse_handover(line: &str) -> Option<HandoverFields> {
     let body = &line[..line.rfind(" chain=")?];
-    let kv: std::collections::BTreeMap<&str, &str> = body.split_whitespace().filter_map(|t| t.split_once('=')).collect();
+    let kv: std::collections::BTreeMap<&str, &str> = body
+        .split_whitespace()
+        .filter_map(|t| t.split_once('='))
+        .collect();
     if kv.get("op") != Some(&"signer") {
         return None;
     }
-    Some((kv.get("seq")?.parse().ok()?, parse_hex32(kv.get("from")?)?, parse_hex32(kv.get("to")?)?, parse_hex64(kv.get("sig")?)?))
+    Some((
+        kv.get("seq")?.parse().ok()?,
+        parse_hex32(kv.get("from")?)?,
+        parse_hex32(kv.get("to")?)?,
+        parse_hex64(kv.get("sig")?)?,
+    ))
 }
 
 impl Proof {
@@ -61,8 +69,16 @@ impl Proof {
         if !self.name.is_empty() && !self.name.contains('\n') {
             s.push_str(&format!("name={}\n", self.name));
         }
-        s.push_str(&format!("entry={}\nprev={}\nsize={}\n", self.line, hex32(&self.prev), self.size));
-        s.push_str(&format!("path={}\n", self.path.iter().map(hex32).collect::<Vec<_>>().join(",")));
+        s.push_str(&format!(
+            "entry={}\nprev={}\nsize={}\n",
+            self.line,
+            hex32(&self.prev),
+            self.size
+        ));
+        s.push_str(&format!(
+            "path={}\n",
+            self.path.iter().map(hex32).collect::<Vec<_>>().join(",")
+        ));
         s.push_str(&format!("root={}\n", hex32(&self.root)));
         if let Some(h) = &self.head {
             s.push_str(&format!(
@@ -82,7 +98,9 @@ impl Proof {
     pub fn parse(text: &str) -> Result<Proof> {
         let mut lines = text.lines();
         if lines.next().map(str::trim) != Some(PROOF_MAGIC) {
-            return Err(err(format!("not a sigil log proof (first line must be {PROOF_MAGIC})")));
+            return Err(err(format!(
+                "not a sigil log proof (first line must be {PROOF_MAGIC})"
+            )));
         }
         let mut kv: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for l in lines {
@@ -90,13 +108,21 @@ impl Proof {
             if l.trim().is_empty() || l.starts_with('#') {
                 continue;
             }
-            let Some((k, v)) = l.split_once('=') else { return Err(err(format!("proof: bad line {l:?}"))) };
+            let Some((k, v)) = l.split_once('=') else {
+                return Err(err(format!("proof: bad line {l:?}")));
+            };
             if kv.insert(k.trim(), v).is_some() {
                 return Err(err(format!("proof: duplicate {k}=")));
             }
         }
-        let need = |k: &str| kv.get(k).copied().ok_or_else(|| err(format!("proof: missing {k}=")));
-        let h32 = |k: &str| -> Result<[u8; 32]> { parse_hex32(need(k)?.trim()).ok_or_else(|| err(format!("proof: bad {k}="))) };
+        let need = |k: &str| {
+            kv.get(k)
+                .copied()
+                .ok_or_else(|| err(format!("proof: missing {k}=")))
+        };
+        let h32 = |k: &str| -> Result<[u8; 32]> {
+            parse_hex32(need(k)?.trim()).ok_or_else(|| err(format!("proof: bad {k}=")))
+        };
         let path_s = need("path")?.trim();
         let path = if path_s.is_empty() {
             Vec::new()
@@ -110,7 +136,10 @@ impl Proof {
             (None, None) => None,
             (Some(_), Some(sig)) => Some(ProofHead {
                 chain: h32("head-chain")?,
-                time: need("head-t")?.trim().parse().map_err(|_| err("proof: bad head-t="))?,
+                time: need("head-t")?
+                    .trim()
+                    .parse()
+                    .map_err(|_| err("proof: bad head-t="))?,
                 signer: h32("signer")?,
                 sig: hex::decode(sig.trim())
                     .ok()
@@ -124,14 +153,22 @@ impl Proof {
             handovers.push(l.to_string());
         }
         if kv.keys().filter(|k| k.starts_with("handover-")).count() != handovers.len() {
-            return Err(err("proof: handover-N= lines must be numbered 1, 2, … without gaps"));
+            return Err(err(
+                "proof: handover-N= lines must be numbered 1, 2, … without gaps",
+            ));
         }
         Ok(Proof {
             log_id: need("log")?.trim().to_string(),
-            name: kv.get("name").map(|s| s.trim().to_string()).unwrap_or_default(),
+            name: kv
+                .get("name")
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default(),
             line: need("entry")?.to_string(),
             prev: h32("prev")?,
-            size: need("size")?.trim().parse().map_err(|_| err("proof: bad size="))?,
+            size: need("size")?
+                .trim()
+                .parse()
+                .map_err(|_| err("proof: bad size="))?,
             path,
             root: h32("root")?,
             head,
@@ -147,7 +184,9 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
     let log = Log::open(path)?;
     let idx = read_index(&log)?;
     if let Some((line, code, msg)) = &idx.error {
-        return Err(err(format!("INDEX line {line} is damaged ({code}: {msg}); run `sigil log verify` first")));
+        return Err(err(format!(
+            "INDEX line {line} is damaged ({code}: {msg}); run `sigil log verify` first"
+        )));
     }
     let n = idx.entries.len() as u64;
     let trusted = trusted_len(&log, &idx) as u64;
@@ -174,25 +213,42 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
         }
     };
     if seq == 0 || seq > size {
-        return Err(err(format!("seq {seq} is not among the {size} entries being proved (1..={size})")));
+        return Err(err(format!(
+            "seq {seq} is not among the {size} entries being proved (1..={size})"
+        )));
     }
     let entries = &idx.entries[..size as usize];
     let leaves: Vec<[u8; 32]> = entries.iter().map(|e| e.chain).collect();
     let i = (seq - 1) as usize;
     let e = &entries[i];
-    let signed = head.as_ref().filter(|h| h.seq == size && h.signer.is_some() && h.sig.is_some());
+    let signed = head
+        .as_ref()
+        .filter(|h| h.seq == size && h.signer.is_some() && h.sig.is_some());
     Ok(Proof {
         log_id: log.id.clone(),
         name: log.name.clone(),
         line: format!("{} chain={}", e.body, hex32(&e.chain)),
-        prev: if i == 0 { log.genesis() } else { entries[i - 1].chain },
+        prev: if i == 0 {
+            log.genesis()
+        } else {
+            entries[i - 1].chain
+        },
         size,
         path: crate::merkle::merkle_path(&leaves, i).expect("index in range"),
         root: root_of(entries),
-        head: signed.map(|h| ProofHead { chain: h.chain, time: h.time, signer: h.signer.unwrap(), sig: h.sig.unwrap() }),
+        head: signed.map(|h| ProofHead {
+            chain: h.chain,
+            time: h.time,
+            signer: h.signer.unwrap(),
+            sig: h.sig.unwrap(),
+        }),
         // the handovers that bring the HEAD's signer back to the earlier ones (see `signer_chain`)
         handovers: if signed.is_some() {
-            entries.iter().filter(|e| e.is_handover() && e.seq < size).map(|e| format!("{} chain={}", e.body, hex32(&e.chain))).collect()
+            entries
+                .iter()
+                .filter(|e| e.is_handover() && e.seq < size)
+                .map(|e| format!("{} chain={}", e.body, hex32(&e.chain)))
+                .collect()
         } else {
             Vec::new()
         },
@@ -229,16 +285,33 @@ impl ProofCheck {
         let e = &self.entry;
         let what = match &e.op {
             Op::Seg => format!("segment, {} byte(s), sha {}", e.size, hex32(&e.sha)),
-            Op::Compact { of } => format!("compaction of {}, {} byte(s), sha {}", fmt_ranges(of), e.size, hex32(&e.sha)),
-            Op::Tomb { del, shred, .. } => format!("{} of {}", if *shred { "crypto-shred" } else { "tombstone" }, fmt_ranges(del)),
-            Op::Signer { from, to, .. } => format!("signer handover {}… → {}…", &hex32(from)[..16], &hex32(to)[..16]),
+            Op::Compact { of } => format!(
+                "compaction of {}, {} byte(s), sha {}",
+                fmt_ranges(of),
+                e.size,
+                hex32(&e.sha)
+            ),
+            Op::Tomb { del, shred, .. } => format!(
+                "{} of {}",
+                if *shred { "crypto-shred" } else { "tombstone" },
+                fmt_ranges(del)
+            ),
+            Op::Signer { from, to, .. } => format!(
+                "signer handover {}… → {}…",
+                &hex32(from)[..16],
+                &hex32(to)[..16]
+            ),
         };
         let mut s = format!(
             "proof ok: entry {} ({what}, appended {}) is in log {}{}\n  at anchor {}:{}\n",
             e.seq,
             iso_utc(e.time),
             self.log_id,
-            if self.name.is_empty() { String::new() } else { format!(" ({})", self.name) },
+            if self.name.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", self.name)
+            },
             self.size,
             hex32(&self.root)
         );
@@ -273,32 +346,66 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         .and_then(|v| v.parse::<u64>().ok())
         .ok_or_else(|| bad("entry= has no seq".into()))?;
     if seq == 0 || seq > p.size {
-        return Err(bad(format!("entry seq {seq} is outside the {} entries the root covers", p.size)));
+        return Err(bad(format!(
+            "entry seq {seq} is outside the {} entries the root covers",
+            p.size
+        )));
     }
-    let probe = Log { dir: PathBuf::new(), name: String::new(), id: p.log_id.clone(), signer: None, format: LOG_FORMAT, segkeys: false };
+    let probe = Log {
+        dir: PathBuf::new(),
+        name: String::new(),
+        id: p.log_id.clone(),
+        signer: None,
+        format: LOG_FORMAT,
+        segkeys: false,
+    };
     if seq == 1 && p.prev != probe.genesis() {
-        return Err(bad("entry 1 must follow the log's genesis hash (prev= is not it)".into()));
+        return Err(bad(
+            "entry 1 must follow the log's genesis hash (prev= is not it)".into(),
+        ));
     }
-    let entry = parse_line(&p.line, seq, &p.prev).map_err(|(code, m)| bad(format!("{code}: {m}")))?;
+    let entry =
+        parse_line(&p.line, seq, &p.prev).map_err(|(code, m)| bad(format!("{code}: {m}")))?;
     if let Op::Signer { from, to, sig } = &entry.op {
         if !handover_sig_ok(&p.log_id, seq, from, to, sig) {
-            return Err(bad("the entry is a signer handover whose signature does not verify (forged)".into()));
+            return Err(bad(
+                "the entry is a signer handover whose signature does not verify (forged)".into(),
+            ));
         }
     }
-    let root = crate::merkle::root_from_path(&entry.chain, (seq - 1) as usize, p.size as usize, &p.path)
-        .ok_or_else(|| bad(format!("path= has the wrong number of hashes for entry {seq} of {}", p.size)))?;
+    let root =
+        crate::merkle::root_from_path(&entry.chain, (seq - 1) as usize, p.size as usize, &p.path)
+            .ok_or_else(|| {
+            bad(format!(
+                "path= has the wrong number of hashes for entry {seq} of {}",
+                p.size
+            ))
+        })?;
     if root != p.root {
-        return Err(bad("the Merkle path does not lead to root= (entry, path or root altered)".into()));
+        return Err(bad(
+            "the Merkle path does not lead to root= (entry, path or root altered)".into(),
+        ));
     }
     let signed_by = match &p.head {
         None => None,
         Some(h) => {
             if seq == p.size && h.chain != entry.chain {
-                return Err(bad("head-chain= is not the chain of the last covered entry".into()));
+                return Err(bad(
+                    "head-chain= is not the chain of the last covered entry".into(),
+                ));
             }
-            let head = Head { seq: p.size, chain: h.chain, root: p.root, time: h.time, signer: Some(h.signer), sig: Some(h.sig) };
+            let head = Head {
+                seq: p.size,
+                chain: h.chain,
+                root: p.root,
+                time: h.time,
+                signer: Some(h.signer),
+                sig: Some(h.sig),
+            };
             if head.signature_ok(&p.log_id) != Some(true) {
-                return Err(bad("the HEAD signature does not verify (wrong log, root or key)".into()));
+                return Err(bad(
+                    "the HEAD signature does not verify (wrong log, root or key)".into(),
+                ));
             }
             Some(h.signer)
         }
@@ -308,12 +415,20 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
     if let Some(pk) = signed_by {
         let mut last_seq = 0u64;
         for (i, l) in p.handovers.iter().enumerate() {
-            let (hseq, from, to, sig) = parse_handover(l).ok_or_else(|| bad(format!("handover-{} is not a signer handover line", i + 1)))?;
+            let (hseq, from, to, sig) = parse_handover(l)
+                .ok_or_else(|| bad(format!("handover-{} is not a signer handover line", i + 1)))?;
             if hseq <= last_seq || hseq >= p.size {
-                return Err(bad(format!("handover-{} (seq {hseq}) is out of order or not before entry {}", i + 1, p.size)));
+                return Err(bad(format!(
+                    "handover-{} (seq {hseq}) is out of order or not before entry {}",
+                    i + 1,
+                    p.size
+                )));
             }
             if signer_chain.last().is_some_and(|c| *c != from) {
-                return Err(bad(format!("handover-{} is not from the key the previous one handed over to", i + 1)));
+                return Err(bad(format!(
+                    "handover-{} is not from the key the previous one handed over to",
+                    i + 1
+                )));
             }
             if !handover_sig_ok(&p.log_id, hseq, &from, &to, &sig) {
                 return Err(bad(format!("handover-{} signature does not verify (forged, or from another log / position)", i + 1)));
@@ -326,7 +441,11 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         }
         match signer_chain.last() {
             None => signer_chain.push(pk),
-            Some(last) if *last != pk => return Err(bad("the handovers do not end at the key that signed HEAD".into())),
+            Some(last) if *last != pk => {
+                return Err(bad(
+                    "the handovers do not end at the key that signed HEAD".into()
+                ))
+            }
             Some(_) => {}
         }
     } else if !p.handovers.is_empty() {
@@ -335,8 +454,18 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
     if let Some(want) = opts.signer {
         match signed_by {
             Some(_) if signer_chain.contains(&want) => {}
-            Some(pk) => return Err(bad(format!("signed by {}, not by the required key {} (nor handed over from it)", hex32(&pk), hex32(&want)))),
-            None => return Err(bad("the proof is unsigned but --signer requires a signature".into())),
+            Some(pk) => {
+                return Err(bad(format!(
+                    "signed by {}, not by the required key {} (nor handed over from it)",
+                    hex32(&pk),
+                    hex32(&want)
+                )))
+            }
+            None => {
+                return Err(bad(
+                    "the proof is unsigned but --signer requires a signature".into(),
+                ))
+            }
         }
     }
     if let Some((aseq, aroot)) = opts.anchor {
@@ -347,17 +476,23 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
             )));
         }
         if aroot != p.root {
-            return Err(bad(format!("root at {aseq} differs from the pinned anchor (history rewritten, or another log)")));
+            return Err(bad(format!(
+                "root at {aseq} differs from the pinned anchor (history rewritten, or another log)"
+            )));
         }
     }
     let file_matched = match opts.file {
         None => false,
         Some((sha, len)) => {
             if matches!(entry.op, Op::Tomb { .. }) {
-                return Err(bad("--file given, but this entry is a tombstone (it holds no bytes)".into()));
+                return Err(bad(
+                    "--file given, but this entry is a tombstone (it holds no bytes)".into(),
+                ));
             }
             if matches!(entry.op, Op::Signer { .. }) {
-                return Err(bad("--file given, but this entry is a signer handover (it holds no bytes)".into()));
+                return Err(bad(
+                    "--file given, but this entry is a signer handover (it holds no bytes)".into(),
+                ));
             }
             if sha != entry.sha || len != entry.size {
                 return Err(bad(format!(
@@ -369,5 +504,14 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
             true
         }
     };
-    Ok(ProofCheck { log_id: p.log_id.clone(), name: p.name.clone(), entry, size: p.size, root, signed_by, signer_chain, file_matched })
+    Ok(ProofCheck {
+        log_id: p.log_id.clone(),
+        name: p.name.clone(),
+        entry,
+        size: p.size,
+        root,
+        signed_by,
+        signer_chain,
+        file_matched,
+    })
 }

@@ -216,7 +216,10 @@ mod simd_x86 {
             let l = _mm256_and_si256(s, mask);
             let h = _mm256_and_si256(_mm256_srli_epi64(s, 4), mask);
             let p = _mm256_xor_si256(_mm256_shuffle_epi8(tlo, l), _mm256_shuffle_epi8(thi, h));
-            _mm256_storeu_si256(dst.as_mut_ptr().add(i) as *mut __m256i, _mm256_xor_si256(d, p));
+            _mm256_storeu_si256(
+                dst.as_mut_ptr().add(i) as *mut __m256i,
+                _mm256_xor_si256(d, p),
+            );
             i += 32;
         }
         super::mul_acc_scalar(c, &src[i..], &mut dst[i..]);
@@ -373,7 +376,9 @@ mod bulk_tests {
 
     #[test]
     fn simd_kernel_matches_scalar_all_coeffs_and_lengths() {
-        let src: Vec<u8> = (0..1000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let src: Vec<u8> = (0..1000u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect();
         for c in 0..=255u8 {
             for &len in &[0usize, 1, 15, 16, 17, 31, 32, 33, 63, 64, 100, 1000] {
                 let base: Vec<u8> = (0..len).map(|i| (i * 31 + c as usize) as u8).collect();

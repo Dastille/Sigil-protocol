@@ -21,7 +21,9 @@ fn load_seed(path: &Path) -> Result<[u8; 32]> {
         return Ok(id.ed25519_seed);
     }
     if b.len() < 32 {
-        return Err(crate::Error::Msg("key file too short (need 32 bytes)".into()));
+        return Err(crate::Error::Msg(
+            "key file too short (need 32 bytes)".into(),
+        ));
     }
     let mut s = [0u8; 32];
     s.copy_from_slice(&b[..32]);
