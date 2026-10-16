@@ -117,14 +117,14 @@ pub fn secret_is_protected(input: &[u8]) -> bool {
     };
     pkts.iter().any(|p| {
         (p.tag == TAG_SECRET_KEY || p.tag == TAG_SECRET_SUBKEY)
-            && parse_key(p.tag, p.body, None).map_or(false, |k| k.protected)
+            && parse_key(p.tag, p.body, None).is_ok_and(|k| k.protected)
     })
 }
 
 // ---------------------------------------------------------------- armor
 
 fn dearmor(input: &[u8]) -> Result<Vec<u8>> {
-    if input.first().map_or(false, |c| c & 0x80 != 0) {
+    if input.first().is_some_and(|c| c & 0x80 != 0) {
         return Ok(input.to_vec());
     }
     let text = std::str::from_utf8(input).map_err(|_| err("not armored text or binary OpenPGP"))?;
@@ -1140,6 +1140,9 @@ fn expired(key_created: u32, kexp: Option<u32>, now: u64) -> bool {
 
 // ---------------------------------------------------------------- selection
 
+/// Subkey candidate: (key, bound by primary, revoked, key-flags, expiry seconds).
+type SubkeyEntry = (Key, bool, bool, Option<u8>, Option<u32>);
+
 fn select(pkts: &[Packet<'_>], now: u64, passphrase: Option<&[u8]>) -> Result<PgpImport> {
     let first = pkts.first().ok_or_else(|| err("empty key file"))?;
     if first.tag != TAG_PUBLIC_KEY && first.tag != TAG_SECRET_KEY {
@@ -1173,7 +1176,7 @@ fn select(pkts: &[Packet<'_>], now: u64, passphrase: Option<&[u8]>) -> Result<Pg
         Skip,
     }
     let mut ctx = Ctx::Primary;
-    let mut subs: Vec<(Key, bool, bool, Option<u8>, Option<u32>)> = Vec::new(); // key, bound, revoked, flags, exp
+    let mut subs: Vec<SubkeyEntry> = Vec::new();
     for pkt in &pkts[1..] {
         match pkt.tag {
             TAG_USER_ID => {
@@ -1261,14 +1264,14 @@ fn select(pkts: &[Packet<'_>], now: u64, passphrase: Option<&[u8]>) -> Result<Pg
     if expired(primary.created, primary_exp, now) {
         return Err(err("primary key has expired"));
     }
-    let mut candidates: Vec<&(Key, bool, bool, Option<u8>, Option<u32>)> = subs
+    let mut candidates: Vec<&SubkeyEntry> = subs
         .iter()
         .filter(|(k, bound, revoked, flags, kexp)| {
             k.kind == Kind::X25519
                 && k.version == primary.version
                 && *bound
                 && !*revoked
-                && flags.map_or(true, |f| f & KEYFLAG_ENCRYPT != 0)
+                && flags.is_none_or(|f| f & KEYFLAG_ENCRYPT != 0)
                 && !expired(k.created, *kexp, now)
         })
         .collect();
@@ -1375,7 +1378,8 @@ mod tests {
         let mut cek = [0u8; 32];
         getrandom::getrandom(&mut cek).unwrap();
         let salt = [3u8; 16];
-        let sgto = crate::keys::build_sgto(&cek, &[p.public.clone()], None, &salt).unwrap();
+        let sgto =
+            crate::keys::build_sgto(&cek, std::slice::from_ref(&p.public), None, &salt).unwrap();
         let got = crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap();
         assert_eq!(got, cek);
     }
@@ -1455,7 +1459,8 @@ mod tests {
         assert_eq!(id.public().ed25519_pk, p.public.ed25519_pk);
         let cek = [9u8; 32];
         let salt = [4u8; 16];
-        let sgto = crate::keys::build_sgto(&cek, &[p.public.clone()], None, &salt).unwrap();
+        let sgto =
+            crate::keys::build_sgto(&cek, std::slice::from_ref(&p.public), None, &salt).unwrap();
         assert_eq!(
             crate::keys::unwrap_cek(&sgto, &[id], None, &salt).unwrap(),
             cek

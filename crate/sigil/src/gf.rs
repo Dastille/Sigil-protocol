@@ -62,13 +62,13 @@ pub fn eval_poly(coeff: &[u8], x: u8) -> u8 {
 pub fn solve_vandermonde(xs: &[u8], ys: &[u8]) -> Vec<u8> {
     let k = xs.len();
     let mut a = vec![vec![0u8; k + 1]; k];
-    for i in 0..k {
+    for (i, row) in a.iter_mut().enumerate() {
         let mut p = 1u8;
-        for j in 0..k {
-            a[i][j] = p;
+        for cell in row.iter_mut().take(k) {
+            *cell = p;
             p = mul(p, xs[i]);
         }
-        a[i][k] = ys[i];
+        row[k] = ys[i];
     }
     for col in 0..k {
         let mut pivot = col;
@@ -80,8 +80,8 @@ pub fn solve_vandermonde(xs: &[u8], ys: &[u8]) -> Vec<u8> {
         }
         a.swap(col, pivot);
         let invp = inv(a[col][col]);
-        for j in col..=k {
-            a[col][j] = mul(a[col][j], invp);
+        for cell in a[col][col..=k].iter_mut() {
+            *cell = mul(*cell, invp);
         }
         for row in 0..k {
             if row == col {
@@ -91,8 +91,15 @@ pub fn solve_vandermonde(xs: &[u8], ys: &[u8]) -> Vec<u8> {
             if f == 0 {
                 continue;
             }
-            for j in col..=k {
-                a[row][j] ^= mul(f, a[col][j]);
+            let (pivot_row, target) = if row < col {
+                let (lo, hi) = a.split_at_mut(col);
+                (&hi[0], &mut lo[row])
+            } else {
+                let (lo, hi) = a.split_at_mut(row);
+                (&lo[col], &mut hi[0])
+            };
+            for (t, &p) in target[col..=k].iter_mut().zip(&pivot_row[col..=k]) {
+                *t ^= mul(f, p);
             }
         }
     }
@@ -155,12 +162,15 @@ pub fn mul_acc(c: u8, src: &[u8], dst: &mut [u8]) {
     #[cfg(target_arch = "x86_64")]
     {
         if n >= 32 && std::arch::is_x86_feature_detected!("avx2") {
-            // SAFETY: AVX2 availability checked at runtime just above.
+            // SAFETY: AVX2 availability checked at runtime just above, so the
+            // `#[target_feature(enable = "avx2")]` kernel cannot hit an illegal instruction;
+            // `src` and `dst` were truncated to the same length `n` at the top of this function, which is the length contract the kernel's raw loads/stores rely on.
             unsafe { simd_x86::mul_acc_avx2(c, src, dst) };
             return;
         }
         if n >= 16 && std::arch::is_x86_feature_detected!("ssse3") {
-            // SAFETY: SSSE3 availability checked at runtime just above.
+            // SAFETY: SSSE3 availability checked at runtime just above;
+            // `src` and `dst` were truncated to the same length `n` at the top of this function, which is the length contract the kernel's raw loads/stores rely on.
             unsafe { simd_x86::mul_acc_ssse3(c, src, dst) };
             return;
         }
@@ -168,7 +178,8 @@ pub fn mul_acc(c: u8, src: &[u8], dst: &mut [u8]) {
     #[cfg(target_arch = "aarch64")]
     {
         if n >= 16 && std::arch::is_aarch64_feature_detected!("neon") {
-            // SAFETY: NEON availability checked at runtime just above.
+            // SAFETY: NEON availability checked at runtime just above;
+            // `src` and `dst` were truncated to the same length `n` at the top of this function, which is the length contract the kernel's raw loads/stores rely on.
             unsafe { simd_arm::mul_acc_neon(c, src, dst) };
             return;
         }
@@ -200,6 +211,10 @@ fn nibble_tables(c: u8) -> ([u8; 16], [u8; 16]) {
 mod simd_x86 {
     use std::arch::x86_64::*;
 
+    /// # Safety
+    /// The CPU must support `AVX2` (callers check with runtime feature detection), and
+    /// `dst.len() >= src.len()`: the loop reads/writes `dst` at every offset it reads `src`,
+    /// using unaligned raw loads/stores bounded by `i + 32 <= src.len()`.
     #[target_feature(enable = "avx2")]
     pub unsafe fn mul_acc_avx2(c: u8, src: &[u8], dst: &mut [u8]) {
         let (lo, hi) = super::nibble_tables(c);
@@ -225,6 +240,10 @@ mod simd_x86 {
         super::mul_acc_scalar(c, &src[i..], &mut dst[i..]);
     }
 
+    /// # Safety
+    /// The CPU must support `SSSE3` (callers check with runtime feature detection), and
+    /// `dst.len() >= src.len()`: the loop reads/writes `dst` at every offset it reads `src`,
+    /// using unaligned raw loads/stores bounded by `i + 16 <= src.len()`.
     #[target_feature(enable = "ssse3")]
     pub unsafe fn mul_acc_ssse3(c: u8, src: &[u8], dst: &mut [u8]) {
         let (lo, hi) = super::nibble_tables(c);
@@ -250,6 +269,10 @@ mod simd_x86 {
 mod simd_arm {
     use std::arch::aarch64::*;
 
+    /// # Safety
+    /// The CPU must support `NEON` (callers check with runtime feature detection), and
+    /// `dst.len() >= src.len()`: the loop reads/writes `dst` at every offset it reads `src`,
+    /// using unaligned raw loads/stores bounded by `i + 16 <= src.len()`.
     #[target_feature(enable = "neon")]
     pub unsafe fn mul_acc_neon(c: u8, src: &[u8], dst: &mut [u8]) {
         let (lo, hi) = super::nibble_tables(c);
@@ -405,11 +428,13 @@ mod bulk_tests {
             {
                 if std::arch::is_x86_feature_detected!("ssse3") {
                     let mut got = base.clone();
+                    // SAFETY: SSSE3 detected above; `src` and `got` are both 517 bytes.
                     unsafe { simd_x86::mul_acc_ssse3(c, &src, &mut got) };
                     assert_eq!(got, want, "ssse3 c={c}");
                 }
                 if std::arch::is_x86_feature_detected!("avx2") {
                     let mut got = base.clone();
+                    // SAFETY: AVX2 detected above; `src` and `got` are both 517 bytes.
                     unsafe { simd_x86::mul_acc_avx2(c, &src, &mut got) };
                     assert_eq!(got, want, "avx2 c={c}");
                 }
@@ -417,6 +442,7 @@ mod bulk_tests {
             #[cfg(target_arch = "aarch64")]
             {
                 let mut got = base.clone();
+                // SAFETY: NEON is mandatory on aarch64; `src` and `got` are both 517 bytes.
                 unsafe { simd_arm::mul_acc_neon(c, &src, &mut got) };
                 assert_eq!(got, want, "neon c={c}");
             }

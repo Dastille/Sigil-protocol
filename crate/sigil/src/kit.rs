@@ -50,7 +50,7 @@ fn budget_ok(h: &Header, drives: usize) -> Result<usize> {
         return Err(crate::Error::Msg("need at least 1 drive".into()));
     }
     // Round-robin: drive i gets ceil((n - i) / drives) shards.
-    let max_on_one = (n + drives - 1) / drives;
+    let max_on_one = n.div_ceil(drives);
     let erasures = n.saturating_sub(k);
     if max_on_one > erasures {
         return Err(crate::Error::Msg(format!(

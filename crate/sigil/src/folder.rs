@@ -12,7 +12,7 @@ fn io(e: std::io::Error) -> crate::Error {
     crate::Error::Msg(e.to_string())
 }
 
-fn walk(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     let rd = fs::read_dir(dir).map_err(io)?;
     let mut ents: Vec<_> = rd.collect::<std::io::Result<Vec<_>>>().map_err(io)?;
     ents.sort_by_key(|e| e.file_name());
@@ -24,7 +24,7 @@ fn walk(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
             continue;
         }
         if p.is_dir() {
-            walk(&p, root, out)?;
+            walk(&p, out)?;
         } else if p.is_file() {
             out.push(p);
         }
@@ -43,12 +43,17 @@ fn rel(root: &Path, file: &Path) -> String {
 /// (dotfiles skipped, `/` separators). Used by vault tree digests.
 pub(crate) fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut files = Vec::new();
-    walk(root, root, &mut files)?;
+    walk(root, &mut files)?;
     let mut out: Vec<(String, PathBuf)> = files.into_iter().map(|p| (rel(root, &p), p)).collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }
 
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn inscribe_dir(
     root: &Path,
     output: &Path,
@@ -63,6 +68,11 @@ pub fn inscribe_dir(
 }
 
 /// Like `inscribe_dir`, with encrypt-to recipients applied to every file star.
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn inscribe_dir_to(
     root: &Path,
     output: &Path,
@@ -75,7 +85,7 @@ pub fn inscribe_dir_to(
     recipients: &[PublicIdentity],
 ) -> Result<(u32, u64)> {
     let mut files = Vec::new();
-    walk(root, root, &mut files)?;
+    walk(root, &mut files)?;
     if files.is_empty() {
         return Err(crate::Error::Msg("folder is empty".into()));
     }
@@ -106,7 +116,7 @@ pub fn inscribe_dir_to(
                 recipients,
             )?
         } else {
-            let tmp = output.with_extension(&format!("tmp-{rel}", rel = rel.replace('/', "_")));
+            let tmp = output.with_extension(format!("tmp-{rel}", rel = rel.replace('/', "_")));
             crate::work::inscribe_path_to(
                 path,
                 &tmp,
@@ -331,12 +341,14 @@ pub fn unseal_dir_mend_keys(
                             p
                         }
                         // Opened within budget but couldn't be re-sealed clean: keep as-is.
-                        Err(_) if opened.is_ok() => opened.unwrap(),
-                        Err(e) => {
-                            return Err(crate::Error::Msg(format!(
-                                "classic star '{rel}' failed to unseal/verify and could not be mended: {e}"
-                            )))
-                        }
+                        Err(e) => match opened {
+                            Ok(p) => p,
+                            Err(_) => {
+                                return Err(crate::Error::Msg(format!(
+                                    "classic star '{rel}' failed to unseal/verify and could not be mended: {e}"
+                                )))
+                            }
+                        },
                     },
                 };
                 let out_path = dest.join(&rel);
@@ -379,7 +391,8 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     }
     let n = u32::from_le_bytes(raw[5..9].try_into().unwrap());
     let mut off = 9usize;
-    let mut entries = Vec::with_capacity(n as usize);
+    // `n` is untrusted: each entry needs >= 10 bytes, so never pre-allocate beyond that.
+    let mut entries = Vec::with_capacity((n as usize).min(raw.len() / 10));
     for _ in 0..n {
         if off + 2 > raw.len() {
             return Err(crate::Error::Msg("truncated folder pack (name len)".into()));
@@ -393,9 +406,10 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         }
         let name = String::from_utf8_lossy(&raw[off..off + nlen]).into_owned();
         off += nlen;
-        let slen = u64::from_le_bytes(raw[off..off + 8].try_into().unwrap()) as usize;
+        let slen = usize::try_from(u64::from_le_bytes(raw[off..off + 8].try_into().unwrap()))
+            .unwrap_or(usize::MAX);
         off += 8;
-        if off + slen > raw.len() {
+        if slen > raw.len() - off {
             return Err(crate::Error::Msg(
                 "truncated folder pack (star bytes)".into(),
             ));
@@ -583,9 +597,7 @@ pub fn looks_like_nest_name(path: &str) -> bool {
 fn peek_nest(peek: &[u8], path: &str) -> (bool, Option<[u8; 32]>) {
     let mut nest = looks_like_nest_name(path);
     let mut digest = None;
-    if peek.starts_with(&crate::work::WORK_MAGIC) {
-        nest = true;
-    } else if peek.starts_with(&DIR_MAGIC) {
+    if peek.starts_with(&crate::work::WORK_MAGIC) || peek.starts_with(&DIR_MAGIC) {
         nest = true;
     } else if let Ok((h, _, _)) = crate::locate_header(peek) {
         digest = Some(h.digest);
@@ -644,4 +656,31 @@ pub fn read_dir_entry_star(input: &Path, want: &str) -> Result<Vec<u8>> {
     Err(crate::Error::Msg(format!(
         "no entry '{want}' in folder pack (Scry / path to list)"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sgdr(count: u32) -> Vec<u8> {
+        let mut raw = DIR_MAGIC.to_vec();
+        raw.push(1);
+        raw.extend_from_slice(&count.to_le_bytes());
+        raw
+    }
+
+    #[test]
+    fn hostile_entry_count_does_not_preallocate() {
+        // u32::MAX entries announced, none present: must error, not abort on allocation.
+        assert!(parse_sgdr_entries(&sgdr(u32::MAX)).is_err());
+    }
+
+    #[test]
+    fn hostile_star_length_does_not_overflow() {
+        let mut raw = sgdr(1);
+        raw.extend_from_slice(&1u16.to_le_bytes());
+        raw.push(b'a');
+        raw.extend_from_slice(&u64::MAX.to_le_bytes());
+        assert!(parse_sgdr_entries(&raw).is_err());
+    }
 }

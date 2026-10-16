@@ -367,19 +367,17 @@ fn list_block_devices() -> Vec<PathBuf> {
             for ent in rd.flatten() {
                 let n = ent.file_name();
                 let n = n.to_string_lossy();
-                if n.starts_with("sd")
+                if (n.starts_with("sd")
                     || n.starts_with("vd")
                     || n.starts_with("nvme")
                     || n.starts_with("mmcblk")
-                    || n.starts_with("xvd")
-                {
-                    if n.chars()
+                    || n.starts_with("xvd"))
+                    && n.chars()
                         .last()
                         .map(|c| c.is_ascii_digit())
                         .unwrap_or(false)
-                    {
-                        out.push(ent.path());
-                    }
+                {
+                    out.push(ent.path());
                 }
             }
         }

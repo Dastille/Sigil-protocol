@@ -177,7 +177,7 @@ fn is_star_name(p: &Path) -> bool {
 /// `true` when `p` is the log itself or anything inside a `.sigil` container.
 fn inside_container(p: &Path) -> bool {
     let abs = fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    abs.ancestors().any(|a| container::is_container(a))
+    abs.ancestors().any(container::is_container)
 }
 
 /// Expand sources: a folder gives its `*.sg1` children in natural name order (not recursive);
