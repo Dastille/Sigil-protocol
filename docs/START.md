@@ -24,6 +24,13 @@ Workshop names still work: `seal` / `unseal` / `scry` mean the same as inscribe 
 ./sigil de-scribe -o file.bin out.sg1
 ```
 
+De-scribe is all-or-nothing: it writes to `file.bin.sigil-part` and renames it
+to `file.bin` only after the whole file checks out (length and SHA-256 of every
+chunk, plus the pack's chunk list for big files). If it can't restore the whole
+file it exits nonzero, removes the part file and leaves any existing `file.bin`
+alone. A big file whose front (the pack head) is damaged is refused with
+"this file holds more than one seal" instead of quietly returning the first 4 MiB.
+
 Folder:
 
 ```
@@ -153,6 +160,7 @@ Frozen layout: [`public/sigil-v1.txt`](../public/sigil-v1.txt). CLI dump: `sigil
 | [FOUNTAIN-v2.md](FOUNTAIN-v2.md) | Fountain / Deluge piece experiments |
 | [SOFT-RS.md](SOFT-RS.md) | Soft Reed–Solomon lab notes |
 | [RS-FAST.md](RS-FAST.md) | How Reed–Solomon got fast without changing a byte |
+| [FAIL-CLOSED.md](FAIL-CLOSED.md) | Unseal/mend never return part of a file silently |
 | [CDC-FastCDC.md](CDC-FastCDC.md) | Opt-in FastCDC chunking profiles |
 | [BREAKTHROUGHS.md](BREAKTHROUGHS.md) | Internal research log |
 

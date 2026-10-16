@@ -286,6 +286,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
         ));
     }
     let (h, prefix, _) = locate_header(file)?;
+    header::ensure_single_seal(file, &h, prefix)?;
     let n = h.n as usize;
     let k = h.k as usize;
     let vow = vow_from_prefix(file, &h, prefix);
