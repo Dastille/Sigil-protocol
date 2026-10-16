@@ -41,7 +41,7 @@ ctap-hid-fido2 = { version = "3.6", optional = true }
 rpassword = "7"
 aes = "0.8"
 cfb-mode = "0.8"
-eframe = { version = "0.31", optional = true }
+eframe = { version = "0.32", optional = true }
 rfd = { version = "0.15", optional = true }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
 ocb3 = "0.1"
