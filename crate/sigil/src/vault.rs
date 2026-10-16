@@ -719,8 +719,8 @@ fn seal_is_encrypt_to(raw: &[u8]) -> bool {
         return false;
     }
     match crate::header::sgto_slice(&h, raw) {
-        Some(b) if b.len() > 6 => (b[5] as usize) > (b[6] & 1) as usize,
-        _ => false,
+        Some(b) => crate::keys::sgto_has_recipients(b),
+        None => false,
     }
 }
 

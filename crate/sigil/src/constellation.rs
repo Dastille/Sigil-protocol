@@ -441,13 +441,13 @@ fn write_card(
     Ok(dest)
 }
 
-/// True when the card mark carries an encrypt-to (SGTO) block.
+/// True when the card mark is sealed to at least one recipient (SGTO with an X25519 wrap).
 fn card_is_encrypt_to(path: &Path) -> bool {
     fs::read(path)
         .ok()
         .and_then(|data| {
             let (h, _, _) = locate_header(&data).ok()?;
-            Some(crate::header::sgto_slice(&h, &data).is_some())
+            Some(crate::header::sgto_slice(&h, &data).is_some_and(crate::keys::sgto_has_recipients))
         })
         .unwrap_or(false)
 }
@@ -461,7 +461,9 @@ fn unseal_card(data: &[u8], pass: Option<&str>, identities: &[Identity]) -> Resu
         let said = e.to_string();
         if said.contains("--identity") {
             e
-        } else if identities.is_empty() && crate::header::sgto_slice(&h, data).is_some() {
+        } else if identities.is_empty()
+            && crate::header::sgto_slice(&h, data).is_some_and(crate::keys::sgto_has_recipients)
+        {
             err(format!(
                 "{e} (this constellation's card is encrypt-to; pass --identity <key.sgk>)"
             ))

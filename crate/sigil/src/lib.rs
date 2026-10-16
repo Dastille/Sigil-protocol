@@ -151,6 +151,9 @@ pub fn rain_lane() -> u8 {
     getrandom(&mut b);
     16 + (b[0] % 200)
 }
+/// Legacy passphrase KDF work factor (PBKDF2-HMAC-SHA256). Not stored in files, so it can
+/// never change for existing seals: used only to *read* legacy Ward / KIND_PASS wraps.
+/// New seals use Argon2id with stored parameters (`keys::ARGON2_*`).
 pub const PBKDF2_ITERS: u32 = 80_000;
 
 /// Pick how many parts. Repair ratio stays the same (Seal = half, Reflection = quarter).
@@ -278,6 +281,7 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Legacy Ward key (read path only).
 fn derive_key(pass: &str, salt: &[u8]) -> [u8; 32] {
     let mut key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(pass.as_bytes(), salt, PBKDF2_ITERS, &mut key);
@@ -444,8 +448,11 @@ pub fn seal_kn_mds_to(
     let mut tag = [0u8; 16];
     let mut encrypted = false;
     let mut sgto_block: Option<Vec<u8>> = None;
-    let use_to = !recipients.is_empty();
     let pass_nonempty = pass.filter(|s| !s.is_empty());
+    // New passphrase seals go through SGTO too: random CEK, wrapped with Argon2id whose
+    // parameters are stored in the wrap record. The legacy Ward (PBKDF2, fixed 80k iterations,
+    // nothing stored) is read-only; see `keys::KIND_PASS_ARGON2ID`.
+    let use_to = !recipients.is_empty() || pass_nonempty.is_some();
     if use_to {
         // Random CEK; wrap for each recipient (+ optional passphrase wrap).
         let mut cek = [0u8; 32];
@@ -459,17 +466,6 @@ pub fn seal_kn_mds_to(
         folded = packed[..t].to_vec();
         encrypted = true;
         sgto_block = Some(keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?);
-    } else if let Some(p) = pass_nonempty {
-        // Legacy passphrase Ward: PBKDF2 → AES-GCM on folded body (unchanged).
-        let key = derive_key(p, &salt);
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::Msg(e.to_string()))?;
-        let packed = cipher
-            .encrypt(Nonce::from_slice(&nonce), folded.as_ref())
-            .map_err(|_| Error::Msg("encrypt failed".into()))?;
-        let t = packed.len() - 16;
-        tag.copy_from_slice(&packed[t..]);
-        folded = packed[..t].to_vec();
-        encrypted = true;
     }
     let shards = if matches!(mode, Mode::Glyph) {
         rs::stripe(&folded, n)
@@ -1425,9 +1421,11 @@ mod tests {
 
     #[test]
     fn passphrase_only_still_works() {
-        let msg = b"legacy ward";
+        // New passphrase seals carry an Argon2id SGTO wrap; legacy (no-SGTO) Ward files are
+        // covered by `kdf_tests::old_files_keep_opening` with fixtures from the old writer.
+        let msg = b"passphrase ward";
         let bytes = seal(msg, Mode::Seal, Some("secret"), "t.txt", false).unwrap();
-        assert!(!bytes.windows(4).any(|w| w == b"SGTO"));
+        assert!(bytes.windows(4).any(|w| w == b"SGTO"));
         assert_eq!(unseal(&bytes, Some("secret")).unwrap(), msg);
         assert!(unseal(&bytes, Some("nope")).is_err());
     }
@@ -1578,5 +1576,131 @@ mod tests {
         assert!(v.contains("good"), "{v}");
         assert_eq!(pk.len(), 32);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod kdf_tests {
+    use super::*;
+
+    const PASS: &str = "correct horse battery";
+
+    fn fixture(name: &str) -> Vec<u8> {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/kdf-v0");
+        std::fs::read(p.join(name)).unwrap()
+    }
+
+    /// (offset of the SGTO block, its length) in a sealed file.
+    fn sgto_span(f: &[u8]) -> (usize, usize) {
+        let (h, _, _) = locate_header(f).unwrap();
+        let off = header::maps_len(&h);
+        (off, keys::sgto_len_at(f, off))
+    }
+
+    /// Rewrite the SGTO CRC after a deliberate edit (so the edit reaches the KDF/AEAD).
+    fn fix_sgto_crc(f: &mut [u8], off: usize, len: usize) {
+        let crc = crc32fast::hash(&f[off..off + len - 4]);
+        f[off + len - 4..off + len].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn new_passphrase_seal_uses_argon2id_with_stored_params() {
+        let data = b"argon2id ward round trip".repeat(50);
+        let f = seal(&data, Mode::Seal, Some(PASS), "a2", false).unwrap();
+        let (off, len) = sgto_span(&f);
+        assert!(len > 0, "passphrase seal must carry an SGTO block");
+        assert_eq!(f[off + 4], keys::SGTO_VERSION_ARGON2);
+        let rec = off + 8;
+        assert_eq!(f[rec], 3, "KIND_PASS_ARGON2ID");
+        let u = |o: usize| u32::from_le_bytes(f[rec + o..rec + o + 4].try_into().unwrap());
+        assert_eq!(
+            (u(17), u(21), u(25)),
+            (keys::ARGON2_M_KIB, keys::ARGON2_T, keys::ARGON2_P)
+        );
+        assert_eq!(unseal(&f, Some(PASS)).unwrap(), data);
+        assert!(unseal(&f, Some("wrong horse")).is_err());
+        assert!(unseal(&f, None).is_err());
+    }
+
+    #[test]
+    fn old_files_keep_opening() {
+        let plain = fixture("plain.bin");
+        // Legacy Ward: PBKDF2-HMAC-SHA256 80k, no SGTO (written by main @ c88d682).
+        let ward = fixture("ward-pbkdf2-80k.sg1");
+        assert_eq!(sgto_span(&ward).1, 0);
+        assert_eq!(unseal(&ward, Some(PASS)).unwrap(), plain);
+        assert!(unseal(&ward, Some("wrong horse")).is_err());
+        // SGTO v1 with a KIND_PASS (PBKDF2 80k) wrap next to an X25519 recipient.
+        let to = fixture("sgto-passwrap-pbkdf2-80k.sg1");
+        let (off, len) = sgto_span(&to);
+        assert!(len > 0);
+        assert_eq!(to[off + 4], keys::SGTO_VERSION);
+        assert_eq!(unseal(&to, Some(PASS)).unwrap(), plain);
+        assert!(unseal(&to, Some("wrong horse")).is_err());
+    }
+
+    #[test]
+    fn encrypt_to_plus_passphrase_round_trip() {
+        let data = b"to + pass".repeat(100);
+        let id = keys::Identity::generate().unwrap();
+        let f = seal_kn_mds_to(
+            &data,
+            Mode::Reflection,
+            Some(PASS),
+            "tp",
+            false,
+            "",
+            &[],
+            None,
+            DEFAULT_PIECE,
+            &*mds::default_backend(),
+            &[id.public()],
+        )
+        .unwrap();
+        assert_eq!(unseal(&f, Some(PASS)).unwrap(), data);
+        assert_eq!(
+            unseal_ex_keys(&f, None, &[], std::slice::from_ref(&id)).unwrap(),
+            data
+        );
+        assert!(unseal(&f, Some("wrong horse")).is_err());
+    }
+
+    #[test]
+    fn tampered_or_hostile_params_fail_closed() {
+        let data = b"tamper".repeat(200);
+        let f = seal(&data, Mode::Reflection, Some(PASS), "t", false).unwrap();
+        let (off, len) = sgto_span(&f);
+        let rec = off + 8 + 1; // after the kind byte
+        let set = |o: usize, v: u32| {
+            let mut g = f.clone();
+            g[rec + o..rec + o + 4].copy_from_slice(&v.to_le_bytes());
+            fix_sgto_crc(&mut g, off, len);
+            g
+        };
+        // Different (still valid) memory cost: wrong key, AEAD rejects.
+        assert!(unseal(&set(16, keys::ARGON2_M_KIB + 1024), Some(PASS)).is_err());
+        // Hostile memory / passes / lanes / zero: rejected before any derivation (DoS bound).
+        let t0 = std::time::Instant::now();
+        for (o, v) in [
+            (16, u32::MAX),
+            (16, keys::ARGON2_MAX_M_KIB + 1),
+            (20, 1000),
+            (24, 64),
+            (20, 0),
+        ] {
+            let e = unseal(&set(o, v), Some(PASS)).unwrap_err().to_string();
+            assert!(e.contains("rejected"), "{o}={v}: {e}");
+        }
+        assert!(
+            t0.elapsed().as_secs() < 5,
+            "bounds must short-circuit, not allocate"
+        );
+        // Flipped salt / wrapped CEK byte: AEAD rejects.
+        for o in [0usize, 60] {
+            let mut g = f.clone();
+            g[rec + o] ^= 1;
+            fix_sgto_crc(&mut g, off, len);
+            assert!(unseal(&g, Some(PASS)).is_err(), "byte {o}");
+        }
     }
 }
