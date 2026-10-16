@@ -32,6 +32,9 @@ fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
 /// Panics on a singular system, exactly like `gf::solve_vandermonde` did.
 fn vandermonde_inverse(xs: &[u8]) -> Vec<u8> {
     let k = xs.len();
+    // Infallible for every caller: a Vandermonde matrix over GF(256) is invertible iff its
+    // points are pairwise distinct. Decoders pass points from `pick_live`, which dedups and
+    // drops indexes > 254; encoders pass `x_of(0..k)` with k <= 255 (k is a u8 in the header).
     gf::invert_matrix(k, &power_matrix(xs, k)).expect("singular")
 }
 
@@ -89,7 +92,9 @@ pub fn encode_shards(payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
     encode_shards_ex(payload, k, n, true)
 }
 
-/// v1 evaluation code (coefficients = data). Kept so old files still De-scribe.
+/// v1 evaluation code (coefficients = data). Old files are decoded by the
+/// shared decoder; this encoder is only needed to produce v1 fixtures in tests.
+#[cfg(test)]
 pub fn encode_shards_v1(payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
     encode_shards_ex(payload, k, n, false)
 }
@@ -197,10 +202,9 @@ pub fn decode_indexed(
                 data_ok[*index] = Some(body);
             }
         }
-        if data_ok.iter().all(|s| s.is_some()) {
+        if let Some(data) = data_ok.iter().copied().collect::<Option<Vec<_>>>() {
             let mut padded = vec![0u8; shard_len * k];
-            for i in 0..k {
-                let s = data_ok[i].unwrap();
+            for (i, s) in data.into_iter().enumerate() {
                 let n = s.len().min(shard_len);
                 padded[i * shard_len..i * shard_len + n].copy_from_slice(&s[..n]);
             }
@@ -244,8 +248,8 @@ pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8
         return Err(Error::Msg("glyph: missing shard".into()));
     }
     let mut out = Vec::new();
-    for s in shards {
-        out.extend_from_slice(s.as_ref().unwrap());
+    for s in shards.iter().flatten() {
+        out.extend_from_slice(s);
     }
     out.truncate(payload_len);
     Ok(out)
@@ -511,15 +515,15 @@ mod tests {
             padded[..sl].to_vec()
         });
         let mut opt: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
-        for i in 0..8 {
-            opt[i] = None;
+        for slot in opt.iter_mut().take(8) {
+            *slot = None;
         }
         let out = decode_shards(&opt, 8, payload.len(), true).unwrap();
         assert_eq!(out, payload);
         let v1 = encode_shards_v1(&payload, 8, 16);
         let mut o1: Vec<Option<Vec<u8>>> = v1.into_iter().map(Some).collect();
-        for i in 0..8 {
-            o1[i] = None;
+        for slot in o1.iter_mut().take(8) {
+            *slot = None;
         }
         assert_eq!(
             decode_shards(&o1, 8, payload.len(), false).unwrap(),
@@ -567,10 +571,10 @@ mod tests {
         let payload: Vec<u8> = (0..3000).map(|i| (i * 3) as u8).collect();
         let shards = encode_shards(&payload, 8, 16);
         let mut parts: Vec<SoftPart> = Vec::new();
-        for i in 0..7 {
+        for (i, shard) in shards.iter().enumerate().take(7) {
             parts.push(SoftPart {
                 index: i,
-                body: shards[i].clone(),
+                body: shard.clone(),
                 hard: true,
             });
         }

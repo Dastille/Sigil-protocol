@@ -264,13 +264,12 @@ fn old_layouts_warn_and_fix_tidies() {
         "{o}"
     );
     assert!(c.join("CONTAINER").is_file() && !old.exists());
-    assert_eq!(
+    assert!(
         ok(&dir, &["vault", "versions", "n.txt"])
             .matches(".sg1")
             .count()
             .max(1)
-            > 0,
-        true
+            > 0
     );
 
     // flat constellation

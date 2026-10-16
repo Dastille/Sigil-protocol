@@ -106,6 +106,14 @@ fn parse_header(buf: &[u8], magic: &[u8; 4]) -> Result<Header> {
     if expect != got {
         return Err(Error::Msg("header CRC mismatch".into()));
     }
+    // The CRC is not authentication: reject geometry no encoder produces, so a crafted
+    // header cannot drive the decoders into a zero divisor or an empty-input index.
+    if buf[6] == 0 || buf[6] > buf[7] {
+        return Err(Error::Msg(format!(
+            "invalid header geometry k={} n={}",
+            buf[6], buf[7]
+        )));
+    }
     let name_end = buf[112..128]
         .iter()
         .rposition(|&b| b != 0)
@@ -229,8 +237,8 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
     } else {
         file
     };
-    for i in 0..n {
-        if !matches!(live[i], GradedShard::Missing) {
+    for (i, slot) in live.iter_mut().enumerate().take(n) {
+        if !matches!(slot, GradedShard::Missing) {
             continue;
         }
         let off = i * stride + lead;
@@ -239,7 +247,7 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
         }
         let shard = body[off..off + sl].to_vec();
         let crc = u32::from_le_bytes(body[off + sl..off + sl + 4].try_into().unwrap());
-        live[i] = grade_shard(shard, crc);
+        *slot = grade_shard(shard, crc);
     }
     live
 }
@@ -295,8 +303,8 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
     } else {
         file
     };
-    for i in 0..n {
-        if live[i].is_some() {
+    for (i, slot) in live.iter_mut().enumerate().take(n) {
+        if slot.is_some() {
             continue;
         }
         let off = i * stride + lead;
@@ -306,7 +314,7 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
         let shard = body[off..off + sl].to_vec();
         let crc = u32::from_le_bytes(body[off + sl..off + sl + 4].try_into().unwrap());
         if crc32fast::hash(&shard) == crc {
-            live[i] = Some(shard);
+            *slot = Some(shard);
         }
     }
     live
@@ -523,4 +531,28 @@ pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
     Err(Error::Msg(
         "header damaged and no Keystone or Ember survived".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_geometry(k: u8, n: u8) -> Vec<u8> {
+        let sealed = crate::seal(b"geometry probe", crate::Mode::Reflection, None, "g", false)
+            .expect("seal");
+        let mut h = sealed[..HEADER_SIZE].to_vec();
+        h[6] = k;
+        h[7] = n;
+        h[108..112].fill(0);
+        let crc = crc32fast::hash(&h);
+        h[108..112].copy_from_slice(&crc.to_le_bytes());
+        h
+    }
+
+    #[test]
+    fn crafted_geometry_is_an_error_not_a_panic() {
+        assert!(read_header(&with_geometry(0, 8)).is_err(), "k = 0");
+        assert!(read_header(&with_geometry(9, 8)).is_err(), "k > n");
+        assert!(read_header(&with_geometry(4, 8)).is_ok(), "valid k <= n");
+    }
 }

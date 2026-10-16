@@ -1248,7 +1248,7 @@ fn dispatch(
             file.to_path_buf()
         } else {
             let tmp = std::env::temp_dir().join(format!("sigil-overture-{}", std::process::id()));
-            let mut src = fs::File::open(file)?;
+            let src = fs::File::open(file)?;
             let mut dst = fs::File::create(&tmp)?;
             let mut taken = src.take(end);
             let n = std::io::copy(&mut taken, &mut dst)?;

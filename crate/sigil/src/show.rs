@@ -67,15 +67,22 @@ pub fn run_showing(
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                *last.lock().unwrap() = Instant::now();
+                *last
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
                 if let Err(e) = handle(stream, &mark, pass.as_deref(), &stage, &last) {
                     eprintln!("showing: {e}");
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                let quiet = last.lock().unwrap().elapsed();
+                let quiet = last
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .elapsed();
                 if quiet > idle {
-                    let mut st = stage.lock().unwrap();
+                    let mut st = stage
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if !st.stars.is_empty() {
                         st.stars.clear();
                         println!("idle — dropped unlocked slices from RAM");
@@ -159,12 +166,24 @@ fn handle(
     }
 
     let path = {
-        let mut st = stage.lock().unwrap();
+        let st = stage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !st.ready {
             println!("De-scribe to temp {} …", st.file.display());
             drop(st);
-            unseal_path(mark, &stage.lock().unwrap().file, pass, &[])?;
-            let mut st = stage.lock().unwrap();
+            unseal_path(
+                mark,
+                &stage
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .file,
+                pass,
+                &[],
+            )?;
+            let mut st = stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             st.ready = true;
             println!("ready ({})", st.file.display());
             st.file.clone()
@@ -172,7 +191,9 @@ fn handle(
             st.file.clone()
         }
     };
-    *last.lock().unwrap() = Instant::now();
+    *last
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
     let meta = fs::metadata(&path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let len = meta.len();
     let (start, end) = match range {
@@ -221,7 +242,9 @@ fn handle(
             .write_all(&buf[..got])
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
         left -= got as u64;
-        *last.lock().unwrap() = Instant::now();
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
     }
     Ok(())
 }
@@ -244,7 +267,9 @@ fn serve_work(
     head_only: bool,
 ) -> Result<()> {
     {
-        let mut st = stage.lock().unwrap();
+        let mut st = stage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if st.locs.is_empty() {
             let (head, locs) = index_pack(mark)?;
             st.work_len = Some(head.orig_total);
@@ -256,7 +281,11 @@ fn serve_work(
             );
         }
     }
-    let len = stage.lock().unwrap().work_len.unwrap_or(0);
+    let len = stage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .work_len
+        .unwrap_or(0);
     let (start, end) = match range {
         Some((s, e)) => {
             let end = e
@@ -286,7 +315,11 @@ fn serve_work(
     if head_only {
         return Ok(());
     }
-    let locs = stage.lock().unwrap().locs.clone();
+    let locs = stage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .locs
+        .clone();
     let mut cur = start;
     while cur <= end {
         let loc = match locs
@@ -302,16 +335,18 @@ fn serve_work(
             }
         };
         {
-            let mut st = stage.lock().unwrap();
-            if !st.stars.contains_key(&loc.index) {
+            let mut st = stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let std::collections::hash_map::Entry::Vacant(e) = st.stars.entry(loc.index) {
                 println!("unlock slice {}", loc.index);
                 let plain = unseal_star_at(mark, loc, pass, &[])?;
-                st.stars.insert(loc.index, plain);
+                e.insert(plain);
             }
         }
         let plain = stage
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .stars
             .get(&loc.index)
             .cloned()
@@ -322,7 +357,9 @@ fn serve_work(
             .write_all(&plain[inner..inner + take])
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
         cur += take as u64;
-        *last.lock().unwrap() = Instant::now();
+        *last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
         if take == 0 {
             break;
         }

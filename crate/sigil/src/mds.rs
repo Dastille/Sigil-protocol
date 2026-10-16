@@ -92,9 +92,12 @@ impl CauchyRs {
         Ok(c)
     }
 
-    fn matrix<'a>(&'a self, k: usize, n: usize) -> Result<Vec<u8>, Error> {
+    fn matrix(&self, k: usize, n: usize) -> Result<Vec<u8>, Error> {
         {
-            let guard = self.cache.lock().unwrap();
+            let guard = self
+                .cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(ref cached) = *guard {
                 if cached.k == k && cached.n == n {
                     return Ok(cached.c.clone());
@@ -102,7 +105,11 @@ impl CauchyRs {
             }
         }
         let c = Self::coding_matrix(k, n)?;
-        *self.cache.lock().unwrap() = Some(CauchyCache { k, n, c: c.clone() });
+        *self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(CauchyCache { k, n, c: c.clone() });
         Ok(c)
     }
 }
@@ -113,6 +120,8 @@ impl MdsBackend for CauchyRs {
     }
 
     fn encode(&self, payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
+        // `MdsBackend::encode` is infallible by signature and is only driven by the opt-in
+        // bake-off with caller-chosen (k, n); `decode` (untrusted input) returns errors instead.
         let c = self.matrix(k, n).expect("Cauchy matrix");
         let m = n - k;
         let shard_len = (payload.len().div_ceil(k)).max(1);
@@ -163,10 +172,9 @@ impl MdsBackend for CauchyRs {
                 data_ok[index] = Some(body);
             }
         }
-        if data_ok.iter().all(|s| s.is_some()) {
+        if let Some(data) = data_ok.iter().copied().collect::<Option<Vec<_>>>() {
             let mut padded = vec![0u8; shard_len * k];
-            for i in 0..k {
-                let s = data_ok[i].unwrap();
+            for (i, s) in data.into_iter().enumerate() {
                 let ncopy = s.len().min(shard_len);
                 padded[i * shard_len..i * shard_len + ncopy].copy_from_slice(&s[..ncopy]);
             }
@@ -308,8 +316,8 @@ pub fn run_bakeoff(iters: usize) -> Vec<MdsBenchRow> {
                 // Warmup
                 let shards = be.encode(&payload, k, n);
                 let mut opt: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
-                for i in 0..erasures {
-                    opt[i] = None;
+                for slot in opt.iter_mut().take(erasures) {
+                    *slot = None;
                 }
                 let _ = be.decode(&opt, k, size).expect("warmup decode");
 
@@ -325,8 +333,8 @@ pub fn run_bakeoff(iters: usize) -> Vec<MdsBenchRow> {
                 let mut recovered = Vec::new();
                 for _ in 0..iters {
                     let mut opt: Vec<Option<Vec<u8>>> = last.iter().cloned().map(Some).collect();
-                    for i in 0..erasures {
-                        opt[i] = None;
+                    for slot in opt.iter_mut().take(erasures) {
+                        *slot = None;
                     }
                     recovered = be.decode(&opt, k, size).expect("bench decode");
                 }

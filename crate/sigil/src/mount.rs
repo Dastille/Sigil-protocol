@@ -437,6 +437,7 @@ impl VaultFs {
                 children: Vec::new(),
             },
         );
+        // Infallible: every inode in `by_path` is inserted into `nodes` together with it.
         self.nodes.get_mut(&parent_ino).unwrap().children.push(ino);
         self.by_path.insert(full, ino);
         Ok(ino)
@@ -478,6 +479,7 @@ impl VaultFs {
                 children: Vec::new(),
             },
         );
+        // Infallible: every inode in `by_path` is inserted into `nodes` together with it.
         self.nodes.get_mut(&parent_ino).unwrap().children.push(ino);
         self.by_path.insert(full, ino);
         Ok(ino)
@@ -489,7 +491,13 @@ impl VaultFs {
     }
 
     fn read_ino(&self, ino: u64) -> Result<Arc<Vec<u8>>> {
-        if let Some(c) = self.cache.lock().unwrap().get(&ino).cloned() {
+        if let Some(c) = self
+            .cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&ino)
+            .cloned()
+        {
             return Ok(c);
         }
         let node = self
@@ -540,18 +548,19 @@ impl VaultFs {
             }
         };
         let arc = Arc::new(data);
-        self.cache.lock().unwrap().insert(ino, arc.clone());
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(ino, arc.clone());
         Ok(arc)
     }
 
     fn child_by_name(&self, parent: u64, name: &str) -> Option<u64> {
         let node = self.nodes.get(&parent)?;
-        for &c in &node.children {
-            if self.nodes[&c].name == name {
-                return Some(c);
-            }
-        }
-        None
+        node.children
+            .iter()
+            .find(|&&c| self.nodes[&c].name == name)
+            .copied()
     }
 }
 
@@ -656,7 +665,14 @@ fn sanitize_name(name: &str) -> String {
 fn current_uid() -> u32 {
     #[cfg(unix)]
     {
-        unsafe { libc_uid() }
+        extern "C" {
+            fn getuid() -> u32;
+        }
+        // SAFETY: POSIX `getuid(2)` takes no arguments, touches no caller memory, cannot
+        // fail (POSIX: "shall always be successful"); `uid_t` is a 32-bit unsigned integer on
+        // every Unix target this crate builds for (Linux, macOS, the BSDs), so the `u32`
+        // return type matches the C ABI. libc is already linked via std/fuser.
+        unsafe { getuid() }
     }
     #[cfg(not(unix))]
     {
@@ -667,30 +683,18 @@ fn current_uid() -> u32 {
 fn current_gid() -> u32 {
     #[cfg(unix)]
     {
-        unsafe { libc_gid() }
+        extern "C" {
+            fn getgid() -> u32;
+        }
+        // SAFETY: POSIX `getgid(2)` takes no arguments, touches no caller memory and always
+        // succeeds; `gid_t` is a 32-bit unsigned integer on every supported Unix target, so
+        // the declared signature matches the C ABI.
+        unsafe { getgid() }
     }
     #[cfg(not(unix))]
     {
         0
     }
-}
-
-#[cfg(unix)]
-unsafe fn libc_uid() -> u32 {
-    // Avoid depending on the `libc` crate: read from /proc or use nix-less getuid via std isn't available.
-    // fuser pulls libc transitively; use libc directly through extern.
-    extern "C" {
-        fn getuid() -> u32;
-    }
-    getuid()
-}
-
-#[cfg(unix)]
-unsafe fn libc_gid() -> u32 {
-    extern "C" {
-        fn getgid() -> u32;
-    }
-    getgid()
 }
 
 /// Run FUSE mount (blocks until unmounted). Unix only.
@@ -979,6 +983,11 @@ pub fn run_mount(
     )
 }
 
+// Justification: each parameter is an independent user-facing seal option threaded
+// straight from the CLI (mode, passphrase, covenant, geas, chunking, wards, recipients...).
+// Bundling them into an options struct is a public-API refactor tracked separately;
+// this PR keeps signatures stable.
+#[allow(clippy::too_many_arguments)]
 pub fn run_mount_keys(
     input: &Path,
     mountpoint: &Path,
@@ -1418,8 +1427,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let mut copts = crate::seglog::CompactOpts::default();
-        copts.apply = true;
+        let copts = crate::seglog::CompactOpts {
+            apply: true,
+            ..Default::default()
+        };
         crate::seglog::compact(&log_path, &copts).unwrap();
         let vfs = VaultFs::open_log(&log_path, None, &[]).unwrap();
         let listing = vfs.list_dir("").unwrap();
@@ -1439,8 +1450,10 @@ mod tests {
         let d = tmp("log-pass");
         let log_path = d.join("ev");
         crate::seglog::init(&log_path, None).unwrap();
-        let mut opts = crate::seglog::AppendOpts::default();
-        opts.pass = Some("house");
+        let opts = crate::seglog::AppendOpts {
+            pass: Some("house"),
+            ..Default::default()
+        };
         crate::seglog::append(&log_path, b"secret-batch\n", &opts).unwrap();
         let vfs = VaultFs::open_log(&log_path, None, &[]).unwrap();
         assert!(vfs
