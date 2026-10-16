@@ -1,5 +1,7 @@
 # Vault + mount + nest (composed model)
 
+New here? Start with the friendly map: [START.md](START.md).
+
 How the **version tip**, **read/edit views**, and **nested seals** fit together. Retention policy (full vs light, cold kit) lives in [VAULT-RETENTION.md](VAULT-RETENTION.md) — this page does not repeat that deep-dive.
 
 Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mark in place. A new tip is always a new seal.

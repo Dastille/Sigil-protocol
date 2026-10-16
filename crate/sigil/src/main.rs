@@ -26,7 +26,8 @@ use std::process::{Command, Stdio};
 #[command(
     name = "sigil",
     about = "Wrap a file so a damaged copy can still be restored, and so you can tell if it was swapped.",
-    long_about = "Inscribe makes a .sg1. Scry checks it without unpacking. De-scribe gets the original back.\nDefault lock style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nGitHub: tag v1.0 yourself — this tool does not log in for you."
+    long_about = "Inscribe makes a .sg1. Scry checks it without unpacking. De-scribe gets the original back.\nDefault lock style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nGitHub: tag v1.0 yourself — this tool does not log in for you.",
+    after_long_help = "See docs/START.md in the repo for a plain-English map of everyday commands."
 )]
 struct Cli {
     #[command(subcommand)]
