@@ -1,5 +1,21 @@
 # Segment log (`sigil log …`)
 
+## Abstract
+
+A Sigil segment log is an append-only, tamper-evident log of opaque batches, stored as a plain
+directory. Each batch is sealed as an ordinary `.sg1` star (Reed–Solomon erasure coding inside the
+file, optional AES-256-GCM per batch). An `INDEX` of one text line per entry links every line to
+its predecessor with a domain-separated SHA-256 hash chain anchored to a random log id. A `HEAD`
+commits to the chain and to a Merkle root over all chain hashes, and can be signed with Ed25519.
+The design borrows the core of Certificate Transparency (RFC 6962): a Merkle tree over an
+append-only sequence, a signed tree head, short offline inclusion proofs, and small `SEQ:ROOT`
+anchors pinned outside the log. To that it adds what CT does not need for a single-owner store:
+erasure-coded segments that `mend` heals in place, tombstones and compaction that never rewrite
+the index, opt-in crypto-shredding of per-segment keys, and signer rotation. CT and similar
+systems provide consistency proofs and public monitoring. This log does not provide them yet
+(consistency proofs are deferred), so rollback and fork detection depend on anchors the reader
+keeps (see "Prior work" and "Threat model").
+
 Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
 **slice 2 shipped** (tombstones + compaction, `log=2`), **slice 3 shipped** (opt-in per-segment
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
@@ -671,6 +687,25 @@ sigil umount ./view
   `segments/NNNN/NNNNNNNNNN.sg1` layout. No extension: the cleartext is the batch bytes, not a star.
 
 See also [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) for FUSE vs `--export-dir` on vaults and packs.
+
+## Prior work and how this log differs
+
+Sources checked on 2026-10-16. Statements about other systems are limited to what those sources
+say.
+
+| Work | What it is | Same here | Different here |
+|------|------------|-----------|----------------|
+| **RFC 6962**, *Certificate Transparency* (Laurie, Langley, Kasper, June 2013), <https://www.rfc-editor.org/rfc/rfc6962> | Public append-only logs of TLS certificates: a Merkle Tree Hash over the entries, Signed Tree Heads, audit (inclusion) paths, consistency proofs between two tree heads, and monitors/auditors watching the logs | Merkle root over an append-only sequence (`HEAD` ≈ STH); offline inclusion proofs (`log prove` ≈ audit path); signed head binding size + root | **Tree shape and hashing.** RFC 6962 §2.1 hashes leaves as `SHA-256(0x00 ‖ d)` and nodes as `SHA-256(0x01 ‖ l ‖ r)`, and splits at the largest power of two below *n*. It notes that "this domain separation is required to give second preimage resistance". Sigil's `merkle.rs` hashes `SHA-256(l ‖ r)` with no prefix and pairs an odd last node with itself. Two things keep that sound here. Leaves are chain hashes, which are outputs of `SHA-256("sigil-log-entry-v1\0" ‖ …)`, and `check-proof` only accepts a leaf it recomputed from a full INDEX line. Every line also names its own `seq` (see "Inclusion proofs"). Sigil roots are therefore **not** RFC 6962 roots, and RFC 6962 tooling cannot verify them. **No consistency proofs** (deferred) and no gossip/monitors: rollback or a split view are caught only by a pinned `--anchor` or a newer signed HEAD. **Single writer, private store** instead of a public multi-party log. Entries are sealed, erasure-coded batches, not certificates |
+| **RFC 9162**, *Certificate Transparency Version 2.0* (Laurie, Messeri, Stradling, December 2021), <https://www.rfc-editor.org/rfc/rfc9162> | Obsoletes RFC 6962. Same Merkle-tree foundation, revised data structures and API | as above | as above. Sigil follows neither version's wire format |
+| **Crosby & Wallach**, *Efficient Data Structures for Tamper-Evident Logging*, USENIX Security 2009, <https://www.usenix.org/conference/usenixsecurity09/technical-sessions/presentation/efficient-data-structures-tamper-evident> | The "history tree": a Merkle tree over a growing log with logarithmic membership and incremental (consistency) proofs between versions, for an untrusted logger and auditors. RFC 6962 says its tree is "essentially the same as the history tree [CrosbyWallach] proposal, except our definition handles non-full trees differently" | Append-only Merkle commitment; membership proofs | Sigil keeps a linear hash chain (each INDEX line commits to all earlier ones) **and** a Merkle root over the chain hashes (short inclusion proofs). Incremental proofs are not implemented yet |
+| **Schneier & Kelsey**, *Secure Audit Logs to Support Computer Forensics*, ACM TISSEC 2(2), May 1999, <https://doi.org/10.1145/317087.317089> | Audit log on an untrusted machine, with hash chains and per-record encryption, making "all log entries generated prior to the logging machine's compromise impossible for the attacker to read, and also impossible to modify or destroy undetectably" (abstract) | Hash chain over every entry; per-entry encryption; keys can be destroyed to make entries unreadable (cf. `shred`) | No protection of past entries after a key compromise: whoever steals the signing key can re-sign the whole log (see "Threat model"). Sigil's `shred` is a deliberate, recorded erasure of one segment's key, not forward secrecy |
+
+What is new here, as a combination rather than a primitive: every segment is an erasure-coded
+`.sg1`, so the log heals bit rot in place (`mend`) without changing any hash the index commits
+to (the chain covers plain bytes, not file bytes). Deletion, compaction, shredding and signer
+handover are themselves appended, signed-over entries, so anchors and receipts taken earlier
+stay valid. No new cryptography: SHA-256, Ed25519, AES-256-GCM and the existing Sigil
+Reed–Solomon code.
 
 ## Deferred (later slices)
 
