@@ -24,6 +24,19 @@ mod pieces;
 pub mod pgp;
 pub mod seglog;
 mod rs;
+mod rs_ref;
+
+/// Benchmark / oracle hooks for the RS codec (not a stable API).
+#[doc(hidden)]
+pub mod rs_bench {
+    pub use crate::gf::kernel_name;
+    pub use crate::mds::{CauchyRs, MdsBackend};
+    pub use crate::rs::{decode_indexed, encode_shards};
+    /// Frozen pre-speedup scalar implementation (baseline).
+    pub mod reference {
+        pub use crate::rs_ref::{decode_indexed, encode_shards};
+    }
+}
 mod show;
 mod vault;
 mod work;
@@ -608,6 +621,46 @@ fn getrandom(buf: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fast RS must still fail closed: wrong key, truncation and corruption
+    /// beyond the parity budget are refused, never returned as wrong bytes.
+    #[test]
+    fn rs_fast_path_fails_closed() {
+        let msg: Vec<u8> = (0..300_000u32).map(|i| (i.wrapping_mul(2654435761) >> 11) as u8).collect();
+        for pass in [None, Some("correct horse")] {
+            let bytes = seal(&msg, Mode::Seal, pass, "big.bin", false).unwrap();
+            assert_eq!(unseal(&bytes, pass).unwrap(), msg);
+            if pass.is_some() {
+                assert!(unseal(&bytes, Some("wrong horse")).is_err());
+                assert!(unseal(&bytes, None).is_err());
+            }
+            for cut in [bytes.len() / 2, bytes.len() - 1, HEADER_SIZE + 10] {
+                if let Ok(out) = unseal(&bytes[..cut], pass) {
+                    assert_eq!(out, msg, "truncated to {cut} returned wrong bytes");
+                }
+            }
+            let h = read_header(&bytes).unwrap();
+            let stride = header::shard_stride(&h);
+            let prefix = if h.keystone() { KEYSTONE_SPAN } else { HEADER_SIZE };
+            // Bit flips in every shard body: more damage than parity can repair.
+            let mut flipped = bytes.clone();
+            for i in 0..h.n as usize {
+                let off = prefix + i * stride + stride / 2;
+                if off < flipped.len() {
+                    flipped[off] ^= 0x10;
+                }
+            }
+            if let Ok(out) = unseal(&flipped, pass) {
+                assert_eq!(out, msg, "bit flips returned wrong bytes");
+            }
+            // Within budget: flips in n-k shards are repaired exactly.
+            let mut some = bytes.clone();
+            for i in 0..(h.n - h.k) as usize {
+                some[prefix + i * stride + stride / 2] ^= 0x01;
+            }
+            assert_eq!(unseal(&some, pass).unwrap(), msg);
+        }
+    }
 
     #[test]
     fn roundtrip_seal() {
