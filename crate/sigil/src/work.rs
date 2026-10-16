@@ -423,26 +423,26 @@ pub fn unseal_range_keys(
     identities: &[Identity],
 ) -> Result<(u64, u32)> {
     let (head, locs) = index_pack(input)?;
-    let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
-    let mut written = 0u64;
-    let mut n = 0u32;
-    for loc in &locs {
-        if loc.index < from_star || loc.index > to_star {
-            continue;
-        }
-        let plain = unseal_star_at_keys(input, loc, pass, companions, identities)?;
-        writer.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        written += plain.len() as u64;
-        n += 1;
-    }
-    writer.flush().map_err(|e| crate::Error::Msg(e.to_string()))?;
-    if n == 0 {
+    if !locs.iter().any(|l| l.index >= from_star && l.index <= to_star) {
         return Err(crate::Error::Msg(format!(
             "no slices in {from_star}..{to_star} (pack has 0..{})",
             head.stars.saturating_sub(1)
         )));
     }
-    Ok((written, n))
+    write_atomic(output, |writer| {
+        let mut written = 0u64;
+        let mut n = 0u32;
+        for loc in &locs {
+            if loc.index < from_star || loc.index > to_star {
+                continue;
+            }
+            let plain = unseal_star_at_keys(input, loc, pass, companions, identities)?;
+            writer.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            written += plain.len() as u64;
+            n += 1;
+        }
+        Ok((written, n))
+    })
 }
 
 /// Write each star as its own .sg1 in a folder (for torrent/IPFS of large work).
@@ -802,6 +802,13 @@ pub fn mend_pack_to<W: Write>(
                 }
             },
         };
+        if let Some(f) = &facets {
+            if crate::sha256(&plain) != f[i as usize] {
+                return Err(crate::Error::Msg(format!(
+                    "star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
+                )));
+            }
+        }
         out.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
         written += plain.len() as u64;
     }
@@ -848,41 +855,100 @@ pub fn unseal_path_keys(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<u64> {
-    let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
-    let mut mag = [0u8; 4];
-    reader.read_exact(&mut mag).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    if mag == WORK_MAGIC {
-        // rewind by reopening — BufReader already consumed 4 bytes; reconstruct
-        drop(reader);
-        let mut reader = BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
-        let head = read_head(&mut reader)?;
-        let mut writer = BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
-        let mut written = 0u64;
-        for _ in 0..head.stars {
-            let mut lenb = [0u8; 8];
-            reader.read_exact(&mut lenb).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let len = u64::from_le_bytes(lenb) as usize;
-            let mut star = vec![0u8; len];
-            reader.read_exact(&mut star).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let plain = unseal_ex_keys(&star, pass, companions, identities)?;
-            writer.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            written += plain.len() as u64;
-        }
-        writer.flush().map_err(|e| crate::Error::Msg(e.to_string()))?;
-        if written != head.orig_total {
-            return Err(crate::Error::Msg(format!(
-                "work length mismatch: got {written} expected {}",
-                head.orig_total
-            )));
-        }
-        return Ok(written);
+    if is_work_pack(input) {
+        return write_atomic(output, |writer| unseal_pack_stream(input, writer, pass, companions, identities));
     }
-    drop(reader);
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    // unseal_ex_keys checks length + SHA-256 against the header and refuses a
+    // buffer holding more than one seal (damaged pack head).
     let plain = unseal_ex_keys(&data, pass, companions, identities)?;
     let n = plain.len() as u64;
-    std::fs::write(output, plain).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    write_atomic(output, |w| w.write_all(&plain).map_err(|e| crate::Error::Msg(e.to_string())))?;
     Ok(n)
+}
+
+/// Stream every chunk star of an SGWK pack into `writer`, verifying each star
+/// (length + SHA-256 in its own header), the SGFC facet true-names when the
+/// trailer is present, and the pack's total length.
+fn unseal_pack_stream<W: Write>(
+    input: &Path,
+    writer: &mut W,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<u64> {
+    let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    let head = read_head(&mut reader)?;
+    let mut written = 0u64;
+    let mut digests = Vec::with_capacity(head.stars as usize);
+    for i in 0..head.stars {
+        let mut lenb = [0u8; 8];
+        reader.read_exact(&mut lenb).map_err(|_| {
+            crate::Error::Msg(format!("work pack truncated or framing damaged at star {i} of {}", head.stars))
+        })?;
+        let len = u64::from_le_bytes(lenb);
+        if len > head.orig_total.saturating_mul(4).saturating_add(1 << 30) {
+            return Err(crate::Error::Msg(format!("work pack framing damaged at star {i} (bad length)")));
+        }
+        let mut star = vec![0u8; len as usize];
+        reader.read_exact(&mut star).map_err(|_| {
+            crate::Error::Msg(format!("work pack truncated inside star {i} of {}", head.stars))
+        })?;
+        let plain = unseal_ex_keys(&star, pass, companions, identities)
+            .map_err(|e| crate::Error::Msg(format!("star {i} of {}: {e}", head.stars)))?;
+        digests.push(crate::locate_header(&star)?.0.digest);
+        writer.write_all(&plain).map_err(io)?;
+        written += plain.len() as u64;
+    }
+    let mut trailer = Vec::new();
+    reader.read_to_end(&mut trailer).map_err(io)?;
+    let n = head.stars as usize;
+    if trailer.len() == 8 + 32 * n
+        && &trailer[0..4] == b"SGFC"
+        && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
+    {
+        for (i, f) in trailer[8..].chunks(32).enumerate() {
+            if f != digests[i] {
+                return Err(crate::Error::Msg(format!(
+                    "chunk star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
+                )));
+            }
+        }
+    }
+    if written != head.orig_total {
+        return Err(crate::Error::Msg(format!(
+            "work length mismatch: got {written} expected {}",
+            head.orig_total
+        )));
+    }
+    Ok(written)
+}
+
+/// Write `output` all-or-nothing: bytes go to `<output>.sigil-part`, which is
+/// flushed, synced and renamed over `output` only if `f` succeeds. On any error
+/// the part file is removed and an existing `output` is left untouched.
+pub(crate) fn write_atomic<T>(
+    output: &Path,
+    f: impl FnOnce(&mut BufWriter<File>) -> Result<T>,
+) -> Result<T> {
+    let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
+    let mut part = output.as_os_str().to_os_string();
+    part.push(".sigil-part");
+    let part = std::path::PathBuf::from(part);
+    let result = (|| {
+        let mut w = BufWriter::new(File::create(&part).map_err(io)?);
+        let v = f(&mut w)?;
+        let file = w.into_inner().map_err(|e| crate::Error::Msg(e.to_string()))?;
+        file.sync_all().map_err(io)?;
+        drop(file);
+        std::fs::rename(&part, output).map_err(io)?;
+        Ok(v)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    result
 }
 
 pub fn payload_name(input: &Path) -> Result<String> {
@@ -1259,4 +1325,80 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    /// Rebuild a pack with stars `a` and `b` swapped (framing rewritten).
+    fn swap_stars(pack: &[u8], a: usize, b: usize) -> Vec<u8> {
+        let spans = star_spans(pack);
+        let head_end = spans[0].0 - 8;
+        let mut stars: Vec<&[u8]> = spans.iter().map(|&(x, y)| &pack[x..y]).collect();
+        stars.swap(a, b);
+        let mut out = pack[..head_end].to_vec();
+        for st in stars {
+            out.extend_from_slice(&(st.len() as u64).to_le_bytes());
+            out.extend_from_slice(st);
+        }
+        out.extend_from_slice(&pack[spans.last().unwrap().1..]);
+        out
+    }
+
+    #[test]
+    fn swapped_stars_refused_by_unseal_and_mend() {
+        let dir = tmp("swap");
+        let (_, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let bad = swap_stars(&pack, 0, 1);
+        let p = dir.join("swapped.sg1");
+        std::fs::write(&p, &bad).unwrap();
+        let out = dir.join("out.bin");
+        let e = unseal_path_keys(&p, &out, None, &[], &[]).unwrap_err().to_string();
+        assert!(e.contains("facet"), "{e}");
+        assert!(!out.exists());
+        let e = mend_pack_to(&bad, &mut Vec::new(), None, &[], &[]).err().unwrap().to_string();
+        assert!(e.contains("facet"), "{e}");
+    }
+
+    #[test]
+    fn damaged_pack_head_refused_in_memory_paths() {
+        let dir = tmp("head");
+        let (_, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let mut torn = pack.clone();
+        torn[..4].fill(0);
+        let e = unseal_ex_keys(&torn, None, &[], &[]).unwrap_err().to_string();
+        assert!(e.contains("more than one seal"), "{e}");
+        let e = crate::pieces::mend_bytes(&torn).unwrap_err().to_string();
+        assert!(e.contains("more than one seal"), "{e}");
+    }
+
+    #[test]
+    fn single_seal_with_trailing_junk_still_opens_but_two_seals_do_not() {
+        let msg: Vec<u8> = data(50_000);
+        let one = crate::seal(&msg, Mode::Seal, None, "x.bin", false).unwrap();
+        let mut junk = one.clone();
+        junk.extend_from_slice(&data(3000));
+        assert_eq!(unseal_ex_keys(&junk, None, &[], &[]).unwrap(), msg);
+        let mut two = one.clone();
+        two.extend_from_slice(&crate::seal(b"other", Mode::Seal, None, "y", false).unwrap());
+        assert!(unseal_ex_keys(&two, None, &[], &[]).is_err());
+        assert!(crate::pieces::mend_bytes(&two).is_err());
+    }
+
+    #[test]
+    fn range_unseal_is_all_or_nothing() {
+        let dir = tmp("range");
+        let (_, pack) = make_pack(&dir, 300 * 1024, &[]);
+        let spans = star_spans(&pack);
+        let mut torn = pack.clone();
+        // Destroy star 2 beyond repair (every shard and every header copy).
+        torn[spans[2].0..spans[2].1].fill(0);
+        let p = dir.join("torn.sg1");
+        std::fs::write(&p, &torn).unwrap();
+        let out = dir.join("range.bin");
+        assert!(unseal_range_keys(&p, &out, None, &[], 0, 3, &[]).is_err());
+        assert!(!out.exists(), "no partial range output");
+        let full = dir.join("full.bin");
+        assert!(unseal_path_keys(&p, &full, None, &[], &[]).is_err());
+        assert!(!full.exists(), "no partial full output");
+        // Range that avoids the dead star still works.
+        let (_, n) = unseal_range_keys(&p, &out, None, &[], 0, 1, &[]).unwrap();
+        assert_eq!(n, 2);
+    }
 }
