@@ -1158,6 +1158,52 @@ pub fn unseal_path_keys(
     Ok(n)
 }
 
+/// Unseal the seal or SGWK pack at `input` into `writer` (no output file is
+/// created; the caller decides where the bytes land). Returns the bytes written.
+pub(crate) fn unseal_path_into<W: Write>(
+    input: &Path,
+    writer: &mut W,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<u64> {
+    if is_work_pack(input) {
+        let mut src = packhead::FileSrc::open(input)?;
+        let l = packhead::layout(&mut src)?;
+        return unseal_pack_stream(&mut src, &l, writer, pass, companions, identities);
+    }
+    let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    unseal_bytes_into(&data, writer, pass, companions, identities)
+}
+
+/// Unseal an in-memory seal or SGWK pack into `writer`, with the same checks as
+/// [`unseal_path_keys`]. Returns the bytes written.
+pub(crate) fn unseal_bytes_into<W: Write>(
+    data: &[u8],
+    writer: &mut W,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<u64> {
+    let mut src = packhead::MemSrc(data);
+    if data.starts_with(&WORK_MAGIC) {
+        let l = packhead::layout(&mut src)?;
+        return unseal_pack_stream(&mut src, &l, writer, pass, companions, identities);
+    }
+    match unseal_ex_keys(data, pass, companions, identities) {
+        Ok(plain) => {
+            writer
+                .write_all(&plain)
+                .map_err(|e| crate::Error::Msg(e.to_string()))?;
+            Ok(plain.len() as u64)
+        }
+        Err(e) => match packhead::recover_bytes(data) {
+            Some(l) => unseal_pack_stream(&mut src, &l, writer, pass, companions, identities),
+            None => Err(e),
+        },
+    }
+}
+
 /// True when `path` is not a readable SGWK pack as written but its head can be
 /// rebuilt (for example the magic itself is damaged). Reads the whole file in
 /// the worst case; call it only after the ordinary readers have failed.

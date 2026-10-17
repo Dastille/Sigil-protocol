@@ -30,6 +30,8 @@ chunk, plus the pack's chunk list for big files). If it can't restore the whole
 file it exits nonzero, removes the part file and leaves any existing `file.bin`
 alone. A big file whose front (the pack head) is damaged is refused with
 "this file holds more than one seal" instead of quietly returning the first 4 MiB.
+Folder packs and constellations work the same way for the whole folder: if any
+file in it can't be restored, none are written and existing files stay as they were.
 
 Folder:
 

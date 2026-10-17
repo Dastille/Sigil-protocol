@@ -51,6 +51,7 @@ pub mod rs_bench {
     }
 }
 mod show;
+mod staging;
 mod vault;
 mod work;
 

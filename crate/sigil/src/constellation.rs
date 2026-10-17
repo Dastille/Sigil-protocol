@@ -1127,7 +1127,10 @@ fn restore_chart(
     card: Option<&Path>,
     identities: &[Identity],
 ) -> Result<u32> {
-    fs::create_dir_all(dest).map_err(io)?;
+    // All-or-nothing: members land as part files and are renamed into place
+    // only after every wanted member has unsealed and verified.
+    let mut staged = crate::staging::Staging::new();
+    staged.make_dir(dest)?;
     let by_digest = dir.map(|d| index_stars(d, card)).unwrap_or_default();
     let mut got = 0u32;
     for m in &chart.members {
@@ -1135,26 +1138,22 @@ fn restore_chart(
             continue;
         }
         let out_path = safe_out_path(dest, &m.name)?;
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(io)?;
-        }
         if !m.bytes.is_empty() {
             if m.bytes.starts_with(&crate::work::WORK_MAGIC) {
-                let tmp = out_path.with_extension("sgwk");
-                fs::write(&tmp, &m.bytes).map_err(io)?;
-                let r =
-                    crate::work::unseal_path_keys(&tmp, &out_path, pass, companions, identities);
-                let _ = fs::remove_file(&tmp);
-                r?;
+                staged.write_with(&out_path, |w| {
+                    crate::work::unseal_bytes_into(&m.bytes, w, pass, companions, identities)
+                })?;
             } else {
                 let plain = unseal_ex_keys(&m.bytes, pass, companions, identities)?;
-                fs::write(&out_path, plain).map_err(io)?;
+                staged.write(&out_path, &plain)?;
             }
         } else {
             let dir = dir.ok_or_else(|| err("constellation is missing a star"))?;
             let star = find_member_star(dir, m, &by_digest)
                 .ok_or_else(|| err(format!("constellation is missing a star: {}", m.name)))?;
-            crate::work::unseal_path_keys(&star, &out_path, pass, companions, identities)?;
+            staged.write_with(&out_path, |w| {
+                crate::work::unseal_path_into(&star, w, pass, companions, identities)
+            })?;
         }
         got += 1;
     }
@@ -1163,6 +1162,7 @@ fn restore_chart(
             "nothing matched --only (Scry the constellation to see paths)",
         ));
     }
+    staged.commit()?;
     Ok(got)
 }
 
@@ -1568,6 +1568,91 @@ mod tests {
                 x as u8
             })
             .collect()
+    }
+
+    /// Every file under `dir`, relative, sorted.
+    fn files_under(dir: &Path) -> Vec<String> {
+        fn go(base: &Path, d: &Path, out: &mut Vec<String>) {
+            if let Ok(rd) = fs::read_dir(d) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        go(base, &p, out);
+                    } else if let Ok(r) = p.strip_prefix(base) {
+                        out.push(r.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        let mut v = Vec::new();
+        go(dir, dir, &mut v);
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn failed_constellation_restore_writes_nothing_and_keeps_existing_files() {
+        let root = scratch("atomic");
+        let sky = legacy_sky(&root, "Sky");
+        fs::create_dir_all(root.join("in")).unwrap();
+        let names = ["a.txt", "big.bin", "z.txt"];
+        let big = noise(200_000, 11);
+        fs::write(root.join("in/a.txt"), b"alpha").unwrap();
+        fs::write(root.join("in/big.bin"), &big).unwrap();
+        fs::write(root.join("in/z.txt"), b"omega").unwrap();
+        let opts = AddOpts {
+            title: Some("Sky"),
+            mode: Mode::Seal,
+            chunk: 64 * 1024,
+            ..AddOpts::default()
+        };
+        for n in names {
+            add_to_constellation(&sky, &root.join("in").join(n), opts.clone()).unwrap();
+        }
+        let z_star = sky.join(star_file_name("z.txt"));
+        let big_star = sky.join(star_file_name("big.bin"));
+        assert!(crate::work::is_work_pack(&big_star));
+        let z_good = fs::read(&z_star).unwrap();
+        let big_good = fs::read(&big_star).unwrap();
+        let mut z_bad = z_good.clone();
+        z_bad.fill(0);
+        let mut big_bad = big_good.clone();
+        let (lo, hi) = (big_bad.len() / 3, big_bad.len() * 2 / 3);
+        big_bad[lo..hi].fill(0);
+        let atlas_dir = root.join("atlas");
+        fs::create_dir_all(&atlas_dir).unwrap();
+        for (what, star, bad, good) in [
+            ("last star", &z_star, &z_bad, &z_good),
+            ("work-pack star", &big_star, &big_bad, &big_good),
+        ] {
+            fs::write(star, bad).unwrap();
+            let atlas = atlas_dir.join("sky.atlas.sg1");
+            let _ = fs::remove_file(&atlas);
+            pack_atlas(&sky, &atlas).unwrap();
+            for input in [&sky, &atlas] {
+                let dest = root.join("fresh");
+                let _ = fs::remove_dir_all(&dest);
+                assert!(unseal_constellation(input, &dest, None, &[], &[]).is_err());
+                assert!(!dest.exists(), "{what}: left {:?}", files_under(&dest));
+                let keep = root.join("keep");
+                let _ = fs::remove_dir_all(&keep);
+                fs::create_dir_all(&keep).unwrap();
+                fs::write(keep.join("a.txt"), b"previous").unwrap();
+                assert!(unseal_constellation(input, &keep, None, &[], &[]).is_err());
+                assert_eq!(files_under(&keep), vec!["a.txt"], "{what}");
+                assert_eq!(fs::read(keep.join("a.txt")).unwrap(), b"previous");
+            }
+            fs::write(star, good).unwrap();
+        }
+        let keep = root.join("keep");
+        assert_eq!(
+            unseal_constellation(&sky, &keep, None, &[], &[]).unwrap(),
+            3
+        );
+        assert_eq!(files_under(&keep), names.to_vec());
+        assert_eq!(fs::read(keep.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(fs::read(keep.join("big.bin")).unwrap(), big);
+        let _ = fs::remove_dir_all(&root);
     }
 
     fn has_sgto(path: &Path) -> bool {
