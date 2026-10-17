@@ -109,6 +109,15 @@ jobs:
         with:
           tool: cargo-audit
       # Fails on any vulnerability advisory in Cargo.lock (all features, incl. the lab GUI).
-      # Unmaintained-crate notices (paste, ttf-parser via eframe) are reported, not fatal.
+      # Unmaintained-crate notices are reported, not fatal. paste and ttf-parser are
+      # ignored with written reasons in crate/sigil/.cargo/audit.toml.
       - name: cargo audit
         run: cargo audit
+      # Backs those reasons: paste is in no build at all, and ttf-parser only in the
+      # optional lab GUI (never in the default or passkey builds).
+      - name: ignored advisories stay out of the CLI builds
+        run: |
+          ! cargo tree --locked --target all --features lab -i paste 2>/dev/null | grep -q paste
+          ! cargo tree --locked --target all -i ttf-parser 2>/dev/null | grep -q ttf-parser
+          ! cargo tree --locked --target all --features passkey -i ttf-parser 2>/dev/null | grep -q ttf-parser
+          cargo tree --locked --target all --features lab -i ttf-parser | grep -q eframe
