@@ -24,6 +24,17 @@ through a pack left a half-written output file behind.
   file is removed and an existing output is left untouched. Used by plain unseal,
   pack unseal and `--star` / `--from-mb` range unseal. Pack mend and single mend
   already used temp + rename.
+- **Folder packs and constellations restore all-or-nothing too.** Every member
+  is written in full to a hidden part file beside its destination
+  (`.<name>.<pid>-<n>.sigil-part`) and synced. Only after every wanted member has
+  unsealed and verified are the part files renamed into place. If any member
+  fails (damage beyond repair, wrong key or ward, missing star), every part file
+  and every folder the restore created is removed and existing files are left
+  untouched. This covers folder-pack De-scribe (with and without mend),
+  constellation folders, cards and atlases (`staging::Staging`). Limit: the
+  final renames are one per file. If a rename itself fails during that last step,
+  files already renamed stay; each is complete and verified. A crash before the
+  renames can leave `.sigil-part` files, never a file under a restored name.
 - **Whole-file checks before success.** Every chunk is checked against the length
   and SHA-256 in its own header. Pack unseal and in-memory pack mend also check
   every chunk against the facet list (catches swapped or reordered chunks) and the
@@ -39,4 +50,7 @@ through a pack left a half-written output file behind.
 Tests: `tests/cli_unseal_failclosed.rs` (the original 6 MB `--mode seal
 --shards 254` case, truncations, existing output preserved, mend refuses) and
 `work::tests` (swapped stars, damaged head in memory, two concatenated seals,
-range all-or-nothing).
+range all-or-nothing), `folder::tests::failed_folder_restore_writes_nothing_and_keeps_existing_files`,
+`folder::tests::wrong_key_folder_restore_writes_nothing`,
+`constellation::tests::failed_constellation_restore_writes_nothing_and_keeps_existing_files`
+and `staging::tests`.
