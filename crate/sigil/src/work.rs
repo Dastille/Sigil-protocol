@@ -223,34 +223,21 @@ pub fn inscribe_path_to(
     let overture = choose_overture(stars, orig, chunk, overture_mb);
     let mut reader =
         BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let head_bytes = packhead::head_to_bytes(&WorkHead {
+        version: 2,
+        chunk_size: chunk,
+        orig_total: orig,
+        name: name.clone(),
+        stars,
+        overture,
+    });
     let mut writer =
         BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
     writer
-        .write_all(&WORK_MAGIC)
+        .write_all(&head_bytes)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&[2u8])
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&chunk.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&orig.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let nb = name.as_bytes();
-    let nlen = nb.len().min(255) as u8;
-    writer
-        .write_all(&[nlen])
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&nb[..nlen as usize])
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&stars.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&overture.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut pos = head_bytes.len() as u64;
+    let pack_id = packhead::new_pack_id()?;
     let mut buf = vec![0u8; chunk as usize];
     let mut facets = Vec::new();
     for (i, range) in ranges.iter().enumerate() {
@@ -271,12 +258,7 @@ pub fn inscribe_path_to(
             piece_bytes,
             recipients,
         )?;
-        writer
-            .write_all(&(sealed.len() as u64).to_le_bytes())
-            .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        writer
-            .write_all(&sealed)
-            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        pos = write_star(&mut writer, pos, i as u32, &sealed, &head_bytes, &pack_id)?;
         if let Ok((h, _, _)) = crate::locate_header(&sealed) {
             facets.push(h.digest);
         } else {
@@ -298,6 +280,37 @@ pub fn inscribe_path_to(
         .flush()
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok((orig, stars, true))
+}
+
+/// The SGFC facet list for `facets`.
+fn facet_trailer(facets: &[[u8; 32]]) -> Vec<u8> {
+    let mut t = Vec::with_capacity(8 + 32 * facets.len());
+    t.extend_from_slice(b"SGFC");
+    t.extend_from_slice(&(facets.len() as u32).to_le_bytes());
+    for d in facets {
+        t.extend_from_slice(d);
+    }
+    t
+}
+
+/// Write star `index` at file offset `pos`: its 8-byte length, its seal, then a
+/// pack-head guard (copy of the head + index + offset, see `packhead`). Returns
+/// the offset after it.
+fn write_star<W: Write>(
+    w: &mut W,
+    pos: u64,
+    index: u32,
+    sealed: &[u8],
+    head_bytes: &[u8],
+    pack_id: &[u8; 16],
+) -> Result<u64> {
+    let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
+    let guard = packhead::guard_bytes(index, pos, sealed.len() as u64, pack_id, head_bytes);
+    let len = (sealed.len() + guard.len()) as u64;
+    w.write_all(&len.to_le_bytes()).map_err(io)?;
+    w.write_all(sealed).map_err(io)?;
+    w.write_all(&guard).map_err(io)?;
+    Ok(pos + 8 + len)
 }
 
 // Justification: each parameter is an independent user-facing seal option threaded
@@ -345,34 +358,21 @@ fn inscribe_ranges(
     let stars = ranges.len() as u32;
     let chunk = header_chunk.max(64 * 1024);
     let overture = choose_overture(stars, orig, chunk, overture_mb);
+    let head_bytes = packhead::head_to_bytes(&WorkHead {
+        version: 2,
+        chunk_size: chunk,
+        orig_total: orig,
+        name: name.to_string(),
+        stars,
+        overture,
+    });
     let mut writer =
         BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
     writer
-        .write_all(&WORK_MAGIC)
+        .write_all(&head_bytes)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&[2u8])
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&chunk.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&orig.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let nb = name.as_bytes();
-    let nlen = nb.len().min(255) as u8;
-    writer
-        .write_all(&[nlen])
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&nb[..nlen as usize])
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&stars.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    writer
-        .write_all(&overture.to_le_bytes())
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut pos = head_bytes.len() as u64;
+    let pack_id = packhead::new_pack_id()?;
     let mut facets = Vec::new();
     for (i, range) in ranges.iter().enumerate() {
         let slice = &data[range.offset..range.end()];
@@ -389,12 +389,7 @@ fn inscribe_ranges(
             piece_bytes,
             recipients,
         )?;
-        writer
-            .write_all(&(sealed.len() as u64).to_le_bytes())
-            .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        writer
-            .write_all(&sealed)
-            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        pos = write_star(&mut writer, pos, i as u32, &sealed, &head_bytes, &pack_id)?;
         if let Ok((h, _, _)) = crate::locate_header(&sealed) {
             facets.push(h.digest);
         } else {
@@ -834,6 +829,12 @@ pub struct PackMendReport {
     /// Where the pack head came from; anything but [`HeadSource::Intact`] means
     /// the head was damaged and the output carries a rebuilt one.
     pub head: HeadSource,
+    /// The facet list was damaged and the output carries one rebuilt from the
+    /// stars' own headers, in the order their guards prove (guarded packs only).
+    pub facets_rebuilt: bool,
+    /// Stars of a guarded pack whose guard was missing or damaged and has been
+    /// written again (for example after a mend by a pre-guard binary).
+    pub guards_restored: u32,
 }
 
 /// Heal one chunk star without keys: returns `Some(healed)` when it was torn.
@@ -893,12 +894,22 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
     let result = (|| -> Result<PackMendReport> {
         let mut w = BufWriter::new(File::create(&tmp).map_err(io)?);
         w.write_all(&l.head_bytes).map_err(io)?;
+        let mut pos = l.head_bytes.len() as u64;
         let mut mended = Vec::new();
         let mut soft_used = false;
+        let mut guards_restored = 0u32;
         for (i, &(start, len)) in l.stars.iter().enumerate() {
             let i = i as u32;
             let mut star = vec![0u8; len as usize];
             src.read_at(start, &mut star)?;
+            if l.guarded {
+                if packhead::guard_of_star(&star).is_none() {
+                    guards_restored += 1;
+                }
+                // Heal the seal alone; a fresh guard is written after it below.
+                let seal_len = packhead::seal_part(&star).len();
+                star.truncate(seal_len);
+            }
             if let Some((healed, used_soft)) = mend_chunk_star(i, n, &star, soft)? {
                 star = healed;
                 soft_used |= used_soft;
@@ -912,11 +923,18 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
                     )));
                 }
             }
-            w.write_all(&(star.len() as u64).to_le_bytes())
-                .map_err(io)?;
-            w.write_all(&star).map_err(io)?;
+            if l.guarded {
+                pos = write_star(&mut w, pos, i, &star, &l.head_bytes, &l.pack_id)?;
+            } else {
+                w.write_all(&(star.len() as u64).to_le_bytes())
+                    .map_err(io)?;
+                w.write_all(&star).map_err(io)?;
+            }
         }
-        w.write_all(&trailer).map_err(io)?;
+        match (&facets, l.facets_rebuilt) {
+            (Some(f), true) => w.write_all(&facet_trailer(f)).map_err(io)?,
+            _ => w.write_all(&trailer).map_err(io)?,
+        }
         w.flush().map_err(io)?;
         w.get_ref().sync_all().map_err(io)?;
         Ok(PackMendReport {
@@ -926,6 +944,8 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
             facets_checked: facets.is_some(),
             bytes: 0,
             head: l.source,
+            facets_rebuilt: l.facets_rebuilt,
+            guards_restored,
         })
     })();
     drop(src);
@@ -1045,11 +1065,12 @@ pub fn mend_pack_to<W: Write>(
         )));
     }
     let mended: Vec<u32> = healed_stars.iter().map(|(i, _)| *i).collect();
-    let healed = if healed_stars.is_empty() && l.source == HeadSource::Intact {
+    let healed = if healed_stars.is_empty() && l.source == HeadSource::Intact && !l.guarded {
         None
     } else {
         let mut rebuilt = Vec::with_capacity(pack.len());
         rebuilt.extend_from_slice(&l.head_bytes);
+        let mut pos = l.head_bytes.len() as u64;
         let mut next = healed_stars.into_iter().peekable();
         for i in 0..l.stars.len() {
             let (a, b) = span(&l, i);
@@ -1057,12 +1078,24 @@ pub fn mend_pack_to<W: Write>(
                 Some((j, _)) if *j as usize == i => next.next().map(|(_, s)| s),
                 _ => None,
             };
-            let star: &[u8] = replacement.as_deref().unwrap_or(&pack[a..b]);
-            rebuilt.extend_from_slice(&(star.len() as u64).to_le_bytes());
-            rebuilt.extend_from_slice(star);
+            if l.guarded {
+                let seal: &[u8] = match replacement.as_deref() {
+                    Some(r) => r,
+                    None => packhead::seal_part(&pack[a..b]),
+                };
+                pos = write_star(&mut rebuilt, pos, i as u32, seal, &l.head_bytes, &l.pack_id)?;
+            } else {
+                let star: &[u8] = replacement.as_deref().unwrap_or(&pack[a..b]);
+                rebuilt.extend_from_slice(&(star.len() as u64).to_le_bytes());
+                rebuilt.extend_from_slice(star);
+            }
         }
-        rebuilt.extend_from_slice(&pack[l.trailer_off as usize..]);
-        Some(rebuilt)
+        match (facets, l.facets_rebuilt) {
+            (Some(f), true) => rebuilt.extend_from_slice(&facet_trailer(f)),
+            _ => rebuilt.extend_from_slice(&pack[l.trailer_off as usize..]),
+        }
+        // A clean guarded pack rewrites to exactly the same bytes.
+        (rebuilt != pack).then_some(rebuilt)
     };
     Ok(WorkMend {
         written,
@@ -1604,11 +1637,16 @@ mod tests {
         let mut fr = pack.clone();
         fr[spans[2].0 - 8..spans[2].0].copy_from_slice(&(1u64 << 40).to_le_bytes());
         check(&fr, "framing damaged at star 2");
-        // Trailer.
+        // Trailer: every star's guard proves the order, so a guarded pack's
+        // facet list is rebuilt (old packs still refuse; see packhead tests).
         let mut tr = pack.clone();
         let n = tr.len();
         tr[n - 32 * spans.len() - 8] = b'X';
-        check(&tr, "facet trailer");
+        std::fs::write(&p, &tr).unwrap();
+        let rep = mend_pack_path(&p, &out, false).unwrap();
+        assert!(rep.facets_rebuilt && rep.facets_checked);
+        assert_eq!(std::fs::read(&out).unwrap(), pack);
+        std::fs::remove_file(&out).unwrap();
         // Swapped equal-length stars → facet mismatch.
         let (a0, a1) = spans[0];
         let (b0, b1) = spans[1];
@@ -1617,7 +1655,8 @@ mod tests {
         let first = pack[a0..a1].to_vec();
         sw[a0..a1].copy_from_slice(&pack[b0..b1]);
         sw[b0..b1].copy_from_slice(&first);
-        check(&sw, "does not match the pack facet");
+        // Their guards name other positions.
+        check(&sw, "out of place");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1647,13 +1686,22 @@ mod tests {
         let e = unseal_path_keys(&p, &out, None, &[], &[])
             .unwrap_err()
             .to_string();
-        assert!(e.contains("facet"), "{e}");
+        assert!(e.contains("out of place"), "{e}");
         assert!(!out.exists());
         let e = mend_pack_to(&bad, &mut Vec::new(), None, &[], &[])
             .err()
             .unwrap()
             .to_string();
+        assert!(e.contains("out of place"), "{e}");
+        // Without guards (a pack written before them) the facet list catches it.
+        let old = crate::packhead::tests::strip_guards(&pack);
+        let bad = swap_stars(&old, 0, 1);
+        std::fs::write(&p, &bad).unwrap();
+        let e = unseal_path_keys(&p, &out, None, &[], &[])
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("facet"), "{e}");
+        assert!(!out.exists());
     }
 
     #[test]

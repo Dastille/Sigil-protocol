@@ -31,7 +31,8 @@ through a pack left a half-written output file behind.
 - If only the facet trailer itself is cut off, every chunk is still verified on
   its own, so the file comes back whole and exact.
 - **A damaged pack head is now rebuilt when the evidence is unambiguous** (facet
-  list + each star's own header), see `PACK-HEAD-REPAIR.md`. When it cannot be
+  list + each star's own header; in new packs, a guard copy after each star), see
+  `PACK-HEAD-REPAIR.md`. When it cannot be
   rebuilt, the refusal above still applies. A lone first star still behind its
   pack framing is refused too ("one part of a large-file pack").
 
