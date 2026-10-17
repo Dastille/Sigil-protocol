@@ -45,7 +45,7 @@ jobs:
         run: cargo test --locked
 
   passkey:
-    name: build + test (--features passkey, headless)
+    name: build + clippy + test (--features passkey, headless)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -53,9 +53,11 @@ jobs:
         working-directory: crate/sigil
     steps:
       - uses: actions/checkout@v7
-      - name: libudev headers for hidapi
+      - name: libudev headers + pkg-config for hidapi
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: crate/sigil -> target
@@ -64,8 +66,13 @@ jobs:
       # passkey logic itself is exercised through the software test authenticator.
       - name: build
         run: cargo build --locked --features passkey --all-targets
-      - name: test passkey paths
-        run: cargo test --locked --features passkey passkey
+      # The lint job builds default features only, so the real CTAP backend
+      # (src/passkey.rs behind cfg(feature = "passkey")) is linted here.
+      - name: cargo clippy --features passkey -D warnings
+        run: cargo clippy --locked --features passkey --all-targets -- -D warnings
+      # Whole suite with the feature on: proves enabling passkey breaks nothing else.
+      - name: test (all, --features passkey)
+        run: cargo test --locked --features passkey
 
   lint:
     name: fmt + clippy (-D warnings)
