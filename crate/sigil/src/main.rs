@@ -3514,6 +3514,17 @@ fn mend_pack_report(
         sigil::HeadSource::FacetList => {
             format!("pack head rebuilt from the facet list; {healed}")
         }
+        sigil::HeadSource::Guard => format!("pack head restored from a guard copy; {healed}"),
+    };
+    let healed = if rep.guards_restored > 0 {
+        format!("restored {} star guard(s); {healed}", rep.guards_restored)
+    } else {
+        healed
+    };
+    let healed = if rep.facets_rebuilt {
+        format!("facet list rebuilt; {healed}")
+    } else {
+        healed
     };
     println!(
         "mended work pack {} → {} ({healed}; {} stars verified{}{})",

@@ -87,3 +87,34 @@ fn unrebuildable_head_still_fails_closed() {
     assert!(!dir.join("m.sg1").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn new_pack_with_head_and_facet_list_wiped_comes_back_byte_exact() {
+    let (dir, _) = setup("guard");
+    std::fs::write(dir.join("plain.bin"), plain()).unwrap();
+    let o = sigil(
+        &dir,
+        &["seal", "--chunk", "65536", "-o", "new.sg1", "plain.bin"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let pack = std::fs::read(dir.join("new.sg1")).unwrap();
+    let mut bad = pack.clone();
+    let n = bad.len();
+    bad[..35].fill(0); // the whole head ("plain.bin": 26 + 9 bytes)
+    bad[n - 32 * 4 - 8..].fill(0xaa); // facet list gone
+    std::fs::write(dir.join("torn.sg1"), &bad).unwrap();
+
+    let o = sigil(&dir, &["unseal", "torn.sg1", "-o", "out.bin"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), plain());
+
+    let o = sigil(&dir, &["mend", "torn.sg1", "-o", "fixed.sg1"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&o);
+    assert!(
+        t.contains("restored from a guard copy") && t.contains("facet list rebuilt"),
+        "{t}"
+    );
+    assert_eq!(std::fs::read(dir.join("fixed.sg1")).unwrap(), pack);
+    let _ = std::fs::remove_dir_all(&dir);
+}
