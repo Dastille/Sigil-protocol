@@ -20,7 +20,7 @@ Tag **v1.0** on GitHub when you push `Dastille/Sigil-protocol` (this sandbox can
 
 **CI**
 
-Every push and PR to `main` runs `.github/workflows/ci.yml`: `cargo build --locked --all-targets` + `cargo test --locked` (lib + integration tests), plus a second job that builds `--features passkey` headless (libudev-dev) and runs the passkey tests against the software authenticator. Cargo deps and `target/` are cached. Tagged releases still use `release.yml`.
+Every push and PR to `main` runs `.github/workflows/ci.yml`: `cargo build --locked --all-targets` + `cargo test --locked` (lib + integration tests), plus a second job that installs libudev-dev + pkg-config, builds `--features passkey` headless, runs `cargo clippy --features passkey --all-targets -D warnings` (the lint job only covers default features), and runs the whole test suite with the feature on (passkey logic against the software authenticator). Separate jobs run `cargo fmt --check`, default-feature clippy, and `cargo audit`. Cargo deps and `target/` are cached. Tagged releases still use `release.yml`.
 
 **Mount / FUSE (Linux)**
 
