@@ -3,6 +3,7 @@
 
 use crate::cdc::{self, ChunkRange, Profile as CdcProfile};
 use crate::keys::{Identity, PublicIdentity};
+use crate::packhead::{self, HeadSource, PackLayout, Src};
 use crate::{seal_kn_to, unseal_ex_keys, Mode, Result, DEFAULT_PIECE};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -42,7 +43,8 @@ pub fn choose_overture(stars: u32, orig: u64, chunk: u32, overture_mb: u32) -> u
     n.min(stars)
 }
 
-fn read_head<R: Read>(r: &mut R) -> Result<WorkHead> {
+/// Parse an SGWK head (version 1 or 2) from the start of `r`.
+pub(crate) fn read_head<R: Read>(r: &mut R) -> Result<WorkHead> {
     let mut mag = [0u8; 4];
     r.read_exact(&mut mag)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -503,9 +505,22 @@ pub struct StarLoc {
     pub orig_len: u32,
 }
 
+/// Locate every chunk star of a pack (stops quietly at a partly copied tail).
+///
+/// When the pack head does not parse, the head is rebuilt from the facet list
+/// and the stars' own headers (see `packhead`); if that fails too, the original
+/// error is returned.
 pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let head = read_head(&mut f)?;
+    let head = match read_head(&mut f) {
+        Ok(h) => h,
+        Err(e) => {
+            return match packhead::layout_path(input) {
+                Ok(l) => index_from_layout(input, l),
+                Err(_) => Err(e),
+            }
+        }
+    };
     let mut loc = Vec::new();
     let mut remain = head.orig_total;
     let mut orig_off = 0u64;
@@ -543,6 +558,31 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
         remain = remain.saturating_sub(orig_len as u64);
     }
     Ok((head, loc))
+}
+
+/// Star locations from a (possibly rebuilt) layout.
+fn index_from_layout(input: &Path, l: PackLayout) -> Result<(WorkHead, Vec<StarLoc>)> {
+    let mut src = packhead::FileSrc::open(input)?;
+    let mut loc = Vec::with_capacity(l.stars.len());
+    let mut remain = l.head.orig_total;
+    let mut orig_off = 0u64;
+    for (i, &(file_off, star_len)) in l.stars.iter().enumerate() {
+        let mut peek = vec![0u8; star_len.min(crate::header::KEYSTONE_SPAN as u64 + 64) as usize];
+        src.read_at(file_off, &mut peek)?;
+        let orig_len = crate::locate_header(&peek)
+            .map(|(h, _, _)| h.orig_len.min(remain) as u32)
+            .unwrap_or(remain.min(l.head.chunk_size as u64) as u32);
+        loc.push(StarLoc {
+            index: i as u32,
+            file_off,
+            star_len,
+            orig_off,
+            orig_len,
+        });
+        orig_off += orig_len as u64;
+        remain = remain.saturating_sub(orig_len as u64);
+    }
+    Ok((l.head, loc))
 }
 
 pub fn unseal_star_at(
@@ -781,6 +821,7 @@ pub fn inscribe_stars_dir_to(
 /// Outcome of [`mend_pack_path`].
 #[derive(Debug)]
 pub struct PackMendReport {
+    /// Number of chunk stars in the pack.
     pub stars: u32,
     /// Indexes of chunk stars that were healed.
     pub mended: Vec<u32>,
@@ -788,7 +829,11 @@ pub struct PackMendReport {
     pub soft_used: bool,
     /// Every star's header true-name matched the SGFC facet trailer.
     pub facets_checked: bool,
+    /// Size of the mended pack in bytes.
     pub bytes: u64,
+    /// Where the pack head came from; anything but [`HeadSource::Intact`] means
+    /// the head was damaged and the output carries a rebuilt one.
+    pub head: HeadSource,
 }
 
 /// Heal one chunk star without keys: returns `Some(healed)` when it was torn.
@@ -810,87 +855,51 @@ fn mend_chunk_star(i: u32, stars: u32, star: &[u8], soft: bool) -> Result<Option
     }
 }
 
+/// Lay out the pack at `input` for mend: a damaged facet trailer is refused.
+fn mend_layout<S: Src>(src: &mut S) -> Result<PackLayout> {
+    let l = packhead::layout(src)?;
+    if matches!(l.trailer, packhead::Trailer::Damaged) {
+        return Err(crate::Error::Msg(
+            "work pack facet trailer (SGFC) damaged; not RS-coded, refusing".into(),
+        ));
+    }
+    Ok(l)
+}
+
 /// Standalone, key-free mend of a whole SGWK large-file pack (`sigil mend`).
 ///
 /// Streams star by star (one chunk in memory at a time), heals every torn chunk
 /// star with the same RS mend as a single mark, and checks every star's header
 /// true-name against the SGFC facet trailer when present. Output goes to a temp
 /// file beside `output` and is renamed into place only when every star is clean,
-/// so `output` may equal `input`. The SGWK head, per-star length framing and the
-/// trailer are not RS-coded: damage there is refused, never guessed. Nothing is
-/// decrypted, so Warded / encrypt-to packs mend without a passphrase or identity.
+/// so `output` may equal `input`. A damaged pack head is rebuilt from the facet
+/// list and the stars' own headers when that is unambiguous (see
+/// `docs/PACK-HEAD-REPAIR.md`); damaged per-star length framing or a damaged
+/// facet trailer is refused, never guessed. Nothing is decrypted, so Warded /
+/// encrypt-to packs mend without a passphrase or identity.
 pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMendReport> {
     let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
-    let file_len = std::fs::metadata(input).map_err(io)?.len();
-    let mut r = BufReader::new(File::open(input).map_err(io)?);
-    let head = read_head(&mut r)?;
-    let head_len = r.stream_position().map_err(io)?;
-    // Pass 1: framing only (lengths must tile the file, trailer must parse).
-    // `stars` is untrusted; every star needs an 8-byte length, so cap the pre-allocation.
-    let mut spans = Vec::with_capacity((head.stars as usize).min((file_len / 8) as usize));
-    let mut off = head_len;
-    for i in 0..head.stars {
-        if off + 8 > file_len {
-            return Err(crate::Error::Msg(format!(
-                "work pack framing damaged at star {i} (length missing); not RS-coded, refusing"
-            )));
-        }
-        r.seek(SeekFrom::Start(off)).map_err(io)?;
-        let mut lb = [0u8; 8];
-        r.read_exact(&mut lb).map_err(io)?;
-        let len = u64::from_le_bytes(lb);
-        let end = (off + 8)
-            .checked_add(len)
-            .filter(|&e| e <= file_len)
-            .ok_or_else(|| {
-                crate::Error::Msg(format!(
-                    "work pack framing damaged at star {i} (bad length); not RS-coded, refusing"
-                ))
-            })?;
-        spans.push((off + 8, len));
-        off = end;
-    }
-    let trailer_len = file_len - off;
-    let mut trailer = vec![0u8; trailer_len as usize];
-    r.seek(SeekFrom::Start(off)).map_err(io)?;
-    r.read_exact(&mut trailer).map_err(io)?;
-    let n = head.stars as usize;
-    let facets: Option<Vec<[u8; 32]>> = if trailer.is_empty() {
-        None
-    } else if trailer.len() == 8 + 32 * n
-        && &trailer[0..4] == b"SGFC"
-        && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
-    {
-        Some(
-            trailer[8..]
-                .chunks(32)
-                .map(|c| c.try_into().unwrap())
-                .collect(),
-        )
-    } else {
-        return Err(crate::Error::Msg(
-            "work pack facet trailer (SGFC) damaged; not RS-coded, refusing".into(),
-        ));
-    };
+    let mut src = packhead::FileSrc::open(input)?;
+    let l = mend_layout(&mut src)?;
+    let n = l.head.stars;
+    let facets = l.facets().map(<[[u8; 32]]>::to_vec);
+    let mut trailer = vec![0u8; (src.size() - l.trailer_off) as usize];
+    src.read_at(l.trailer_off, &mut trailer)?;
 
-    // Pass 2: heal + write to a temp file beside the output.
+    // Heal + write to a temp file beside the output.
     let mut tmp = output.as_os_str().to_os_string();
     tmp.push(".mend-part");
     let tmp = std::path::PathBuf::from(tmp);
     let result = (|| -> Result<PackMendReport> {
         let mut w = BufWriter::new(File::create(&tmp).map_err(io)?);
-        let mut head_bytes = vec![0u8; head_len as usize];
-        r.seek(SeekFrom::Start(0)).map_err(io)?;
-        r.read_exact(&mut head_bytes).map_err(io)?;
-        w.write_all(&head_bytes).map_err(io)?;
+        w.write_all(&l.head_bytes).map_err(io)?;
         let mut mended = Vec::new();
         let mut soft_used = false;
-        for (i, &(start, len)) in spans.iter().enumerate() {
+        for (i, &(start, len)) in l.stars.iter().enumerate() {
             let i = i as u32;
-            r.seek(SeekFrom::Start(start)).map_err(io)?;
             let mut star = vec![0u8; len as usize];
-            r.read_exact(&mut star).map_err(io)?;
-            if let Some((healed, used_soft)) = mend_chunk_star(i, head.stars, &star, soft)? {
+            src.read_at(start, &mut star)?;
+            if let Some((healed, used_soft)) = mend_chunk_star(i, n, &star, soft)? {
                 star = healed;
                 soft_used |= used_soft;
                 mended.push(i);
@@ -911,16 +920,17 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
         w.flush().map_err(io)?;
         w.get_ref().sync_all().map_err(io)?;
         Ok(PackMendReport {
-            stars: head.stars,
+            stars: n,
             mended,
             soft_used,
             facets_checked: facets.is_some(),
             bytes: 0,
+            head: l.source,
         })
     })();
+    drop(src);
     match result {
         Ok(mut rep) => {
-            drop(r);
             std::fs::rename(&tmp, output).map_err(|e| {
                 let _ = std::fs::remove_file(&tmp);
                 io(e)
@@ -943,10 +953,13 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
 pub struct WorkMend {
     /// Plaintext bytes written.
     pub written: u64,
-    /// Rebuilt SGWK bytes when at least one star was healed (same layout, same facets).
+    /// Rebuilt SGWK bytes when at least one star was healed or the pack head was
+    /// rebuilt (same layout, same facets).
     pub healed: Option<Vec<u8>>,
     /// Indexes of stars that were mended.
     pub mended: Vec<u32>,
+    /// Where the pack head came from.
+    pub head: HeadSource,
 }
 
 /// True when a star still opens but shards / Merkle (or its primary header) are damaged.
@@ -957,14 +970,19 @@ pub fn star_torn(star: &[u8]) -> bool {
     }
 }
 
+fn span(l: &PackLayout, i: usize) -> (usize, usize) {
+    let (o, n) = l.stars[i];
+    (o as usize, (o + n) as usize)
+}
+
 /// Unseal an in-memory SGWK pack into `out`, mending torn chunk stars on the way.
 ///
 /// Each chunk star is a complete `.sg1`, so it heals with the same RS mend as a
 /// single-file mark. A star is mended when it fails to unseal, or opens but still
 /// shows damage (bad shard CRC / Merkle / primary header). Healed stars must keep
-/// the chunk true-name recorded in the SGFC facet trailer. The SGWK head, the
-/// per-star length framing and the trailer are not RS-coded (like the outer SGDR):
-/// damage there is refused, never guessed.
+/// the chunk true-name recorded in the SGFC facet trailer. A damaged pack head is
+/// rebuilt from the facet list when that is unambiguous; damaged per-star length
+/// framing is refused, never guessed.
 pub fn mend_pack_to<W: Write>(
     pack: &[u8],
     out: &mut W,
@@ -972,53 +990,12 @@ pub fn mend_pack_to<W: Write>(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<WorkMend> {
-    let mut cur = std::io::Cursor::new(pack);
-    let head = read_head(&mut cur)?;
-    let head_len = cur.position() as usize;
-    let mut off = head_len;
-    // `stars` is untrusted; every star needs an 8-byte length, so cap the pre-allocation.
-    let mut spans: Vec<(usize, usize)> =
-        Vec::with_capacity((head.stars as usize).min(pack.len() / 8));
-    for i in 0..head.stars {
-        let lb = pack.get(off..off + 8).ok_or_else(|| {
-            crate::Error::Msg(format!(
-                "work pack framing damaged at star {i} (length missing)"
-            ))
-        })?;
-        let len = u64::from_le_bytes(lb.try_into().unwrap()) as usize;
-        off += 8;
-        let end = off
-            .checked_add(len)
-            .filter(|&e| e <= pack.len())
-            .ok_or_else(|| {
-                crate::Error::Msg(format!(
-                    "work pack framing damaged at star {i} (bad length)"
-                ))
-            })?;
-        spans.push((off, end));
-        off = end;
-    }
-    let trailer = &pack[off..];
-    let facets: Option<Vec<[u8; 32]>> = {
-        let n = head.stars as usize;
-        if trailer.len() == 8 + 32 * n
-            && &trailer[0..4] == b"SGFC"
-            && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
-        {
-            Some(
-                trailer[8..]
-                    .chunks(32)
-                    .map(|c| c.try_into().unwrap())
-                    .collect(),
-            )
-        } else {
-            None
-        }
-    };
-
+    let l = packhead::layout(&mut packhead::MemSrc(pack))?;
+    let facets = l.facets();
     let mut healed_stars: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut written = 0u64;
-    for (i, &(a, b)) in spans.iter().enumerate() {
+    for i in 0..l.stars.len() {
+        let (a, b) = span(&l, i);
         let i = i as u32;
         let star = &pack[a..b];
         let opened = unseal_ex_keys(star, pass, companions, identities);
@@ -1027,7 +1004,7 @@ pub fn mend_pack_to<W: Write>(
             opened => match crate::pieces::mend_bytes(star) {
                 Ok(healed) => {
                     let p = unseal_ex_keys(&healed, pass, companions, identities)?;
-                    if let Some(f) = &facets {
+                    if let Some(f) = facets {
                         let (h, _, _) = crate::locate_header(&healed)?;
                         if h.digest != f[i as usize] {
                             return Err(crate::Error::Msg(format!(
@@ -1044,13 +1021,13 @@ pub fn mend_pack_to<W: Write>(
                     Err(_) => {
                         return Err(crate::Error::Msg(format!(
                             "star {i} of {} is too damaged to mend: {e}",
-                            head.stars
+                            l.head.stars
                         )))
                     }
                 },
             },
         };
-        if let Some(f) = &facets {
+        if let Some(f) = facets {
             if crate::sha256(&plain) != f[i as usize] {
                 return Err(crate::Error::Msg(format!(
                     "star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
@@ -1061,20 +1038,21 @@ pub fn mend_pack_to<W: Write>(
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
         written += plain.len() as u64;
     }
-    if written != head.orig_total {
+    if written != l.head.orig_total {
         return Err(crate::Error::Msg(format!(
             "work length mismatch: got {written} expected {}",
-            head.orig_total
+            l.head.orig_total
         )));
     }
     let mended: Vec<u32> = healed_stars.iter().map(|(i, _)| *i).collect();
-    let healed = if healed_stars.is_empty() {
+    let healed = if healed_stars.is_empty() && l.source == HeadSource::Intact {
         None
     } else {
         let mut rebuilt = Vec::with_capacity(pack.len());
-        rebuilt.extend_from_slice(&pack[..head_len]);
+        rebuilt.extend_from_slice(&l.head_bytes);
         let mut next = healed_stars.into_iter().peekable();
-        for (i, &(a, b)) in spans.iter().enumerate() {
+        for i in 0..l.stars.len() {
+            let (a, b) = span(&l, i);
             let replacement = match next.peek() {
                 Some((j, _)) if *j as usize == i => next.next().map(|(_, s)| s),
                 _ => None,
@@ -1083,16 +1061,18 @@ pub fn mend_pack_to<W: Write>(
             rebuilt.extend_from_slice(&(star.len() as u64).to_le_bytes());
             rebuilt.extend_from_slice(star);
         }
-        rebuilt.extend_from_slice(trailer);
+        rebuilt.extend_from_slice(&pack[l.trailer_off as usize..]);
         Some(rebuilt)
     };
     Ok(WorkMend {
         written,
         healed,
         mended,
+        head: l.source,
     })
 }
 
+/// Unseal a single mark or an SGWK pack at `input` to `output` (all-or-nothing).
 pub fn unseal_path(
     input: &Path,
     output: &Path,
@@ -1102,6 +1082,11 @@ pub fn unseal_path(
     unseal_path_keys(input, output, pass, companions, &[])
 }
 
+/// Like [`unseal_path`], with `--identity` keys.
+///
+/// A pack whose head is damaged is opened through a rebuilt head when the
+/// facet list and the stars' own headers make that unambiguous; otherwise the
+/// error stands and nothing is written.
 pub fn unseal_path_keys(
     input: &Path,
     output: &Path,
@@ -1110,14 +1095,28 @@ pub fn unseal_path_keys(
     identities: &[Identity],
 ) -> Result<u64> {
     if is_work_pack(input) {
+        let mut src = packhead::FileSrc::open(input)?;
+        let l = packhead::layout(&mut src)?;
         return write_atomic(output, |writer| {
-            unseal_pack_stream(input, writer, pass, companions, identities)
+            unseal_pack_stream(&mut src, &l, writer, pass, companions, identities)
         });
     }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // unseal_ex_keys checks length + SHA-256 against the header and refuses a
     // buffer holding more than one seal (damaged pack head).
-    let plain = unseal_ex_keys(&data, pass, companions, identities)?;
+    let plain = match unseal_ex_keys(&data, pass, companions, identities) {
+        Ok(p) => p,
+        Err(e) => {
+            // The SGWK magic itself may be what was damaged.
+            if let Some(l) = packhead::recover_bytes(&data) {
+                let mut src = packhead::MemSrc(&data);
+                return write_atomic(output, |writer| {
+                    unseal_pack_stream(&mut src, &l, writer, pass, companions, identities)
+                });
+            }
+            return Err(e);
+        }
+    };
     let n = plain.len() as u64;
     write_atomic(output, |w| {
         w.write_all(&plain)
@@ -1126,67 +1125,49 @@ pub fn unseal_path_keys(
     Ok(n)
 }
 
+/// True when `path` is not a readable SGWK pack as written but its head can be
+/// rebuilt (for example the magic itself is damaged). Reads the whole file in
+/// the worst case; call it only after the ordinary readers have failed.
+pub fn is_damaged_work_pack(path: &Path) -> bool {
+    packhead::recover_path(path).is_some()
+}
+
 /// Stream every chunk star of an SGWK pack into `writer`, verifying each star
 /// (length + SHA-256 in its own header), the SGFC facet true-names when the
 /// trailer is present, and the pack's total length.
-fn unseal_pack_stream<W: Write>(
-    input: &Path,
+fn unseal_pack_stream<S: Src, W: Write>(
+    src: &mut S,
+    l: &PackLayout,
     writer: &mut W,
     pass: Option<&str>,
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<u64> {
     let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
-    let mut reader = BufReader::new(File::open(input).map_err(io)?);
-    let head = read_head(&mut reader)?;
+    let n = l.head.stars;
+    let facets = l.facets();
     let mut written = 0u64;
-    let mut digests = Vec::with_capacity(head.stars as usize);
-    for i in 0..head.stars {
-        let mut lenb = [0u8; 8];
-        reader.read_exact(&mut lenb).map_err(|_| {
-            crate::Error::Msg(format!(
-                "work pack truncated or framing damaged at star {i} of {}",
-                head.stars
-            ))
-        })?;
-        let len = u64::from_le_bytes(lenb);
-        if len > head.orig_total.saturating_mul(4).saturating_add(1 << 30) {
-            return Err(crate::Error::Msg(format!(
-                "work pack framing damaged at star {i} (bad length)"
-            )));
-        }
+    for (i, &(off, len)) in l.stars.iter().enumerate() {
         let mut star = vec![0u8; len as usize];
-        reader.read_exact(&mut star).map_err(|_| {
-            crate::Error::Msg(format!(
-                "work pack truncated inside star {i} of {}",
-                head.stars
-            ))
+        src.read_at(off, &mut star).map_err(|_| {
+            crate::Error::Msg(format!("work pack truncated inside star {i} of {n}"))
         })?;
         let plain = unseal_ex_keys(&star, pass, companions, identities)
-            .map_err(|e| crate::Error::Msg(format!("star {i} of {}: {e}", head.stars)))?;
-        digests.push(crate::locate_header(&star)?.0.digest);
-        writer.write_all(&plain).map_err(io)?;
-        written += plain.len() as u64;
-    }
-    let mut trailer = Vec::new();
-    reader.read_to_end(&mut trailer).map_err(io)?;
-    let n = head.stars as usize;
-    if trailer.len() == 8 + 32 * n
-        && &trailer[0..4] == b"SGFC"
-        && u32::from_le_bytes(trailer[4..8].try_into().unwrap()) as usize == n
-    {
-        for (i, f) in trailer[8..].chunks(32).enumerate() {
-            if f != digests[i] {
+            .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
+        if let Some(f) = facets {
+            if crate::locate_header(&star)?.0.digest != f[i] {
                 return Err(crate::Error::Msg(format!(
                     "chunk star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
                 )));
             }
         }
+        writer.write_all(&plain).map_err(io)?;
+        written += plain.len() as u64;
     }
-    if written != head.orig_total {
+    if written != l.head.orig_total {
         return Err(crate::Error::Msg(format!(
             "work length mismatch: got {written} expected {}",
-            head.orig_total
+            l.head.orig_total
         )));
     }
     Ok(written)
@@ -1220,6 +1201,7 @@ pub(crate) fn write_atomic<T>(
     result
 }
 
+/// Name stored in a mark or pack ("payload.bin" when none was recorded).
 pub fn payload_name(input: &Path) -> Result<String> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mag = [0u8; 4];
@@ -1229,7 +1211,10 @@ pub fn payload_name(input: &Path) -> Result<String> {
         drop(f);
         let mut reader =
             BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
-        let head = read_head(&mut reader)?;
+        let head = match read_head(&mut reader) {
+            Ok(h) => h,
+            Err(e) => packhead::layout_path(input).map_err(|_| e)?.head,
+        };
         if head.name.is_empty() {
             return Ok("payload.bin".into());
         }
@@ -1237,7 +1222,16 @@ pub fn payload_name(input: &Path) -> Result<String> {
     }
     drop(f);
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let (h, _, _) = crate::locate_header(&data)?;
+    let (h, prefix, _) = crate::locate_header(&data)?;
+    if crate::header::ensure_single_seal(&data, &h, prefix).is_err() {
+        // Several seals in a row: a pack whose magic is damaged.
+        if let Some(l) = packhead::recover_bytes(&data) {
+            if l.head.name.is_empty() {
+                return Ok("payload.bin".into());
+            }
+            return Ok(l.head.name);
+        }
+    }
     if h.name.is_empty() {
         Ok("payload.bin".into())
     } else {

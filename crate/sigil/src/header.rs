@@ -463,10 +463,27 @@ pub fn wrap_keystone(header: &[u8]) -> Vec<u8> {
 /// bytes in, and that seal opens and checks out on its own, so opening "the
 /// file" would silently return only the first chunk. Any second Sigil header or
 /// pack trailer after the end of the located seal means "this is not one seal".
+///
+/// It also refuses a seal that still has pack framing in front of it: a
+/// little-endian u64 right before the seal's header that equals the seal's own
+/// length (plus at most [`PACK_STAR_EXTRA`] bytes). That is one chunk star of a
+/// pack whose head is damaged and whose other stars are missing; returning it
+/// would hand back one 4 MiB chunk as if it were the whole file.
 pub fn ensure_single_seal(file: &[u8], h: &Header, prefix: usize) -> Result<()> {
     let end = prefix.saturating_add((h.n as usize).saturating_mul(shard_stride(h)));
+    let lone_star = || {
+        if framed_as_pack_star(file, end) {
+            return Err(Error::Msg(
+                "this file holds one part of a large-file pack whose front (pack head) is \
+                 damaged and whose other parts are missing. Refusing to return only that \
+                 part; restore the pack from another copy."
+                    .into(),
+            ));
+        }
+        Ok(())
+    };
     if file.len() <= end {
-        return Ok(());
+        return lone_star();
     }
     let tail = &file[end..];
     let mut i = 0;
@@ -483,13 +500,40 @@ pub fn ensure_single_seal(file: &[u8], h: &Header, prefix: usize) -> Result<()> 
             return Err(Error::Msg(
                 "this file holds more than one seal: it looks like a large-file pack whose \
                  front (pack head) is damaged. Refusing to return only the first part. \
-                 The pack head is not repairable; restore it from another copy."
+                 `sigil mend` rebuilds the head when the facet list and the stars \
+                 survive; otherwise restore it from another copy."
                     .into(),
             ));
         }
         i += 1;
     }
-    Ok(())
+    lone_star()
+}
+
+/// Bytes a pack star may carry after its seal and still count as framed (room
+/// for optional per-star records such as a pack-head guard).
+pub const PACK_STAR_EXTRA: usize = 1024;
+
+/// Longest SGWK pack head plus the star's 8-byte length: how far in a framed
+/// first star's header can sit.
+const PACK_FRAME_REACH: usize = 281 + 8;
+
+/// True when some header within the first [`PACK_FRAME_REACH`] bytes is preceded
+/// by an 8-byte length that matches the seal ending at `end`.
+fn framed_as_pack_star(file: &[u8], end: usize) -> bool {
+    let reach = file.len().min(PACK_FRAME_REACH + 1);
+    (8..reach).any(|s| {
+        if file.get(s..s + 4) != Some(&MAGIC[..]) || read_header(&file[s..]).is_err() {
+            return false;
+        }
+        let mut lb = [0u8; 8];
+        lb.copy_from_slice(&file[s - 8..s]);
+        let framed = u64::from_le_bytes(lb);
+        let Some(seal_len) = end.checked_sub(s) else {
+            return false;
+        };
+        framed >= seal_len as u64 && framed <= (seal_len + PACK_STAR_EXTRA) as u64
+    })
 }
 
 /// Returns (header, body prefix, recovered from a spare copy).

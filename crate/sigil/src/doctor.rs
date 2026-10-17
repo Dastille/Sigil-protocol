@@ -280,7 +280,11 @@ fn health_work_pack(path: &Path) -> Health {
     let r = crate::work::mend_pack_path(path, &tmp, false);
     let _ = fs::remove_file(&tmp);
     match r {
-        Ok(rep) if rep.mended.is_empty() => Health::Ok,
+        Ok(rep) if rep.mended.is_empty() && rep.head == crate::HeadSource::Intact => Health::Ok,
+        Ok(rep) if rep.head != crate::HeadSource::Intact => Health::Mendable(format!(
+            "pack head damaged but rebuildable from the facet list; {} chunk star(s) torn",
+            rep.mended.len()
+        )),
         Ok(rep) => Health::Mendable(format!(
             "{} chunk star(s) torn but healable",
             rep.mended.len()
@@ -329,7 +333,18 @@ fn health_file(path: &Path) -> Health {
         return worst;
     }
     match fs::read(path) {
-        Ok(b) => health_bytes(&b),
+        Ok(b) => match health_bytes(&b) {
+            Health::Ok => Health::Ok,
+            // A pack whose SGWK magic is damaged reads as several seals in a row.
+            other if crate::packhead::recover_bytes(&b).is_some() => {
+                drop(b);
+                match health_work_pack(path) {
+                    Health::Ok => other,
+                    h => h,
+                }
+            }
+            other => other,
+        },
         Err(e) => Health::Damaged(format!("cannot read: {e}")),
     }
 }
@@ -925,5 +940,33 @@ fn walk_sg1(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if p.extension().map(|e| e == "sg1").unwrap_or(false) {
             out.push(p);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn damaged_pack_head_is_reported_as_mendable() {
+        let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pack-v0");
+        let pack = fs::read(fx.join("pack-v2-reflection.sg1")).unwrap();
+        let p = std::env::temp_dir().join(format!("sigil-doctor-ph-{}.sg1", std::process::id()));
+        fs::write(&p, &pack).unwrap();
+        assert!(matches!(health_file(&p), Health::Ok));
+        for (lo, hi) in [(0, 4), (9, 17)] {
+            let mut bad = pack.clone();
+            bad[lo..hi].fill(0);
+            fs::write(&p, &bad).unwrap();
+            match health_file(&p) {
+                Health::Mendable(m) => assert!(m.contains("pack head"), "{m}"),
+                other => panic!("bytes {lo}..{hi}: {other:?}"),
+            }
+        }
+        let mut gone = pack.clone();
+        gone[..60].fill(0);
+        fs::write(&p, &gone).unwrap();
+        assert!(!matches!(health_file(&p), Health::Ok));
+        let _ = fs::remove_file(&p);
     }
 }

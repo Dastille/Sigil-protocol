@@ -1790,29 +1790,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             soft,
         } if sigil::is_work_pack(&input) => {
-            let rep = sigil::mend_pack_path(&input, &output, soft)?;
-            let healed = if rep.mended.is_empty() {
-                "no damage".to_string()
-            } else {
-                let list: Vec<String> = rep.mended.iter().map(|i| i.to_string()).collect();
-                format!(
-                    "healed {} chunk star(s): {}",
-                    rep.mended.len(),
-                    list.join(", ")
-                )
-            };
-            println!(
-                "mended work pack {} → {} ({healed}; {} stars verified{}{})",
-                input.display(),
-                output.display(),
-                rep.stars,
-                if rep.facets_checked {
-                    ", facets ok"
-                } else {
-                    ", no facet trailer"
-                },
-                if rep.soft_used { ", soft salvage" } else { "" }
-            );
+            mend_pack_report(&input, &output, soft)?;
         }
         Cmd::Mend {
             input,
@@ -1820,7 +1798,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             soft,
         } => {
             let data = fs::read(&input)?;
-            let (healed, used_soft) = mend_bytes_ex(&data, soft)?;
+            let (healed, used_soft) = match mend_bytes_ex(&data, soft) {
+                Ok(v) => v,
+                // A large-file pack whose head (even its magic) is damaged looks like
+                // several seals back to back; rebuild the head when that is unambiguous.
+                Err(e) => {
+                    drop(data);
+                    if sigil::is_damaged_work_pack(&input) {
+                        mend_pack_report(&input, &output, soft)?;
+                        return Ok(());
+                    }
+                    return Err(e.into());
+                }
+            };
             let mut tmp = output.as_os_str().to_os_string();
             tmp.push(".mend-part");
             let tmp = PathBuf::from(tmp);
@@ -3499,5 +3489,43 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
             println!("rebuild the live USB's initrd so the stick carries these (update-initramfs / dracut), or run sigil boot prepare on the mounted stick.");
         }
     }
+    Ok(())
+}
+
+/// `sigil mend` on a large-file pack: heal, then print what was done.
+fn mend_pack_report(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    soft: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rep = sigil::mend_pack_path(input, output, soft)?;
+    let healed = if rep.mended.is_empty() {
+        "no damage".to_string()
+    } else {
+        let list: Vec<String> = rep.mended.iter().map(|i| i.to_string()).collect();
+        format!(
+            "healed {} chunk star(s): {}",
+            rep.mended.len(),
+            list.join(", ")
+        )
+    };
+    let healed = match rep.head {
+        sigil::HeadSource::Intact => healed,
+        sigil::HeadSource::FacetList => {
+            format!("pack head rebuilt from the facet list; {healed}")
+        }
+    };
+    println!(
+        "mended work pack {} → {} ({healed}; {} stars verified{}{})",
+        input.display(),
+        output.display(),
+        rep.stars,
+        if rep.facets_checked {
+            ", facets ok"
+        } else {
+            ", no facet trailer"
+        },
+        if rep.soft_used { ", soft salvage" } else { "" }
+    );
     Ok(())
 }

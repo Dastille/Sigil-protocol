@@ -31,6 +31,7 @@ mod mount;
 pub mod names;
 mod nest;
 mod open;
+mod packhead;
 pub mod passkey;
 pub mod pgp;
 mod pieces;
@@ -107,6 +108,7 @@ pub use nest::{
     path_walk_keys, refuse_if_cycle, NestKind, PathEntry, PathView, MAX_NEST_DEPTH,
 };
 pub use open::{run_open, run_open_keys};
+pub use packhead::HeadSource;
 pub use pieces::{
     deluge as deluge_pieces, gather as gather_pieces, gather_dirs as gather_piece_dirs, mend_bytes,
     mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
@@ -138,8 +140,8 @@ pub use vault::{
 };
 pub use work::{
     choose_overture, index_pack, inscribe_path, inscribe_path_to, inscribe_stars_dir,
-    inscribe_stars_dir_to, is_work_pack, mend_pack_path, overture_report, payload_name,
-    read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
+    inscribe_stars_dir_to, is_damaged_work_pack, is_work_pack, mend_pack_path, overture_report,
+    payload_name, read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
     unseal_path_keys, unseal_range, unseal_range_keys, unseal_star_at, unseal_star_at_keys,
     PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
 };
