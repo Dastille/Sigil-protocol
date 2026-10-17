@@ -1,6 +1,7 @@
 //! Folder Inscribe: a directory becomes one SGDR pack of per-file marks.
 
 use crate::keys::{Identity, PublicIdentity};
+use crate::staging::Staging;
 use crate::{seal_kn_to, unseal_ex_keys, Mode, Result, DEFAULT_PIECE};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
@@ -177,7 +178,10 @@ pub fn unseal_dir_only_keys(
     wards: &[(String, String)],
     identities: &[Identity],
 ) -> Result<u32> {
-    fs::create_dir_all(dest).map_err(io)?;
+    // All-or-nothing: members land as part files and are renamed into place
+    // only after every wanted member has unsealed and verified.
+    let mut staged = Staging::new();
+    staged.make_dir(dest)?;
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let mut mag = [0u8; 4];
     reader.read_exact(&mut mag).map_err(io)?;
@@ -217,28 +221,20 @@ pub fn unseal_dir_only_keys(
             continue;
         }
         let out_path = dest.join(&rel);
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(io)?;
-        }
+        let file_pass = pass_for(&rel, pass, wards);
         if star.starts_with(&crate::work::WORK_MAGIC) {
-            let tmp = out_path.with_extension("sgwk");
-            fs::write(&tmp, &star).map_err(io)?;
-            crate::work::unseal_path_keys(
-                &tmp,
-                &out_path,
-                pass_for(&rel, pass, wards).as_deref(),
-                companions,
-                identities,
-            )?;
-            let _ = fs::remove_file(&tmp);
+            staged.write_with(&out_path, |w| {
+                crate::work::unseal_bytes_into(
+                    &star,
+                    w,
+                    file_pass.as_deref(),
+                    companions,
+                    identities,
+                )
+            })?;
         } else {
-            let plain = unseal_ex_keys(
-                &star,
-                pass_for(&rel, pass, wards).as_deref(),
-                companions,
-                identities,
-            )?;
-            fs::write(&out_path, plain).map_err(io)?;
+            let plain = unseal_ex_keys(&star, file_pass.as_deref(), companions, identities)?;
+            staged.write(&out_path, &plain)?;
         }
         got += 1;
     }
@@ -247,6 +243,7 @@ pub fn unseal_dir_only_keys(
             "nothing matched --only (Scry the pack to see paths)".into(),
         ));
     }
+    staged.commit()?;
     Ok(got)
 }
 
@@ -270,7 +267,8 @@ pub fn unseal_dir_mend_keys(
     wards: &[(String, String)],
     identities: &[Identity],
 ) -> Result<(u32, Option<Vec<u8>>)> {
-    fs::create_dir_all(dest).map_err(io)?;
+    let mut staged = Staging::new();
+    staged.make_dir(dest)?;
     let raw = fs::read(input).map_err(io)?;
     let entries = parse_sgdr_entries(&raw)?;
     let mut healed_stars: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
@@ -289,32 +287,22 @@ pub fn unseal_dir_mend_keys(
             if star.starts_with(&crate::work::WORK_MAGIC) {
                 // WORK/SGWK large-file member: mend torn chunk stars, keep framing.
                 let out_path = dest.join(&rel);
-                if let Some(parent) = out_path.parent() {
-                    fs::create_dir_all(parent).map_err(io)?;
-                }
                 let file_pass = pass_for(&rel, pass, wards);
-                let mut w = std::io::BufWriter::new(fs::File::create(&out_path).map_err(io)?);
-                let res = crate::work::mend_pack_to(
-                    &star,
-                    &mut w,
-                    file_pass.as_deref(),
-                    companions,
-                    identities,
-                )
-                .and_then(|m| {
-                    std::io::Write::flush(&mut w).map_err(io)?;
-                    Ok(m)
-                });
-                let m = match res {
-                    Ok(m) => m,
-                    Err(e) => {
-                        drop(w);
-                        let _ = fs::remove_file(&out_path);
-                        return Err(crate::Error::Msg(format!(
+                let m = staged
+                    .write_with(&out_path, |w| {
+                        crate::work::mend_pack_to(
+                            &star,
+                            w,
+                            file_pass.as_deref(),
+                            companions,
+                            identities,
+                        )
+                    })
+                    .map_err(|e| {
+                        crate::Error::Msg(format!(
                             "large-file member '{rel}' could not be restored: {e}"
-                        )));
-                    }
-                };
+                        ))
+                    })?;
                 if let Some(healed) = m.healed {
                     star = healed;
                     any_mended = true;
@@ -351,11 +339,7 @@ pub fn unseal_dir_mend_keys(
                         },
                     },
                 };
-                let out_path = dest.join(&rel);
-                if let Some(parent) = out_path.parent() {
-                    fs::create_dir_all(parent).map_err(io)?;
-                }
-                fs::write(&out_path, plain).map_err(io)?;
+                staged.write(&dest.join(&rel), &plain)?;
                 got += 1;
             }
         }
@@ -373,6 +357,7 @@ pub fn unseal_dir_mend_keys(
     } else {
         None
     };
+    staged.commit()?;
     Ok((got, healed_pack))
 }
 
@@ -661,6 +646,153 @@ pub fn read_dir_entry_star(input: &Path, want: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every file under `dir`, relative, sorted (directories omitted).
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        if dir.exists() {
+            walk(dir, &mut out).unwrap();
+        }
+        let mut v: Vec<String> = out.iter().map(|p| rel(dir, p)).collect();
+        v.sort();
+        v
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sigil-folder-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn noise(n: usize) -> Vec<u8> {
+        let mut x = 0x2545f4914f6cdd1du64;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    /// A folder pack of a.txt, m/big.bin (a 4-star work pack) and z.txt.
+    fn three_file_pack(root: &Path) -> (PathBuf, Vec<u8>) {
+        let src = root.join("src");
+        fs::create_dir_all(src.join("m")).unwrap();
+        fs::write(src.join("a.txt"), b"alpha").unwrap();
+        fs::write(src.join("m/big.bin"), noise(200_000)).unwrap();
+        fs::write(src.join("z.txt"), b"omega").unwrap();
+        let pack = root.join("f.sg1");
+        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        let raw = fs::read(&pack).unwrap();
+        (pack, raw)
+    }
+
+    /// Zero entry `name`'s star bytes inside the raw SGDR pack (beyond repair),
+    /// or only `[from..to)` of them.
+    fn wreck(raw: &[u8], name: &str, part: Option<(usize, usize)>) -> Vec<u8> {
+        let entries = parse_sgdr_entries(raw).unwrap();
+        let star = &entries.iter().find(|(r, _)| r == name).unwrap().1;
+        let at = raw
+            .windows(star.len())
+            .position(|w| w == star.as_slice())
+            .unwrap();
+        let (a, b) = part.unwrap_or((0, star.len()));
+        let mut out = raw.to_vec();
+        out[at + a..at + b].fill(0);
+        out
+    }
+
+    #[test]
+    fn failed_folder_restore_writes_nothing_and_keeps_existing_files() {
+        let root = scratch("atomic");
+        let (pack, raw) = three_file_pack(&root);
+        let wrecked_last = wreck(&raw, "z.txt", None);
+        let big_star_len = parse_sgdr_entries(&raw)
+            .unwrap()
+            .into_iter()
+            .find(|(r, _)| r == "m/big.bin")
+            .unwrap()
+            .1
+            .len();
+        // Wreck the middle of the work-pack member (two whole stars' worth).
+        let wrecked_mid = wreck(
+            &raw,
+            "m/big.bin",
+            Some((big_star_len / 3, big_star_len * 2 / 3)),
+        );
+        for (what, bytes) in [
+            ("last file", &wrecked_last),
+            ("work-pack member", &wrecked_mid),
+        ] {
+            fs::write(&pack, bytes).unwrap();
+            // Fresh destination: nothing at all is left behind, not even the folder.
+            let dest = root.join("fresh");
+            let _ = fs::remove_dir_all(&dest);
+            assert!(unseal_dir(&pack, &dest, None, &[]).is_err(), "{what}");
+            assert!(listing(&dest).is_empty(), "{what}: {:?}", listing(&dest));
+            assert!(!dest.exists(), "{what}: created folder removed");
+            assert!(unseal_dir_mend_keys(&pack, &dest, None, &[], &[], &[], &[]).is_err());
+            assert!(
+                !dest.exists(),
+                "{what}: mend restore left {:?}",
+                listing(&dest)
+            );
+            // Existing destination: its files stay exactly as they were.
+            let keep = root.join("keep");
+            let _ = fs::remove_dir_all(&keep);
+            fs::create_dir_all(&keep).unwrap();
+            fs::write(keep.join("a.txt"), b"previous").unwrap();
+            assert!(unseal_dir(&pack, &keep, None, &[]).is_err());
+            assert!(unseal_dir_mend_keys(&pack, &keep, None, &[], &[], &[], &[]).is_err());
+            assert_eq!(listing(&keep), vec!["a.txt".to_string()], "{what}");
+            assert_eq!(fs::read(keep.join("a.txt")).unwrap(), b"previous");
+        }
+        // The intact pack restores all three, replacing the old a.txt.
+        fs::write(&pack, &raw).unwrap();
+        let keep = root.join("keep");
+        assert_eq!(unseal_dir(&pack, &keep, None, &[]).unwrap(), 3);
+        assert_eq!(listing(&keep), vec!["a.txt", "m/big.bin", "z.txt"]);
+        assert_eq!(fs::read(keep.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(fs::read(keep.join("m/big.bin")).unwrap(), noise(200_000));
+        let dest = root.join("mended");
+        assert_eq!(
+            unseal_dir_mend_keys(&pack, &dest, None, &[], &[], &[], &[])
+                .unwrap()
+                .0,
+            3
+        );
+        assert_eq!(listing(&dest), vec!["a.txt", "m/big.bin", "z.txt"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn wrong_key_folder_restore_writes_nothing() {
+        let root = scratch("atomic-key");
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), b"alpha").unwrap();
+        fs::write(src.join("b.txt"), b"beta").unwrap();
+        let pack = root.join("f.sg1");
+        let wards = vec![("b.txt".to_string(), "b-secret".to_string())];
+        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &wards).unwrap();
+        let dest = root.join("out");
+        let wrong = vec![("b.txt".to_string(), "nope".to_string())];
+        assert!(unseal_dir_only(&pack, &dest, None, &[], &[], &wrong).is_err());
+        assert!(!dest.exists(), "left {:?}", listing(&dest));
+        assert_eq!(
+            unseal_dir_only(&pack, &dest, None, &[], &[], &wards).unwrap(),
+            2
+        );
+        assert_eq!(listing(&dest), vec!["a.txt", "b.txt"]);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     fn sgdr(count: u32) -> Vec<u8> {
         let mut raw = DIR_MAGIC.to_vec();
