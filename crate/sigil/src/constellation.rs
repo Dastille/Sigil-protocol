@@ -277,7 +277,7 @@ pub fn unpack_chart(data: &[u8]) -> Result<Chart> {
     if version != 2 {
         return Err(err(format!("unknown constellation version {version}")));
     }
-    let count = u16::from_le_bytes(data[6..8].try_into().unwrap()) as usize;
+    let count = u16::from_le_bytes(data[6..8].try_into().map_err(crate::short_field)?) as usize;
     let mut o = 8;
     let tlen = *data.get(o).ok_or_else(|| err("truncated constellation"))? as usize;
     o += 1;
@@ -312,9 +312,11 @@ pub fn unpack_chart(data: &[u8]) -> Result<Chart> {
         let mut merkle = [0u8; 32];
         merkle.copy_from_slice(&data[o..o + 32]);
         o += 32;
-        let orig_len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as u64;
+        let orig_len =
+            u32::from_le_bytes(data[o..o + 4].try_into().map_err(crate::short_field)?) as u64;
         o += 4;
-        let sealed = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+        let sealed =
+            u32::from_le_bytes(data[o..o + 4].try_into().map_err(crate::short_field)?) as usize;
         o += 4;
         let mode = match data[o] {
             2 => Mode::Seal,
@@ -322,9 +324,9 @@ pub fn unpack_chart(data: &[u8]) -> Result<Chart> {
             _ => Mode::Glyph,
         };
         o += 1;
-        let index = u16::from_le_bytes(data[o..o + 2].try_into().unwrap());
+        let index = u16::from_le_bytes(data[o..o + 2].try_into().map_err(crate::short_field)?);
         o += 2;
-        let total = u16::from_le_bytes(data[o..o + 2].try_into().unwrap());
+        let total = u16::from_le_bytes(data[o..o + 2].try_into().map_err(crate::short_field)?);
         o += 2;
         let has = flags & 1 != 0;
         let bytes = if has {
@@ -366,7 +368,8 @@ fn unpack_v1(data: &[u8]) -> Result<Chart> {
         if o + 4 > data.len() {
             return Err(err("truncated v1 constellation"));
         }
-        let byte_len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as usize;
+        let byte_len =
+            u32::from_le_bytes(data[o..o + 4].try_into().map_err(crate::short_field)?) as usize;
         o += 4;
         let nlen = *data
             .get(o)
@@ -383,7 +386,8 @@ fn unpack_v1(data: &[u8]) -> Result<Chart> {
         let mut merkle = [0u8; 32];
         merkle.copy_from_slice(&data[o..o + 32]);
         o += 32;
-        let orig_len = u32::from_le_bytes(data[o..o + 4].try_into().unwrap()) as u64;
+        let orig_len =
+            u32::from_le_bytes(data[o..o + 4].try_into().map_err(crate::short_field)?) as u64;
         o += 8;
         let mode = match data[o] {
             2 => Mode::Seal,

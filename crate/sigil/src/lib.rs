@@ -2,15 +2,17 @@
 //!
 //! # Panic policy
 //! Input files, headers, pieces and I/O are untrusted: parsers return `Error`, never panic.
-//! The `unwrap()`/`expect()` calls left in library (non-test) code are provably infallible:
-//! - `buf[a..b].try_into().unwrap()` into a `[u8; b - a]` array: the slice was just taken with
-//!   exactly that length (bounds were checked before slicing), so the conversion cannot fail;
-//! - lookups whose presence is an internal invariant, each commented at the call site
-//!   (Vandermonde inverse on distinct points, Merkle path in range, mount inode tables,
-//!   seglog cache, HMAC key of any length, the opt-in Cauchy bake-off encoder).
+//! Library (non-test) code has no `unwrap()` or `expect()` at all, enforced by
+//! `#![deny(clippy::unwrap_used, clippy::expect_used)]` below and the CI clippy job.
+//! Fixed-width fields convert with `try_into().map_err(short_field)?`, and internal
+//! invariants (Vandermonde inverse on distinct points, Merkle path in range, mount inode
+//! tables, seglog cache) surface as an `Error` if they were ever broken, never a panic.
+//! Every `unsafe` block carries a `// SAFETY:` comment (`clippy::undocumented_unsafe_blocks`).
 //!
 //! Mutex locks use `unwrap_or_else(PoisonError::into_inner)`: the guarded data (caches,
 //! progress stage) stays valid even if another thread panicked mid-update.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+#![deny(clippy::undocumented_unsafe_blocks)]
 mod attest;
 mod boot;
 mod cdc;
@@ -238,6 +240,14 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Error for a fixed-width field whose slice did not have the field's width.
+///
+/// Callers check lengths before slicing, so this path should be unreachable; it exists so
+/// that a missed check fails closed with an `Error` instead of panicking.
+pub(crate) fn short_field(_: std::array::TryFromSliceError) -> Error {
+    Error::Msg("internal: fixed-width field length mismatch (refusing to guess)".into())
+}
 
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
@@ -473,7 +483,7 @@ pub fn seal_kn_mds_to(
     let shards = if matches!(mode, Mode::Glyph) {
         rs::stripe(&folded, n)
     } else {
-        mds_be.encode(&folded, k, n)
+        mds_be.encode(&folded, k, n)?
     };
     let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
     let merkle = merkle::merkle_root(&leaves);

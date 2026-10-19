@@ -1833,8 +1833,10 @@ impl<'a> Reader<'a> {
             self.keyed_seen |= k;
             self.cache = Some((h, p));
         }
-        // Infallible: the block above fills `cache` whenever it did not already hold `h`.
-        let plain = &self.cache.as_ref().unwrap().1;
+        // The block above fills `cache` whenever it did not already hold `h`.
+        let Some((_, plain)) = self.cache.as_ref() else {
+            return Err(err("internal: segment cache empty after fill"));
+        };
         let mut off = 0usize;
         for m in self.state.members_of(h) {
             let sz = self.state.size_of(m) as usize;

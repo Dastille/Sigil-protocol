@@ -32,10 +32,10 @@ fn logistic_mask(seed: u32, size: usize) -> Vec<u8> {
     out
 }
 
-fn masks(salt: &[u8], size: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, u8) {
-    let s0 = u32::from_be_bytes(salt[0..4].try_into().unwrap());
-    let s1 = u32::from_be_bytes(salt[4..8].try_into().unwrap());
-    let s2 = u32::from_be_bytes(salt[8..12].try_into().unwrap());
+fn masks(salt: &[u8; 16], size: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, u8) {
+    let s0 = u32::from_be_bytes([salt[0], salt[1], salt[2], salt[3]]);
+    let s1 = u32::from_be_bytes([salt[4], salt[5], salt[6], salt[7]]);
+    let s2 = u32::from_be_bytes([salt[8], salt[9], salt[10], salt[11]]);
     let pi = logistic_mask(mix32(PI_SEED, s0), size);
     let phi = logistic_mask(mix32(PHI_SEED, s1), size);
     let log = logistic_mask(mix32(E_SEED, s2), size);
@@ -43,7 +43,7 @@ fn masks(salt: &[u8], size: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, u8) {
     (pi, phi, log, prime)
 }
 
-pub fn fold(data: &[u8], salt: &[u8]) -> Vec<u8> {
+pub fn fold(data: &[u8], salt: &[u8; 16]) -> Vec<u8> {
     let (pi, phi, log, prime) = masks(salt, data.len());
     let mut out = vec![0u8; data.len()];
     for i in 0..data.len() {
@@ -65,7 +65,7 @@ pub fn fold(data: &[u8], salt: &[u8]) -> Vec<u8> {
     out
 }
 
-pub fn unfold(data: &[u8], salt: &[u8]) -> Vec<u8> {
+pub fn unfold(data: &[u8], salt: &[u8; 16]) -> Vec<u8> {
     let (pi, phi, log, prime) = masks(salt, data.len());
     let mut out = data.to_vec();
     for i in 0..out.len() {

@@ -215,14 +215,22 @@ impl Wrapped {
         }
         let nslots = b[6] as usize;
         let public = PublicIdentity {
-            x25519_pk: b[8..40].try_into().unwrap(),
-            ed25519_pk: b[40..72].try_into().unwrap(),
+            x25519_pk: b[8..40].try_into().map_err(crate::short_field)?,
+            ed25519_pk: b[40..72].try_into().map_err(crate::short_field)?,
         };
         let mut i = HEADER_LEN;
-        let body_nonce: [u8; 12] = body.get(i..i + 12).ok_or_else(bad)?.try_into().unwrap();
+        let body_nonce: [u8; 12] = body
+            .get(i..i + 12)
+            .ok_or_else(bad)?
+            .try_into()
+            .map_err(crate::short_field)?;
         i += 12;
-        let ct_len =
-            u32::from_le_bytes(body.get(i..i + 4).ok_or_else(bad)?.try_into().unwrap()) as usize;
+        let ct_len = u32::from_le_bytes(
+            body.get(i..i + 4)
+                .ok_or_else(bad)?
+                .try_into()
+                .map_err(crate::short_field)?,
+        ) as usize;
         i += 4;
         let body_ct = body
             .get(i..i.checked_add(ct_len).ok_or_else(bad)?)
@@ -233,9 +241,12 @@ impl Wrapped {
         let mut unknown_slots = Vec::new();
         for _ in 0..nslots {
             let kind = *body.get(i).ok_or_else(bad)?;
-            let len =
-                u16::from_le_bytes(body.get(i + 1..i + 3).ok_or_else(bad)?.try_into().unwrap())
-                    as usize;
+            let len = u16::from_le_bytes(
+                body.get(i + 1..i + 3)
+                    .ok_or_else(bad)?
+                    .try_into()
+                    .map_err(crate::short_field)?,
+            ) as usize;
             let s = body.get(i + 3..i + 3 + len).ok_or_else(bad)?;
             i += 3 + len;
             if kind != SLOT_FIDO2_PRF {
@@ -249,14 +260,26 @@ impl Wrapped {
             let rp_id = String::from_utf8(s.get(j..j + rp_len).ok_or_else(bad)?.to_vec())
                 .map_err(|_| bad())?;
             j += rp_len;
-            let cl =
-                u16::from_le_bytes(s.get(j..j + 2).ok_or_else(bad)?.try_into().unwrap()) as usize;
+            let cl = u16::from_le_bytes(
+                s.get(j..j + 2)
+                    .ok_or_else(bad)?
+                    .try_into()
+                    .map_err(crate::short_field)?,
+            ) as usize;
             j += 2;
             let cred_id = s.get(j..j + cl).ok_or_else(bad)?.to_vec();
             j += cl;
-            let prf_input: [u8; 32] = s.get(j..j + 32).ok_or_else(bad)?.try_into().unwrap();
+            let prf_input: [u8; 32] = s
+                .get(j..j + 32)
+                .ok_or_else(bad)?
+                .try_into()
+                .map_err(crate::short_field)?;
             j += 32;
-            let nonce: [u8; 12] = s.get(j..j + 12).ok_or_else(bad)?.try_into().unwrap();
+            let nonce: [u8; 12] = s
+                .get(j..j + 12)
+                .ok_or_else(bad)?
+                .try_into()
+                .map_err(crate::short_field)?;
             j += 12;
             let wrapped_dek = s.get(j..j + 48).ok_or_else(bad)?.to_vec();
             j += 48;
@@ -503,10 +526,10 @@ impl SoftAuthenticator {
             }
             for c in b[4..].chunks(128) {
                 a.creds.push(SoftCred {
-                    id: c[0..32].try_into().unwrap(),
-                    rp_hash: c[32..64].try_into().unwrap(),
-                    cred_random_uv: c[64..96].try_into().unwrap(),
-                    cred_random_no_uv: c[96..128].try_into().unwrap(),
+                    id: c[0..32].try_into().map_err(crate::short_field)?,
+                    rp_hash: c[32..64].try_into().map_err(crate::short_field)?,
+                    cred_random_uv: c[64..96].try_into().map_err(crate::short_field)?,
+                    cred_random_no_uv: c[96..128].try_into().map_err(crate::short_field)?,
                 });
             }
         }
@@ -570,8 +593,9 @@ impl Authenticator for SoftAuthenticator {
         } else {
             &c.cred_random_no_uv
         };
-        // Infallible: HMAC accepts keys of any length (RFC 2104); RustCrypto never errs here.
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("hmac key");
+        // HMAC accepts keys of any length (RFC 2104), so this error path is not expected.
+        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+            .map_err(|_| Error::Msg("internal: HMAC key rejected".into()))?;
         mac.update(salt);
         let mut out = Zeroizing::new([0u8; 32]);
         out.copy_from_slice(&mac.finalize().into_bytes());

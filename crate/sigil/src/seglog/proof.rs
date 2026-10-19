@@ -240,8 +240,10 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
             entries[i - 1].chain
         },
         size,
-        // Infallible: `seq` was range-checked against `size`, so `i < leaves.len()`.
-        path: crate::merkle::merkle_path(&leaves, i).expect("index in range"),
+        // `seq` was range-checked against `size`, so `i < leaves.len()`.
+        path: crate::merkle::merkle_path(&leaves, i).ok_or_else(|| {
+            crate::Error::Msg(format!("internal: entry {} outside the log", i + 1))
+        })?,
         root: root_of(entries),
         head: signed,
         // the handovers that bring the HEAD's signer back to the earlier ones (see `signer_chain`)

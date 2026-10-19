@@ -156,10 +156,13 @@ pub fn decode_indexed(
                 data_ok[*index] = Some(body.clone());
             }
         }
-        if data_ok.iter().all(|s| s.is_some()) {
+        if let Some(data) = data_ok
+            .iter()
+            .map(|s| s.as_ref())
+            .collect::<Option<Vec<_>>>()
+        {
             let mut padded = vec![0u8; shard_len * k];
-            for i in 0..k {
-                let s = data_ok[i].as_ref().unwrap();
+            for (i, s) in data.into_iter().enumerate() {
                 let n = s.len().min(shard_len);
                 padded[i * shard_len..i * shard_len + n].copy_from_slice(&s[..n]);
             }
@@ -218,12 +221,12 @@ pub fn stripe(payload: &[u8], n: usize) -> Vec<Vec<u8>> {
 }
 
 pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8>, Error> {
-    if shards.iter().any(|s| s.is_none()) {
-        return Err(Error::Msg("glyph: missing shard".into()));
-    }
     let mut out = Vec::new();
     for s in shards {
-        out.extend_from_slice(s.as_ref().unwrap());
+        let Some(s) = s else {
+            return Err(Error::Msg("glyph: missing shard".into()));
+        };
+        out.extend_from_slice(s);
     }
     out.truncate(payload_len);
     Ok(out)

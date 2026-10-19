@@ -606,9 +606,14 @@ pub fn unwrap_cek(
                     break;
                 }
                 let hint = &sgto[i..i + 8];
-                let eph_pk: [u8; 32] = sgto[i + 8..i + 40].try_into().unwrap();
-                let nonce: [u8; 12] = sgto[i + 40..i + 52].try_into().unwrap();
-                let tag: [u8; 16] = sgto[i + 52..i + 68].try_into().unwrap();
+                let eph_pk: [u8; 32] =
+                    sgto[i + 8..i + 40].try_into().map_err(crate::short_field)?;
+                let nonce: [u8; 12] = sgto[i + 40..i + 52]
+                    .try_into()
+                    .map_err(crate::short_field)?;
+                let tag: [u8; 16] = sgto[i + 52..i + 68]
+                    .try_into()
+                    .map_err(crate::short_field)?;
                 let ct = &sgto[i + 68..i + 100];
                 i += RECIPIENT_REC;
                 for id in identities {
@@ -652,8 +657,10 @@ pub fn unwrap_cek(
                 if i + 12 + 16 + 32 > end {
                     break;
                 }
-                let nonce: [u8; 12] = sgto[i..i + 12].try_into().unwrap();
-                let tag: [u8; 16] = sgto[i + 12..i + 28].try_into().unwrap();
+                let nonce: [u8; 12] = sgto[i..i + 12].try_into().map_err(crate::short_field)?;
+                let tag: [u8; 16] = sgto[i + 12..i + 28]
+                    .try_into()
+                    .map_err(crate::short_field)?;
                 let ct = &sgto[i + 28..i + 60];
                 i += 12 + 16 + 32;
                 if let Some(p) = pass.filter(|s| !s.is_empty()) {
@@ -674,12 +681,12 @@ pub fn unwrap_cek(
                 }
                 let r = &sgto[i..i + PASS_ARGON2_REC];
                 i += PASS_ARGON2_REC;
-                let salt: [u8; 16] = r[0..16].try_into().unwrap();
-                let m_kib = u32::from_le_bytes(r[16..20].try_into().unwrap());
-                let t = u32::from_le_bytes(r[20..24].try_into().unwrap());
-                let p_lanes = u32::from_le_bytes(r[24..28].try_into().unwrap());
-                let nonce: [u8; 12] = r[28..40].try_into().unwrap();
-                let tag: [u8; 16] = r[40..56].try_into().unwrap();
+                let salt: [u8; 16] = r[0..16].try_into().map_err(crate::short_field)?;
+                let m_kib = u32::from_le_bytes(r[16..20].try_into().map_err(crate::short_field)?);
+                let t = u32::from_le_bytes(r[20..24].try_into().map_err(crate::short_field)?);
+                let p_lanes = u32::from_le_bytes(r[24..28].try_into().map_err(crate::short_field)?);
+                let nonce: [u8; 12] = r[28..40].try_into().map_err(crate::short_field)?;
+                let tag: [u8; 16] = r[40..56].try_into().map_err(crate::short_field)?;
                 let ct = &r[56..88];
                 if let Some(p) = pass.filter(|s| !s.is_empty()) {
                     // Out-of-bounds parameters are an error, not a skip: fail closed.

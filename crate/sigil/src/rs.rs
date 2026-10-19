@@ -29,37 +29,42 @@ fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
 }
 
 /// Inverse of the k×k Vandermonde matrix at `xs` (maps evaluations → coefficients).
-/// Panics on a singular system, exactly like `gf::solve_vandermonde` did.
-fn vandermonde_inverse(xs: &[u8]) -> Vec<u8> {
+///
+/// A Vandermonde matrix over GF(256) is invertible iff its points are pairwise distinct.
+/// Decoders pass points from `pick_live`, which dedups and drops indexes > 254; encoders
+/// pass `x_of(0..k)`, distinct for k <= 255. Repeated points (or k > 255, where `x_of`
+/// wraps) are refused with an error instead of a panic.
+fn vandermonde_inverse(xs: &[u8]) -> Result<Vec<u8>, Error> {
     let k = xs.len();
-    // Infallible for every caller: a Vandermonde matrix over GF(256) is invertible iff its
-    // points are pairwise distinct. Decoders pass points from `pick_live`, which dedups and
-    // drops indexes > 254; encoders pass `x_of(0..k)` with k <= 255 (k is a u8 in the header).
-    gf::invert_matrix(k, &power_matrix(xs, k)).expect("singular")
+    gf::invert_matrix(k, &power_matrix(xs, k)).ok_or_else(|| {
+        Error::Msg(format!(
+            "Reed-Solomon: evaluation points are not distinct (k = {k}); refusing a singular matrix"
+        ))
+    })
 }
 
 /// Matrix mapping k data shards → shard `rows` evaluations.
 /// systematic: E(rows) · V(1..k)^-1 ; v1: E(rows).
-fn encode_matrix(k: usize, rows: &[usize], systematic: bool) -> Vec<u8> {
+fn encode_matrix(k: usize, rows: &[usize], systematic: bool) -> Result<Vec<u8>, Error> {
     let xr: Vec<u8> = rows.iter().map(|&i| x_of(i)).collect();
     let e = power_matrix(&xr, k);
     if systematic {
         let xs: Vec<u8> = (0..k).map(x_of).collect();
-        gf::matmul(&e, &vandermonde_inverse(&xs), rows.len(), k, k)
+        Ok(gf::matmul(&e, &vandermonde_inverse(&xs)?, rows.len(), k, k))
     } else {
-        e
+        Ok(e)
     }
 }
 
 /// Matrix mapping k received symbols at `xs` → k data symbols.
-fn decode_matrix(xs: &[u8], systematic: bool) -> Vec<u8> {
+fn decode_matrix(xs: &[u8], systematic: bool) -> Result<Vec<u8>, Error> {
     let k = xs.len();
-    let vinv = vandermonde_inverse(xs);
+    let vinv = vandermonde_inverse(xs)?;
     if systematic {
         let data_xs: Vec<u8> = (0..k).map(x_of).collect();
-        gf::matmul(&power_matrix(&data_xs, k), &vinv, k, k, k)
+        Ok(gf::matmul(&power_matrix(&data_xs, k), &vinv, k, k, k))
     } else {
-        vinv
+        Ok(vinv)
     }
 }
 
@@ -88,14 +93,14 @@ pub fn decode_column(codeword: &[u8], k: usize, erased: &[bool]) -> Result<Vec<u
     Ok(gf::solve_vandermonde(&xs, &ys))
 }
 
-pub fn encode_shards(payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
+pub fn encode_shards(payload: &[u8], k: usize, n: usize) -> Result<Vec<Vec<u8>>, Error> {
     encode_shards_ex(payload, k, n, true)
 }
 
 /// v1 evaluation code (coefficients = data). Old files are decoded by the
 /// shared decoder; this encoder is only needed to produce v1 fixtures in tests.
 #[cfg(test)]
-pub fn encode_shards_v1(payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
+pub fn encode_shards_v1(payload: &[u8], k: usize, n: usize) -> Result<Vec<Vec<u8>>, Error> {
     encode_shards_ex(payload, k, n, false)
 }
 
@@ -113,14 +118,19 @@ fn split_padded(payload: &[u8], k: usize) -> (usize, Vec<Vec<u8>>) {
     (shard_len, data)
 }
 
-fn encode_shards_ex(payload: &[u8], k: usize, n: usize, systematic: bool) -> Vec<Vec<u8>> {
+fn encode_shards_ex(
+    payload: &[u8],
+    k: usize,
+    n: usize,
+    systematic: bool,
+) -> Result<Vec<Vec<u8>>, Error> {
     let (shard_len, data) = split_padded(payload, k);
     let rows: Vec<usize> = if systematic {
         (k..n).collect()
     } else {
         (0..n).collect()
     };
-    let m = encode_matrix(k, &rows, systematic);
+    let m = encode_matrix(k, &rows, systematic)?;
     let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
     let mut computed = vec![vec![0u8; shard_len]; rows.len()];
     {
@@ -131,9 +141,9 @@ fn encode_shards_ex(payload: &[u8], k: usize, n: usize, systematic: bool) -> Vec
         let mut shards = data;
         shards.truncate(n.min(k));
         shards.extend(computed);
-        shards
+        Ok(shards)
     } else {
-        computed
+        Ok(computed)
     }
 }
 
@@ -151,16 +161,21 @@ pub fn decode_shards(
     decode_indexed(&parts, k, payload_len, systematic)
 }
 
-pub fn encode_shard_index(payload: &[u8], k: usize, index: usize, systematic: bool) -> Vec<u8> {
+pub fn encode_shard_index(
+    payload: &[u8],
+    k: usize,
+    index: usize,
+    systematic: bool,
+) -> Result<Vec<u8>, Error> {
     let (shard_len, data) = split_padded(payload, k);
     if systematic && index < k {
-        return data[index].clone();
+        return Ok(data[index].clone());
     }
-    let m = encode_matrix(k, &[index], systematic);
+    let m = encode_matrix(k, &[index], systematic)?;
     let ins: Vec<&[u8]> = data.iter().map(|v| v.as_slice()).collect();
     let mut shard = vec![0u8; shard_len];
     gf::matrix_apply(&m, &ins, &mut [shard.as_mut_slice()]);
-    shard
+    Ok(shard)
 }
 
 /// First k distinct usable evaluation points, as (x, position in `idx`).
@@ -216,7 +231,7 @@ pub fn decode_indexed(
     if xs.len() < k {
         return Err(Error::Msg(format!("need {k} distinct pieces")));
     }
-    let m = decode_matrix(&xs, systematic);
+    let m = decode_matrix(&xs, systematic)?;
     // Inputs longer than shard_len are cut; shorter ones read as zero (as before).
     let ins: Vec<&[u8]> = live_idx
         .iter()
@@ -341,9 +356,12 @@ fn decode_graded_with_mask(
         if xs.len() < k {
             return Err(Error::Msg(format!("need {k} distinct symbols")));
         }
-        let m = cache
-            .entry(xs.clone())
-            .or_insert_with(|| decode_matrix(&xs, systematic));
+        let m = match cache.entry(xs.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(decode_matrix(&xs, systematic)?)
+            }
+        };
         let ins: Vec<&[u8]> = pos
             .iter()
             .map(|&j| {
@@ -507,7 +525,7 @@ mod tests {
     #[test]
     fn invert_once_matches_column() {
         let payload: Vec<u8> = (0..200).map(|i| (i * 7) as u8).collect();
-        let shards = encode_shards(&payload, 8, 16);
+        let shards = encode_shards(&payload, 8, 16).unwrap();
         assert_eq!(shards[0], {
             let sl = shards[0].len();
             let mut padded = vec![0u8; sl * 8];
@@ -520,7 +538,7 @@ mod tests {
         }
         let out = decode_shards(&opt, 8, payload.len(), true).unwrap();
         assert_eq!(out, payload);
-        let v1 = encode_shards_v1(&payload, 8, 16);
+        let v1 = encode_shards_v1(&payload, 8, 16).unwrap();
         let mut o1: Vec<Option<Vec<u8>>> = v1.into_iter().map(Some).collect();
         for slot in o1.iter_mut().take(8) {
             *slot = None;
@@ -534,7 +552,7 @@ mod tests {
     #[test]
     fn soft_recovers_crc_trailer_corruption() {
         let payload: Vec<u8> = (0..5000).map(|i| (i * 13) as u8).collect();
-        let shards = encode_shards(&payload, 8, 16);
+        let shards = encode_shards(&payload, 8, 16).unwrap();
         let parts: Vec<SoftPart> = shards
             .iter()
             .enumerate()
@@ -569,7 +587,7 @@ mod tests {
     #[test]
     fn soft_gmd_drops_bad_soft_shard() {
         let payload: Vec<u8> = (0..3000).map(|i| (i * 3) as u8).collect();
-        let shards = encode_shards(&payload, 8, 16);
+        let shards = encode_shards(&payload, 8, 16).unwrap();
         let mut parts: Vec<SoftPart> = Vec::new();
         for (i, shard) in shards.iter().enumerate().take(7) {
             parts.push(SoftPart {
@@ -634,19 +652,19 @@ mod tests {
             let (k, n, len) = random_shape(&mut r);
             let p = r.bytes(len);
             assert_eq!(
-                encode_shards(&p, k, n),
+                encode_shards(&p, k, n).unwrap(),
                 rs_ref::encode_shards(&p, k, n),
                 "v2 k={k} n={n} len={len}"
             );
             assert_eq!(
-                encode_shards_v1(&p, k, n),
+                encode_shards_v1(&p, k, n).unwrap(),
                 rs_ref::encode_shards_v1(&p, k, n),
                 "v1 k={k} n={n} len={len}"
             );
             let idx = r.below(n);
             for sys in [true, false] {
                 assert_eq!(
-                    encode_shard_index(&p, k, idx, sys),
+                    encode_shard_index(&p, k, idx, sys).unwrap(),
                     rs_ref::encode_shard_index(&p, k, idx, sys)
                 );
             }
@@ -666,7 +684,7 @@ mod tests {
             let extra = r.below(k);
             let p = r.bytes(k * 37 + extra);
             assert_eq!(
-                encode_shards(&p, k, n),
+                encode_shards(&p, k, n).unwrap(),
                 rs_ref::encode_shards(&p, k, n),
                 "k={k} n={n}"
             );
@@ -681,9 +699,9 @@ mod tests {
             let p = r.bytes(len);
             for sys in [true, false] {
                 let shards = if sys {
-                    encode_shards(&p, k, n)
+                    encode_shards(&p, k, n).unwrap()
                 } else {
-                    encode_shards_v1(&p, k, n)
+                    encode_shards_v1(&p, k, n).unwrap()
                 };
                 // random subset, random order, sometimes duplicates or extras
                 let mut idx: Vec<usize> = (0..n).collect();
@@ -715,7 +733,7 @@ mod tests {
         for _ in 0..200 {
             let (k, n, len) = random_shape(&mut r);
             let p = r.bytes(len);
-            let shards = encode_shards(&p, k, n);
+            let shards = encode_shards(&p, k, n).unwrap();
             let mut parts: Vec<(usize, Vec<u8>)> = (0..n)
                 .rev()
                 .take(k)
@@ -750,7 +768,7 @@ mod tests {
             let n = k + 1 + r.below(8);
             let len = r.below(3 * SOFT_STRIPE * k);
             let p = r.bytes(len);
-            let shards = encode_shards(&p, k, n);
+            let shards = encode_shards(&p, k, n).unwrap();
             let mut parts: Vec<SoftPart> = Vec::new();
             for i in 0..n {
                 if r.below(5) == 0 {
@@ -790,10 +808,25 @@ mod tests {
     #[test]
     fn decode_too_few_fails() {
         let p = vec![9u8; 1000];
-        let shards = encode_shards(&p, 8, 12);
+        let shards = encode_shards(&p, 8, 12).unwrap();
         let parts: Vec<(usize, Vec<u8>)> = (0..7).map(|i| (i + 5, shards[i + 5].clone())).collect();
         assert!(decode_indexed(&parts, 8, 1000, true).is_err());
         let dup: Vec<(usize, Vec<u8>)> = (0..8).map(|_| (9, shards[9].clone())).collect();
         assert!(decode_indexed(&dup, 8, 1000, true).is_err());
+    }
+
+    /// Repeated evaluation points make the Vandermonde matrix singular. This used to be an
+    /// `expect("singular")` panic; it must now be a clean error on every path that reaches it.
+    #[test]
+    fn singular_points_are_an_error_not_a_panic() {
+        assert!(vandermonde_inverse(&[3, 3]).is_err());
+        assert!(decode_matrix(&[7, 9, 7], true).is_err());
+        // k = 257 makes `x_of` wrap (index 256 → 1 again), so the data points repeat.
+        let payload = vec![0x5au8; 1024];
+        assert!(encode_shards(&payload, 257, 260).is_err());
+        assert!(encode_shard_index(&payload, 257, 258, true).is_err());
+        // Distinct points still invert, and k = 255 (the header maximum) still encodes.
+        assert!(vandermonde_inverse(&[1, 2, 3]).is_ok());
+        assert_eq!(encode_shards(&payload, 255, 256).unwrap().len(), 256);
     }
 }
