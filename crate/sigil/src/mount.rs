@@ -428,6 +428,13 @@ impl VaultFs {
             .ok_or_else(|| crate::Error::Msg(format!("missing parent {parent_path:?}")))?;
         let ino = self.next_ino;
         self.next_ino += 1;
+        // Every inode in `by_path` is inserted into `nodes` together with it, so the parent is
+        // always there; a broken table is refused rather than panicking.
+        self.nodes
+            .get_mut(&parent_ino)
+            .ok_or_else(|| crate::Error::Msg(format!("internal: no inode for {parent_path:?}")))?
+            .children
+            .push(ino);
         self.nodes.insert(
             ino,
             Node {
@@ -437,8 +444,6 @@ impl VaultFs {
                 children: Vec::new(),
             },
         );
-        // Infallible: every inode in `by_path` is inserted into `nodes` together with it.
-        self.nodes.get_mut(&parent_ino).unwrap().children.push(ino);
         self.by_path.insert(full, ino);
         Ok(ino)
     }
@@ -470,6 +475,12 @@ impl VaultFs {
         }
         let ino = self.next_ino;
         self.next_ino += 1;
+        // Same invariant as `ensure_dir`: refuse a broken inode table instead of panicking.
+        self.nodes
+            .get_mut(&parent_ino)
+            .ok_or_else(|| crate::Error::Msg(format!("internal: no inode for {parent_path:?}")))?
+            .children
+            .push(ino);
         self.nodes.insert(
             ino,
             Node {
@@ -479,8 +490,6 @@ impl VaultFs {
                 children: Vec::new(),
             },
         );
-        // Infallible: every inode in `by_path` is inserted into `nodes` together with it.
-        self.nodes.get_mut(&parent_ino).unwrap().children.push(ino);
         self.by_path.insert(full, ino);
         Ok(ino)
     }

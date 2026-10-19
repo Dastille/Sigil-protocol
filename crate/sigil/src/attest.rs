@@ -59,8 +59,8 @@ pub fn verify_attestation(mark: &Path) -> Result<String> {
     if b.len() < 4 + 32 + 64 || b[0..4] != SIG_MAGIC {
         return Ok("attestation: FAILED — not a Sigil .sig".into());
     }
-    let pk: [u8; 32] = b[4..36].try_into().unwrap();
-    let sg: [u8; 64] = b[36..100].try_into().unwrap();
+    let pk: [u8; 32] = b[4..36].try_into().map_err(crate::short_field)?;
+    let sg: [u8; 64] = b[36..100].try_into().map_err(crate::short_field)?;
     let vk = match VerifyingKey::from_bytes(&pk) {
         Ok(v) => v,
         Err(_) => return Ok("attestation: FAILED — bad public key in .sig".into()),

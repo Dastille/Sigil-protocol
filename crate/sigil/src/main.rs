@@ -2295,7 +2295,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             println!("unmounted {}", mountpoint.display());
         }
         Cmd::BenchMds { iters } => {
-            let rows = run_bakeoff(iters);
+            let rows = run_bakeoff(iters)?;
             let (report, _keep) = format_bakeoff_report(&rows);
             print!("{report}");
         }

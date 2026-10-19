@@ -1,5 +1,13 @@
 use crate::{Error, Mode, Result};
 
+/// Little-endian `u32` at `at`, or `None` when `b` is too short (never panics).
+fn le_u32_at(b: &[u8], at: usize) -> Option<u32> {
+    let end = at.checked_add(4)?;
+    b.get(at..end)
+        .and_then(|w| <[u8; 4]>::try_from(w).ok())
+        .map(u32::from_le_bytes)
+}
+
 pub const HEADER_SIZE: usize = 160;
 pub const KEYSTONE_COPIES: usize = 3;
 pub const KEYSTONE_SPAN: usize = HEADER_SIZE * (1 + KEYSTONE_COPIES);
@@ -102,7 +110,7 @@ fn parse_header(buf: &[u8], magic: &[u8; 4]) -> Result<Header> {
     let mut probe = buf[..HEADER_SIZE].to_vec();
     probe[108..112].fill(0);
     let expect = crc32fast::hash(&probe);
-    let got = u32::from_le_bytes(buf[108..112].try_into().unwrap());
+    let got = u32::from_le_bytes(buf[108..112].try_into().map_err(crate::short_field)?);
     if expect != got {
         return Err(Error::Msg("header CRC mismatch".into()));
     }
@@ -124,16 +132,16 @@ fn parse_header(buf: &[u8], magic: &[u8; 4]) -> Result<Header> {
         flags: buf[5],
         k: buf[6],
         n: buf[7],
-        orig_len: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-        folded_len: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
-        digest: buf[24..56].try_into().unwrap(),
-        salt: buf[56..72].try_into().unwrap(),
-        nonce: buf[72..84].try_into().unwrap(),
-        tag: buf[84..100].try_into().unwrap(),
-        shard_len: u32::from_le_bytes(buf[100..104].try_into().unwrap()),
-        entropy_milli: u32::from_le_bytes(buf[104..108].try_into().unwrap()),
+        orig_len: u64::from_le_bytes(buf[8..16].try_into().map_err(crate::short_field)?),
+        folded_len: u64::from_le_bytes(buf[16..24].try_into().map_err(crate::short_field)?),
+        digest: buf[24..56].try_into().map_err(crate::short_field)?,
+        salt: buf[56..72].try_into().map_err(crate::short_field)?,
+        nonce: buf[72..84].try_into().map_err(crate::short_field)?,
+        tag: buf[84..100].try_into().map_err(crate::short_field)?,
+        shard_len: u32::from_le_bytes(buf[100..104].try_into().map_err(crate::short_field)?),
+        entropy_milli: u32::from_le_bytes(buf[104..108].try_into().map_err(crate::short_field)?),
         name: String::from_utf8_lossy(&buf[112..112 + name_end]).into_owned(),
-        merkle: buf[128..160].try_into().unwrap(),
+        merkle: buf[128..160].try_into().map_err(crate::short_field)?,
     })
 }
 
@@ -208,10 +216,9 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
                 Ok(eh) if eh.merkle == h.merkle && eh.shard_len == h.shard_len => {
                     let slot = (eh.entropy_milli >> 24) as usize;
                     let off = i + lead;
-                    if off + sl + 4 <= file.len() {
+                    // `get` + `try_from` is the bounds check: no CRC word, no shard.
+                    if let Some(crc) = le_u32_at(file, off + sl) {
                         let shard = file[off..off + sl].to_vec();
-                        let crc =
-                            u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
                         hits.push(Hit {
                             slot,
                             grade: grade_shard(shard, crc),
@@ -246,7 +253,9 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
             continue;
         }
         let shard = body[off..off + sl].to_vec();
-        let crc = u32::from_le_bytes(body[off + sl..off + sl + 4].try_into().unwrap());
+        let Some(crc) = le_u32_at(body, off + sl) else {
+            continue;
+        };
         *slot = grade_shard(shard, crc);
     }
     live
@@ -275,10 +284,9 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
                 Ok(eh) if eh.merkle == h.merkle && eh.shard_len == h.shard_len => {
                     let slot = (eh.entropy_milli >> 24) as usize;
                     let off = i + lead;
-                    if off + sl + 4 <= file.len() {
+                    // `get` + `try_from` is the bounds check: no CRC word, no shard.
+                    if let Some(crc) = le_u32_at(file, off + sl) {
                         let shard = file[off..off + sl].to_vec();
-                        let crc =
-                            u32::from_le_bytes(file[off + sl..off + sl + 4].try_into().unwrap());
                         if crc32fast::hash(&shard) == crc {
                             hits.push(Hit { slot, shard });
                         }
@@ -312,7 +320,9 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
             continue;
         }
         let shard = body[off..off + sl].to_vec();
-        let crc = u32::from_le_bytes(body[off + sl..off + sl + 4].try_into().unwrap());
+        let Some(crc) = le_u32_at(body, off + sl) else {
+            continue;
+        };
         if crc32fast::hash(&shard) == crc {
             *slot = Some(shard);
         }
@@ -397,11 +407,9 @@ fn score_prefix(file: &[u8], h: &Header, prefix: usize) -> i32 {
             continue;
         }
         let shard = &body[off..off + h.shard_len as usize];
-        let crc = u32::from_le_bytes(
-            body[off + h.shard_len as usize..off + h.shard_len as usize + 4]
-                .try_into()
-                .unwrap(),
-        );
+        let Some(crc) = le_u32_at(body, off + h.shard_len as usize) else {
+            continue;
+        };
         if crc32fast::hash(shard) == crc {
             live += 1;
         }
@@ -494,7 +502,8 @@ pub fn ensure_single_seal(file: &[u8], h: &Header, prefix: usize) -> Result<()> 
             || (w == b"SGFC"
                 && tail.len() >= i + 8
                 && (tail.len() - i - 8).is_multiple_of(32)
-                && u32::from_le_bytes(tail[i + 4..i + 8].try_into().unwrap()) as usize
+                && u32::from_le_bytes(tail[i + 4..i + 8].try_into().map_err(crate::short_field)?)
+                    as usize
                     == (tail.len() - i - 8) / 32);
         if hit {
             return Err(Error::Msg(
@@ -598,5 +607,29 @@ mod tests {
         assert!(read_header(&with_geometry(0, 8)).is_err(), "k = 0");
         assert!(read_header(&with_geometry(9, 8)).is_err(), "k > n");
         assert!(read_header(&with_geometry(4, 8)).is_ok(), "valid k <= n");
+    }
+
+    #[test]
+    fn le_u32_at_is_total() {
+        let b = [1u8, 0, 0, 0, 2];
+        assert_eq!(le_u32_at(&b, 0), Some(1));
+        assert_eq!(le_u32_at(&b, 1), Some(0x0200_0000));
+        assert_eq!(le_u32_at(&b, 2), None, "3 bytes left");
+        assert_eq!(le_u32_at(&b, 99), None, "past the end");
+        assert_eq!(le_u32_at(&b, usize::MAX), None, "offset overflow");
+    }
+
+    /// The best-effort shard scanners must never panic on a truncated file: every prefix of a
+    /// real mark either parses or is refused.
+    #[test]
+    fn scanners_survive_every_truncation() {
+        let mark = crate::seal(&[0x42u8; 3000], Mode::Seal, None, "t", false).unwrap();
+        for cut in (0..mark.len()).step_by(37) {
+            let f = &mark[..cut];
+            if let Ok((h, prefix, _)) = locate_header(f) {
+                let _ = gather_live_shards(f, &h, prefix);
+                let _ = gather_graded_shards(f, &h, prefix);
+            }
+        }
     }
 }

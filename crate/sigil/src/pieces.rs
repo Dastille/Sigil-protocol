@@ -121,7 +121,7 @@ pub fn deluge(file: &[u8], extra: u8, dir: &Path, only_rain: bool, from: Option<
             if path.exists() {
                 continue;
             }
-            let shard = rs::encode_shard_index(&payload, k, i, h.version >= 2);
+            let shard = rs::encode_shard_index(&payload, k, i, h.version >= 2)?;
             let body = pack_stride(&hdr, &h, &shard, i as u8, vow);
             write_piece(dir, i as u8, h.n, h.k, map, &body)?;
             wrote += 1;
@@ -191,15 +191,19 @@ fn scan_dirs(dirs: &[&Path]) -> Result<ScanResult> {
             let index = raw[5] as usize;
             n = raw[6];
             k = raw[7];
-            let map_len = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
+            let map_len =
+                u32::from_le_bytes(raw[8..12].try_into().map_err(crate::short_field)?) as usize;
             if 12 + map_len + 4 > raw.len() {
                 continue;
             }
             if map.is_none() {
                 map = Some(raw[12..12 + map_len].to_vec());
             }
-            let body_len =
-                u32::from_le_bytes(raw[12 + map_len..16 + map_len].try_into().unwrap()) as usize;
+            let body_len = u32::from_le_bytes(
+                raw[12 + map_len..16 + map_len]
+                    .try_into()
+                    .map_err(crate::short_field)?,
+            ) as usize;
             let start = 16 + map_len;
             if start + body_len > raw.len() {
                 continue;
@@ -325,7 +329,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
             Ok(payload) if accept_folded(&h, &payload) => {
                 let shards: Vec<Vec<u8>> = (0..n)
                     .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
-                    .collect();
+                    .collect::<Result<_>>()?;
                 return Ok((
                     assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
                     false,
@@ -377,7 +381,7 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     })?;
     let shards: Vec<Vec<u8>> = (0..n)
         .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
-        .collect();
+        .collect::<Result<_>>()?;
     Ok((
         assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
         true,
@@ -391,9 +395,13 @@ fn accept_folded(h: &Header, payload: &[u8]) -> bool {
     let systematic = h.version >= 2;
     let n = h.n as usize;
     let k = h.k as usize;
-    let shards: Vec<Vec<u8>> = (0..n)
+    // A shape that cannot be re-encoded is not accepted (fail closed).
+    let Ok(shards) = (0..n)
         .map(|i| rs::encode_shard_index(payload, k, i, systematic))
-        .collect();
+        .collect::<Result<Vec<Vec<u8>>>>()
+    else {
+        return false;
+    };
     let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
     if merkle::merkle_root(&leaves) != h.merkle {
         return false;
@@ -471,7 +479,7 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
     };
     let rebuilt: Vec<Vec<u8>> = (0..n)
         .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
-        .collect();
+        .collect::<Result<_>>()?;
     Ok(assemble_mark(
         &h,
         &rebuilt,

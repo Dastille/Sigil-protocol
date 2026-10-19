@@ -44,7 +44,7 @@ fn main() {
     };
     let mut fast_parts = None;
     if which != "ref" {
-        fast_parts = Some(run("fast", &|d| encode_shards(d, k, n), &|p| {
+        fast_parts = Some(run("fast", &|d| encode_shards(d, k, n).unwrap(), &|p| {
             decode_indexed(p, k, len, true).unwrap()
         }));
     }

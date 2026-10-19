@@ -11,7 +11,7 @@ use crate::Error;
 /// Pluggable systematic MDS encode/decode.
 pub trait MdsBackend: Send + Sync {
     fn name(&self) -> &'static str;
-    fn encode(&self, payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>>;
+    fn encode(&self, payload: &[u8], k: usize, n: usize) -> Result<Vec<Vec<u8>>, Error>;
     fn decode(
         &self,
         shards: &[Option<Vec<u8>>],
@@ -28,7 +28,7 @@ impl MdsBackend for VandermondeRs {
     fn name(&self) -> &'static str {
         "vandermonde"
     }
-    fn encode(&self, payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
+    fn encode(&self, payload: &[u8], k: usize, n: usize) -> Result<Vec<Vec<u8>>, Error> {
         rs::encode_shards(payload, k, n)
     }
     fn decode(
@@ -119,10 +119,8 @@ impl MdsBackend for CauchyRs {
         "cauchy"
     }
 
-    fn encode(&self, payload: &[u8], k: usize, n: usize) -> Vec<Vec<u8>> {
-        // `MdsBackend::encode` is infallible by signature and is only driven by the opt-in
-        // bake-off with caller-chosen (k, n); `decode` (untrusted input) returns errors instead.
-        let c = self.matrix(k, n).expect("Cauchy matrix");
+    fn encode(&self, payload: &[u8], k: usize, n: usize) -> Result<Vec<Vec<u8>>, Error> {
+        let c = self.matrix(k, n)?;
         let m = n - k;
         let shard_len = (payload.len().div_ceil(k)).max(1);
         let mut padded = vec![0u8; shard_len * k];
@@ -138,7 +136,7 @@ impl MdsBackend for CauchyRs {
                 parity[..m].iter_mut().map(|v| v.as_mut_slice()).collect();
             gf::matrix_apply(&c, &ins, &mut outs);
         }
-        shards
+        Ok(shards)
     }
 
     fn decode(
@@ -301,7 +299,7 @@ pub struct MdsBenchRow {
 }
 
 /// Run Seal/Reflection bake-off sizes. `iters` ≥ 1.
-pub fn run_bakeoff(iters: usize) -> Vec<MdsBenchRow> {
+pub fn run_bakeoff(iters: usize) -> Result<Vec<MdsBenchRow>, Error> {
     let iters = iters.max(1);
     let sizes = [1usize << 20, 4usize << 20, 8usize << 20];
     let shapes = [(8usize, 16usize), (12usize, 16usize)];
@@ -314,17 +312,17 @@ pub fn run_bakeoff(iters: usize) -> Vec<MdsBenchRow> {
             let payload: Vec<u8> = (0..size).map(|i| (i * 17 + 3) as u8).collect();
             for be in &backends {
                 // Warmup
-                let shards = be.encode(&payload, k, n);
+                let shards = be.encode(&payload, k, n)?;
                 let mut opt: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
                 for slot in opt.iter_mut().take(erasures) {
                     *slot = None;
                 }
-                let _ = be.decode(&opt, k, size).expect("warmup decode");
+                let _ = be.decode(&opt, k, size)?;
 
                 let t0 = std::time::Instant::now();
                 let mut last = Vec::new();
                 for _ in 0..iters {
-                    last = be.encode(&payload, k, n);
+                    last = be.encode(&payload, k, n)?;
                 }
                 let enc_s = t0.elapsed().as_secs_f64() / iters as f64;
                 let encode_mibs = (size as f64 / (1024.0 * 1024.0)) / enc_s;
@@ -336,11 +334,13 @@ pub fn run_bakeoff(iters: usize) -> Vec<MdsBenchRow> {
                     for slot in opt.iter_mut().take(erasures) {
                         *slot = None;
                     }
-                    recovered = be.decode(&opt, k, size).expect("bench decode");
+                    recovered = be.decode(&opt, k, size)?;
                 }
                 let dec_s = t1.elapsed().as_secs_f64() / iters as f64;
                 let decode_mibs = (size as f64 / (1024.0 * 1024.0)) / dec_s;
-                assert_eq!(recovered, payload, "{} true-name mismatch", be.name());
+                if recovered != payload {
+                    return Err(Error::Msg(format!("{} true-name mismatch", be.name())));
+                }
 
                 rows.push(MdsBenchRow {
                     backend: be.name().to_string(),
@@ -354,7 +354,7 @@ pub fn run_bakeoff(iters: usize) -> Vec<MdsBenchRow> {
             }
         }
     }
-    rows
+    Ok(rows)
 }
 
 /// Format bake-off table + keep/drop recommendation (≥15% win on encode OR decode).
@@ -438,7 +438,7 @@ mod tests {
     fn cauchy_roundtrip_seal_erasures() {
         let be = CauchyRs::new();
         let payload: Vec<u8> = (0..4096).map(|i| (i * 9) as u8).collect();
-        let shards = be.encode(&payload, 8, 16);
+        let shards = be.encode(&payload, 8, 16).unwrap();
         assert_eq!(shards.len(), 16);
         // systematic: first k are data stripes
         let sl = shards[0].len();
@@ -455,7 +455,7 @@ mod tests {
     fn cauchy_roundtrip_reflection_erasures() {
         let be = CauchyRs::new();
         let payload: Vec<u8> = (0..3000).map(|i| (i * 3) as u8).collect();
-        let shards = be.encode(&payload, 12, 16);
+        let shards = be.encode(&payload, 12, 16).unwrap();
         let opt = erase_first(&shards, 4);
         assert_eq!(be.decode(&opt, 12, payload.len()).unwrap(), payload);
     }
@@ -469,7 +469,7 @@ mod tests {
                 Box::new(VandermondeRs) as Box<dyn MdsBackend>,
                 Box::new(CauchyRs::new()),
             ] {
-                let shards = be.encode(&payload, k, n);
+                let shards = be.encode(&payload, k, n).unwrap();
                 let opt = erase_first(&shards, erase);
                 let out = be.decode(&opt, k, payload.len()).unwrap();
                 assert_eq!(sha256(&out), true_name, "{} k={k}", be.name());
@@ -480,8 +480,8 @@ mod tests {
     #[test]
     fn cauchy_parity_differs_from_vandermonde() {
         let payload: Vec<u8> = (0..512).map(|i| i as u8).collect();
-        let v = VandermondeRs.encode(&payload, 8, 16);
-        let c = CauchyRs::new().encode(&payload, 8, 16);
+        let v = VandermondeRs.encode(&payload, 8, 16).unwrap();
+        let c = CauchyRs::new().encode(&payload, 8, 16).unwrap();
         // systematic data matches; parity generally differs
         assert_eq!(v[0], c[0]);
         assert_ne!(v[8], c[8], "expected different Cauchy parity");
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     #[ignore = "slow MDS bake-off; run: cargo test --release ignored_full_bakeoff -- --ignored --nocapture"]
     fn ignored_full_bakeoff() {
-        let rows = run_bakeoff(2);
+        let rows = run_bakeoff(2).unwrap();
         let (report, keep) = format_bakeoff_report(&rows);
         println!("{report}");
         // Always succeeds — recommendation is printed for humans.
@@ -528,7 +528,7 @@ mod tests {
                     seed as u8
                 })
                 .collect();
-            let shards = be.encode(&payload, k, n);
+            let shards = be.encode(&payload, k, n).unwrap();
             let c = CauchyRs::coding_matrix(k, n).unwrap();
             let sl = shards[0].len();
             for row in 0..n - k {

@@ -256,7 +256,8 @@ fn packets(data: &[u8]) -> Result<Vec<Packet<'_>>> {
                 l
             } else if o1 == 255 {
                 need(p, 4)?;
-                let l = u32::from_be_bytes(data[p..p + 4].try_into().unwrap()) as usize;
+                let l = u32::from_be_bytes(data[p..p + 4].try_into().map_err(crate::short_field)?)
+                    as usize;
                 p += 4;
                 l
             } else {
@@ -279,7 +280,8 @@ fn packets(data: &[u8]) -> Result<Vec<Packet<'_>>> {
                 2 => {
                     need(p, 4)?;
                     p += 4;
-                    u32::from_be_bytes(data[p - 4..p].try_into().unwrap()) as usize
+                    u32::from_be_bytes(data[p - 4..p].try_into().map_err(crate::short_field)?)
+                        as usize
                 }
                 _ => data.len() - p,
             };
@@ -317,7 +319,9 @@ impl<'a> Reader<'a> {
         Ok(u16::from_be_bytes([s[0], s[1]]))
     }
     fn u32(&mut self) -> Result<u32> {
-        Ok(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))
+        Ok(u32::from_be_bytes(
+            self.take(4)?.try_into().map_err(crate::short_field)?,
+        ))
     }
     fn mpi(&mut self) -> Result<&'a [u8]> {
         let bits = self.u16()? as usize;
@@ -507,7 +511,7 @@ fn parse_key(tag: u8, body: &[u8], passphrase: Option<&[u8]>) -> Result<Key> {
         } else {
             let start = r.p;
             let raw: [u8; 32] = match algo {
-                ALGO_X25519 | ALGO_ED25519 => r.take(32)?.try_into().unwrap(),
+                ALGO_X25519 | ALGO_ED25519 => r.take(32)?.try_into().map_err(crate::short_field)?,
                 _ => left_pad32(r.mpi()?)?,
             };
             if ver == 4 {
@@ -600,18 +604,18 @@ fn parse_s2k(r: &mut Reader<'_>) -> Result<S2k> {
             let hash = r.u8()?;
             Ok(S2k::Salted {
                 hash,
-                salt: r.take(8)?.try_into().unwrap(),
+                salt: r.take(8)?.try_into().map_err(crate::short_field)?,
             })
         }
         3 => {
             let hash = r.u8()?;
-            let salt = r.take(8)?.try_into().unwrap();
+            let salt = r.take(8)?.try_into().map_err(crate::short_field)?;
             let c = r.u8()? as usize;
             let count = (16 + (c & 15)) << ((c >> 4) + 6);
             Ok(S2k::Iterated { hash, salt, count })
         }
         4 => {
-            let salt = r.take(16)?.try_into().unwrap();
+            let salt = r.take(16)?.try_into().map_err(crate::short_field)?;
             let (t, p, m) = (r.u8()?, r.u8()?, r.u8()?);
             Ok(S2k::Argon2 { salt, t, p, m })
         }
@@ -930,7 +934,11 @@ fn decrypt_secret(
     };
     let mut m = Reader { b: &material, p: 0 };
     let raw: Zeroizing<[u8; 32]> = Zeroizing::new(match k.algo {
-        ALGO_X25519 | ALGO_ED25519 => m.take(32).map_err(|_| wrong())?.try_into().unwrap(),
+        ALGO_X25519 | ALGO_ED25519 => m
+            .take(32)
+            .map_err(|_| wrong())?
+            .try_into()
+            .map_err(crate::short_field)?,
         _ => left_pad32(m.mpi().map_err(|_| wrong())?)?,
     });
     if m.p != material.len() {
@@ -1111,7 +1119,10 @@ fn subpackets(hashed: &[u8]) -> (Option<u8>, Option<u32>, u32) {
             if p + 4 > hashed.len() {
                 break;
             }
-            let l = u32::from_be_bytes(hashed[p..p + 4].try_into().unwrap()) as usize;
+            let Ok(w) = <[u8; 4]>::try_from(&hashed[p..p + 4]) else {
+                break;
+            };
+            let l = u32::from_be_bytes(w) as usize;
             p += 4;
             l
         };
@@ -1121,8 +1132,16 @@ fn subpackets(hashed: &[u8]) -> (Option<u8>, Option<u32>, u32) {
         let ty = hashed[p] & 0x7f;
         let data = &hashed[p + 1..p + len];
         match ty {
-            2 if data.len() == 4 => created = u32::from_be_bytes(data.try_into().unwrap()),
-            9 if data.len() == 4 => kexp = Some(u32::from_be_bytes(data.try_into().unwrap())),
+            2 => {
+                if let Ok(w) = <[u8; 4]>::try_from(data) {
+                    created = u32::from_be_bytes(w);
+                }
+            }
+            9 => {
+                if let Ok(w) = <[u8; 4]>::try_from(data) {
+                    kexp = Some(u32::from_be_bytes(w));
+                }
+            }
             27 if !data.is_empty() => flags = Some(data[0]),
             _ => {}
         }

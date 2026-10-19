@@ -374,7 +374,7 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
             raw[4]
         )));
     }
-    let n = u32::from_le_bytes(raw[5..9].try_into().unwrap());
+    let n = u32::from_le_bytes(raw[5..9].try_into().map_err(crate::short_field)?);
     let mut off = 9usize;
     // `n` is untrusted: each entry needs >= 10 bytes, so never pre-allocate beyond that.
     let mut entries = Vec::with_capacity((n as usize).min(raw.len() / 10));
@@ -382,7 +382,8 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         if off + 2 > raw.len() {
             return Err(crate::Error::Msg("truncated folder pack (name len)".into()));
         }
-        let nlen = u16::from_le_bytes(raw[off..off + 2].try_into().unwrap()) as usize;
+        let nlen =
+            u16::from_le_bytes(raw[off..off + 2].try_into().map_err(crate::short_field)?) as usize;
         off += 2;
         if off + nlen + 8 > raw.len() {
             return Err(crate::Error::Msg(
@@ -391,8 +392,10 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         }
         let name = String::from_utf8_lossy(&raw[off..off + nlen]).into_owned();
         off += nlen;
-        let slen = usize::try_from(u64::from_le_bytes(raw[off..off + 8].try_into().unwrap()))
-            .unwrap_or(usize::MAX);
+        let slen = usize::try_from(u64::from_le_bytes(
+            raw[off..off + 8].try_into().map_err(crate::short_field)?,
+        ))
+        .unwrap_or(usize::MAX);
         off += 8;
         if slen > raw.len() - off {
             return Err(crate::Error::Msg(
