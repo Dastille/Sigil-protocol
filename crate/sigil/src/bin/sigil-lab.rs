@@ -135,7 +135,7 @@ fn main() -> eframe::Result<()> {
             vis.window_corner_radius = CornerRadius::same(12);
             vis.menu_corner_radius = CornerRadius::same(8);
             cc.egui_ctx.set_visuals(vis);
-            let mut style = (*cc.egui_ctx.style()).clone();
+            let mut style = (*cc.egui_ctx.global_style()).clone();
             style.spacing.item_spacing = Vec2::new(10.0, 10.0);
             style.spacing.button_padding = Vec2::new(14.0, 8.0);
             style.spacing.window_margin = Margin::same(0);
@@ -158,7 +158,7 @@ fn main() -> eframe::Result<()> {
                 egui::TextStyle::Monospace,
                 FontId::new(12.5, FontFamily::Monospace),
             );
-            cc.egui_ctx.set_style(style);
+            cc.egui_ctx.set_global_style(style);
             Ok(Box::new(Lab::default()))
         }),
     )
@@ -571,7 +571,7 @@ fn punch(path: &Path, pct: u8) -> Result<u32, String> {
         return Err("file too small".into());
     }
     let want = ((len as u128 * pct as u128) / 100).max(1) as u64;
-    let hits = want.min(8192).max(1);
+    let hits = want.clamp(1, 8192);
     let mut n = 0u32;
     for _ in 0..hits {
         let mut rb = [0u8; 8];
@@ -769,16 +769,16 @@ fn mode_stripes(ui: &mut Ui, k: u8, n: u8, active: bool) {
 }
 
 impl eframe::App for Lab {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("hdr")
-            .exact_height(HEADER_H)
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        egui::Panel::top("hdr")
+            .exact_size(HEADER_H)
             .frame(
                 Frame::new()
                     .fill(BG)
                     .inner_margin(Margin::symmetric(20, 0))
                     .stroke(Stroke::new(0.0_f32, BG)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal_centered(|ui| {
                     draw_mark(ui, 28.0);
                     ui.add_space(6.0);
@@ -816,10 +816,10 @@ impl eframe::App for Lab {
                 });
             });
 
-        egui::TopBottomPanel::top("hdr_line")
-            .exact_height(1.0)
+        egui::Panel::top("hdr_line")
+            .exact_size(1.0)
             .frame(Frame::new().fill(BORDER))
-            .show(ctx, |_| {});
+            .show(ui, |_| {});
 
         egui::CentralPanel::default()
             .frame(
@@ -827,7 +827,7 @@ impl eframe::App for Lab {
                     .fill(BG)
                     .inner_margin(Margin::symmetric(28, 20)),
             )
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| match self.page {
@@ -837,6 +837,34 @@ impl eframe::App for Lab {
                         Page::Grimoire => self.ui_grimoire(ui),
                     });
             });
+        self.smoke_step(ui.ctx());
+    }
+}
+
+/// Frames rendered so far; only counted in smoke mode.
+static SMOKE_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+impl Lab {
+    /// CI smoke test: with `SIGIL_LAB_SMOKE_FRAMES=N`, visit every page in turn, then
+    /// close the window after N frames and report it on stdout. Off unless the variable is set.
+    fn smoke_step(&mut self, ctx: &egui::Context) {
+        let Some(want) = std::env::var("SIGIL_LAB_SMOKE_FRAMES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        else {
+            return;
+        };
+        let done = SMOKE_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let pages = [Page::Lab, Page::Scry, Page::Sky, Page::Grimoire];
+        self.page = pages[done as usize % pages.len()];
+        if done >= want {
+            if done == want {
+                println!("sigil-lab smoke: {done} frames rendered, all pages visited");
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else {
+            ctx.request_repaint();
+        }
     }
 }
 
