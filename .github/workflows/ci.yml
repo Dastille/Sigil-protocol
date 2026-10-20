@@ -109,15 +109,40 @@ jobs:
         with:
           tool: cargo-audit
       # Fails on any vulnerability advisory in Cargo.lock (all features, incl. the lab GUI).
-      # Unmaintained-crate notices are reported, not fatal. paste and ttf-parser are
-      # ignored with written reasons in crate/sigil/.cargo/audit.toml.
+      # No advisory is ignored: there is no audit.toml.
       - name: cargo audit
         run: cargo audit
-      # Backs those reasons: paste is in no build at all, and ttf-parser only in the
-      # optional lab GUI (never in the default or passkey builds).
-      - name: ignored advisories stay out of the CLI builds
+      # The unmaintained GUI-only crates removed by the eframe 0.37 upgrade stay out of the
+      # lockfile (paste, ttf-parser, zbus/zvariant via AT-SPI accesskit).
+      - name: removed crates stay out of Cargo.lock
         run: |
-          ! cargo tree --locked --target all --features lab -i paste 2>/dev/null | grep -q paste
-          ! cargo tree --locked --target all -i ttf-parser 2>/dev/null | grep -q ttf-parser
-          ! cargo tree --locked --target all --features passkey -i ttf-parser 2>/dev/null | grep -q ttf-parser
-          cargo tree --locked --target all --features lab -i ttf-parser | grep -q eframe
+          ! grep -E '^name = "(paste|ttf-parser|zvariant|zvariant_derive|zbus_names)"$' Cargo.lock
+
+  lab:
+    name: lab GUI (--features lab) build + clippy + smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - name: GUI libraries + virtual X server
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-0 libgl1 libegl1 libgl1-mesa-dri xvfb
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: lab
+      - name: build
+        run: cargo build --locked --features lab --all-targets
+      - name: cargo clippy --features lab -D warnings
+        run: cargo clippy --locked --features lab --all-targets -- -D warnings
+      # Opens the real window on a virtual display (software OpenGL), renders every page,
+      # and closes itself; fails if it panics, hangs, or never renders the frames.
+      - name: smoke test (sigil-lab under Xvfb)
+        run: |
+          SIGIL_LAB_SMOKE_FRAMES=40 timeout 120 xvfb-run -a cargo run --locked --features lab --bin sigil-lab | tee smoke.txt
+          grep -q "sigil-lab smoke: 40 frames rendered" smoke.txt
