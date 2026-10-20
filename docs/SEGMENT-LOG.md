@@ -21,7 +21,8 @@ Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
 `kind=log` container), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
 shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log), and **signer
-rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key). Approved 2026-10-06 as a general-purpose mode (not tied to any one
+rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key), and **folder
+backup shipped** (`log add LOG DIR`: seal only the files that are new or changed since the last add). Approved 2026-10-06 as a general-purpose mode (not tied to any one
 application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
 (see the end).
 
@@ -92,6 +93,8 @@ seq=11 t=1760000200 op=signer from=<64 hex> to=<64 hex> sig=<128 hex> chain=<64 
 | `shred` | tombstone, optional, only `1`: this is a crypto-shred — the key of the named segments' file was destroyed (needs `segkeys=1`; in any other log it is a `log-format` error) |
 | `reason`| tombstone, optional: free text, `%XX`-escaped so the value stays one token. The INDEX is not secret: no secrets in reasons |
 | `of`    | compaction: the original segment seqs whose plain bytes were concatenated (ascending) into this entry's segment |
+| `src`   | `log adopt`, optional: SHA-256 of the adopted star file (makes re-runs idempotent) |
+| `path`  | `log add`, optional: the file's path relative to the folder that was added, `/`-separated, `%XX`-escaped like `reason` (any byte outside `A-Z a-z 0-9 - _ . ~ , : / @`), so any file name round-trips. The INDEX is not secret: file names are visible in it |
 | `from`, `to`, `sig` | signer handover: the outgoing and the new Ed25519 key, and `from`'s signature over `"sigil-log-signer-v1\nid=<log-id>\nseq=<this seq>\nfrom=<hex>\nto=<hex>\n"` |
 | `chain` | `SHA-256("sigil-log-entry-v1\0" ‖ previous chain ‖ line text before " chain=")` |
 
@@ -147,6 +150,7 @@ sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --ident
 sigil log verify events [--quick] [--pass … | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
+sigil log add events DIR [--dry-run] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]   # back up a folder
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
@@ -492,6 +496,79 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
   adopted star it merges (locked stars from different passphrases: give a key for each, or leave
   them out of the compaction range).
 
+## Backing up a folder (`sigil log add`)
+
+`sigil log add LOG DIR` makes a folder backup one command. Run it as often as you like: each run
+seals only what is **new or changed** since the last add, and a run with nothing to do writes
+nothing.
+
+```sh
+sigil log init photos --identity me.sgk
+sigil log add photos ./Photos --to me.pub --identity me.sgk --dry-run   # plan only
+sigil log add photos ./Photos --to me.pub --identity me.sgk
+```
+
+```text
+  + 2024/trip/beach.jpg  6 bytes  new → segment 7
+  + a.jpg  14 bytes  changed (was segment 3) → segment 8
+  ! b/c.txt  missing from source (kept: segment 4)
+log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, skipped-special 0  root 3f1c…
+```
+
+* **One segment per file.** Each file is sealed by the same path as `log append` (its own star,
+  `--mode`, `--pass`, `--to`; in a `--segment-keys` log its own key), and its INDEX line is an
+  ordinary segment line plus the additive `path=` key. Nothing else changes: no new entry type,
+  no manifest bump (the log stays `log=1` unless it already was newer), no new files in the
+  container, `.sg1` layout untouched. `read --seq`, `verify`, `mend`, `prove` / `check-proof
+  --file`, `tombstone`, `compact` and `mount` treat these entries like any other; `log ls` also
+  shows each entry's path. One file per segment keeps memory to **one file at a time** (the file is
+  sealed in memory, so very large single files need that much RAM; streaming is a later slice) and
+  lets a single file be read back, proved, tombstoned or shredded on its own.
+* **Walk.** `DIR` is walked recursively; files are taken in **byte order of their relative path**
+  (stable on every run and machine). Symlinks are never followed; symlinks, devices, pipes, sockets
+  and nested sigil containers (including the log itself, if it lives inside `DIR`) are **skipped and
+  listed** (`skipped-special`). Empty folders are not recorded. A `DIR` inside a sigil container is
+  refused. A file that cannot be read is listed and not added, and the exit code is 1. Output
+  shows names with control characters escaped (`\n`), so a file name cannot fake extra lines.
+* **What counts as already sealed.** For every path, the latest entry **the HEAD vouches for**
+  (the same rule `gc` uses: on a signed log only entries under a valid signature of the current
+  signer) gives a size and a SHA-256. A file is *unchanged* only if its size matches, **the SHA-256
+  of its current bytes matches**, and the segment file that holds that entry is present and its
+  header carries the true-name the INDEX recorded (keyless; one header read). A different size goes
+  straight to "changed" without hashing; modification times are never used. So the comparison
+  needs **no key**, also for encrypted logs.
+* **Changed files are new versions.** A changed file becomes a new segment; the earlier version
+  stays readable by its seq. Nothing is overwritten.
+* **Nothing is ever deleted because a source file went away.** A path that is still live in the log
+  but no longer in `DIR` is listed as `missing from source (kept: segment N)` on every run; no
+  tombstone is written. Deleting from the log is always an explicit `log tombstone` / `log shred`.
+  If you did tombstone a file and the folder still holds exactly those bytes, `add` does not put it
+  back (`same bytes as segment N, deleted by entry T; not re-added`); different bytes at that path
+  are added as a new version.
+* **Encryption is not dropped by accident.** If the newest file added to the log was sealed with
+  `--pass` / `--to`, a run that would seal files without either is refused. An unchanged re-run needs
+  no key at all. A `--segment-keys` log needs `--pass` and/or `--to` as for `append`.
+* **Signed logs** need the current signer's `--identity`, like every writer; a `--dry-run` needs no
+  key.
+* **Dry run.** `--dry-run` hashes what it must to decide, prints the same plan (`would have added …`)
+  and writes nothing, not even the lock.
+* **Crash safety and checkpoints.** Files are sealed one at a time into unindexed segment files;
+  their INDEX lines are appended in one write (the commit point), then HEAD, as for `adopt`. A run
+  commits a **checkpoint** every 1000 files or 1 GiB of plain data, so a crash during a large first
+  backup loses at most one checkpoint: run the same command again and the committed files are
+  recognised as unchanged. Uncommitted leftovers are removed on an error, or reclaimed by `gc` /
+  overwritten by the next write after a crash.
+* **Cost.** Every run reads and hashes every file whose size did not change (about the time of
+  reading the folder once). Each segment carries the fixed ~3.2 KB of per-star overhead (see "Size
+  notes"): negligible for photos, noticeable for thousands of tiny files. The INDEX grows by about
+  170 bytes plus the path per file. Identical files at two paths are stored twice.
+* **One folder per log.** The log remembers paths relative to `DIR`. To back up several sources
+  into one log, give them one parent folder (`staging/mum/`, `staging/dad/`) and add that; adding
+  two unrelated folders to one log reports each other's files as missing.
+* **Getting files back.** `sigil log ls` shows the seq of every file; `sigil log read LOG --seq N -o
+  FILE` restores one. A whole-folder restore by path is a later slice (today `sigil mount
+  --export-dir` gives one file per seq).
+
 ## Invariants
 
 1. A segment, once appended, is never modified except by ECC repair that preserves its plain bytes.
@@ -536,6 +613,11 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
 | Signer key stolen | attacker can extend or re-sign (or hand the log over to their own key); out of scope. Rotate with `log rotate-signer` while the key is still yours, and keep anchors elsewhere |
 | Forged signer handover (valid chain, not signed by the signer in effect; or no signature; or replayed from another seq / log) | `index-signer` / `index-line` error; writers, `gc`, `read` refuse; `check-proof` rejects a forged `handover-N` |
 | HEAD signed by a retired key after its handover | `head-signer` error (HEAD must be signed by the signer for its position) |
+| `log add`: INDEX edited so a changed file looks already sealed | chain break: `add` refuses (dry run too) and writes nothing |
+| `log add`: a line with a valid chain appended to claim new content is in, without the signer's key | not covered by a valid HEAD signature, so `add` ignores it (note) and seals the file |
+| `log add`: unsigned log, such a line plus HEAD removed (so the line counts as vouched) | `add` still checks the segment named by the line: missing, or not the star the INDEX recorded → the file is **sealed again**, not skipped. An attacker who can also write a matching star into the log (unsigned log) is the "rewrite consistently" case above: sign the log, keep anchors, and use keyed `verify` |
+| `log add`: a source file changed but size and modification time kept | detected: unchanged needs equal SHA-256 of the current bytes |
+| `log add`: a source file deleted, renamed or emptied | never deletes anything from the log: listed as missing (a rename = missing + new); an emptied file is a new, empty version |
 | Attacker with segment write access and the plain data | can replace a segment only by a star with the same true-name = same plain bytes |
 | Confidentiality | per segment via `--pass` / `--to`; INDEX leaks sequence, time, sizes and plain true-names (hashes of the batches). Do not use it for low-entropy secrets you cannot afford to have confirmed by guessing. Hiding that metadata = deferred |
 | Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, cold kit) of the container |
@@ -715,7 +797,10 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Adding a signer to an unsigned log after `init`; *consistency proofs* (this anchor is a prefix of that one) without the full INDEX.
-* Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX.
+* Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX (this
+  would also hide `log add` file names).
+* `log add` follow-ups: restore a whole folder (or one path) by name, per-file receipts by path, and
+  an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Re-wrapping the key ring to new recipients / rotating a recipient (today: `compact` re-seals live batches under new keys wrapped to the new recipients), shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).

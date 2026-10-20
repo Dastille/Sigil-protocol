@@ -763,6 +763,31 @@ enum LogCmd {
         #[arg(long)]
         identity: Option<PathBuf>,
     },
+    /// Back up a folder: seal every file under DIR that is new or changed since the last add as its
+    /// own segment (recursive, stable order; symlinks and special files are skipped and listed).
+    /// Unchanged files (same path, size and SHA-256) are skipped; files gone from DIR are reported,
+    /// never deleted from the log. Re-running with no changes writes nothing.
+    Add {
+        path: PathBuf,
+        /// Folder to back up (its relative paths are what the log remembers)
+        dir: PathBuf,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Encrypt-to recipient for each new segment: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable).
+        /// In a --segment-keys log they wrap each segment's own key instead
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Signing identity (.sgk); required exactly when the log was created with --identity
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// Show what would be added, skipped and missing; write nothing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
     /// List segments (from the INDEX; reads no segment bytes).
     Ls { path: PathBuf },
     /// Write segment bytes (checked against the INDEX) to stdout or -o. Default: all, in order.
@@ -2822,6 +2847,39 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 hex::encode(r.root),
                 if r.signed { "  (signed)" } else { "" }
             );
+        }
+        LogCmd::Add {
+            path,
+            dir,
+            mode,
+            pass,
+            talisman,
+            to,
+            identity,
+            dry_run,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let recipients = load_recipients(&to)?;
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let r = seglog::add(
+                &path,
+                &dir,
+                &seglog::AddOpts {
+                    mode: mode.into(),
+                    pass: pass.as_deref(),
+                    recipients: &recipients,
+                    identity: id.as_ref(),
+                    dry_run,
+                    ..Default::default()
+                },
+            )?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            print!("{}", r.render());
+            if !r.unreadable.is_empty() {
+                std::process::exit(1);
+            }
         }
         LogCmd::Ls { path } => print!("{}", seglog::list(&path)?.render()),
         LogCmd::Read {
