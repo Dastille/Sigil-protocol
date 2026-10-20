@@ -84,6 +84,8 @@ export const MODE_PARAMS: Record<ResilienceMode, ModeSpec> = {
 export const MAGIC = new Uint8Array([0x53, 0x47, 0x49, 0x4c]); // SGIL
 export const MAGIC_EMBER = new Uint8Array([0x53, 0x47, 0x45, 0x4d]); // SGEM
 export const VERSION = 2;
+/** Private label: new encrypted marks (name, size, SHA-256 inside the AEAD). */
+export const PRIVATE_VERSION = 3;
 export const HEADER_SIZE = 160;
 export const KEYSTONE_COPIES = 3;
 /** Primary header + spare copies. Pieces start here on new marks. */

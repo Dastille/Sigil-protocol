@@ -159,6 +159,8 @@ fn constellation_remove_passphrase_and_encrypt_to_cards() {
         &dir,
         &["constellation", "add", "W", "b.txt", "--pass", "pw"],
     );
+    let wb =
+        sigil::constellation_member_star(&dir.join("W.sigil"), "b.txt", Some("pw"), &[]).unwrap();
     // locked card: gc refuses to guess, remove needs the passphrase
     assert!(fails(&dir, &["gc", "W", "--apply"]).contains("will not guess"));
     fails(&dir, &["constellation", "remove", "W", "b.txt"]);
@@ -166,7 +168,7 @@ fn constellation_remove_passphrase_and_encrypt_to_cards() {
         &dir,
         &["constellation", "remove", "W", "b.txt", "--pass", "pw"],
     );
-    assert!(!star(&dir.join("W.sigil"), b"beta").exists());
+    assert!(!wb.exists());
     assert!(ok(&dir, &["gc", "W", "--pass", "pw"]).contains("nothing to reclaim"));
 
     ok(&dir, &["keygen", "-o", "alice.sgk"]);
@@ -194,6 +196,9 @@ fn constellation_remove_passphrase_and_encrypt_to_cards() {
             "alice.sgk",
         ],
     );
+    let alice = [sigil::Identity::load(&dir.join("alice.sgk")).unwrap()];
+    let eb = sigil::constellation_member_star(&dir.join("E.sigil"), "b.txt", None, &alice).unwrap();
+    let ea = sigil::constellation_member_star(&dir.join("E.sigil"), "a.txt", None, &alice).unwrap();
     assert!(fails(
         &dir,
         &[
@@ -219,8 +224,8 @@ fn constellation_remove_passphrase_and_encrypt_to_cards() {
             "alice.sgk",
         ],
     );
-    assert!(!star(&dir.join("E.sigil"), b"beta").exists());
-    assert!(star(&dir.join("E.sigil"), b"alpha").is_file());
+    assert!(!eb.exists());
+    assert!(ea.is_file());
     let o = ok(&dir, &["gc", "E", "--identity", "alice.sgk"]);
     assert!(o.contains("nothing to reclaim"), "{o}");
     let _ = fs::remove_dir_all(&dir);

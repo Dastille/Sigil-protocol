@@ -234,3 +234,7 @@ key ring; gc also destroys key records nothing needs); older sigils refuse newer
 Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
 Segment-log mode: slices 1–3 shipped (append / verify / mend; tombstones + compaction; opt-in per-segment keys + crypto-shredding; see SEGMENT-LOG.md), plus log mount and `sigil log adopt` (tidy a loose folder of `.sg1` batches into a `kind=log` container, byte-for-byte). A later container-format bump (if ever needed) is
 handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.
+
+## Private label (v3)
+
+Encrypted constellation stars are filed under a ciphertext id (v3 Merkle root; for a pack, SHA-256 of its facet list), stored in the member record. tidy, gc, doctor and names look them up by that id; no plaintext hash appears in a path.

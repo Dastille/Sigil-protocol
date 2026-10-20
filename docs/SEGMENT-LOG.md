@@ -719,3 +719,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Re-wrapping the key ring to new recipients / rotating a recipient (today: `compact` re-seals live batches under new keys wrapped to the new recipients), shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
+
+## Private label (v3)
+
+Encrypted segments are v3 marks. INDEX lines gain an additive `star=<hex>` field holding the star label digest (keyed fingerprint); verify/mend compare it keylessly. `size` and `sha` remain the plaintext values (receipts and compaction rely on them), so the INDEX still reveals them. Adopted v3 stars are label-only (`star` = `sha`) and are not merged by compaction.

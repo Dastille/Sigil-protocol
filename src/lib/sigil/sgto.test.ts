@@ -180,3 +180,37 @@ test(
     await assert.rejects(unseal(f, "wrong horse"));
   },
 );
+
+test("lab encrypted seals use the private label (v3) and fail closed on label edits", async () => {
+  const msg = new TextEncoder().encode("private label from the lab ".repeat(50));
+  const s = await seal({ data: msg, mode: "reflection", passphrase: PASS, name: "secret-name.txt" });
+  const { header } = locateHeader(s.bytes);
+  assert.equal(header.version, 3);
+  assert.equal(header.origLen, 0);
+  assert.equal(header.name, "");
+  const sha = new Uint8Array(await crypto.subtle.digest("SHA-256", msg));
+  const has = (n: Uint8Array) => {
+    outer: for (let i = 0; i + n.length <= s.bytes.length; i++) {
+      for (let j = 0; j < n.length; j++) if (s.bytes[i + j] !== n[j]) continue outer;
+      return true;
+    }
+    return false;
+  };
+  assert.ok(!has(sha), "plaintext SHA-256 visible");
+  assert.ok(!has(new TextEncoder().encode("secret-name")), "name visible");
+  const back = await unseal(s.bytes, PASS);
+  assert.deepEqual(back.data, msg);
+  assert.equal(back.header.name, "secret-name.txt");
+  // Rewrite the original-length field in every label copy with fresh CRCs: refused.
+  const t = new Uint8Array(s.bytes);
+  for (let o = 0; o + 160 <= t.length; o++) {
+    const m = String.fromCharCode(t[o], t[o + 1], t[o + 2], t[o + 3]);
+    if ((m === "SGIL" && o % 160 === 0 && o < KEYSTONE_SPAN) || m === "SGEM") {
+      t[o + 8] ^= 1;
+      t.fill(0, o + 108, o + 112);
+      new DataView(t.buffer).setUint32(o + 108, crc32(t.subarray(o, o + 160)), true);
+    }
+  }
+  await assert.rejects(unseal(t, PASS));
+  await assert.rejects(unseal(s.bytes, "wrong horse"));
+});

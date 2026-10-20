@@ -3,6 +3,7 @@ import { maybeDeflate, inflate } from "./compress";
 import { crc32, crc32bytes, readCrc32 } from "./crc32";
 import { aesGcmOpen, aesGcmSeal, decryptAesGcm, hex, randomBytes, sha256 } from "./crypto";
 import { buildSgtoPass, unwrapCekWithPass } from "./sgto";
+import { labelAad, perFileFingerprint, readInner, writeInner } from "./privacy";
 import { shannonEntropy } from "./entropy";
 import { residualGlyph } from "./fibonacci";
 import {
@@ -26,7 +27,9 @@ import {
   MAX_COVENANT,
   MAX_GEAS,
   MODE_PARAMS,
+  PRIVATE_VERSION,
   SHARD_CRC,
+  VERSION,
   VOW_SIZE,
   type ResilienceMode,
   type SealResult,
@@ -175,30 +178,12 @@ function pickShardViews(
 }
 
 /**
- * Writers for new encrypted seals, by format name. `ENCRYPTED_WRITE_FORMAT` must name what
- * Rust `main` writes today (`lib.rs` seal_kn_mds_to + `keys.rs` build_sgto): a random content
- * key encrypts the folded body (AES-256-GCM, header nonce and tag), and an SGTO v2 block
- * after the Keystone wraps that key with an Argon2id passphrase record. When the format
- * changes, add a writer here and point `ENCRYPTED_WRITE_FORMAT` at it; readers for old
- * formats stay in `unseal` / `sgto.ts`.
+ * Format new encrypted lab seals use; must name what Rust `main` writes today: header v3
+ * (private label, `privacy.ts`), the body under a random content key (AES-256-GCM with the
+ * label as associated data), and an SGTO v2 block wrapping that key with Argon2id.
+ * Readers for older formats stay in `unseal` / `sgto.ts`.
  */
-type EncryptedWriter = (
-  folded: Uint8Array,
-  pass: string,
-  nonce: Uint8Array,
-) => Promise<{ cipher: Uint8Array; tag: Uint8Array; sgto: Uint8Array }>;
-
-const ENCRYPTED_WRITERS: Record<string, EncryptedWriter> = {
-  "sgto-v2-argon2id": async (folded, pass, nonce) => {
-    const cek = randomBytes(32);
-    const { cipher, tag } = await aesGcmSeal(cek, nonce, folded);
-    const sgto = await buildSgtoPass(cek, pass);
-    cek.fill(0);
-    return { cipher, tag, sgto };
-  },
-};
-
-export const ENCRYPTED_WRITE_FORMAT = "sgto-v2-argon2id";
+export const ENCRYPTED_WRITE_FORMAT = "v3-private-label+sgto-v2-argon2id";
 
 export async function seal(opts: {
   data: Uint8Array;
@@ -224,35 +209,86 @@ export async function seal(opts: {
   let sgto: Uint8Array = new Uint8Array(0);
   // As in Rust: an all-blank passphrase means "not encrypted"; otherwise it is used as typed.
   const pass = opts.passphrase ?? "";
+  const cov = (opts.covenant ?? "").slice(0, MAX_COVENANT);
+  const geas = (opts.geas ?? []).slice(0, MAX_GEAS);
+  const hasVow = Boolean(cov || geas.length);
+  const entropyMilli = Math.round(shannonEntropy(opts.data) * 1000);
+  // New encrypted marks use the private label (v3), as Rust does: the outside shows
+  // a keyed fingerprint and the ciphertext length only.
+  let label = {
+    version: VERSION,
+    origLen: opts.data.length,
+    digest,
+    entropyMilli,
+    compressed: shrunk.compressed,
+    name: opts.name ?? "",
+  };
+  let aadFor: ((hdr: Uint8Array) => Uint8Array) | undefined;
   if (pass.trim()) {
     encrypted = true;
     nonce = new Uint8Array(randomBytes(12));
-    const enc = await ENCRYPTED_WRITERS[ENCRYPTED_WRITE_FORMAT](payload, pass, nonce);
-    payload = new Uint8Array(enc.cipher);
-    tag = new Uint8Array(enc.tag);
-    sgto = enc.sgto;
+    const cek = randomBytes(32);
+    const inner = writeInner({
+      name: opts.name ?? "",
+      origLen: opts.data.length,
+      bodyLen: folded.length,
+      digest,
+      entropyMilli,
+      compressed: shrunk.compressed,
+      groupTotal: 0,
+      sharedFingerprint: false,
+    });
+    const plainInner = concat([inner, folded]);
+    label = {
+      version: PRIVATE_VERSION,
+      origLen: 0,
+      digest: await perFileFingerprint(cek, salt, opts.data),
+      entropyMilli: 0,
+      compressed: false,
+      name: "",
+    };
+    aadFor = labelAad;
+    const pre = writeHeader({
+      ...label,
+      flags: buildFlags(opts.mode, false, true, opts.graph ?? false, true, true, hasVow),
+      mode: opts.mode,
+      k,
+      n,
+      foldedLen: plainInner.length,
+      salt,
+      nonce,
+      tag,
+      shardLen: 0,
+      encrypted,
+      graph: opts.graph ?? false,
+      keystone: true,
+      ember: true,
+      vow: hasVow,
+      covenant: cov,
+      geas,
+      merkle: new Uint8Array(32),
+    });
+    const sealed = await aesGcmSeal(cek, nonce, plainInner, aadFor(pre));
+    payload = new Uint8Array(sealed.cipher);
+    tag = new Uint8Array(sealed.tag);
+    sgto = await buildSgtoPass(cek, pass);
+    cek.fill(0);
   }
   const shards =
     opts.mode === "glyph" ? stripeShards(payload, n) : rsEncodeShards(payload, k, n);
   const tree = await shardMerkle(shards);
-  const cov = (opts.covenant ?? "").slice(0, MAX_COVENANT);
-  const geas = (opts.geas ?? []).slice(0, MAX_GEAS);
-  const hasVow = Boolean(cov || geas.length);
-  const flags = buildFlags(opts.mode, shrunk.compressed, encrypted, opts.graph ?? false, true, true, hasVow);
+  const flags = buildFlags(opts.mode, label.compressed, encrypted, opts.graph ?? false, true, true, hasVow);
   const header = writeHeader({
+    ...label,
     flags,
     mode: opts.mode,
     k,
     n,
-    origLen: opts.data.length,
     foldedLen: payload.length,
-    digest,
     salt,
     nonce,
     tag,
     shardLen: shards[0]?.length ?? 1,
-    entropyMilli: Math.round(shannonEntropy(opts.data) * 1000),
-    compressed: shrunk.compressed,
     encrypted,
     graph: opts.graph ?? false,
     keystone: true,
@@ -260,7 +296,6 @@ export async function seal(opts: {
     vow: hasVow,
     covenant: cov,
     geas,
-    name: opts.name ?? "",
     merkle: tree.root,
   });
   const vow = hasVow ? writeVow(cov, geas) : undefined;
@@ -332,9 +367,31 @@ export async function unseal(
   else folded = rsDecodeShards(live, header.k, header.foldedLen, header.version >= 2);
 
   const pass = passphrase?.trim() ?? "";
+  const priv = header.version === PRIVATE_VERSION;
+  if (priv && !header.encrypted) throw new Error("v3 label on an unencrypted seal; refusing");
+  if (priv && (header.entropyMilli & 0x00ffffff) !== 0) {
+    throw new Error("v3 label carries an outer entropy score; refusing");
+  }
+  let privCek: Uint8Array | null = null;
   if (header.encrypted) {
     if (!pass) throw new Error("this seal is encrypted — a passphrase is required");
-    if (sgto) {
+    if (priv) {
+      if (!sgto) throw new Error("v3 seal has no key wrap (SGTO) left; past repair");
+      // The Merkle root is computed after encryption, so GCM cannot cover it.
+      const shards =
+        header.mode === "glyph" ? stripeShards(folded, header.n) : rsEncodeShards(folded, header.k, header.n);
+      if (!equal32((await shardMerkle(shards)).root, header.merkle)) {
+        throw new Error("label does not match the parts (Merkle root); refusing");
+      }
+      const cek = await unwrapCekWithPass(sgto, passphrase ?? "", header.salt);
+      const open = await aesGcmOpen(cek, header.nonce, folded, header.tag, labelAad(writeHeader(header)));
+      if (!open) {
+        cek.fill(0);
+        throw new Error("unseal failed: wrong passphrase, label edited, or past repair");
+      }
+      folded = open;
+      privCek = cek;
+    } else if (sgto) {
       // Since PR #44 (and for encrypt-to): the SGTO block wraps a random content key.
       // Rust uses the passphrase as typed here; only the legacy Ward trims it.
       const cek = await unwrapCekWithPass(sgto, passphrase ?? "", header.salt);
@@ -350,15 +407,34 @@ export async function unseal(
     throw new Error("this seal was not encrypted; leave the passphrase empty");
   }
 
-  const unfolded = unfold(folded, header.salt);
-  const plain = header.compressed ? await inflate(unfolded) : unfolded;
-  if (plain.length !== header.origLen) {
-    throw new Error("length mismatch after unfold — the residual does not close");
-  }
-  const digest = await sha256(plain);
-  for (let i = 0; i < 32; i++) {
-    if (digest[i] !== header.digest[i]) {
-      throw new Error("SHA-256 mismatch — regeneration produced a different object");
+  let plain: Uint8Array;
+  if (priv) {
+    const { meta, bodyOff } = readInner(folded);
+    const unfolded = unfold(folded.subarray(bodyOff, bodyOff + meta.bodyLen), header.salt);
+    plain = meta.compressed ? await inflate(unfolded) : unfolded;
+    if (plain.length !== meta.origLen) throw new Error("length mismatch after unfold");
+    if (!equal32(await sha256(plain), meta.digest)) throw new Error("SHA-256 mismatch");
+    if (!meta.sharedFingerprint && privCek) {
+      const fp = await perFileFingerprint(privCek, header.salt, plain);
+      if (!equal32(fp, header.digest)) throw new Error("keyed fingerprint mismatch");
+    }
+    privCek?.fill(0);
+    // Shown only after unlock.
+    header.name = meta.name;
+    header.origLen = meta.origLen;
+    header.entropyMilli = meta.entropyMilli;
+    header.compressed = meta.compressed;
+  } else {
+    const unfolded = unfold(folded, header.salt);
+    plain = header.compressed ? await inflate(unfolded) : unfolded;
+    if (plain.length !== header.origLen) {
+      throw new Error("length mismatch after unfold — the residual does not close");
+    }
+    const digest = await sha256(plain);
+    for (let i = 0; i < 32; i++) {
+      if (digest[i] !== header.digest[i]) {
+        throw new Error("SHA-256 mismatch — regeneration produced a different object");
+      }
     }
   }
 

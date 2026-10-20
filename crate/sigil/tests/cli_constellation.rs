@@ -165,13 +165,16 @@ fn encrypt_to_constellation_cli() {
     assert_eq!(std::fs::read(dir.join("bag-out/sub/big.bin")).unwrap(), big);
 
     // A named star gone: still refused.
-    // New constellations are tidy containers: `Sky` resolves to `Sky.sigil/`, stars sharded by fingerprint.
+    // New constellations are tidy containers: `Sky` resolves to `Sky.sigil/`; encrypted stars are
+    // sharded by a keyless private id (never the plaintext SHA-256).
     assert!(dir.join("Sky.sigil/CONTAINER").is_file());
-    std::fs::remove_file(sigil::container::star_path(
-        &dir.join("Sky.sigil"),
-        &sigil::sha256(b"extra"),
-    ))
-    .unwrap();
+    let alice = [sigil::Identity::load(&dir.join("alice.sgk")).unwrap()];
+    let extra = sigil::constellation_member_star(&dir.join("Sky.sigil"), "extra.txt", None, &alice)
+        .unwrap();
+    assert!(
+        !sigil::container::star_path(&dir.join("Sky.sigil"), &sigil::sha256(b"extra")).exists()
+    );
+    std::fs::remove_file(extra).unwrap();
     let e = fails(sigil(
         &dir,
         &["de-scribe", "-o", "out2", "Sky", "--identity", "alice.sgk"],

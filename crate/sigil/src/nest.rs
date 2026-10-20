@@ -215,28 +215,27 @@ fn view_mark_bytes(
         }
         NestKind::Mark => {
             let (h, _, _) = locate_header(data)?;
-            let mut nest_payload = looks_like_nest_name(&h.name);
+            // A v3 encrypted mark shows its name only after unlock.
+            let mut name = h.name.clone();
+            let mut nest_payload = looks_like_nest_name(&name);
             // Try unseal when not encrypted, or when pass given, to confirm payload magic.
             if !h.encrypted() || pass.is_some() || !identities.is_empty() {
-                match unseal_ex_keys(data, pass, &[], identities) {
-                    Ok(plain) if is_nestable_bytes(&plain) => nest_payload = true,
-                    Ok(_) => {
-                        if !looks_like_nest_name(&h.name) {
-                            nest_payload = false;
-                        }
+                if let Ok((plain, meta)) = crate::unseal_meta_keys(data, pass, &[], identities) {
+                    if let Some(m) = meta {
+                        name = m.name;
                     }
-                    Err(_) => {}
+                    if is_nestable_bytes(&plain) {
+                        nest_payload = true;
+                    } else if !looks_like_nest_name(&name) {
+                        nest_payload = false;
+                    }
                 }
             }
             Ok(PathView {
                 trail,
                 kind: NestKind::Mark,
                 entries: vec![],
-                payload_name: if h.name.is_empty() {
-                    None
-                } else {
-                    Some(h.name)
-                },
+                payload_name: if name.is_empty() { None } else { Some(name) },
                 nest_payload,
                 seen,
             })

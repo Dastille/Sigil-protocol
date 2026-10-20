@@ -319,6 +319,16 @@ impl VaultFs {
     }
 
     fn build_single(&mut self) -> Result<()> {
+        // A v3 encrypted mark shows its name and size only after unlock.
+        if let Ok(Some((name, size))) =
+            crate::work::payload_label_keys(&self.seal, self.pass.as_deref(), &[], &self.identities)
+        {
+            if !name.is_empty() {
+                let name = sanitize_name(&name);
+                self.add_file("", &name, size, FileSrc::Whole)?;
+                return Ok(());
+            }
+        }
         let name = payload_name(&self.seal).unwrap_or_else(|_| {
             self.seal
                 .file_stem()

@@ -275,7 +275,12 @@ fn flat_sky(dir: &Path, name: &str, extra: &[&str]) -> PathBuf {
     let mut a = vec!["constellation", "add", name, "docs"];
     a.extend(extra);
     ok(dir, &a);
-    assert!(sky.join("a.txt.sg1").is_file(), "flat star");
+    // Plain stars keep their list name; encrypted ones never carry it (nor the plaintext hash).
+    assert_eq!(
+        sky.join("a.txt.sg1").is_file(),
+        extra.is_empty(),
+        "flat star"
+    );
     sky
 }
 
@@ -318,7 +323,11 @@ fn tidy_old_constellations() {
         let c = dir.join(format!("{name}.sigil"));
         assert_eq!(sg1_hashes(&c), before, "card + stars byte-identical");
         assert!(c.join(format!("{name}.sg1")).is_file() && c.join(format!("{name}.sga")).is_file());
-        assert!(container::star_path(&c, &sigil::sha256(b"alpha")).is_file());
+        // plain stars are filed by their SHA-256; encrypted ones by a keyless private id
+        assert_eq!(
+            container::star_path(&c, &sigil::sha256(b"alpha")).is_file(),
+            name == "Clear"
+        );
         assert!(!sky.join("a.txt.sg1").exists() && sky.join("keep.txt").is_file());
 
         let mut a = vec!["de-scribe", "-o"];

@@ -538,6 +538,10 @@ fn hex_stem(p: &Path) -> Option<[u8; 32]> {
 }
 
 fn star_digest(p: &Path) -> Option<[u8; 32]> {
+    // New encrypted stars are keyed by their keyless private id (see constellation).
+    if let Some(id) = crate::constellation::private_star_id(p) {
+        return Some(id);
+    }
     if crate::work::is_work_pack(p) {
         hex_stem(p)
     } else {
@@ -574,7 +578,9 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
         .members
         .iter()
         .filter(|m| m.bytes.is_empty())
-        .map(|m| m.digest)
+        // `merkle` is the private id of a new encrypted star (its file key).
+        .flat_map(|m| [m.digest, m.merkle])
+        .filter(|d| *d != [0u8; 32])
         .collect();
     let embedded = chart.members.iter().filter(|m| !m.bytes.is_empty()).count();
     rep.kept += embedded;

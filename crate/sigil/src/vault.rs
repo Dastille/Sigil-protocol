@@ -1524,12 +1524,14 @@ pub fn restore_ex(
             Err(e) => return Err(e),
         },
     };
-    let plain = unseal_ex_keys(&seal_bytes, pass, &[], identities)?;
+    let (plain, meta) = crate::unseal_meta_keys(&seal_bytes, pass, &[], identities)?;
     let digest = sha256(&plain);
     if digest != entry.digest {
-        // Prefer header true-name if chart drifted; still refuse mismatch vs seal header.
+        // Prefer the seal's own true-name if chart drifted; still refuse a mismatch. A v3
+        // encrypted seal keeps it inside the ciphertext (its label holds a keyed fingerprint).
         let (h, _, _) = locate_header(&seal_bytes)?;
-        if digest != h.digest {
+        let true_name = meta.map(|m| m.digest).unwrap_or(h.digest);
+        if digest != true_name {
             return Err(crate::Error::Msg(
                 "restored bytes do not match seal true-name".into(),
             ));

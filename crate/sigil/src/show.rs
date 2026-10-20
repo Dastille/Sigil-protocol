@@ -1,7 +1,7 @@
 //! Showing: HTTP-range to Plex/Jellyfin. Work packs De-scribe only the slices asked for.
 
 use crate::work::StarLoc;
-use crate::{index_pack, payload_name, unseal_path, unseal_star_at, Result, WORK_MAGIC};
+use crate::{payload_name, unseal_path, unseal_star_at, Result, WORK_MAGIC};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -271,7 +271,7 @@ fn serve_work(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if st.locs.is_empty() {
-            let (head, locs) = index_pack(mark)?;
+            let (head, locs) = crate::work::index_pack_keys(mark, pass, &[], &[])?;
             st.work_len = Some(head.orig_total);
             st.locs = locs;
             println!(
@@ -341,6 +341,14 @@ fn serve_work(
             if let std::collections::hash_map::Entry::Vacant(e) = st.stars.entry(loc.index) {
                 println!("unlock slice {}", loc.index);
                 let plain = unseal_star_at(mark, loc, pass, &[])?;
+                if plain.len() != loc.orig_len as usize {
+                    return Err(crate::Error::Msg(format!(
+                        "slice {} is {} bytes, the index said {}; refusing to serve shifted bytes",
+                        loc.index,
+                        plain.len(),
+                        loc.orig_len
+                    )));
+                }
                 e.insert(plain);
             }
         }

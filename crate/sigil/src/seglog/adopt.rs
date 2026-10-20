@@ -343,8 +343,15 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         let seq = next;
         next += 1;
         known.insert(src, seq);
+        // A v3 star hides its plain size and SHA-256: adopt it by its keyed
+        // fingerprint alone (`star=` equal to `sha=` marks a label-only entry).
+        let star = if h.private_label() {
+            format!(" star={}", hex32(&h.digest))
+        } else {
+            String::new()
+        };
         bodies.push(format!(
-            "seq={seq} t={} size={} sha={} src={}",
+            "seq={seq} t={} size={} sha={} src={}{star}",
             now(),
             h.orig_len,
             hex32(&h.digest),
