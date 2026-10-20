@@ -41,8 +41,11 @@ ctap-hid-fido2 = { version = "3.6", optional = true }
 rpassword = "7"
 aes = "0.8"
 cfb-mode = "0.8"
-eframe = { version = "0.32", optional = true }
-rfd = { version = "0.15", optional = true }
+# Lab GUI only. No default features: glow (OpenGL) instead of wgpu, and no `accesskit`
+# (its Linux AT-SPI backend pulls zbus/zvariant, unmaintained per RUSTSEC-2026-0370/0371/0372)
+# and no winit/default (its Adwaita title bar pulls ttf-parser, RUSTSEC-2026-0192).
+eframe = { version = "0.37", optional = true, default-features = false, features = ["clipboard", "default_fonts", "glow", "wayland", "x11"] }
+rfd = { version = "0.17", optional = true }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
 ocb3 = "0.1"
 eax = "0.5"
