@@ -269,6 +269,7 @@ impl Entry {
                         | "of"
                         | "shred"
                         | "src"
+                        | "path"
                         | "from"
                         | "to"
                         | "sig"
@@ -293,6 +294,15 @@ impl Entry {
     /// Opened bytes match this entry.
     pub fn plain_matches(&self, plain: &[u8]) -> bool {
         self.label_only() || (sha256(plain) == self.sha && plain.len() as u64 == self.size)
+    }
+
+    /// The source-relative file path of an entry written by `sigil log add` (additive `path=`
+    /// key, `%XX`-escaped bytes, `/`-separated). `None` for every other entry, or a malformed value.
+    pub fn path(&self) -> Option<Vec<u8>> {
+        self.body
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("path="))
+            .and_then(dec_bytes)
     }
 
     /// True for a tombstone / compaction line (needs `log=2`).
@@ -368,8 +378,18 @@ fn expand(r: &[(u64, u64)]) -> Vec<u64> {
 
 /// Reasons are free text; INDEX values must stay one token, so everything but a safe set is %XX.
 fn enc_reason(s: &str) -> String {
+    enc_bytes(s.as_bytes())
+}
+
+fn dec_reason(s: &str) -> Option<String> {
+    String::from_utf8(dec_bytes(s)?).ok()
+}
+
+/// `%XX`-escape any bytes into one INDEX token: everything but `A-Z a-z 0-9 - _ . ~ , : / @` is
+/// escaped (so spaces, `=`, `%`, control bytes and non-ASCII names round-trip exactly).
+fn enc_bytes(b: &[u8]) -> String {
     let mut o = String::new();
-    for b in s.bytes() {
+    for &b in b {
         if b.is_ascii_alphanumeric() || b"-_.~,:/@".contains(&b) {
             o.push(b as char);
         } else {
@@ -379,21 +399,39 @@ fn enc_reason(s: &str) -> String {
     o
 }
 
-fn dec_reason(s: &str) -> Option<String> {
+/// A stored file path for display: lossy UTF-8 with control characters escaped (`\n`, `\u{1b}`),
+/// so a file name cannot fake extra lines or terminal escapes in `log ls` / `log add` output.
+pub(crate) fn show_path(p: &[u8]) -> String {
+    let mut o = String::new();
+    for c in String::from_utf8_lossy(p).chars() {
+        if c.is_control() {
+            o.extend(c.escape_default());
+        } else {
+            o.push(c);
+        }
+    }
+    o
+}
+
+/// Inverse of `enc_bytes`; `None` on a malformed escape.
+fn dec_bytes(s: &str) -> Option<Vec<u8>> {
     let b = s.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'%' {
-            let h = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
-            out.push(u8::from_str_radix(h, 16).ok()?);
+            let h = b.get(i + 1..i + 3)?;
+            if !h.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            out.push(u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()?);
             i += 3;
         } else {
             out.push(b[i]);
             i += 1;
         }
     }
-    String::from_utf8(out).ok()
+    Some(out)
 }
 
 // --- what the entries add up to ----------------------------------------------------
@@ -1220,12 +1258,14 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
     )
 }
 
+mod add;
 mod adopt;
 mod compact;
 mod keyring;
 mod proof;
 mod rotate;
 mod shred;
+pub use add::*;
 pub use adopt::*;
 pub use compact::*;
 use keyring::RingCache;
@@ -1529,6 +1569,56 @@ pub(crate) fn star_field(sealed: &[u8]) -> String {
     }
 }
 
+/// Seal `data` as segment `seq` the way `append` does: under the given `--pass` / `--to`, or (in a
+/// `--segment-keys` log) under a fresh random key that is returned for the caller to wrap into the
+/// key ring with `keyring::put`. Refuses a segment-keys log without `--pass` / `--to` (there would
+/// be nowhere to keep the key). Writes nothing.
+fn seal_segment(
+    log: &Log,
+    seq: u64,
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    recipients: &[PublicIdentity],
+) -> Result<(Vec<u8>, Option<[u8; 32]>)> {
+    // Per-segment keys: the segment is sealed to its own fresh key; --pass / --to only wrap that
+    // key into the key ring. Without them there would be nowhere to keep it, so refuse first.
+    if log.segkeys {
+        if pass.filter(|p| !p.is_empty()).is_none() && recipients.is_empty() {
+            return Err(err(
+                "this log has per-segment keys: give --pass and/or --to so the segment key can be wrapped and kept in the key ring",
+            ));
+        }
+        let (m, id) = keyring::new_key()?;
+        let sealed = crate::seal_kn_to(
+            data,
+            mode,
+            None,
+            &format!("segment-{seq}"),
+            false,
+            "",
+            &[],
+            None,
+            crate::DEFAULT_PIECE,
+            &[id.public()],
+        )?;
+        return Ok((sealed, Some(m)));
+    }
+    let sealed = crate::seal_kn_to(
+        data,
+        mode,
+        pass,
+        &format!("segment-{seq}"),
+        false,
+        "",
+        &[],
+        None,
+        crate::DEFAULT_PIECE,
+        recipients,
+    )?;
+    Ok((sealed, None))
+}
+
 /// Seal `data` as the next immutable segment and extend the chain.
 pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendReport> {
     let log = Log::open(path)?;
@@ -1539,49 +1629,12 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
     let n = idx.entries.len();
     let seq = n as u64 + 1;
     let sha = sha256(data);
-    // Per-segment keys: the segment is sealed to its own fresh key; --pass / --to only wrap that
-    // key into the key ring. Without them there would be nowhere to keep it, so refuse first.
-    let own_key = if log.segkeys {
-        if opts.pass.filter(|p| !p.is_empty()).is_none() && opts.recipients.is_empty() {
-            return Err(err(
-                "this log has per-segment keys: give --pass and/or --to so the segment key can be wrapped and kept in the key ring",
-            ));
-        }
-        Some(keyring::new_key()?)
-    } else {
-        None
-    };
-    let sealed = match &own_key {
-        Some((_, id)) => crate::seal_kn_to(
-            data,
-            opts.mode,
-            None,
-            &format!("segment-{seq}"),
-            false,
-            "",
-            &[],
-            None,
-            crate::DEFAULT_PIECE,
-            &[id.public()],
-        )?,
-        None => crate::seal_kn_to(
-            data,
-            opts.mode,
-            opts.pass,
-            &format!("segment-{seq}"),
-            false,
-            "",
-            &[],
-            None,
-            crate::DEFAULT_PIECE,
-            opts.recipients,
-        )?,
-    };
+    let (sealed, own_key) = seal_segment(&log, seq, data, opts.mode, opts.pass, opts.recipients)?;
     // 1. segment (atomic; replaces an unindexed leftover from a crash at the same seq), then its key
     //    (a record without an INDEX line is an orphan `gc` reclaims; the next append replaces it)
     let seg = log.segment_path(seq);
     write_atomic(&seg, &sealed)?;
-    if let Some((m, _)) = &own_key {
+    if let Some(m) = &own_key {
         keyring::put(&log, seq, m, opts.pass, opts.recipients)?;
     }
     // 2. INDEX line, 3. HEAD
@@ -1743,6 +1796,11 @@ impl Listing {
                     &hex32(from)[..16],
                     &hex32(to)[..16]
                 ),
+            };
+            // `sigil log add` entries name their file (additive `path=`; absent elsewhere)
+            let what = match e.path() {
+                Some(p) if e.op == Op::Seg => format!("{what}  {}", show_path(&p)),
+                _ => what,
             };
             s.push_str(&format!(
                 "  {:<4} {}  {:<10}  {:<17}  {}\n",

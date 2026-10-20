@@ -100,6 +100,24 @@ Guide: [CONTAINER.md](CONTAINER.md)
 
 Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md)
 
+### Back up a folder into a log (only new or changed files)
+
+```
+./sigil log init photos --identity me.sgk
+./sigil log add photos ./Photos --mode seal --to me.pub --identity me.sgk --dry-run   # preview
+./sigil log add photos ./Photos --mode seal --to me.pub --identity me.sgk
+./sigil log ls photos                                    # every file with its seq and path
+./sigil log read photos --seq 12 -o beach.jpg --identity me.sgk   # one file back
+```
+
+Run the same `log add` again whenever you like. It seals only files that are new or changed (it
+compares SHA-256, so it needs no key for that); unchanged files are skipped, and with nothing to do
+it writes nothing. A changed file becomes a new version and the old one stays. A file you deleted
+from the folder is listed as `missing from source (kept)` and is **never** removed from the log.
+Symlinks and special files are skipped and listed.
+
+Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder")
+
 ### Lock a mark to someone’s public key (encrypt-to)
 
 ```

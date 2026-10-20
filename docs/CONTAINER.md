@@ -232,7 +232,7 @@ key ring; gc also destroys key records nothing needs); older sigils refuse newer
 ## Status
 
 Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
-Segment-log mode: slices 1–3 shipped (append / verify / mend; tombstones + compaction; opt-in per-segment keys + crypto-shredding; see SEGMENT-LOG.md), plus log mount and `sigil log adopt` (tidy a loose folder of `.sg1` batches into a `kind=log` container, byte-for-byte). A later container-format bump (if ever needed) is
+Segment-log mode: slices 1–3 shipped (append / verify / mend; tombstones + compaction; opt-in per-segment keys + crypto-shredding; see SEGMENT-LOG.md), plus log mount, `sigil log adopt` (tidy a loose folder of `.sg1` batches into a `kind=log` container, byte-for-byte) and `sigil log add` (back up a folder: one segment per new or changed file). A later container-format bump (if ever needed) is
 handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.
 
 ## Private label (v3)
