@@ -146,3 +146,30 @@ jobs:
         run: |
           SIGIL_LAB_SMOKE_FRAMES=40 timeout 120 xvfb-run -a cargo run --locked --features lab --bin sigil-lab | tee smoke.txt
           grep -q "sigil-lab smoke: 40 frames rendered" smoke.txt
+
+  web-lab:
+    name: web lab (typecheck + crypto tests vs the Rust binary)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: web-lab
+      - name: npm ci
+        run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      # The lab tests open fixtures written by the Rust CLI and, with SIGIL_BIN set,
+      # cross-check live: lab-written seals open in Rust and Rust-written seals open in the lab.
+      - name: build the sigil CLI
+        working-directory: crate/sigil
+        run: cargo build --locked --release --bin sigil
+      - name: lab tests (Argon2id / PBKDF2 seals, fail-closed)
+        run: SIGIL_BIN="$PWD/crate/sigil/target/release/sigil" npm run test:lab
