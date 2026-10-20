@@ -1,7 +1,8 @@
 import { fold, unfold } from "./chaos";
 import { maybeDeflate, inflate } from "./compress";
 import { crc32, crc32bytes, readCrc32 } from "./crc32";
-import { encryptAesGcm, decryptAesGcm, hex, randomBytes, sha256 } from "./crypto";
+import { aesGcmOpen, aesGcmSeal, decryptAesGcm, hex, randomBytes, sha256 } from "./crypto";
+import { buildSgtoPass, unwrapCekWithPass } from "./sgto";
 import { shannonEntropy } from "./entropy";
 import { residualGlyph } from "./fibonacci";
 import {
@@ -173,6 +174,32 @@ function pickShardViews(
   return { views, live: views.map((v) => (v.crcOk ? v.bytes : null)) };
 }
 
+/**
+ * Writers for new encrypted seals, by format name. `ENCRYPTED_WRITE_FORMAT` must name what
+ * Rust `main` writes today (`lib.rs` seal_kn_mds_to + `keys.rs` build_sgto): a random content
+ * key encrypts the folded body (AES-256-GCM, header nonce and tag), and an SGTO v2 block
+ * after the Keystone wraps that key with an Argon2id passphrase record. When the format
+ * changes, add a writer here and point `ENCRYPTED_WRITE_FORMAT` at it; readers for old
+ * formats stay in `unseal` / `sgto.ts`.
+ */
+type EncryptedWriter = (
+  folded: Uint8Array,
+  pass: string,
+  nonce: Uint8Array,
+) => Promise<{ cipher: Uint8Array; tag: Uint8Array; sgto: Uint8Array }>;
+
+const ENCRYPTED_WRITERS: Record<string, EncryptedWriter> = {
+  "sgto-v2-argon2id": async (folded, pass, nonce) => {
+    const cek = randomBytes(32);
+    const { cipher, tag } = await aesGcmSeal(cek, nonce, folded);
+    const sgto = await buildSgtoPass(cek, pass);
+    cek.fill(0);
+    return { cipher, tag, sgto };
+  },
+};
+
+export const ENCRYPTED_WRITE_FORMAT = "sgto-v2-argon2id";
+
 export async function seal(opts: {
   data: Uint8Array;
   mode: ResilienceMode;
@@ -194,13 +221,16 @@ export async function seal(opts: {
   let nonce = new Uint8Array(12);
   let tag = new Uint8Array(16);
   let encrypted = false;
-  const pass = opts.passphrase?.trim() ?? "";
-  if (pass) {
+  let sgto: Uint8Array = new Uint8Array(0);
+  // As in Rust: an all-blank passphrase means "not encrypted"; otherwise it is used as typed.
+  const pass = opts.passphrase ?? "";
+  if (pass.trim()) {
     encrypted = true;
     nonce = new Uint8Array(randomBytes(12));
-    const enc = await encryptAesGcm(payload, pass, salt, nonce);
+    const enc = await ENCRYPTED_WRITERS[ENCRYPTED_WRITE_FORMAT](payload, pass, nonce);
     payload = new Uint8Array(enc.cipher);
     tag = new Uint8Array(enc.tag);
+    sgto = enc.sgto;
   }
   const shards =
     opts.mode === "glyph" ? stripeShards(payload, n) : rsEncodeShards(payload, k, n);
@@ -234,7 +264,8 @@ export async function seal(opts: {
     merkle: tree.root,
   });
   const vow = hasVow ? writeVow(cov, geas) : undefined;
-  const bytes = concat([wrapKeystone(header), vow ?? new Uint8Array(0), packShards(shards, header, vow)]);
+  // SGTO sits after the Keystone and before the Vow, as in Rust.
+  const bytes = concat([wrapKeystone(header), sgto, vow ?? new Uint8Array(0), packShards(shards, header, vow)]);
   const parsed = readHeader(header);
   if (hasVow) {
     parsed.vow = true;
@@ -278,7 +309,7 @@ export async function unseal(
   passphrase?: string,
   companions?: Uint8Array[],
 ): Promise<UnsealResult> {
-  const { header, prefix, source } = locateHeader(file);
+  const { header, prefix, source, sgto } = locateHeader(file);
   if (header.geas.length) {
     const have = await Promise.all((companions ?? []).map((c) => sha256(c)));
     const need = header.geas;
@@ -303,7 +334,18 @@ export async function unseal(
   const pass = passphrase?.trim() ?? "";
   if (header.encrypted) {
     if (!pass) throw new Error("this seal is encrypted — a passphrase is required");
-    folded = await decryptAesGcm(folded, header.tag, pass, header.salt, header.nonce);
+    if (sgto) {
+      // Since PR #44 (and for encrypt-to): the SGTO block wraps a random content key.
+      // Rust uses the passphrase as typed here; only the legacy Ward trims it.
+      const cek = await unwrapCekWithPass(sgto, passphrase ?? "", header.salt);
+      const open = await aesGcmOpen(cek, header.nonce, folded, header.tag);
+      cek.fill(0);
+      if (!open) throw new Error("unseal failed: wrong passphrase, or the payload is past repair");
+      folded = open;
+    } else {
+      // Legacy Ward: PBKDF2-HMAC-SHA256 (80k) of the passphrase with the header salt.
+      folded = await decryptAesGcm(folded, header.tag, pass, header.salt, header.nonce);
+    }
   } else if (pass) {
     throw new Error("this seal was not encrypted; leave the passphrase empty");
   }

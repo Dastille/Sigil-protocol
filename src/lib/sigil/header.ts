@@ -22,6 +22,7 @@ import {
   type Sg1Header,
   VERSION,
 } from "./types";
+import { readSgtoAt, type SgtoBlock } from "./sgto";
 
 function u64le(n: number): Uint8Array {
   const b = new Uint8Array(8);
@@ -165,6 +166,8 @@ export type HeaderFix = {
   slot: number;
   recovered: boolean;
   source: "primary" | "keystone" | "ember";
+  /** Key-wrap block after the Keystone (encrypted seals since PR #44, and encrypt-to). */
+  sgto: SgtoBlock | null;
 };
 
 export function shardStride(header: Sg1Header): number {
@@ -172,9 +175,22 @@ export function shardStride(header: Sg1Header): number {
   return lead + header.shardLen + SHARD_CRC;
 }
 
+export function mapsLen(header: Sg1Header): number {
+  return header.keystone ? KEYSTONE_SPAN : HEADER_SIZE;
+}
+
+/** Bytes before the first piece, without looking for an SGTO block (pre-SGTO seals). */
 export function bodyPrefix(header: Sg1Header): number {
-  const maps = header.keystone ? KEYSTONE_SPAN : HEADER_SIZE;
-  return maps + (header.vow ? VOW_SIZE : 0);
+  return mapsLen(header) + (header.vow ? VOW_SIZE : 0);
+}
+
+/** Where the maps end, the SGTO block (if any), the Vow and the first piece sit, from `base`. */
+function frontLayout(file: Uint8Array, header: Sg1Header, base: number) {
+  const mapsEnd = base + mapsLen(header);
+  const sgto = readSgtoAt(file, mapsEnd);
+  const vowAt = mapsEnd + (sgto?.bytes.length ?? 0);
+  const vow = header.vow ? readVow(file, vowAt) : null;
+  return { sgto, vow, prefix: vowAt + (header.vow ? VOW_SIZE : 0) };
 }
 
 export function writeVow(covenant: string, geas: Uint8Array[]): Uint8Array {
@@ -249,7 +265,8 @@ function locateFromEmber(file: Uint8Array): HeaderFix | null {
   for (const hit of hits) {
     const stride = shardStride(hit.header);
     if (stride <= 0) continue;
-    const prefixes = new Set<number>([0, KEYSTONE_SPAN, KEYSTONE_SPAN + VOW_SIZE]);
+    const front = frontLayout(file, hit.header, 0);
+    const prefixes = new Set<number>([0, KEYSTONE_SPAN, KEYSTONE_SPAN + VOW_SIZE, front.prefix]);
     for (let i = 0; i < hit.header.n; i++) {
       const p = hit.offset - i * stride;
       if (p >= 0) prefixes.add(p);
@@ -264,6 +281,7 @@ function locateFromEmber(file: Uint8Array): HeaderFix | null {
           slot: 4,
           recovered: true,
           source: "ember",
+          sgto: front.sgto,
         };
       }
     }
@@ -276,20 +294,14 @@ function locateFromEmber(file: Uint8Array): HeaderFix | null {
 export function locateHeader(file: Uint8Array): HeaderFix {
   const primary = tryReadHeaderAt(file, 0);
   if (primary) {
-    const vow = primary.vow ? readVow(file, primary.keystone ? KEYSTONE_SPAN : HEADER_SIZE) : null;
-    return {
-      header: applyVow(primary, vow),
-      prefix: bodyPrefix(primary),
-      slot: 0,
-      recovered: false,
-      source: "primary",
-    };
+    const { sgto, vow, prefix } = frontLayout(file, primary, 0);
+    return { header: applyVow(primary, vow), prefix, slot: 0, recovered: false, source: "primary", sgto };
   }
   for (let slot = 1; slot <= KEYSTONE_COPIES; slot++) {
     const h = tryReadHeaderAt(file, slot * HEADER_SIZE);
     if (h?.keystone) {
-      const vow = h.vow ? readVow(file, KEYSTONE_SPAN) : null;
-      return { header: applyVow(h, vow), prefix: bodyPrefix(h), slot, recovered: true, source: "keystone" };
+      const { sgto, vow, prefix } = frontLayout(file, h, 0);
+      return { header: applyVow(h, vow), prefix, slot, recovered: true, source: "keystone", sgto };
     }
   }
   const hunt = Math.min(file.length, 8192);
@@ -304,14 +316,8 @@ export function locateHeader(file: Uint8Array): HeaderFix {
     }
     const h = tryReadHeaderAt(file, i);
     if (h) {
-      const vow = h.vow ? readVow(file, i + (h.keystone ? KEYSTONE_SPAN : HEADER_SIZE)) : null;
-      return {
-        header: applyVow(h, vow),
-        prefix: i + bodyPrefix(h),
-        slot: 0,
-        recovered: true,
-        source: "keystone",
-      };
+      const { sgto, vow, prefix } = frontLayout(file, h, i);
+      return { header: applyVow(h, vow), prefix, slot: 0, recovered: true, source: "keystone", sgto };
     }
   }
   const ember = locateFromEmber(file);
