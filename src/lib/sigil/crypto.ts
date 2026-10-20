@@ -128,11 +128,12 @@ export async function aesGcmSeal(
   key: Uint8Array,
   nonce: Uint8Array,
   data: Uint8Array,
+  aad?: Uint8Array,
 ): Promise<{ cipher: Uint8Array; tag: Uint8Array }> {
   const k = await aesKey(key, "encrypt");
-  const packed = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: toBuf(nonce), tagLength: 128 }, k, toBuf(data)),
-  );
+  const params: AesGcmParams = { name: "AES-GCM", iv: toBuf(nonce), tagLength: 128 };
+  if (aad) params.additionalData = toBuf(aad);
+  const packed = new Uint8Array(await crypto.subtle.encrypt(params, k, toBuf(data)));
   return { cipher: packed.slice(0, packed.length - 16), tag: packed.slice(packed.length - 16) };
 }
 
@@ -142,16 +143,36 @@ export async function aesGcmOpen(
   nonce: Uint8Array,
   cipher: Uint8Array,
   tag: Uint8Array,
+  aad?: Uint8Array,
 ): Promise<Uint8Array | null> {
   const k = await aesKey(key, "decrypt");
+  const params: AesGcmParams = { name: "AES-GCM", iv: toBuf(nonce), tagLength: 128 };
+  if (aad) params.additionalData = toBuf(aad);
   const packed = new Uint8Array(cipher.length + tag.length);
   packed.set(cipher);
   packed.set(tag, cipher.length);
   try {
     return new Uint8Array(
-      await crypto.subtle.decrypt({ name: "AES-GCM", iv: toBuf(nonce), tagLength: 128 }, k, toBuf(packed)),
+      await crypto.subtle.decrypt(params, k, toBuf(packed)),
     );
   } catch {
     return null;
   }
+}
+
+/** HKDF-SHA-256 (RFC 5869): 32 bytes. */
+export async function hkdfSha256(ikm: Uint8Array, salt: Uint8Array, info: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey("raw", toBuf(ikm), "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: toBuf(salt), info: toBuf(info) },
+    k,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+/** HMAC-SHA-256 (RFC 2104). */
+export async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey("raw", toBuf(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", k, toBuf(data)));
 }

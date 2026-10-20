@@ -21,6 +21,7 @@ import {
   type ResilienceMode,
   type Sg1Header,
   VERSION,
+  PRIVATE_VERSION,
 } from "./types";
 import { readSgtoAt, type SgtoBlock } from "./sgto";
 
@@ -97,8 +98,8 @@ function parseHeader(buf: Uint8Array, magic: Uint8Array): Sg1Header {
     throw new Error("not a Sigil file: missing magic");
   }
   const version = buf[4];
-  if (version !== 1 && version !== VERSION) {
-    throw new Error(`unsupported Sigil version ${version} (this lab reads v1 and v${VERSION})`);
+  if (version !== 1 && version !== VERSION && version !== PRIVATE_VERSION) {
+    throw new Error(`unsupported Sigil version ${version} (this lab reads v1 to v${PRIVATE_VERSION})`);
   }
   const probe = new Uint8Array(HEADER_SIZE);
   probe.set(buf.subarray(0, HEADER_SIZE));
