@@ -202,7 +202,11 @@ pub fn friendly_label(mark: &Path, pass: Option<&str>, identities: &[Identity]) 
     }
     let card = crate::constellation::find_card(root)?;
     let chart = crate::constellation::load_chart_from_mark(&card, pass, identities).ok()?;
-    let digest: [u8; 32] = if crate::work::is_work_pack(&abs) {
+    // A new encrypted star is filed under its keyless private id (see constellation).
+    let private = crate::constellation::private_star_id(&abs);
+    let digest: [u8; 32] = if let Some(id) = private {
+        id
+    } else if crate::work::is_work_pack(&abs) {
         hex::decode(file.strip_suffix(".sg1")?)
             .ok()?
             .try_into()
@@ -213,7 +217,13 @@ pub fn friendly_label(mark: &Path, pass: Option<&str>, identities: &[Identity]) 
     let names: Vec<&str> = chart
         .members
         .iter()
-        .filter(|m| m.digest == digest)
+        .filter(|m| {
+            if private.is_some() {
+                m.merkle == digest
+            } else {
+                m.digest == digest
+            }
+        })
         .map(|m| m.name.as_str())
         .collect();
     match names.len() {

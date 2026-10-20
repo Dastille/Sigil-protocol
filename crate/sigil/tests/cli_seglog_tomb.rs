@@ -927,9 +927,12 @@ fn keyed_verify_catches_a_compaction_that_does_not_match_its_members() {
     let m = manifest(&c);
     fs::write(c.join("CONTAINER"), m.replace("log=1", "log=2")).unwrap();
     let digest = sigil::hex32(&sigil::sha256(fake));
+    // a v3 (private-label) star binds to its entry by `star=`, its keyed fingerprint
+    let star_bytes = fs::read(d.join("fake.sg1")).unwrap();
+    let star = sigil::hex32(&sigil::locate_header(&star_bytes).unwrap().0.digest);
     forge_line(
         &c,
-        &format!("seq=4 t=5 size=24 sha={digest} op=compact of=1-3"),
+        &format!("seq=4 t=5 size=24 sha={digest} op=compact of=1-3 star={star}"),
     );
     // keyless verify cannot see content: the star's own digest matches the INDEX
     let (_code, o) = run(&d, &["log", "verify", "ev"]);

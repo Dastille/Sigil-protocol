@@ -234,7 +234,13 @@ fn constellation_missing_star_rot_locked_card_and_manifest() {
     assert!(o.contains("card-locked") && o.contains("--pass"), "{o}");
     let (code, o) = doc(&dir, &["W", "--pass", "pw"]);
     assert_eq!(code, 0, "{o}");
-    zero_mid(&star(&dir.join("W.sigil"), b"warded warded warded"), 8);
+    // a new encrypted star is filed under its keyless private id, not the plaintext SHA-256
+    let ws =
+        sigil::constellation_member_star(&dir.join("W.sigil"), "w.txt", Some("pw"), &[]).unwrap();
+    assert!(!ws
+        .to_string_lossy()
+        .contains(&sigil::hex32(&sigil::sha256(b"warded warded warded"))));
+    zero_mid(&ws, 8);
     let (code, o) = doc(&dir, &["W"]);
     assert_eq!(code, 1, "{o}");
     assert!(o.contains("bit-rot"), "{o}");

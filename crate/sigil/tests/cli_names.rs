@@ -152,7 +152,12 @@ fn ls_never_changes_disk_and_works_on_flat_and_locked() {
     assert!(fails(&dir, &["ls", "W"]).contains("--pass"));
     assert!(ok(&dir, &["ls", "W", "--pass", "pw"]).contains("w.txt"));
     // fingerprint path of a warded star: no name without the key (falls back), name with it
-    let star = container::star_path(&dir.join("W.sigil"), &sigil::sha256(b"warded"));
+    let star =
+        sigil::constellation_member_star(&dir.join("W.sigil"), "w.txt", Some("pw"), &[]).unwrap();
+    assert_ne!(
+        star,
+        container::star_path(&dir.join("W.sigil"), &sigil::sha256(b"warded"))
+    );
     let o = ok(&dir, &["ls", star.to_str().unwrap(), "--pass", "pw"]);
     assert!(o.contains("trail  w.txt"), "{o}");
     let _ = fs::remove_dir_all(&dir);

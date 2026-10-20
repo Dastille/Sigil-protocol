@@ -54,3 +54,7 @@ range all-or-nothing), `folder::tests::failed_folder_restore_writes_nothing_and_
 `folder::tests::wrong_key_folder_restore_writes_nothing`,
 `constellation::tests::failed_constellation_restore_writes_nothing_and_keeps_existing_files`
 and `staging::tests`.
+
+## Private label (v3)
+
+New encrypted marks authenticate their label as AES-GCM associated data. A rewritten name, size, fingerprint, salt, nonce, version or binding, a swapped label, or an outer entropy score makes unseal refuse. See docs/PRIVATE-LABEL.md.

@@ -37,6 +37,7 @@ mod packhead;
 pub mod passkey;
 pub mod pgp;
 mod pieces;
+pub mod privacy;
 mod rs;
 mod rs_ref;
 pub mod seglog;
@@ -77,10 +78,11 @@ pub use cdc::{
 };
 pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input,
-    is_constellation_mark, pack_atlas, pack_atlas_chart, pack_atlas_keys,
-    remove_members as constellation_remove, scry_chart, scry_constellation,
-    scry_constellation_keys, unseal_constellation, unseal_constellation_keys, AddOpts, AddReport,
-    Chart, RemoveOpts as ConstellationRemoveOpts, RemoveReport as ConstellationRemoveReport,
+    is_constellation_mark, member_star_path as constellation_member_star, pack_atlas,
+    pack_atlas_chart, pack_atlas_keys, remove_members as constellation_remove, scry_chart,
+    scry_constellation, scry_constellation_keys, unseal_constellation, unseal_constellation_keys,
+    AddOpts, AddReport, Chart, RemoveOpts as ConstellationRemoveOpts,
+    RemoveReport as ConstellationRemoveReport,
 };
 pub use folder::{
     inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name,
@@ -117,6 +119,7 @@ pub use pieces::{
     mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
     VESSEL,
 };
+pub use privacy::{FingerprintKey, Pad, SealMeta, SealOpts};
 pub use show::run_showing;
 pub use vault::tip_seal_path as vault_tip_seal_path;
 pub use vault::{
@@ -142,11 +145,12 @@ pub use vault::{
     DIRTY_NAME as VAULT_DIRTY, VAULT_SUFFIX,
 };
 pub use work::{
-    choose_overture, index_pack, inscribe_path, inscribe_path_to, inscribe_stars_dir,
-    inscribe_stars_dir_to, is_damaged_work_pack, is_work_pack, mend_pack_path, overture_report,
-    payload_name, read_facet_digests, scry_facets, scry_path, suggested_output_name, unseal_path,
-    unseal_path_keys, unseal_range, unseal_range_keys, unseal_star_at, unseal_star_at_keys,
-    PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
+    choose_overture, index_pack, index_pack_keys, inscribe_path, inscribe_path_to,
+    inscribe_stars_dir, inscribe_stars_dir_to, is_damaged_work_pack, is_work_pack, mend_pack_path,
+    overture_report, payload_label_keys, payload_name, read_facet_digests, scry_facets, scry_path,
+    suggested_output_name, unseal_path, unseal_path_keys, unseal_range, unseal_range_keys,
+    unseal_star_at, unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
+    OVERTURE, WORK_MAGIC,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
@@ -450,6 +454,228 @@ pub fn seal_kn_mds_to(
     mds_be: &dyn mds::MdsBackend,
     recipients: &[keys::PublicIdentity],
 ) -> Result<Vec<u8>> {
+    seal_kn_mds_to_opts(
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        mds_be,
+        recipients,
+        &privacy::SealOpts::default(),
+    )
+}
+
+/// Like [`seal_kn_to`], with private-label options (keyed-fingerprint key, opt-in padding).
+// Justification: see `seal_kn_mds_to`.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_kn_to_opts(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    recipients: &[keys::PublicIdentity],
+    opts: &privacy::SealOpts,
+) -> Result<Vec<u8>> {
+    seal_kn_mds_to_opts(
+        data,
+        mode,
+        pass,
+        name,
+        graph,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        &*mds::default_backend(),
+        recipients,
+        opts,
+    )
+}
+
+/// The seal itself. Encrypted seals (passphrase and/or encrypt-to) are written
+/// with the v3 private label (see [`privacy`]); plain seals keep the v2 label.
+// Justification: see `seal_kn_mds_to`.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_kn_mds_to_opts(
+    data: &[u8],
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    mds_be: &dyn mds::MdsBackend,
+    recipients: &[keys::PublicIdentity],
+    opts: &privacy::SealOpts,
+) -> Result<Vec<u8>> {
+    let pass_nonempty = pass.filter(|s| !s.is_empty());
+    // New passphrase seals go through SGTO too: random CEK, wrapped with Argon2id whose
+    // parameters are stored in the wrap record. The legacy Ward (PBKDF2, fixed 80k iterations,
+    // nothing stored) is read-only; see `keys::KIND_PASS_ARGON2ID`.
+    let use_to = !recipients.is_empty() || pass_nonempty.is_some();
+    if !use_to {
+        return seal_plain(
+            data,
+            mode,
+            name,
+            graph,
+            covenant,
+            geas,
+            shards,
+            piece_bytes,
+            mds_be,
+        );
+    }
+    let digest = sha256(data);
+    let mut salt = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    getrandom(&mut salt);
+    getrandom(&mut nonce);
+    let (body, compressed) = maybe_deflate(data);
+    let entropy_milli = (shannon(data) * 1000.0).round() as u32;
+    let mut cek = zeroize::Zeroizing::new([0u8; 32]);
+    getrandom(&mut cek[..]);
+    let sgto_block = keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?;
+    let fp_key = privacy::fingerprint_key(&cek, &salt, &opts.fingerprint)?;
+    let keyed = privacy::keyed_fingerprint(&fp_key, data)?;
+    let mut meta = privacy::SealMeta {
+        name: name.to_string(),
+        orig_len: data.len() as u64,
+        digest,
+        body_len: body.len() as u64,
+        entropy_milli,
+        compressed,
+        group_total: opts.group_total,
+        shared_fingerprint: matches!(opts.fingerprint, privacy::FingerprintKey::Shared(_)),
+        pad_len: 0,
+    };
+    let inner_len = privacy::write_inner(&meta).len() as u64;
+    let unpadded = inner_len + body.len() as u64;
+    meta.pad_len = privacy::padded_len(unpadded, opts.pad) - unpadded;
+    let mut inner = privacy::write_inner(&meta);
+    inner.extend_from_slice(&chaos::fold(&body, &salt));
+    let pad = usize::try_from(meta.pad_len).map_err(|_| Error::Msg("padding too large".into()))?;
+    inner.resize(inner.len() + pad, 0);
+    // Part counts follow the ciphertext length (what is visible anyway), not the plain size.
+    let (k, n) = choose_kn(mode, inner.len() as u64, piece_bytes, shards);
+    let mut flags = mode.flag() | 2;
+    if graph {
+        flags |= 1 << 4;
+    }
+    flags |= header::FLAG_KEYSTONE | header::FLAG_EMBER;
+    let has_vow = !covenant.is_empty() || !geas.is_empty();
+    if has_vow {
+        flags |= header::FLAG_VOW;
+    }
+    let mut h = header::Header {
+        version: privacy::PRIVATE_VERSION,
+        flags,
+        k: k as u8,
+        n: n as u8,
+        orig_len: 0,
+        folded_len: inner.len() as u64,
+        digest: keyed,
+        salt,
+        nonce,
+        tag: [0u8; 16],
+        shard_len: 0,
+        entropy_milli: 0,
+        name: String::new(),
+        merkle: [0u8; 32],
+    };
+    let aad = privacy::label_aad(&write_header(&h))?;
+    let cipher = Aes256Gcm::new_from_slice(&cek[..]).map_err(|e| Error::Msg(e.to_string()))?;
+    let mut packed = cipher
+        .encrypt(
+            Nonce::from_slice(&nonce),
+            aes_gcm::aead::Payload {
+                msg: &inner,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| Error::Msg("encrypt failed".into()))?;
+    let t = packed
+        .len()
+        .checked_sub(16)
+        .ok_or_else(|| Error::Msg("encrypt failed".into()))?;
+    h.tag.copy_from_slice(&packed[t..]);
+    packed.truncate(t);
+    let shards = if matches!(mode, Mode::Glyph) {
+        rs::stripe(&packed, n)
+    } else {
+        mds_be.encode(&packed, k, n)?
+    };
+    let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
+    h.merkle = merkle::merkle_root(&leaves);
+    h.shard_len = shards.first().map(|s| s.len() as u32).unwrap_or(1);
+    Ok(assemble(
+        &write_header(&h),
+        Some(&sgto_block),
+        covenant,
+        geas,
+        &shards,
+    ))
+}
+
+/// Keystone + optional SGTO + optional vow + ember-framed shards.
+fn assemble(
+    hdr: &[u8],
+    sgto: Option<&[u8]>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: &[Vec<u8>],
+) -> Vec<u8> {
+    let mut out = header::wrap_keystone(hdr);
+    // SGTO sits after keystone, before vow (detected by magic — no flag bit).
+    if let Some(sg) = sgto {
+        out.extend_from_slice(sg);
+    }
+    let has_vow = !covenant.is_empty() || !geas.is_empty();
+    let vow = if has_vow {
+        Some(header::write_vow(covenant, geas))
+    } else {
+        None
+    };
+    if let Some(v) = &vow {
+        out.extend_from_slice(v);
+    }
+    for (i, s) in shards.iter().enumerate() {
+        out.extend_from_slice(&header::write_ember(hdr, i as u8));
+        if let Some(v) = &vow {
+            out.extend_from_slice(v);
+        }
+        out.extend_from_slice(s);
+        out.extend_from_slice(&crc32fast::hash(s).to_le_bytes());
+    }
+    out
+}
+
+/// Plain (unencrypted) seal: the v2 label, unchanged.
+// Justification: see `seal_kn_mds_to`.
+#[allow(clippy::too_many_arguments)]
+fn seal_plain(
+    data: &[u8],
+    mode: Mode,
+    name: &str,
+    graph: bool,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    mds_be: &dyn mds::MdsBackend,
+) -> Result<Vec<u8>> {
     let (k, n) = choose_kn(mode, data.len() as u64, piece_bytes, shards);
     let digest = sha256(data);
     let mut salt = [0u8; 16];
@@ -457,29 +683,7 @@ pub fn seal_kn_mds_to(
     getrandom(&mut salt);
     getrandom(&mut nonce);
     let (body, compressed) = maybe_deflate(data);
-    let mut folded = chaos::fold(&body, &salt);
-    let mut tag = [0u8; 16];
-    let mut encrypted = false;
-    let mut sgto_block: Option<Vec<u8>> = None;
-    let pass_nonempty = pass.filter(|s| !s.is_empty());
-    // New passphrase seals go through SGTO too: random CEK, wrapped with Argon2id whose
-    // parameters are stored in the wrap record. The legacy Ward (PBKDF2, fixed 80k iterations,
-    // nothing stored) is read-only; see `keys::KIND_PASS_ARGON2ID`.
-    let use_to = !recipients.is_empty() || pass_nonempty.is_some();
-    if use_to {
-        // Random CEK; wrap for each recipient (+ optional passphrase wrap).
-        let mut cek = [0u8; 32];
-        getrandom(&mut cek);
-        let cipher = Aes256Gcm::new_from_slice(&cek).map_err(|e| Error::Msg(e.to_string()))?;
-        let packed = cipher
-            .encrypt(Nonce::from_slice(&nonce), folded.as_ref())
-            .map_err(|_| Error::Msg("encrypt failed".into()))?;
-        let t = packed.len() - 16;
-        tag.copy_from_slice(&packed[t..]);
-        folded = packed[..t].to_vec();
-        encrypted = true;
-        sgto_block = Some(keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?);
-    }
+    let folded = chaos::fold(&body, &salt);
     let shards = if matches!(mode, Mode::Glyph) {
         rs::stripe(&folded, n)
     } else {
@@ -491,16 +695,12 @@ pub fn seal_kn_mds_to(
     if compressed {
         flags |= 1;
     }
-    if encrypted {
-        flags |= 2;
-    }
     if graph {
         flags |= 1 << 4;
     }
     flags |= header::FLAG_KEYSTONE;
     flags |= header::FLAG_EMBER;
-    let has_vow = !covenant.is_empty() || !geas.is_empty();
-    if has_vow {
+    if !covenant.is_empty() || !geas.is_empty() {
         flags |= header::FLAG_VOW;
     }
     let entropy_milli = (shannon(data) * 1000.0).round() as u32;
@@ -514,34 +714,13 @@ pub fn seal_kn_mds_to(
         digest,
         salt,
         nonce,
-        tag,
+        tag: [0u8; 16],
         shard_len: shards.first().map(|s| s.len() as u32).unwrap_or(1),
         entropy_milli,
         name: name.to_string(),
         merkle,
     });
-    let mut out = header::wrap_keystone(&hdr);
-    // SGTO sits after keystone, before vow (detected by magic — no flag bit).
-    if let Some(sg) = &sgto_block {
-        out.extend_from_slice(sg);
-    }
-    let vow = if has_vow {
-        Some(header::write_vow(covenant, geas))
-    } else {
-        None
-    };
-    if let Some(v) = &vow {
-        out.extend_from_slice(v);
-    }
-    for (i, s) in shards.iter().enumerate() {
-        out.extend_from_slice(&header::write_ember(&hdr, i as u8));
-        if let Some(v) = &vow {
-            out.extend_from_slice(v);
-        }
-        out.extend_from_slice(s);
-        out.extend_from_slice(&crc32fast::hash(s).to_le_bytes());
-    }
-    Ok(out)
+    Ok(assemble(&hdr, None, covenant, geas, &shards))
 }
 
 pub fn unseal(file: &[u8], pass: Option<&str>) -> Result<Vec<u8>> {
@@ -571,6 +750,81 @@ pub fn unseal_ex_mds_keys(
     mds_be: &dyn mds::MdsBackend,
     identities: &[keys::Identity],
 ) -> Result<Vec<u8>> {
+    unseal_meta(file, pass, companions, mds_be, identities).map(|(p, _)| p)
+}
+
+/// Like [`unseal_ex_keys`], also returning the private label of a v3 seal
+/// (`None` for v1/v2 seals, whose label is on the outside).
+pub fn unseal_meta_keys(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[keys::Identity],
+) -> Result<(Vec<u8>, Option<privacy::SealMeta>)> {
+    unseal_meta(file, pass, companions, &*mds::default_backend(), identities)
+}
+
+/// Name, size and plaintext SHA-256 of a seal: from the outer label for v1/v2 and
+/// plain seals, from inside the ciphertext for v3 (needs the key; opens the seal).
+pub fn seal_meta_keys(
+    file: &[u8],
+    pass: Option<&str>,
+    identities: &[keys::Identity],
+) -> Result<privacy::SealMeta> {
+    let (h, _, _) = locate_header(file)?;
+    if !h.private_label() {
+        return Ok(privacy::SealMeta {
+            name: h.name.clone(),
+            orig_len: h.orig_len,
+            digest: h.digest,
+            body_len: 0,
+            entropy_milli: h.entropy_milli,
+            compressed: h.compressed(),
+            group_total: 0,
+            shared_fingerprint: false,
+            pad_len: 0,
+        });
+    }
+    match unseal_meta(file, pass, &[], &*mds::default_backend(), identities)? {
+        (_, Some(m)) => Ok(m),
+        (_, None) => Err(Error::Msg("private label missing".into())),
+    }
+}
+
+/// Change check for the key holder (option 4): does `data` match the keyed
+/// fingerprint on the outside of this v3 seal? Unwraps the content key only; the
+/// body is not decrypted. Per-file fingerprints only: a seal made with a shared
+/// dedupe key compares against [`privacy::shared_fingerprint`] instead, which needs
+/// no seal key at all. Errors on v1/v2 seals and on a wrong key.
+pub fn keyed_fingerprint_matches(
+    file: &[u8],
+    pass: Option<&str>,
+    identities: &[keys::Identity],
+    data: &[u8],
+) -> Result<bool> {
+    let (h, _, _) = locate_header(file)?;
+    if !h.private_label() {
+        return Err(Error::Msg("not a v3 private-label seal".into()));
+    }
+    let block = header::sgto_slice(&h, file)
+        .ok_or_else(|| Error::Msg("v3 seal has no key wrap (SGTO)".into()))?;
+    let cek = keys::unwrap_cek(block, identities, pass.filter(|s| !s.is_empty()), &h.salt)?;
+    let fk = privacy::fingerprint_key(&cek, &h.salt, &privacy::FingerprintKey::PerFile)?;
+    let fp = privacy::keyed_fingerprint(&fk, data)?;
+    Ok(subtle_eq(&fp, &h.digest))
+}
+
+fn subtle_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn unseal_meta(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    mds_be: &dyn mds::MdsBackend,
+    identities: &[keys::Identity],
+) -> Result<(Vec<u8>, Option<privacy::SealMeta>)> {
     let (h, prefix, _) = locate_header(file)?;
     header::ensure_single_seal(file, &h, prefix)?;
     if h.vow() {
@@ -595,6 +849,18 @@ pub fn unseal_ex_mds_keys(
             }
         }
     }
+    if h.private_label() && !h.encrypted() {
+        return Err(Error::Msg(
+            "v3 label on an unencrypted seal; refusing".into(),
+        ));
+    }
+    // Entropy lives inside the lock on v3; the outer slot (outside the AAD, since
+    // Embers reuse its high byte for the piece index) must stay zero.
+    if h.private_label() && h.entropy_milli & 0x00FF_FFFF != 0 {
+        return Err(Error::Msg(
+            "v3 label carries an outer entropy score; refusing".into(),
+        ));
+    }
     let live = header::gather_live_shards(file, &h, prefix);
     let k = h.k as usize;
     let folded = if h.mode() == Mode::Glyph {
@@ -606,6 +872,7 @@ pub fn unseal_ex_mds_keys(
     };
     let mut folded = folded;
     let p = pass.unwrap_or("").trim();
+    let mut cek_kept: Option<zeroize::Zeroizing<[u8; 32]>> = None;
     if h.encrypted() {
         let sgto = header::sgto_slice(&h, file);
         let key = if let Some(block) = sgto {
@@ -619,6 +886,10 @@ pub fn unseal_ex_mds_keys(
                     return Err(e);
                 }
             }
+        } else if h.private_label() {
+            return Err(Error::Msg(
+                "v3 seal has no key wrap (SGTO) left; past repair".into(),
+            ));
         } else {
             // Legacy passphrase Ward.
             if p.is_empty() {
@@ -633,12 +904,67 @@ pub fn unseal_ex_mds_keys(
         };
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| Error::Msg(e.to_string()))?;
         let mut packed = folded;
+        if h.private_label() {
+            // The Merkle root is computed after encryption, so GCM cannot cover it:
+            // re-encode the ciphertext and require the label's root.
+            let shards = if h.mode() == Mode::Glyph {
+                rs::stripe(&packed, h.n as usize)
+            } else {
+                mds_be.encode(&packed, k, h.n as usize)?
+            };
+            let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
+            if merkle::merkle_root(&leaves) != h.merkle {
+                return Err(Error::Msg(
+                    "label does not match the parts (Merkle root); refusing".into(),
+                ));
+            }
+        }
         packed.extend_from_slice(&h.tag);
+        let aad = if h.private_label() {
+            privacy::label_aad(&write_header(&h))?
+        } else {
+            Vec::new()
+        };
         folded = cipher
-            .decrypt(Nonce::from_slice(&h.nonce), packed.as_ref())
-            .map_err(|_| Error::Msg("wrong passphrase/identity, or past repair".into()))?;
+            .decrypt(
+                Nonce::from_slice(&h.nonce),
+                aes_gcm::aead::Payload {
+                    msg: &packed,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| {
+                Error::Msg("wrong passphrase/identity, label edited, or past repair".into())
+            })?;
+        let mut kept = zeroize::Zeroizing::new([0u8; 32]);
+        kept.copy_from_slice(&key[..32.min(key.len())]);
+        cek_kept = Some(kept);
     } else if !p.is_empty() {
         return Err(Error::Msg("seal was not encrypted".into()));
+    }
+    if h.private_label() {
+        let (meta, off) = privacy::read_inner(&folded)?;
+        let end = off + meta.body_len as usize;
+        let unfolded = chaos::unfold(&folded[off..end], &h.salt);
+        let plain = if meta.compressed {
+            inflate(&unfolded)?
+        } else {
+            unfolded
+        };
+        if plain.len() as u64 != meta.orig_len {
+            return Err(Error::Msg("length mismatch".into()));
+        }
+        if sha256(&plain) != meta.digest {
+            return Err(Error::Msg("SHA-256 mismatch".into()));
+        }
+        if !meta.shared_fingerprint {
+            let cek = cek_kept.ok_or_else(|| Error::Msg("no key".into()))?;
+            let fk = privacy::fingerprint_key(&cek, &h.salt, &privacy::FingerprintKey::PerFile)?;
+            if privacy::keyed_fingerprint(&fk, &plain)? != h.digest {
+                return Err(Error::Msg("keyed fingerprint mismatch".into()));
+            }
+        }
+        return Ok((plain, Some(meta)));
     }
     let unfolded = chaos::unfold(&folded, &h.salt);
     let plain = if h.compressed() {
@@ -652,7 +978,7 @@ pub fn unseal_ex_mds_keys(
     if sha256(&plain) != h.digest {
         return Err(Error::Msg("SHA-256 mismatch".into()));
     }
-    Ok(plain)
+    Ok((plain, None))
 }
 
 /// Convenience: unseal with identities (default MDS).

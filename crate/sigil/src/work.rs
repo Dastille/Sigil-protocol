@@ -22,6 +22,80 @@ pub fn is_work_pack(path: &Path) -> bool {
     }
 }
 
+/// New encrypted packs hide the name and total on the outside (v3 private label).
+fn encrypting(pass: Option<&str>, recipients: &[PublicIdentity]) -> bool {
+    pass.is_some_and(|p| !p.is_empty()) || !recipients.is_empty()
+}
+
+/// Name a chunk star carries (inside its ciphertext when encrypted): the whole
+/// name on an encrypted pack's first star, `name.NNNN` otherwise.
+fn star_name(name: &str, i: usize, enc: bool) -> String {
+    if enc && i == 0 {
+        name.to_string()
+    } else {
+        format!("{name}.{i:04}")
+    }
+}
+
+/// Private-label options for chunk star `i`: the first star of an encrypted pack
+/// records the pack's real total inside its ciphertext.
+fn star_opts(i: usize, enc: bool, total: u64) -> crate::privacy::SealOpts {
+    crate::privacy::SealOpts {
+        group_total: if enc && i == 0 { total } else { 0 },
+        ..Default::default()
+    }
+}
+
+/// Outer head for a new pack: an encrypted pack shows no name and no total.
+fn outer_head(name: &str, orig: u64, enc: bool) -> (String, u64) {
+    if enc {
+        (String::new(), 0)
+    } else {
+        (name.to_string(), orig)
+    }
+}
+
+/// The pack's outer head hides its total (v3 encrypted pack).
+pub fn total_hidden(head: &WorkHead) -> bool {
+    head.orig_total == 0 && head.stars > 0
+}
+
+/// Per-star length to index with when the star's own label hides its size:
+/// the chunk size (exact for every fixed-chunk star but the last).
+fn star_len_for(h: &crate::Header, head_chunk: u32, remain: u64, hidden: bool) -> u32 {
+    if h.private_label() {
+        if hidden {
+            head_chunk
+        } else {
+            remain.min(head_chunk as u64) as u32
+        }
+    } else {
+        h.orig_len.min(if hidden { u64::MAX } else { remain }) as u32
+    }
+}
+
+/// A chunk star matches its SGFC facet: the label's keyed fingerprint for a v3
+/// star, the SHA-256 of the opened bytes for older stars.
+fn facet_ok(star: &[u8], plain: &[u8], facet: &[u8; 32]) -> Result<bool> {
+    let (h, _, _) = crate::locate_header(star)?;
+    Ok(if h.private_label() {
+        h.digest == *facet
+    } else {
+        crate::sha256(plain) == *facet
+    })
+}
+
+/// Expected total after opening every star: the head's, or (hidden) the one
+/// recorded inside the first star.
+fn expect_total(head: &WorkHead, star0: Option<&crate::privacy::SealMeta>) -> Result<u64> {
+    if !total_hidden(head) {
+        return Ok(head.orig_total);
+    }
+    star0
+        .map(|m| m.group_total)
+        .ok_or_else(|| crate::Error::Msg("pack total hidden and first star unreadable".into()))
+}
+
 pub struct WorkHead {
     pub version: u8,
     pub chunk_size: u32,
@@ -223,11 +297,13 @@ pub fn inscribe_path_to(
     let overture = choose_overture(stars, orig, chunk, overture_mb);
     let mut reader =
         BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let enc = encrypting(pass, recipients);
+    let (outer_name, outer_total) = outer_head(&name, orig, enc);
     let head_bytes = packhead::head_to_bytes(&WorkHead {
         version: 2,
         chunk_size: chunk,
-        orig_total: orig,
-        name: name.clone(),
+        orig_total: outer_total,
+        name: outer_name,
         stars,
         overture,
     });
@@ -245,18 +321,18 @@ pub fn inscribe_path_to(
         reader
             .read_exact(&mut buf[..n])
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let star_name = format!("{name}.{i:04}");
-        let sealed = seal_kn_to(
+        let sealed = crate::seal_kn_to_opts(
             &buf[..n],
             mode,
             pass,
-            &star_name,
+            &star_name(&name, i, enc),
             false,
             covenant,
             geas,
             shards,
             piece_bytes,
             recipients,
+            &star_opts(i, enc, orig),
         )?;
         pos = write_star(&mut writer, pos, i as u32, &sealed, &head_bytes, &pack_id)?;
         if let Ok((h, _, _)) = crate::locate_header(&sealed) {
@@ -358,11 +434,13 @@ fn inscribe_ranges(
     let stars = ranges.len() as u32;
     let chunk = header_chunk.max(64 * 1024);
     let overture = choose_overture(stars, orig, chunk, overture_mb);
+    let enc = encrypting(pass, recipients);
+    let (outer_name, outer_total) = outer_head(name, orig, enc);
     let head_bytes = packhead::head_to_bytes(&WorkHead {
         version: 2,
         chunk_size: chunk,
-        orig_total: orig,
-        name: name.to_string(),
+        orig_total: outer_total,
+        name: outer_name,
         stars,
         overture,
     });
@@ -376,18 +454,18 @@ fn inscribe_ranges(
     let mut facets = Vec::new();
     for (i, range) in ranges.iter().enumerate() {
         let slice = &data[range.offset..range.end()];
-        let star_name = format!("{name}.{i:04}");
-        let sealed = seal_kn_to(
+        let sealed = crate::seal_kn_to_opts(
             slice,
             mode,
             pass,
-            &star_name,
+            &star_name(name, i, enc),
             false,
             covenant,
             geas,
             shards,
             piece_bytes,
             recipients,
+            &star_opts(i, enc, orig),
         )?;
         pos = write_star(&mut writer, pos, i as u32, &sealed, &head_bytes, &pack_id)?;
         if let Ok((h, _, _)) = crate::locate_header(&sealed) {
@@ -476,7 +554,10 @@ pub fn scry_facets(input: &Path) -> Result<Vec<Facet>> {
             .read_exact(&mut star)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
         let (digest, orig_len) = match crate::locate_header(&star) {
-            Ok((h, _, _)) => (h.digest, h.orig_len.min(remain) as u32),
+            Ok((h, _, _)) => (
+                h.digest,
+                star_len_for(&h, head.chunk_size, remain, total_hidden(&head)),
+            ),
             Err(_) => ([0u8; 32], remain.min(head.chunk_size as u64) as u32),
         };
         out.push(Facet {
@@ -536,7 +617,7 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
             break;
         }
         let orig_len = crate::locate_header(&peek)
-            .map(|(h, _, _)| h.orig_len.min(remain) as u32)
+            .map(|(h, _, _)| star_len_for(&h, head.chunk_size, remain, total_hidden(&head)))
             .unwrap_or(remain.min(head.chunk_size as u64) as u32);
         let leftover = star_len as i64 - peek_n as i64;
         if leftover > 0 && std::io::Seek::seek(&mut f, SeekFrom::Current(leftover)).is_err() {
@@ -555,6 +636,49 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
     Ok((head, loc))
 }
 
+/// Like [`index_pack`], with exact offsets for a pack whose head hides its total
+/// (v3 encrypted): opens the first star for the real total. Every star but the last
+/// is then taken as `chunk_size` long (true for fixed chunking); readers that slice
+/// by these offsets must check each opened star's length ([`StarLoc::orig_len`]).
+/// A total that cannot be tiled that way (CDC packs) opens every star to measure it.
+pub fn index_pack_keys(
+    input: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<(WorkHead, Vec<StarLoc>)> {
+    let (mut head, mut locs) = index_pack(input)?;
+    if !total_hidden(&head) || locs.is_empty() {
+        return Ok((head, locs));
+    }
+    let total = payload_label_keys(input, pass, companions, identities)?
+        .map(|(_, t)| t)
+        .ok_or_else(|| crate::Error::Msg("this pack is locked: give its key".into()))?;
+    let n = locs.len() as u64;
+    let chunk = head.chunk_size as u64;
+    let fixed_last = total.checked_sub((n - 1) * chunk);
+    let lens: Vec<u64> = match fixed_last {
+        Some(last) if last > 0 && last <= chunk => (0..n)
+            .map(|i| if i + 1 == n { last } else { chunk })
+            .collect(),
+        _ => {
+            let mut v = Vec::with_capacity(locs.len());
+            for l in &locs {
+                v.push(unseal_star_at_keys(input, l, pass, companions, identities)?.len() as u64);
+            }
+            v
+        }
+    };
+    let mut off = 0u64;
+    for (l, len) in locs.iter_mut().zip(lens) {
+        l.orig_off = off;
+        l.orig_len = u32::try_from(len).map_err(|_| crate::Error::Msg("star too large".into()))?;
+        off += len;
+    }
+    head.orig_total = total;
+    Ok((head, locs))
+}
+
 /// Star locations from a (possibly rebuilt) layout.
 fn index_from_layout(input: &Path, l: PackLayout) -> Result<(WorkHead, Vec<StarLoc>)> {
     let mut src = packhead::FileSrc::open(input)?;
@@ -565,7 +689,7 @@ fn index_from_layout(input: &Path, l: PackLayout) -> Result<(WorkHead, Vec<StarL
         let mut peek = vec![0u8; star_len.min(crate::header::KEYSTONE_SPAN as u64 + 64) as usize];
         src.read_at(file_off, &mut peek)?;
         let orig_len = crate::locate_header(&peek)
-            .map(|(h, _, _)| h.orig_len.min(remain) as u32)
+            .map(|(h, _, _)| star_len_for(&h, l.head.chunk_size, remain, total_hidden(&l.head)))
             .unwrap_or(remain.min(l.head.chunk_size as u64) as u32);
         loc.push(StarLoc {
             index: i as u32,
@@ -718,6 +842,9 @@ pub fn inscribe_stars_dir_to(
         piece_bytes
     };
     let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+    let enc = encrypting(pass, recipients);
+    // An encrypted star folder's manifest shows no name or size (both are inside star 0).
+    let (man_name, man_orig) = outer_head(name, orig, enc);
     if orig == 0 {
         let sealed = seal_kn_to(
             &[],
@@ -742,24 +869,25 @@ pub fn inscribe_stars_dir_to(
         let chunk = profile.max as u32;
         for (i, range) in r.iter().enumerate() {
             let slice = &data[range.offset..range.end()];
-            let sealed = seal_kn_to(
+            let sealed = crate::seal_kn_to_opts(
                 slice,
                 mode,
                 pass,
-                &format!("{name}.{i:04}"),
+                &star_name(name, i, enc),
                 false,
                 covenant,
                 geas,
                 shards,
                 piece_bytes,
                 recipients,
+                &star_opts(i, enc, orig),
             )?;
             std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed)
                 .map_err(|e| crate::Error::Msg(e.to_string()))?;
         }
         let ov = choose_overture(stars, orig, chunk, overture_mb);
         let man = format!(
-            "name={name}\nstars={stars}\norig={orig}\nchunk={chunk}\ncdc={}\noverture={ov}\n",
+            "name={man_name}\nstars={stars}\norig={man_orig}\nchunk={chunk}\ncdc={}\noverture={ov}\n",
             profile.name
         );
         std::fs::write(dir.join("manifest.txt"), man)
@@ -784,17 +912,18 @@ pub fn inscribe_stars_dir_to(
         reader
             .read_exact(&mut buf[..n])
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let sealed = seal_kn_to(
+        let sealed = crate::seal_kn_to_opts(
             &buf[..n],
             mode,
             pass,
-            &format!("{name}.{i:04}"),
+            &star_name(name, i as usize, enc),
             false,
             covenant,
             geas,
             shards,
             piece_bytes,
             recipients,
+            &star_opts(i as usize, enc, orig),
         )?;
         std::fs::write(dir.join(format!("star-{i:04}.sg1")), sealed)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -802,7 +931,8 @@ pub fn inscribe_stars_dir_to(
         i += 1;
     }
     let ov = choose_overture(stars, orig, chunk, overture_mb);
-    let man = format!("name={name}\nstars={stars}\norig={orig}\nchunk={chunk}\noverture={ov}\n");
+    let man =
+        format!("name={man_name}\nstars={stars}\norig={man_orig}\nchunk={chunk}\noverture={ov}\n");
     std::fs::write(dir.join("manifest.txt"), man).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut boot =
         String::from("Overture — copy these first; you can start before the rest arrives.\n");
@@ -1014,6 +1144,7 @@ pub fn mend_pack_to<W: Write>(
     let facets = l.facets();
     let mut healed_stars: Vec<(u32, Vec<u8>)> = Vec::new();
     let mut written = 0u64;
+    let mut star0: Option<crate::privacy::SealMeta> = None;
     for i in 0..l.stars.len() {
         let (a, b) = span(&l, i);
         let i = i as u32;
@@ -1047,21 +1178,28 @@ pub fn mend_pack_to<W: Write>(
                 },
             },
         };
+        let cur: &[u8] = match healed_stars.last() {
+            Some((j, h)) if *j == i => h,
+            _ => star,
+        };
         if let Some(f) = facets {
-            if crate::sha256(&plain) != f[i as usize] {
+            if !facet_ok(cur, &plain, &f[i as usize])? {
                 return Err(crate::Error::Msg(format!(
                     "star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
                 )));
             }
         }
+        if i == 0 && total_hidden(&l.head) {
+            star0 = crate::unseal_meta_keys(cur, pass, companions, identities)?.1;
+        }
         out.write_all(&plain)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
         written += plain.len() as u64;
     }
-    if written != l.head.orig_total {
+    let expect = expect_total(&l.head, star0.as_ref())?;
+    if written != expect {
         return Err(crate::Error::Msg(format!(
-            "work length mismatch: got {written} expected {}",
-            l.head.orig_total
+            "work length mismatch: got {written} expected {expect}"
         )));
     }
     let mended: Vec<u32> = healed_stars.iter().map(|(i, _)| *i).collect();
@@ -1226,12 +1364,13 @@ fn unseal_pack_stream<S: Src, W: Write>(
     let n = l.head.stars;
     let facets = l.facets();
     let mut written = 0u64;
+    let mut star0: Option<crate::privacy::SealMeta> = None;
     for (i, &(off, len)) in l.stars.iter().enumerate() {
         let mut star = vec![0u8; len as usize];
         src.read_at(off, &mut star).map_err(|_| {
             crate::Error::Msg(format!("work pack truncated inside star {i} of {n}"))
         })?;
-        let plain = unseal_ex_keys(&star, pass, companions, identities)
+        let (plain, meta) = crate::unseal_meta_keys(&star, pass, companions, identities)
             .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
         if let Some(f) = facets {
             if crate::locate_header(&star)?.0.digest != f[i] {
@@ -1240,13 +1379,16 @@ fn unseal_pack_stream<S: Src, W: Write>(
                 )));
             }
         }
+        if i == 0 {
+            star0 = meta;
+        }
         writer.write_all(&plain).map_err(io)?;
         written += plain.len() as u64;
     }
-    if written != l.head.orig_total {
+    let expect = expect_total(&l.head, star0.as_ref())?;
+    if written != expect {
         return Err(crate::Error::Msg(format!(
-            "work length mismatch: got {written} expected {}",
-            l.head.orig_total
+            "work length mismatch: got {written} expected {expect}"
         )));
     }
     Ok(written)
@@ -1318,6 +1460,48 @@ pub fn payload_name(input: &Path) -> Result<String> {
     }
 }
 
+/// Name and size of a mark's or pack's payload, opening the private label when it
+/// is hidden (v3 encrypted mark, or a pack with a hidden head). `Ok(None)` when it
+/// is hidden and no key was given; a wrong key is an error.
+pub fn payload_label_keys(
+    input: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<Option<(String, u64)>> {
+    let keyless = pass.is_none_or(str::is_empty) && identities.is_empty();
+    if is_work_pack(input) {
+        let (head, locs) = index_pack(input)?;
+        if !total_hidden(&head) {
+            return Ok(Some((head.name, head.orig_total)));
+        }
+        if keyless {
+            return Ok(None);
+        }
+        let first = locs
+            .first()
+            .ok_or_else(|| crate::Error::Msg("pack has no stars".into()))?;
+        let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        f.seek(SeekFrom::Start(first.file_off))
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let mut star = vec![0u8; first.star_len as usize];
+        f.read_exact(&mut star)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let meta = crate::unseal_meta_keys(&star, pass, companions, identities)?.1;
+        return Ok(meta.map(|m| (m.name, m.group_total)));
+    }
+    let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let (h, _, _) = crate::locate_header(&data)?;
+    if !h.private_label() {
+        return Ok(Some((h.name, h.orig_len)));
+    }
+    if keyless {
+        return Ok(None);
+    }
+    let meta = crate::unseal_meta_keys(&data, pass, companions, identities)?.1;
+    Ok(meta.map(|m| (m.name, m.orig_len)))
+}
+
 /// Suggested filename for De-scribe. Basename only — never a path.
 pub fn suggested_output_name(input: &Path) -> String {
     payload_name(input)
@@ -1357,10 +1541,19 @@ pub fn scry_path(input: &Path) -> Result<String> {
         let mut reader =
             BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
         let head = read_head(&mut reader)?;
+        let hidden = total_hidden(&head);
         let mut s = format!(
             "work  name={} orig={} chunk={} stars={} overture={}/{} (first ~{} MiB to start)",
-            head.name,
-            head.orig_total,
+            if hidden {
+                "(locked)"
+            } else {
+                head.name.as_str()
+            },
+            if hidden {
+                "(locked)".to_string()
+            } else {
+                head.orig_total.to_string()
+            },
             head.chunk_size,
             head.stars,
             head.overture,
@@ -1389,16 +1582,27 @@ pub fn scry_path(input: &Path) -> Result<String> {
     drop(f);
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let (h, merkle_ok, live, k, recovered) = crate::verify(&data)?;
-    let mut s = format!(
-        "ok  v{}  live={live}/{} need={k} merkle={} keystone={} orig={} entropy={} name={}",
-        h.version,
-        h.n,
-        if merkle_ok { "closed" } else { "open" },
-        if recovered { "recovered" } else { "intact" },
-        h.orig_len,
-        h.entropy_milli,
-        h.name
-    );
+    let mut s = if h.private_label() {
+        // v3: name, size, SHA-256 and entropy are inside the lock; shown only after unlock.
+        format!(
+            "ok  v{}  live={live}/{} need={k} merkle={} keystone={} label=private (name, size and fingerprint inside the lock)",
+            h.version,
+            h.n,
+            if merkle_ok { "closed" } else { "open" },
+            if recovered { "recovered" } else { "intact" },
+        )
+    } else {
+        format!(
+            "ok  v{}  live={live}/{} need={k} merkle={} keystone={} orig={} entropy={} name={}",
+            h.version,
+            h.n,
+            if merkle_ok { "closed" } else { "open" },
+            if recovered { "recovered" } else { "intact" },
+            h.orig_len,
+            h.entropy_milli,
+            h.name
+        )
+    };
     if let Ok(a) = crate::verify_attestation(input) {
         s.push('\n');
         s.push_str(&a);

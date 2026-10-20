@@ -11,8 +11,12 @@ fn le_u32_at(b: &[u8], at: usize) -> Option<u32> {
 pub const HEADER_SIZE: usize = 160;
 pub const KEYSTONE_COPIES: usize = 3;
 pub const KEYSTONE_SPAN: usize = HEADER_SIZE * (1 + KEYSTONE_COPIES);
+/// Version written for plain (unencrypted) seals; unchanged since v2.
 pub const VERSION: u8 = 2;
 pub const VERSION_MIN: u8 = 1;
+/// Highest version this reader opens: v3 is the private label for new encrypted
+/// seals (see `privacy.rs`).
+pub const VERSION_MAX: u8 = crate::privacy::PRIVATE_VERSION;
 const MAGIC: [u8; 4] = *b"SGIL";
 const MAGIC_EMBER: [u8; 4] = *b"SGEM";
 pub const FLAG_KEYSTONE: u8 = 1 << 5;
@@ -56,6 +60,11 @@ impl Header {
     }
     pub fn vow(&self) -> bool {
         self.flags & FLAG_VOW != 0
+    }
+    /// v3 private label: name, size, plaintext hash and entropy are inside the
+    /// ciphertext; `digest` is a keyed fingerprint and `orig_len` is 0.
+    pub fn private_label(&self) -> bool {
+        self.version >= crate::privacy::PRIVATE_VERSION
     }
     pub fn mode(&self) -> Mode {
         match (self.flags >> 2) & 3 {
@@ -101,9 +110,9 @@ fn parse_header(buf: &[u8], magic: &[u8; 4]) -> Result<Header> {
     if buf[0..4] != magic[..] {
         return Err(Error::Msg("missing magic".into()));
     }
-    if buf[4] < VERSION_MIN || buf[4] > VERSION {
+    if buf[4] < VERSION_MIN || buf[4] > VERSION_MAX {
         return Err(Error::Msg(format!(
-            "unsupported Sigil version {} (this tool reads v{VERSION_MIN}–v{VERSION})",
+            "unsupported Sigil version {} (this tool reads v{VERSION_MIN}–v{VERSION_MAX})",
             buf[4]
         )));
     }

@@ -627,7 +627,9 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
         if chart.kind == crate::vault::ChartKind::Single {
             if let Ok(bytes) = fs::read(&p) {
                 if let Ok((h, _, _)) = crate::locate_header(&bytes) {
-                    if h.digest != v.digest && !opts.quick {
+                    // A v3 encrypted seal shows no plaintext SHA-256 (only a keyed
+                    // fingerprint), so the CHART cannot be compared without the key.
+                    if !h.private_label() && h.digest != v.digest && !opts.quick {
                         rep.findings.push(f(
                             Severity::Warn,
                             "chart-digest",
@@ -878,7 +880,8 @@ fn analyze_sky(sky: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
                         }
                         checked.insert(p.clone());
                         let subject = rel(sky, &p);
-                        if is_container && p != container::star_path(sky, &m.digest) && !subject.starts_with("stars/by-name") {
+                        let key = crate::constellation::private_star_id(&p).unwrap_or(m.digest);
+                        if is_container && p != container::star_path(sky, &key) && !subject.starts_with("stars/by-name") {
                             rep.findings.push(f(Severity::Info, "off-path-star", subject.clone(), "star is not at its fingerprint-sharded path", Some("sigil tidy normally files these".into())));
                         }
                         if !opts.quick {

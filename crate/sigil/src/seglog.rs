@@ -240,6 +240,10 @@ pub struct Entry {
     pub size: u64,
     /// SHA-256 true-name of the plain bytes (equals the star's header digest; zeros for a tombstone).
     pub sha: [u8; 32],
+    /// Keyed fingerprint of the segment star's v3 private label (`star=`), when the
+    /// star was sealed encrypted by a sigil with the private label. Keyless checks
+    /// bind the segment file to the entry with it, since the star no longer shows `sha`.
+    pub star: Option<[u8; 32]>,
     pub chain: [u8; 32],
     pub op: Op,
     /// The line up to (not including) ` chain=`; covered by the chain hash. Unknown keys live here.
@@ -268,9 +272,27 @@ impl Entry {
                         | "from"
                         | "to"
                         | "sig"
+                        | "star"
                 )
             })
             .collect()
+    }
+
+    /// What the segment star's own label must carry: `star=` for a v3 private label,
+    /// else the plain SHA-256 (older stars carry it on the outside).
+    pub fn star_digest(&self) -> [u8; 32] {
+        self.star.unwrap_or(self.sha)
+    }
+
+    /// Adopted without a key from a v3 star: `sha` is only the keyed fingerprint and
+    /// `size` is unknown (0). Its bytes are checked by the star's own AEAD and label.
+    pub fn label_only(&self) -> bool {
+        self.star.is_some_and(|d| d == self.sha)
+    }
+
+    /// Opened bytes match this entry.
+    pub fn plain_matches(&self, plain: &[u8]) -> bool {
+        self.label_only() || (sha256(plain) == self.sha && plain.len() as u64 == self.size)
     }
 
     /// True for a tombstone / compaction line (needs `log=2`).
@@ -815,11 +837,13 @@ fn parse_line(
             format!("seq {seq}: chain hash does not match (entry or an earlier one was altered)"),
         ));
     }
+    let star = kv.get("star").and_then(|v| parse_hex32(v));
     Ok(Entry {
         seq,
         time,
         size,
         sha,
+        star,
         chain,
         op,
         body: body.to_string(),
@@ -1497,6 +1521,14 @@ fn commit_head(log: &Log, entries: &[Entry], identity: Option<&Identity>) -> Res
     Ok(head)
 }
 
+/// ` star=<hex>` for a v3 (private-label) segment star, else empty.
+pub(crate) fn star_field(sealed: &[u8]) -> String {
+    match crate::locate_header(sealed) {
+        Ok((h, _, _)) if h.private_label() => format!(" star={}", hex32(&h.digest)),
+        _ => String::new(),
+    }
+}
+
 /// Seal `data` as the next immutable segment and extend the chain.
 pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendReport> {
     let log = Log::open(path)?;
@@ -1554,7 +1586,12 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
     }
     // 2. INDEX line, 3. HEAD
     let t = now();
-    let body = format!("seq={seq} t={t} size={} sha={}", data.len(), hex32(&sha));
+    let body = format!(
+        "seq={seq} t={t} size={} sha={}{}",
+        data.len(),
+        hex32(&sha),
+        star_field(&sealed)
+    );
     let (_entries, head) = commit(&log, idx, &[body], opts.identity)?;
     Ok(AppendReport {
         seq,
@@ -1776,7 +1813,10 @@ fn read_holder(
             ),
         }
     };
-    if sha256(&plain) != e.sha || plain.len() as u64 != e.size {
+    let label_ok = crate::locate_header(&file)
+        .map(|(h, _, _)| !h.private_label() || h.digest == e.star_digest())
+        .unwrap_or(false);
+    if !label_ok || !e.plain_matches(&plain) {
         return Err(err(format!(
             "segment {} does not match the index (substituted or altered)",
             e.seq
@@ -2375,7 +2415,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
         rep.verified += 1;
         let digest = crate::locate_header(&bytes).ok().map(|(h, _, _)| h.digest);
         match digest {
-            Some(d) if d != e.sha => {
+            Some(d) if d != e.star_digest() => {
                 rep.findings.push(fnd(Severity::Error, "segment-digest", subject.clone(), format!("segment {} is a different star than the index recorded (substituted or altered)", e.seq), None));
                 continue;
             }
@@ -2421,7 +2461,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                 crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities)
             };
             match opened {
-                Ok(plain) if sha256(&plain) == e.sha && plain.len() as u64 == e.size => {
+                Ok(plain) if e.plain_matches(&plain) => {
                     // a compaction segment must also cut back into exactly the original batches
                     if st.is_compact(e.seq) {
                         let mut off = 0usize;
@@ -2914,7 +2954,7 @@ pub fn mend(path: &Path) -> Result<MendReport> {
             Health::Mendable(_) => match crate::mend_bytes(&bytes) {
                 Ok(healed) => {
                     let good = crate::locate_header(&healed)
-                        .map(|(h, _, _)| h.digest == e.sha)
+                        .map(|(h, _, _)| h.digest == e.star_digest())
                         .unwrap_or(false);
                     if !good {
                         rep.unrecoverable.push((

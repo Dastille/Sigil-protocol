@@ -414,7 +414,13 @@ fn plan_constellation(dir: &Path) -> Result<Plan> {
                 buf
             })
             .ok()
-            .map(|(h, _, _)| h.digest)
+            .map(|(h, _, _)| {
+                if h.private_label() {
+                    h.merkle
+                } else {
+                    h.digest
+                }
+            })
         };
         let rel = match digest {
             Some(d) => {

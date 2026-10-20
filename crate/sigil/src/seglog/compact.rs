@@ -538,6 +538,14 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             rd.keyed_seen = false;
             let mut plain = Vec::with_capacity(g.bytes as usize);
             for m in &g.members {
+                if entries
+                    .get((*m as usize).wrapping_sub(1))
+                    .is_some_and(Entry::label_only)
+                {
+                    return Err(err(format!(
+                        "segment {m} was adopted from an encrypted star without a key, so the index has no size for it; it cannot be merged (append its bytes again with a key to make it mergeable)"
+                    )));
+                }
                 plain.extend_from_slice(&rd.member(*m)?);
             }
             if log.segkeys
@@ -602,11 +610,12 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             }
             rep.bytes_after += sealed.len() as u64;
             bodies.push(format!(
-                "seq={} t={t_now} size={} sha={} op=compact of={}",
+                "seq={} t={t_now} size={} sha={} op=compact of={}{}",
                 g.new_seq,
                 plain.len(),
                 hex32(&sha),
-                fmt_ranges(&compress(&g.members))
+                fmt_ranges(&compress(&g.members)),
+                star_field(&sealed)
             ));
         }
         Ok(())

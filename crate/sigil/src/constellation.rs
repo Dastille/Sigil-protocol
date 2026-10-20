@@ -121,6 +121,36 @@ pub(crate) fn peek_digest(path: &Path) -> Option<[u8; 32]> {
     peek_header(path).ok().map(|(h, _)| h.digest)
 }
 
+/// Keyless id of a new encrypted star, which shows no plaintext SHA-256: a v3 mark's
+/// Merkle root (a fingerprint of its ciphertext parts), or for a large-file pack with a
+/// hidden head the SHA-256 over its facet list. `None` for plain and older stars, which
+/// are found by the plaintext digest on their label. Members record it in `merkle`.
+pub(crate) fn private_star_id(path: &Path) -> Option<[u8; 32]> {
+    if crate::work::is_work_pack(path) {
+        let (head, _) = crate::work::index_pack(path).ok()?;
+        if !crate::work::total_hidden(&head) {
+            return None;
+        }
+        let facets = crate::work::read_facet_digests(path).ok()?;
+        return Some(crate::sha256(&facets.concat()));
+    }
+    let (h, _) = peek_header(path).ok()?;
+    h.private_label().then_some(h.merkle)
+}
+
+/// The star at `p` is the one `m` lists.
+pub(crate) fn star_is_member(p: &Path, m: &Member) -> bool {
+    match private_star_id(p) {
+        Some(id) => id == m.merkle,
+        None => crate::work::is_work_pack(p) || peek_digest(p) == Some(m.digest),
+    }
+}
+
+/// Index key of a star file: its private id, else its plaintext digest.
+pub(crate) fn star_key(p: &Path) -> Option<[u8; 32]> {
+    private_star_id(p).or_else(|| peek_digest(p))
+}
+
 pub fn star_file_name(list_path: &str) -> String {
     let safe = list_path.replace('\\', "/");
     let safe = safe.trim_start_matches('/');
@@ -535,7 +565,7 @@ pub(crate) fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], 
                 if p.extension().and_then(|x| x.to_str()) != Some("sg1") || !p.is_file() {
                     continue;
                 }
-                if let Some(d) = peek_digest(&p) {
+                if let Some(d) = star_key(&p) {
                     map.entry(d).or_insert(p);
                 }
             }
@@ -558,7 +588,7 @@ pub(crate) fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], 
         if is_constellation_mark(&p) {
             continue;
         }
-        if let Some(d) = peek_digest(&p) {
+        if let Some(d) = star_key(&p) {
             map.entry(d).or_insert(p);
         }
     }
@@ -571,7 +601,7 @@ fn member_from_star(path: &Path, list_name: &str, digest: [u8; 32]) -> Result<Me
         return Ok(Member {
             name: list_name.to_string(),
             digest,
-            merkle: [0u8; 32],
+            merkle: private_star_id(path).unwrap_or([0u8; 32]),
             orig_len: meta.len(),
             mode: Mode::Reflection,
             index: 0,
@@ -603,6 +633,16 @@ pub(crate) fn find_member_star(
     if let Some(p) = by_digest.get(&member.digest) {
         return Some(p.clone());
     }
+    // New encrypted stars are indexed and named by their keyless private id.
+    if member.merkle != [0u8; 32] {
+        if let Some(p) = by_digest.get(&member.merkle) {
+            return Some(p.clone());
+        }
+        let sharded = crate::container::star_path(dir, &member.merkle);
+        if sharded.is_file() && star_is_member(&sharded, member) {
+            return Some(sharded);
+        }
+    }
     let sharded = crate::container::star_path(dir, &member.digest);
     if sharded.is_file() {
         return Some(sharded);
@@ -623,6 +663,27 @@ pub(crate) fn find_member_star(
         return Some(by_name);
     }
     None
+}
+
+/// Star file that holds list entry `name` of the constellation at `sky` (opens the card,
+/// so a locked card needs its key). New encrypted stars are filed under a keyless
+/// private id rather than the plaintext SHA-256 or the list name.
+pub fn member_star_path(
+    sky: &Path,
+    name: &str,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<PathBuf> {
+    let sky = crate::container::sky_for_read(sky);
+    let card = find_card(&sky).ok_or_else(|| err("no constellation card"))?;
+    let chart = load_chart_from_mark(&card, pass, identities)?;
+    let m = chart
+        .members
+        .iter()
+        .find(|m| m.name == name)
+        .ok_or_else(|| err(format!("no list entry {name}")))?;
+    find_member_star(&sky, m, &index_stars(&sky, Some(&card)))
+        .ok_or_else(|| err(format!("star for {name} is missing")))
 }
 
 fn missing_stars(dir: &Path, chart: &Chart, card: Option<&Path>) -> Vec<String> {
@@ -875,7 +936,7 @@ pub fn remove_members(sky: &Path, names: &[String], opts: RemoveOpts<'_>) -> Res
             continue;
         }
         if let Some(p) = find_member_star(sky, m, &by_digest) {
-            let ok = crate::work::is_work_pack(&p) || peek_digest(&p) == Some(m.digest);
+            let ok = star_is_member(&p, m);
             if ok && !is_constellation_mark(&p) && !freed.contains(&p) {
                 freed.push(p);
             }
@@ -925,6 +986,51 @@ fn mint_or_reuse(
 ) -> Result<PathBuf> {
     if let Some(p) = by_digest.get(&digest) {
         return Ok(p.clone());
+    }
+    let encrypted = opts.pass.is_some_and(|p| !p.is_empty()) || !opts.recipients.is_empty();
+    if encrypted {
+        // The file name must not carry the plaintext SHA-256 or the list name: seal
+        // beside, then name the star by its keyless private id.
+        let mut nonce = [0u8; 8];
+        getrandom::getrandom(&mut nonce).map_err(|e| err(e.to_string()))?;
+        let tmp = sky.join(format!(".mint-{}.part", hex::encode(nonce)));
+        let sealed = crate::work::inscribe_path_to(
+            file,
+            &tmp,
+            opts.mode,
+            opts.pass,
+            opts.covenant,
+            opts.geas,
+            opts.chunk,
+            None,
+            crate::DEFAULT_PIECE,
+            crate::work::DEFAULT_OVERTURE_MB,
+            None,
+            opts.recipients,
+        )
+        .and_then(|_| {
+            private_star_id(&tmp).ok_or_else(|| err("new encrypted star has no private id"))
+        });
+        let id = match sealed {
+            Ok(id) => id,
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(e);
+            }
+        };
+        let dest = if crate::container::is_container(sky) {
+            crate::container::star_path(sky, &id)
+        } else {
+            sky.join(format!("{}.sg1", &hex32(&id)[..12]))
+        };
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(io)?;
+        }
+        fs::rename(&tmp, &dest).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            io(e)
+        })?;
+        return Ok(dest);
     }
     if crate::container::is_container(sky) {
         let dest = crate::container::star_path(sky, &digest);
@@ -1206,7 +1312,10 @@ pub fn pack_atlas_chart(sky: &Path, chart: &Chart, output: &Path) -> Result<u32>
                 .to_string();
             // Container stars travel under their old flat name so any sigil (old or new)
             // finds them in the bag, work packs included.
-            if p.starts_with(dir.join(crate::container::STARS_DIR)) {
+            if private_star_id(&p).is_some() {
+                // An encrypted star never travels under its list name.
+                name = format!("{}.sg1", &hex32(&m.merkle)[..12]);
+            } else if p.starts_with(dir.join(crate::container::STARS_DIR)) {
                 name = star_file_name(&m.name);
                 if name == card_name(&chart.title) {
                     name = format!("{}.sg1", &hex32(&m.digest)[..12]);
@@ -1706,24 +1815,17 @@ mod tests {
 
         let card = find_card(&sky).unwrap();
         assert!(has_sgto(&card), "card must be encrypt-to");
-        let note_star = sky.join(star_file_name("note.txt"));
+        // Encrypted stars never carry the list name (or the plaintext hash) in their file name.
+        assert!(!sky.join(star_file_name("note.txt")).exists());
+        let ids = [alice.clone()];
+        let note_star = member_star_path(&sky, "note.txt", None, &ids).unwrap();
         assert!(has_sgto(&note_star), "star must be encrypt-to");
-        assert!(crate::work::is_work_pack(
-            &sky.join(star_file_name("big.bin"))
-        ));
+        let big_star = member_star_path(&sky, "big.bin", None, &ids).unwrap();
+        assert!(crate::work::is_work_pack(&big_star));
         let probe = root.join("probe.bin");
-        assert!(
-            crate::work::unseal_path(&sky.join(star_file_name("big.bin")), &probe, None, &[])
-                .is_err()
-        );
-        crate::work::unseal_path_keys(
-            &sky.join(star_file_name("big.bin")),
-            &probe,
-            None,
-            &[],
-            std::slice::from_ref(&alice),
-        )
-        .unwrap();
+        assert!(crate::work::unseal_path(&big_star, &probe, None, &[]).is_err());
+        crate::work::unseal_path_keys(&big_star, &probe, None, &[], std::slice::from_ref(&alice))
+            .unwrap();
         assert_eq!(fs::read(&probe).unwrap(), big_bytes);
 
         // A later add without --to would rewrite the card in the clear: refused.
@@ -1824,7 +1926,7 @@ mod tests {
         }
 
         // A named star gone: de-scribe and atlas still refuse, even with the key.
-        let star = sky.join(star_file_name("a.txt"));
+        let star = member_star_path(&sky, "a.txt", None, &ids).unwrap();
         fs::remove_file(&star).unwrap();
         let e = unseal_constellation_keys(&sky, &root.join("m"), None, &[], &[], &ids)
             .unwrap_err()
