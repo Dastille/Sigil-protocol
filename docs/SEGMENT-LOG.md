@@ -150,7 +150,7 @@ sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --ident
 sigil log verify events [--quick] [--pass … | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
-sigil log add events DIR [--dry-run] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]   # back up a folder
+sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]   # back up a folder
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
@@ -552,6 +552,36 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
   key.
 * **Dry run.** `--dry-run` hashes what it must to decide, prints the same plan (`would have added …`)
   and writes nothing, not even the lock.
+* **Skipping files and folders (`--exclude`, `.sigilignore`).** `--exclude PATTERN` (repeatable)
+  and a `.sigilignore` file at the top of `DIR` (read automatically when present; one pattern per
+  line, blank lines and `#` comment lines ignored, trailing spaces trimmed; `--no-ignore-file`
+  switches it off) leave paths out. Patterns are matched against the path **relative to `DIR`**,
+  `/`-separated, case-sensitive:
+
+  | Pattern | Skips |
+  |---------|-------|
+  | `.tools-venv/` | every folder named `.tools-venv`, at any depth, with everything under it (trailing `/` = folders only) |
+  | `*.tmp` | every file or folder whose name ends in `.tmp`, at any depth (`*`, `?`, `[a-z]`, `[!a-z]` never cross a `/`) |
+  | `raw/*.dng` | `.dng` files directly in `DIR/raw` (a `/` in the pattern anchors it at the top of `DIR`; so does a leading `/`) |
+  | `**/cache/` , `logs/**` , `a/**/b` | `**` crosses folders: any depth / everything inside / zero or more folders between |
+  | `\*`, `\!x`, `\#x` | a literal `*`, `!x`, `#x` |
+
+  A matching **folder is skipped with its whole subtree, unread** (an unreadable excluded folder
+  is not an error). Excluded entries are listed (`x .tools-venv/  excluded by ".tools-venv/"
+  (.sigilignore line 3)`) and counted (`excluded N`). Paths **already in the log** that a pattern
+  now covers are **left alone**: they are not "missing from source", nothing is tombstoned, they
+  stay readable, and they are counted as `excluded-kept N` (listed one by one with `--dry-run`).
+  To actually drop them, use `log tombstone` / `log shred` explicitly. `.sigilignore` itself is an
+  ordinary file and is backed up unless it excludes itself. Fail closed: a leading `!`
+  (`.gitignore`'s re-include) is refused rather than read as a literal, as are an unclosed `[`, a
+  lone trailing `\` and an empty pattern, and a `.sigilignore` that is not a regular file; the run
+  then stops before reading the folder or writing anything (dry run too).
+
+  ```sh
+  printf '# Python tools for the export\n.tools-venv/\n' > ./instagram/.sigilignore
+  sigil log add ig ./instagram --dry-run                     # shows the x lines, writes nothing
+  sigil log add ig ./instagram --exclude '*.tmp'             # plus a one-off pattern
+  ```
 * **Crash safety and checkpoints.** Files are sealed one at a time into unindexed segment files;
   their INDEX lines are appended in one write (the commit point), then HEAD, as for `adopt`. A run
   commits a **checkpoint** every 1000 files or 1 GiB of plain data, so a crash during a large first
@@ -617,6 +647,8 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
 | `log add`: a line with a valid chain appended to claim new content is in, without the signer's key | not covered by a valid HEAD signature, so `add` ignores it (note) and seals the file |
 | `log add`: unsigned log, such a line plus HEAD removed (so the line counts as vouched) | `add` still checks the segment named by the line: missing, or not the star the INDEX recorded → the file is **sealed again**, not skipped. An attacker who can also write a matching star into the log (unsigned log) is the "rewrite consistently" case above: sign the log, keep anchors, and use keyed `verify` |
 | `log add`: a source file changed but size and modification time kept | detected: unchanged needs equal SHA-256 of the current bytes |
+| `log add`: an exclude pattern covers files already in the log | left alone: not missing, not tombstoned, still readable (`excluded-kept`) |
+| `log add`: typo or unsupported syntax in `--exclude` / `.sigilignore` (`!x`, `[abc`, …) | refused before the folder is read; nothing written |
 | `log add`: a source file deleted, renamed or emptied | never deletes anything from the log: listed as missing (a rename = missing + new); an emptied file is a new, empty version |
 | Attacker with segment write access and the plain data | can replace a segment only by a star with the same true-name = same plain bytes |
 | Confidentiality | per segment via `--pass` / `--to`; INDEX leaks sequence, time, sizes and plain true-names (hashes of the batches). Do not use it for low-entropy secrets you cannot afford to have confirmed by guessing. Hiding that metadata = deferred |

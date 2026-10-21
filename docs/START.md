@@ -115,6 +115,10 @@ compares SHA-256, so it needs no key for that); unchanged files are skipped, and
 it writes nothing. A changed file becomes a new version and the old one stays. A file you deleted
 from the folder is listed as `missing from source (kept)` and is **never** removed from the log.
 Symlinks and special files are skipped and listed.
+To leave something out (say a Python `.tools-venv/` folder inside an export), put one pattern per
+line in a `.sigilignore` file at the top of the folder (`#` starts a comment), or pass
+`--exclude '.tools-venv/'` (repeatable). A skipped folder is skipped with everything inside it;
+`--dry-run` lists what would be skipped, and files already in the log are never removed by this.
 
 Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder")
 
