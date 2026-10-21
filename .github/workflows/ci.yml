@@ -1,0 +1,175 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    # Pinned images, not ubuntu-latest (which moves to 26.04 from 2026-10-19):
+    # 24.04 is today's baseline, 26.04 proves the next one before the switch.
+    name: build + test (default features, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: ${{ matrix.os }}
+      - name: build
+        run: cargo build --locked --all-targets
+      - name: test (lib + integration)
+        run: cargo test --locked
+
+  passkey:
+    name: build + clippy + test (--features passkey, headless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - name: libudev headers + pkg-config for hidapi
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: passkey
+      # No security key on the runner: this proves the real CTAP backend compiles;
+      # passkey logic itself is exercised through the software test authenticator.
+      - name: build
+        run: cargo build --locked --features passkey --all-targets
+      # The lint job builds default features only, so the real CTAP backend
+      # (src/passkey.rs behind cfg(feature = "passkey")) is linted here.
+      - name: cargo clippy --features passkey -D warnings
+        run: cargo clippy --locked --features passkey --all-targets -- -D warnings
+      # Whole suite with the feature on: proves enabling passkey breaks nothing else.
+      - name: test (all, --features passkey)
+        run: cargo test --locked --features passkey
+
+  lint:
+    name: fmt + clippy (-D warnings)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: lint
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  audit:
+    name: cargo audit (RustSec)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # Fails on any vulnerability advisory in Cargo.lock (all features, incl. the lab GUI).
+      # No advisory is ignored: there is no audit.toml.
+      - name: cargo audit
+        run: cargo audit
+      # The unmaintained GUI-only crates removed by the eframe 0.37 upgrade stay out of the
+      # lockfile (paste, ttf-parser, zbus/zvariant via AT-SPI accesskit).
+      - name: removed crates stay out of Cargo.lock
+        run: |
+          ! grep -E '^name = "(paste|ttf-parser|zvariant|zvariant_derive|zbus_names)"$' Cargo.lock
+
+  lab:
+    name: lab GUI (--features lab) build + clippy + smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v7
+      - name: GUI libraries + virtual X server
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-x11-0 libgl1 libegl1 libgl1-mesa-dri xvfb
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: lab
+      - name: build
+        run: cargo build --locked --features lab --all-targets
+      - name: cargo clippy --features lab -D warnings
+        run: cargo clippy --locked --features lab --all-targets -- -D warnings
+      # Opens the real window on a virtual display (software OpenGL), renders every page,
+      # and closes itself; fails if it panics, hangs, or never renders the frames.
+      - name: smoke test (sigil-lab under Xvfb)
+        run: |
+          SIGIL_LAB_SMOKE_FRAMES=40 timeout 120 xvfb-run -a cargo run --locked --features lab --bin sigil-lab | tee smoke.txt
+          grep -q "sigil-lab smoke: 40 frames rendered" smoke.txt
+
+  web-lab:
+    name: web lab (typecheck + crypto tests vs the Rust binary)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crate/sigil -> target
+          key: web-lab
+      - name: npm ci
+        run: npm ci
+      - name: typecheck
+        run: npm run typecheck
+      # The lab tests open fixtures written by the Rust CLI and, with SIGIL_BIN set,
+      # cross-check live: lab-written seals open in Rust and Rust-written seals open in the lab.
+      - name: build the sigil CLI
+        working-directory: crate/sigil
+        run: cargo build --locked --release --bin sigil
+      - name: lab tests (Argon2id / PBKDF2 seals, fail-closed)
+        run: SIGIL_BIN="$PWD/crate/sigil/target/release/sigil" npm run test:lab
