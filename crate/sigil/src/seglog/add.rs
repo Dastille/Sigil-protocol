@@ -22,6 +22,13 @@
 //! bytes are still exactly that version is not re-added behind the user's back ("deleted earlier,
 //! not re-added"), mirroring `log adopt`.
 //!
+//! **Skipping parts of the folder.** `--exclude PATTERN` (repeatable) and a `.sigilignore` file at
+//! the top of `DIR` (one pattern per line, `#` comments) name files and folders to leave out; a
+//! matching folder is skipped with everything under it, unread (see [`super::Excluder`] for the
+//! pattern language). Excluded paths that are already in the log are **left alone**: they are not
+//! "missing from source", nothing is tombstoned, and they are counted as "excluded, kept". A bad
+//! pattern refuses the run before anything is read or written.
+//!
 //! Crash safety: segments are written as unindexed files (and keys into the ring for a
 //! `--segment-keys` log), then their INDEX lines are appended in one write (the commit point), then
 //! HEAD. A run commits a **checkpoint** every `checkpoint_files` files or `checkpoint_bytes` plain
@@ -53,6 +60,10 @@ pub struct AddOpts<'a> {
     pub identity: Option<&'a Identity>,
     /// Plan only: read and hash, write nothing, take no lock.
     pub dry_run: bool,
+    /// Skip patterns (`--exclude`), applied with those of `DIR/.sigilignore`.
+    pub exclude: &'a [String],
+    /// Do not read `DIR/.sigilignore` (only `exclude` applies).
+    pub no_ignore_file: bool,
     /// Commit a checkpoint after this many sealed files (0 = [`ADD_CHECKPOINT_FILES`]).
     pub checkpoint_files: usize,
     /// Commit a checkpoint after this many plain bytes (0 = [`ADD_CHECKPOINT_BYTES`]).
@@ -67,6 +78,8 @@ impl Default for AddOpts<'_> {
             recipients: &[],
             identity: None,
             dry_run: false,
+            exclude: &[],
+            no_ignore_file: false,
             checkpoint_files: 0,
             checkpoint_bytes: 0,
         }
@@ -117,6 +130,14 @@ pub struct AddReport {
     pub unreadable: Vec<(Vec<u8>, String)>,
     /// Paths whose bytes equal a version that was tombstoned: `(path, segment, tombstone)`. Not re-added.
     pub deleted: Vec<(Vec<u8>, u64, u64)>,
+    /// Files and folders skipped by an exclude pattern while walking `DIR` (a folder stands for its
+    /// whole subtree, which is not read): `(path, is folder, pattern, where the pattern came from)`.
+    pub excluded: Vec<(Vec<u8>, bool, String, String)>,
+    /// Paths still live in the log that an exclude pattern now covers: `(path, latest segment)`.
+    /// Left alone: not missing, never tombstoned.
+    pub excluded_kept: Vec<(Vec<u8>, u64)>,
+    /// Patterns in force (`--exclude` plus `.sigilignore`), and how many came from the file.
+    pub patterns: (usize, usize),
     /// Checkpoints committed (INDEX writes).
     pub commits: usize,
     /// Merkle root of the last HEAD written (`None` when nothing was committed).
@@ -184,6 +205,21 @@ impl AddReport {
                 show_path(p)
             ));
         }
+        for (p, dir, pat, from) in &self.excluded {
+            s.push_str(&format!(
+                "  x {}{}  excluded by {pat:?} ({from})\n",
+                show_path(p),
+                if *dir { "/" } else { "" }
+            ));
+        }
+        if self.dry_run {
+            for (p, seq) in &self.excluded_kept {
+                s.push_str(&format!(
+                    "  ~ {}  excluded, kept in log (segment {seq}; not tombstoned)\n",
+                    show_path(p)
+                ));
+            }
+        }
         for (p, what) in &self.special {
             s.push_str(&format!("  - {}  skipped: {what}\n", show_path(p)));
         }
@@ -204,6 +240,15 @@ impl AddReport {
             self.missing.len(),
             self.special.len()
         );
+        if !self.excluded.is_empty() {
+            tail.push_str(&format!(", excluded {}", self.excluded.len()));
+        }
+        if !self.excluded_kept.is_empty() {
+            tail.push_str(&format!(", excluded-kept {}", self.excluded_kept.len()));
+            if !self.dry_run {
+                tail.push_str(" (listed by --dry-run)");
+            }
+        }
         if self.resealed() > 0 {
             tail.push_str(&format!(", sealed again {}", self.resealed()));
         }
@@ -258,8 +303,9 @@ fn join_rel(parent: &[u8], name: &[u8]) -> Vec<u8> {
     r
 }
 
-/// Walk `root` (no symlinks followed); regular files sorted by relative path bytes.
-fn walk(root: &Path, rep: &mut AddReport) -> Vec<Found> {
+/// Walk `root` (no symlinks followed); regular files sorted by relative path bytes. Entries an
+/// exclude pattern matches are recorded in `rep.excluded` and not descended into.
+fn walk(root: &Path, ex: &Excluder, rep: &mut AddReport) -> Vec<Found> {
     let mut found = Vec::new();
     let mut stack: Vec<(PathBuf, Vec<u8>)> = vec![(root.to_path_buf(), Vec::new())];
     while let Some((dir, rel)) = stack.pop() {
@@ -294,6 +340,11 @@ fn walk(root: &Path, rep: &mut AddReport) -> Vec<Found> {
                 }
             };
             let ft = md.file_type();
+            if let Some(p) = ex.matching(&r, ft.is_dir()) {
+                rep.excluded
+                    .push((r, ft.is_dir(), p.text.clone(), p.origin.clone()));
+                continue;
+            }
             if ft.is_symlink() {
                 rep.special.push((r, "symbolic link (not followed)".into()));
             } else if ft.is_dir() {
@@ -317,6 +368,7 @@ fn walk(root: &Path, rep: &mut AddReport) -> Vec<Found> {
     found.sort_by(|a, b| a.rel.cmp(&b.rel));
     rep.special.sort();
     rep.unreadable.sort();
+    rep.excluded.sort();
     found
 }
 
@@ -406,6 +458,7 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
             src.display()
         )));
     }
+    let ex = Excluder::new(opts.exclude, &abs_src, !opts.no_ignore_file).map_err(err)?;
     if !opts.dry_run || opts.identity.is_some() {
         signer_gate(&log, opts.identity)?;
     }
@@ -422,6 +475,7 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
         dir: log.dir.clone(),
         source: src.to_path_buf(),
         dry_run: opts.dry_run,
+        patterns: (ex.patterns.len(), ex.from_file),
         ..Default::default()
     };
     let _guard = if opts.dry_run {
@@ -461,7 +515,7 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
     let st = &idx.state;
 
     // plan
-    let found = walk(&abs_src, &mut rep);
+    let found = walk(&abs_src, &ex, &mut rep);
     let mut seen: BTreeSet<Vec<u8>> = rep
         .special
         .iter()
@@ -503,7 +557,12 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
     }
     for (p, &(seq, _, _)) in &held {
         if !seen.contains(p) && st.deleted_by(seq).is_none() {
-            rep.missing.push((p.clone(), seq));
+            // excluded paths are left alone: neither missing nor tombstoned
+            if ex.excluded(p).is_some() {
+                rep.excluded_kept.push((p.clone(), seq));
+            } else {
+                rep.missing.push((p.clone(), seq));
+            }
         }
     }
     let protect = opts.pass.filter(|p| !p.is_empty()).is_some() || !opts.recipients.is_empty();

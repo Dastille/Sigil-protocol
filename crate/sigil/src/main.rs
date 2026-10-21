@@ -767,6 +767,12 @@ enum LogCmd {
     /// own segment (recursive, stable order; symlinks and special files are skipped and listed).
     /// Unchanged files (same path, size and SHA-256) are skipped; files gone from DIR are reported,
     /// never deleted from the log. Re-running with no changes writes nothing.
+    ///
+    /// Skipping: `--exclude PATTERN` (repeatable) and DIR/.sigilignore (one pattern per line,
+    /// `#` comments) leave files and whole folders out. Patterns match the path relative to DIR:
+    /// `*` `?` `[a-z]` stay inside one folder, `**` crosses folders, a name without `/` matches at
+    /// any depth, a `/` anchors at DIR, a trailing `/` means folders only. Excluded paths already
+    /// in the log are kept (never reported missing, never tombstoned).
     Add {
         path: PathBuf,
         /// Folder to back up (its relative paths are what the log remembers)
@@ -784,9 +790,16 @@ enum LogCmd {
         /// Signing identity (.sgk); required exactly when the log was created with --identity
         #[arg(long)]
         identity: Option<PathBuf>,
-        /// Show what would be added, skipped and missing; write nothing
+        /// Show what would be added, skipped, excluded and missing; write nothing
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Skip files/folders matching PATTERN (relative to DIR; a matching folder skips its whole
+        /// subtree). Repeatable, e.g. --exclude .tools-venv/ --exclude '*.tmp'
+        #[arg(long = "exclude", value_name = "PATTERN")]
+        exclude: Vec<String>,
+        /// Do not read DIR/.sigilignore (only --exclude patterns apply)
+        #[arg(long = "no-ignore-file")]
+        no_ignore_file: bool,
     },
     /// List segments (from the INDEX; reads no segment bytes).
     Ls { path: PathBuf },
@@ -2857,6 +2870,8 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             identity,
             dry_run,
+            exclude,
+            no_ignore_file,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
@@ -2870,6 +2885,8 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     recipients: &recipients,
                     identity: id.as_ref(),
                     dry_run,
+                    exclude: &exclude,
+                    no_ignore_file,
                     ..Default::default()
                 },
             )?;
