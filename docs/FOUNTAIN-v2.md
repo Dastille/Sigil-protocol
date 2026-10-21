@@ -37,7 +37,7 @@ Classic `.sg1` layout stays interoperable; rain lives in piece folders or `.rq` 
 ## Not claimed here
 
 - Inventing fountain codes.
-- Changing `public/sigil-v1.txt`.
+- Changing `docs/sigil-v1.txt`.
 - Replacing Seal’s on-mark 50% budget (extras are outside the classic `n` slots).
 
 ## Next leaps after mend

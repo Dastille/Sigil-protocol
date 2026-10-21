@@ -1,6 +1,6 @@
 # Sigil breakthrough map
 
-Frozen v1 layout: `public/sigil-v1.txt`. Tooling below is **v1.x** (no byte-layout break) unless marked **v2**.
+Frozen v1 layout: `docs/sigil-v1.txt`. Tooling below is **v1.x** (no byte-layout break) unless marked **v2**.
 
 Lab: https://dove-bloom-star-island.grok.me
 

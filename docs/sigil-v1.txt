@@ -1,9 +1,10 @@
 SIGIL PROTOCOL SPECIFICATION
-Version 2 · writers emit v2 · readers accept v1 and v2 · AGPL-3.0 (programs) · Apache-2.0 (this layout)
+Version 2/3 · writers emit v2 (plain) and v3 (encrypted, private label) · readers accept v1–v3 · AGPL-3.0 (programs) · Apache-2.0 (this layout)
 
 New marks are version 2: first k shards are the payload (systematic Reed–Solomon);
 parity shards are extra evaluations. Version 1 evaluation-code files still De-scribe.
-Default mode is Reflection (~1.3×, ~25% loss). Seal is opt-in (~2×, ~50% loss).
+Default mode is Reflection (~1.3×, ~25% shard loss). Seal is opt-in (~2×, ~50%
+shard loss). Loss means whole shards; see THREAT MODEL for scattered bit rot.
 
 Sigil is a portable object format (.sg1) that combines a content identifier,
 Reed–Solomon erasure coding, replicated headers, and optional AES-256-GCM.
@@ -14,7 +15,9 @@ OBJECT
 A .sg1 packs a payload into n shards (default 16; the CLI may increase n).
   true name  SHA-256 of the original plaintext
   binding    Merkle root of shard hashes
-  Ward       optional AES-256-GCM (PBKDF2-HMAC-SHA256, 80 000 iterations)
+  Ward       optional AES-256-GCM. New passphrase seals: random content key
+             wrapped with Argon2id (parameters stored, SGTO v2). Legacy Wards:
+             key = PBKDF2-HMAC-SHA256, 80 000 iterations (read-only)
   Keystone   three extra copies of the 160-byte header after the primary
   Ember      SGEM-tagged header copy at the start of each shard
   Covenant   optional purpose string (not an access-control decision)
@@ -45,6 +48,9 @@ RBAC / ABAC / PBAC require a live policy service. A .sg1 does not know a subject
 STAR / CONSTELLATION
 A star is one .sg1. A constellation is a named list of stars.
 The same star may appear on more than one list.
+On disk: a folder of loose stars plus a card (a Seal whose payload is SIGG).
+An atlas (.sga, ATLS) is the card plus the member stars in one bag.
+De-scribe of a constellation refuses if a named star is absent.
 
 VERIFYING A COPY WITHOUT SIGIL
 SHA-256 the entire .sg1 (envelope hash) at source and destination.
@@ -54,19 +60,19 @@ Reconstruction requires an implementation:
 
 HEADER (160 bytes)
 0-3     SGIL
-4       version = 1
+4       version = 1, 2, or 3 (3 = private label, encrypted only)
 5       flags: deflate | Ward | mode | constellation | Keystone | Ember | Vow
 6-7     k, n
-8-15    original length (u64 le)
+8-15    original length (u64 le; 0 on v3)
 16-23   folded length (u64 le)
-24-55   true name
+24-55   true name (v3: keyed fingerprint)
 56-71   salt
 72-83   AES-GCM nonce
 84-99   AES-GCM tag
 100-103 shard length (u32 le)
 104-107 entropy milli-bits; Ember may store piece index in the high byte
 108-111 header CRC32 (this field zeroed)
-112-127 original file name (UTF-8, padded)
+112-127 original file name (UTF-8, padded; empty on v3)
 128-159 binding
 160-639 Keystone (three copies)
 640-767 Vow slab if FLAG_VOW
@@ -78,3 +84,119 @@ The Vow is copied after each Ember so Geas still applies if the prefix is gone.
 
 Work packs (magic SGWK) concatenate sequential .sg1 stars for large payloads.
 The browser lab remains size-capped; the Rust CLI is not.
+
+THREAT MODEL
+This section states what a .sg1 protects, against whom, and what it does not.
+It describes the reference implementation (crate/sigil) as of October 2026.
+
+Assets
+  payload      the original bytes: their confidentiality (only when a Ward
+               or encrypt-to wrap is present) and their recoverability
+  identity     the true name (SHA-256 of the plaintext) and the binding
+  metadata     file name, sizes, entropy score, mode and shard geometry
+  secrets      the Ward passphrase and .sgk identity keys (kept outside
+               the .sg1; only wraps of a random content key are inside)
+
+Adversaries
+  F  faults: bit rot, torn or truncated writes, lost pieces, a smashed
+     front of file. Not malicious.
+  P  passive holder of a copy without the key (cloud host, courier,
+     finder of a lost USB stick). Reads every byte, changes nothing.
+  A  active tamperer without the key: edits bytes, swaps whole marks,
+     crafts hostile headers, piece files, packs and SGTO blocks.
+  G  offline guesser: runs the passphrase KDF on candidate passphrases.
+  K  anyone holding the passphrase or identity key: full access, by
+     definition out of scope.
+
+In scope (what is claimed)
+  F  Exact recovery while at least k shards are intact; otherwise decode
+     refuses and names the shortfall. It never returns different bytes:
+     the output must match the true name and length.
+     Repair is SHARD ERASURE. A shard whose CRC32 fails is dropped whole,
+     so one flipped bit costs a whole shard. Up to n-k damaged shards are
+     tolerated however the damage is spread (Reflection 4 of 16, Seal 8
+     of 16 at the default n). Bit flips scattered across more than n-k
+     shards are NOT recoverable, even at very low rates (see the README
+     for measured numbers). Keystone and Ember copies keep the header
+     findable when the front of the file is destroyed.
+  P  With a Ward or encrypt-to wrap, payload content is protected by
+     AES-256-GCM under a 256-bit key. The fold is not a cipher.
+  A  On encrypted marks the GCM tag rejects any change to the payload.
+     On every mark the decoder checks the true name and length after
+     decode. Parsers treat all input as hostile: malformed geometry,
+     counts and lengths are errors, not panics or unbounded allocations.
+     NOT claimed: authenticity of an unencrypted mark. The header is
+     protected only by CRC32, so whoever rewrites payload and header
+     consistently produces a valid mark with a new true name. Proving
+     origin needs a signature kept outside the header (sigil sign,
+     an Ed25519 attestation) or a true name learned out of band.
+  G  Cost per guess is the KDF. New passphrase wraps (SGTO v2, record
+     kind 3) use Argon2id with stored parameters, defaulting to
+     m = 19456 KiB, t = 2, p = 1 (the OWASP Password Storage Cheat Sheet
+     minimum); readers cap stored parameters before deriving. Legacy
+     Wards and SGTO v1 passphrase wraps use PBKDF2-HMAC-SHA256 at a fixed
+     80 000 iterations (below OWASP's 600 000 for that hash). They stay
+     readable and are as weak as they always were. Re-seal them to
+     upgrade. No KDF saves a guessable passphrase.
+
+Out of scope (what is not claimed)
+  Metadata confidentiality. FIXED FOR NEW ENCRYPTED FILES (header v3,
+    "private label", October 2026; options 1 and 4 on by default). Every
+    new encrypted mark (passphrase, encrypt-to, both, Talisman; single
+    seals, work-pack stars, constellation stars, log segments) writes:
+      - outside: magic, version 3, flags (deflate bit cleared), k, n, the
+        CIPHERTEXT length, salt, nonce, tag, shard length, the Merkle
+        binding, and a KEYED FINGERPRINT in the true-name slot. Name,
+        original length and entropy slots are zero.
+      - inside the AES-256-GCM plaintext, before the body: an SGIN block
+        with the real name, original length, folded length, plaintext
+        SHA-256, entropy score, deflate flag and (pack star 0) the pack
+        total. Readers check the inner SHA-256 and length after decrypt.
+      - the 160-byte label as GCM associated data ("sigil v3 label\0" ||
+        label, with the CRC, tag, shard length, Ember index/entropy and
+        binding bytes zeroed). Those excluded bytes are bound separately:
+        the binding is recomputed from the shards and must match, the
+        entropy slot must be zero. Editing any label field, swapping
+        labels or fields between marks, or rewriting v3 to v2 fails closed.
+      - keyed fingerprint = HMAC-SHA256 (RFC 2104) of the plaintext under
+        HKDF-SHA256 (RFC 5869): ikm = content key, salt = file salt,
+        info "sigil v3 keyed fingerprint". Per file by default, so two
+        seals of the same file do not match. An opt-in shared dedupe key
+        (library SealOpts) makes equal files match for its holder only.
+    Work packs with an encrypted payload write an empty name and a zero
+    total in the pack front and guards; facets list the stars' keyed
+    fingerprints, not chunk hashes. Constellation stars are filed under
+    a ciphertext id (Merkle binding; for a pack, SHA-256 of its facet
+    list). Mend, scry, doctor and log verify need no key: they check
+    shard CRCs and the Merkle binding of the ciphertext. Name and size are
+    shown only after unlock (scry prints "label=private" / "(locked)").
+    Cost: about 72 bytes plus the name length inside the ciphertext,
+    times the parity ratio, rounded up to whole shard rows (measured: a
+    10 000-byte file grows from 3 461 to 3 573 bytes; under 0.01% for
+    MiB-sized files). Plain marks and every existing .sg1 are unchanged
+    and open exactly as before.
+  STILL LEAKS (not fixed, or fixed only by opt-in):
+      - every v1/v2 encrypted mark written before the fix: re-seal it.
+      - the ciphertext length, i.e. the compressed size plus ~72 bytes plus
+        the name. Opt-in padding (size buckets / power of two) is a
+        follow-up; until then the folded length can fingerprint a file.
+      - folder packs (SGDR): member names and sizes inside the folder
+        record, and per-member plaintext SHA-256 for large members.
+      - vault CHART version lines: plaintext SHA-256 and size of each
+        version (sidecar file, not the .sg1).
+      - segment-log INDEX lines: plaintext size and SHA-256 per entry
+        (receipts and compaction rely on them); the star= field is keyed.
+      - constellation card member names: hidden only when the card itself
+        is encrypted; star counts and sizes are always visible.
+    Until padding ships: give encrypted outputs neutral names and do not
+    rely on the size of an encrypted .sg1 being secret.
+  Always visible: that the file is a .sg1, whether it is encrypted, its
+    mode and shard counts, the ciphertext length (or its bucket once
+    padding is used), and file-system names and dates.
+  Rollback and replay: an older valid mark of the same file is
+    indistinguishable from the current one without an external record
+    (vaults and segment logs add one; see docs/SEGMENT-LOG.md).
+  Destruction beyond the budget: more than n-k bad shards, or all copies.
+    Keep a second copy; Sigil is not a backup schedule.
+  Compromised endpoints, key theft, malware, side channels, coercion,
+    traffic analysis, and the Covenant string (a label, never enforced).

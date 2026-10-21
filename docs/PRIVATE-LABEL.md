@@ -1,7 +1,7 @@
 # Private label (header v3)
 
 New encrypted `.sg1` files no longer carry the plaintext's identity in the clear.
-Spec and threat model: `public/sigil-v1.txt` (HEADER, THREAT MODEL). Code: `crate/sigil/src/privacy.rs`.
+Spec and threat model: `docs/sigil-v1.txt` (HEADER, THREAT MODEL). Code: `crate/sigil/src/privacy.rs`.
 
 ## What changed (on by default for every encrypted write)
 

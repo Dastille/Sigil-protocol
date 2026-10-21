@@ -1,3 +1,5 @@
+# NOTE: GitHub Actions do not run for this repository (free plan billing), so this
+# workflow is kept for reference only. Run the same checks locally (see README.md).
 name: ci
 
 on:
@@ -37,7 +39,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crate/sigil -> target
+          workspaces: . -> target
           key: ${{ matrix.os }}
       - name: build
         run: cargo build --locked --all-targets
@@ -60,7 +62,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crate/sigil -> target
+          workspaces: . -> target
           key: passkey
       # No security key on the runner: this proves the real CTAP backend compiles;
       # passkey logic itself is exercised through the software test authenticator.
@@ -88,7 +90,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crate/sigil -> target
+          workspaces: . -> target
           key: lint
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
@@ -116,7 +118,7 @@ jobs:
       # lockfile (paste, ttf-parser, zbus/zvariant via AT-SPI accesskit).
       - name: removed crates stay out of Cargo.lock
         run: |
-          ! grep -E '^name = "(paste|ttf-parser|zvariant|zvariant_derive|zbus_names)"$' Cargo.lock
+          ! grep -E '^name = "(paste|ttf-parser|zvariant|zvariant_derive|zbus_names)"$' ../../Cargo.lock
 
   lab:
     name: lab GUI (--features lab) build + clippy + smoke
@@ -134,7 +136,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crate/sigil -> target
+          workspaces: . -> target
           key: lab
       - name: build
         run: cargo build --locked --features lab --all-targets
@@ -160,7 +162,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crate/sigil -> target
+          workspaces: . -> target
           key: web-lab
       - name: npm ci
         run: npm ci
@@ -172,4 +174,4 @@ jobs:
         working-directory: crate/sigil
         run: cargo build --locked --release --bin sigil
       - name: lab tests (Argon2id / PBKDF2 seals, fail-closed)
-        run: SIGIL_BIN="$PWD/crate/sigil/target/release/sigil" npm run test:lab
+        run: SIGIL_BIN="$PWD/target/release/sigil" npm run test:lab

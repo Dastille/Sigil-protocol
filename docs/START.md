@@ -174,7 +174,7 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
 | [LRC-COLD-USB.md](LRC-COLD-USB.md) | Cold kit across USB sticks |
 
-Frozen layout: [`public/sigil-v1.txt`](../public/sigil-v1.txt). CLI dump: `sigil --help`.
+Frozen layout: [`docs/sigil-v1.txt`](sigil-v1.txt). CLI dump: `sigil --help`.
 
 ### Advanced / lab (skip unless you need them)
 

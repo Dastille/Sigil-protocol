@@ -53,7 +53,7 @@ pub enum FingerprintKey {
     Shared([u8; 32]),
 }
 
-/// Opt-in size hiding (see `docs` / `public/sigil-v1.txt`). Never on by default.
+/// Opt-in size hiding (see `docs` / `docs/sigil-v1.txt`). Never on by default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Pad {
     /// No padding (default): ciphertext length ≈ compressed size + inner block.

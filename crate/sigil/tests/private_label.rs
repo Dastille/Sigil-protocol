@@ -1,5 +1,5 @@
 //! v3 private label for new encrypted seals: what it hides, that it fails closed,
-//! and that old files keep opening. See `src/privacy.rs` and public/sigil-v1.txt.
+//! and that old files keep opening. See `src/privacy.rs` and docs/sigil-v1.txt.
 
 use sigil::{
     locate_header, mend_bytes, seal_kn_to, seal_kn_to_opts, unseal_ex_keys, unseal_meta_keys,

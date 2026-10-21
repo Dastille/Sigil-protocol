@@ -1,3 +1,5 @@
+# NOTE: GitHub Actions do not run for this repository (free plan billing), so this
+# workflow is kept for reference only. Run the same checks locally (see README.md).
 name: release
 
 on:
@@ -39,14 +41,14 @@ jobs:
       - name: pack unix
         if: matrix.os != 'windows-latest'
         run: |
-          BIN=target/${{ matrix.target }}/release/sigil
+          BIN=../../target/${{ matrix.target }}/release/sigil
           cp "$BIN" ${{ matrix.artifact }}
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
       - name: pack windows
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Copy-Item target/${{ matrix.target }}/release/sigil.exe ${{ matrix.artifact }}
+          Copy-Item ../../target/${{ matrix.target }}/release/sigil.exe ${{ matrix.artifact }}
           Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ${{ matrix.artifact }}.zip
       - uses: softprops/action-gh-release@v2
         with:
