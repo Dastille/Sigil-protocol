@@ -1,0 +1,20 @@
+{
+  "name": "sigil-web-lab-core",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript Sigil codec used by the web lab; tests cross-check against the Rust CLI.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test:lab": "node --import tsx --test src/lib/sigil/sgto.test.ts",
+    "selftest": "node scripts/sigil-selftest.mjs"
+  },
+  "dependencies": {
+    "hash-wasm": "^4.12.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.16.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.7.0"
+  }
+}
