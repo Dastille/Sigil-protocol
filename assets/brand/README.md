@@ -1,46 +1,41 @@
 # Sigil brand assets
 
-Sigil has a mark and a name (wordmark), used separately or together (lockup).
-Everything here comes from the old repo
-[Dastille/dove-bloom-star-island](https://github.com/Dastille/dove-bloom-star-island).
-Source commits: `5cad5930c3ed8f048c98fe556c81e611eb189dc7` (mark, header, mark component, fonts)
-and `cca33b48db30931127c093dd24c8c5a0a11cb520` (brand tokens); all unchanged at old-repo HEAD `40e649a`.
+## Official logo
 
-| File | Status | Source |
-|---|---|---|
-| `mark.svg` | **Original**, copied byte-for-byte | `public/favicon.svg` (gold mark on dark-green rounded square, 32×32) |
-| `mark-line.svg` | **Original geometry**, converted from JSX to SVG | `src/components/mark.tsx` (`SigilMark`, the in-app line mark; `currentColor`, set here to `#e8dcc8`) |
-| `wordmark.svg` | **Reproduced from the CSS** | `src/components/app-header.tsx`: `font-serif text-lg tracking-tight` "Sigil" |
-| `lockup.svg` | **Reproduced from the CSS** | `src/components/app-header.tsx`: `SigilMark` `size-7` + `gap-2.5` + wordmark |
-| `sigil-brand-tokens.css` | **Original**, copied byte-for-byte | `artifacts/sigil-brand-tokens.css` |
+Sigil's official logo is the **OG tree logo**: a thin gold tree of life (branches up, roots down)
+inside a circle, over spaced `S I G I L` serif capitals, on dark green.
 
-No standalone wordmark/lockup file, PNG or larger logo existed in the old repo or its history; the
-wordmark and lockup only existed as rendered HTML/CSS in the app header.
+The files in `original/` are copied byte-for-byte from the old repo
+[Dastille/dove-bloom-star-island](https://github.com/Dastille/dove-bloom-star-island). They are raster
+JPEGs; there is no vector master yet.
 
-## Wordmark and lockup spec (from the original CSS)
+| File | Size | Source path (old repo) | Commit(s) |
+|---|---|---|---|
+| `original/og-cover.jpg` | 1200×630 | `artifacts/og-cover.jpg` | `5cad593` (2026-08-24), `e86b45f` (2026-08-26), `cca33b4` (2026-08-28) |
+| `original/og.jpg` | 1200×630 | `public/og.jpg` | `5cad593` (2026-08-24) |
+| `original/lockup-stacked-square.jpg` | 1408×1408 | `attachments/1000008435.jpg` | `5cad593` (2026-08-24) |
+| `original/lockup-horizontal.jpg` | 1168×784 | `attachments/1000008433.jpg` | `5cad593` (2026-08-24) |
+| `original/emblem-stacked-black.jpg` | 1168×784 | `attachments/1000008432.jpg` | `5cad593` (2026-08-24) |
+| `original/banner.jpg` | 1500×843 | `attachments/1000008438.jpg` | `5cad593` (2026-08-24) |
 
-- Font: Newsreader (Google Fonts), weight 400, optical size 18 (`--font-serif`: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif)
-- Size: 18px (`text-lg`), line height 28px
-- Letter-spacing: −0.025em (`tracking-tight`)
-- Colour: `#e8dcc8` (foreground), mark uses the same colour (`currentColor`)
-- Lockup: mark 28×28px, 10px gap, then wordmark, vertically centred in 28px
-
-The wordmark text is outlined to paths (from Newsreader at opsz 18 / wght 400) so it renders without the font installed.
-The wordmark, lockup and `mark-line.svg` are cream on transparent and are meant for dark backgrounds.
+Dates are commit dates in US Eastern time. `og-cover.jpg` was last changed in `cca33b4`; `og.jpg` is a different file.
+The root README shows `original/og.jpg`.
 
 ## Colours
 
-| Name | Hex | Use |
+`sigil-brand-tokens.css` holds the brand colours as CSS custom properties (plus a two-line `body`
+background/colour rule). Copied byte-for-byte from `artifacts/sigil-brand-tokens.css` (`cca33b4`).
+
+| Name | Hex | Token |
 |---|---|---|
-| Gold | `#c29965` | `mark.svg`, `--sigil-gold`, app primary |
-| Dark green | `#081710` | `mark.svg` background, app background |
-| Background | `#07160f` | `--sigil-bg` |
-| Background, elevated | `#0c2418` | `--sigil-bg-elevated` |
+| Gold | `#c29965` | `--sigil-gold` |
 | Gold, bright | `#d4b07a` | `--sigil-gold-bright` |
-| Foreground / cream | `#e8dcc8` | `--sigil-fg`, wordmark, line mark |
+| Background (dark green) | `#07160f` | `--sigil-bg` |
+| Background, elevated | `#0c2418` | `--sigil-bg-elevated` |
+| Foreground / cream | `#e8dcc8` | `--sigil-fg` |
 | Muted | `#8a9a88` | `--sigil-muted` |
 
 ## Future
 
-A professionally redrawn vector master that holds up at large sizes is still to do. The current marks were
-drawn on a 32×32 grid for favicon/header use.
+- A professionally redrawn clean vector (SVG) of the tree logo and the wordmark. Not done yet. It should be
+  redrawn by hand, not auto-traced from the JPEGs.

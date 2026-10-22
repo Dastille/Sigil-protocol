@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/brand/mark.svg" alt="Sigil logo" width="96" height="96"></p>
+<p align="center"><img src="assets/brand/original/og.jpg" alt="Sigil logo: gold tree of life in a circle over the SIGIL wordmark" width="600"></p>
 
 # Sigil
 
