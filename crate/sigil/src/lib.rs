@@ -85,8 +85,9 @@ pub use constellation::{
     RemoveReport as ConstellationRemoveReport,
 };
 pub use folder::{
-    inscribe_dir, inscribe_dir_to, is_dir_pack, list_dir_pack, looks_like_nest_name,
-    read_dir_entry_star, scry_dir, unseal_dir, unseal_dir_mend_keys, unseal_dir_only,
+    inscribe_dir, inscribe_dir_to, is_dir_pack, is_sealed_dir_pack, list_dir_pack,
+    list_dir_pack_keys, looks_like_nest_name, mend_sealed_dir, read_dir_entry_star, scry_dir,
+    scry_dir_keys, sealed_dir_body, unseal_dir, unseal_dir_mend_keys, unseal_dir_only,
     unseal_dir_only_keys, DirEntry,
 };
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};

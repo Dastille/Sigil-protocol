@@ -943,7 +943,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 * Private INDEX follow-ups: sealed tombstone / shred reasons, `sigil mount` of a private log, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, re-wrapping the index
   key to new recipients, and converting an existing log (today: `--private-index` at init only).
-* Folder packs (SGDR) still show member names in an encrypted pack (see PRIVATE-LABEL.md).
+* Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * `log add` follow-ups: restore a whole folder (or one path) by name, per-file receipts by path, and
   an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).

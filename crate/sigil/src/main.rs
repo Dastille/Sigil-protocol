@@ -6,7 +6,7 @@ use sigil::{
     is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
     mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
     place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
-    run_showing, scatter_pieces, scry_constellation, scry_dir, scry_path, seal_kn_mds_to, sha256,
+    run_showing, scatter_pieces, scry_constellation, scry_path, seal_kn_mds_to, sha256,
     sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
     vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
@@ -123,10 +123,24 @@ enum Cmd {
     },
     Verify {
         input: PathBuf,
+        /// Key for an encrypted folder pack: list its (hidden) member names
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
     #[command(visible_alias = "gaze")]
     Scry {
         input: PathBuf,
+        /// Key for an encrypted folder pack: list its (hidden) member names
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
     Scatter {
         input: PathBuf,
@@ -239,9 +253,7 @@ enum Cmd {
         idle: u64,
     },
     /// What to copy first so Play can start (Blizzard-style boot).
-    Overture {
-        input: PathBuf,
-    },
+    Overture { input: PathBuf },
     /// De-scribe to temp, open in the usual app, delete when you press Enter.
     Open {
         input: PathBuf,
@@ -467,9 +479,7 @@ enum Cmd {
     },
     /// Unmount a Sigil FUSE mountpoint (`fusermount3 -u`). Alias: unmount.
     #[command(visible_alias = "unmount")]
-    Umount {
-        mountpoint: PathBuf,
-    },
+    Umount { mountpoint: PathBuf },
     /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
     #[command(name = "bench-mds")]
     BenchMds {
@@ -1697,14 +1707,30 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("de-scribed {n} bytes → {}", output.display());
             }
         }
-        Cmd::Verify { input } | Cmd::Scry { input } => {
+        Cmd::Verify {
+            input,
+            pass,
+            talisman,
+            identity,
+        }
+        | Cmd::Scry {
+            input,
+            pass,
+            talisman,
+            identity,
+        } => {
             if is_constellation_input(&input) {
                 let text = scry_constellation(&input, None).map_err(|e| {
                     format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
                 })?;
                 println!("{text}");
             } else if is_dir_pack(&input) {
-                println!("{}", scry_dir(&input)?);
+                let pass = resolve_pass(pass, talisman)?;
+                let identities = load_identities(&identity)?;
+                println!(
+                    "{}",
+                    sigil::scry_dir_keys(&input, pass.as_deref(), &[], &identities)?
+                );
             } else {
                 println!("{}", scry_path(&input)?);
             }
@@ -1861,6 +1887,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("gathered mark → {}", output.display());
                 }
             }
+        }
+        Cmd::Mend {
+            input,
+            output,
+            soft: _,
+        } if sigil::is_sealed_dir_pack(&input) => {
+            println!("{}", sigil::mend_sealed_dir(&input, &output)?);
         }
         Cmd::Mend {
             input,
