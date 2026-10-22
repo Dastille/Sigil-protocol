@@ -1,94 +1,381 @@
 //! RaptorQ rain (RFC 6330). Extra packets are not limited to 255 RS indices.
+//!
+//! ## Packet numbering
+//!
+//! RFC 6330 section 3.2 (FEC Payload ID) gives every encoding symbol an 8-bit
+//! Source Block Number and a **24-bit Encoding Symbol ID** (ESI), so ESIs run
+//! from 0 to 2^24 - 1 = 16 777 215 ([`MAX_ESI`]). ESIs 0..K-1 of a block are its
+//! source symbols and K.. are repair symbols (RFC 6330 section 4.4.2); a decoder
+//! rebuilds the block from any K (usually) or K+1 / K+2 distinct symbols.
+//!
+//! By default `deluge --fountain` gives every packet a **random ESI drawn from
+//! the whole 24-bit space**, so people raining the same file without talking to
+//! each other almost never send the same packet, and partial shares pooled from
+//! several senders add up. `--sequential` keeps the old order (source symbols
+//! 0..K-1, then K..K+extra-1 per block).
+//!
+//! ## Packet file
+//!
+//! - v1 (old, still read): `"SGFT" | 1 | OTI (12) | payload id (4) | symbol`.
+//! - v2 (written now): `"SGFT" | 2 | OTI (12) | object SHA-256 (32) | payload id (4)
+//!   | symbol | SHA-256 of every byte before it (32)`.
+//!
+//! Gather checks each v2 packet's SHA-256 (skips damaged files), groups packets by
+//! object (skips strays from another file), dedupes ESIs, and after decoding checks
+//! the result against the object SHA-256, so a forged packet fails closed instead
+//! of yielding different bytes.
 
 use crate::Result;
-use raptorq::{Decoder, Encoder, EncodingPacket, ObjectTransmissionInformation};
+use raptorq::{
+    partition, Decoder, Encoder, EncodingPacket, ObjectTransmissionInformation, PayloadId,
+};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const FT_MAGIC: [u8; 4] = *b"SGFT";
 const MTU: u16 = 16 * 1024;
+/// Largest Encoding Symbol ID: RFC 6330 section 3.2, the ESI is a 24-bit field.
+pub const MAX_ESI: u32 = (1 << 24) - 1;
+/// Largest source block RFC 6330 supports (K'max, section 5.1.2 / Table 2).
+const MAX_K: u32 = 56_403;
+/// Refuse to allocate a decoder for more than this (a hostile OTI could ask for TBs).
+const MAX_TRANSFER: u64 = 1 << 40;
 
-fn write_rq(dir: &Path, i: u32, cfg: &[u8; 12], pkt: &EncodingPacket) -> Result<()> {
-    let ser = pkt.serialize();
-    let mut out = Vec::with_capacity(4 + 1 + 12 + ser.len());
-    out.extend_from_slice(&FT_MAGIC);
-    out.push(1);
-    out.extend_from_slice(cfg);
-    out.extend_from_slice(&ser);
-    fs::write(dir.join(format!("rain-{i:05}.rq")), out)
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
-    Ok(())
+fn err(m: impl Into<String>) -> crate::Error {
+    crate::Error::Msg(m.into())
 }
 
-fn read_rq(path: &Path) -> Result<([u8; 12], EncodingPacket)> {
-    let b = fs::read(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    if b.len() < 17 || b[0..4] != FT_MAGIC {
-        return Err(crate::Error::Msg(format!(
-            "not a fountain packet: {}",
-            path.display()
-        )));
+/// Encode one v2 packet file.
+fn packet_v2(cfg: &[u8; 12], object: &[u8; 32], pkt: &EncodingPacket) -> Vec<u8> {
+    let ser = pkt.serialize();
+    let mut out = Vec::with_capacity(4 + 1 + 12 + 32 + ser.len() + 32);
+    out.extend_from_slice(&FT_MAGIC);
+    out.push(2);
+    out.extend_from_slice(cfg);
+    out.extend_from_slice(object);
+    out.extend_from_slice(&ser);
+    let h: [u8; 32] = Sha256::digest(&out).into();
+    out.extend_from_slice(&h);
+    out
+}
+
+/// One parsed packet file.
+struct Parsed {
+    cfg: [u8; 12],
+    /// Object SHA-256 (v2 only).
+    object: Option<[u8; 32]>,
+    pkt: EncodingPacket,
+}
+
+/// Number of source symbols in each source block (RFC 6330 section 4.4.1.2:
+/// Kt = ceil(F/T), Partition[Kt, Z]). `None` when the OTI is not one we will decode.
+fn block_sizes(oti: &ObjectTransmissionInformation) -> Option<Vec<u32>> {
+    let (f, t, z) = (
+        oti.transfer_length(),
+        u64::from(oti.symbol_size()),
+        u32::from(oti.source_blocks()),
+    );
+    if f == 0 || f > MAX_TRANSFER || t == 0 || z == 0 || oti.sub_blocks() == 0 {
+        return None;
+    }
+    let kt = u32::try_from(f.div_ceil(t)).ok()?;
+    if kt < z {
+        return None;
+    }
+    let (kl, ks, zl, _zs) = partition(kt, z);
+    if kl > MAX_K {
+        return None;
+    }
+    Some((0..z).map(|i| if i < zl { kl } else { ks }).collect())
+}
+
+fn parse_packet(b: &[u8]) -> std::result::Result<Parsed, String> {
+    if b.len() < 5 || b[0..4] != FT_MAGIC {
+        return Err("not a fountain packet".into());
+    }
+    let (cfg_at, body_at, end, object) = match b[4] {
+        1 => (5usize, 17usize, b.len(), None),
+        2 => {
+            if b.len() < 4 + 1 + 12 + 32 + 4 + 32 {
+                return Err("cut off".into());
+            }
+            let end = b.len() - 32;
+            let want: [u8; 32] = Sha256::digest(&b[..end]).into();
+            if b[end..] != want {
+                return Err("checksum mismatch (damaged)".into());
+            }
+            let mut o = [0u8; 32];
+            o.copy_from_slice(&b[17..49]);
+            (5, 49, end, Some(o))
+        }
+        v => return Err(format!("unknown packet version {v}")),
+    };
+    if end < body_at + 4 {
+        return Err("cut off".into());
     }
     let mut cfg = [0u8; 12];
-    cfg.copy_from_slice(&b[5..17]);
-    Ok((cfg, EncodingPacket::deserialize(&b[17..])))
+    cfg.copy_from_slice(&b[cfg_at..cfg_at + 12]);
+    let oti = ObjectTransmissionInformation::deserialize(&cfg);
+    let sizes = block_sizes(&oti).ok_or("unusable transmission parameters")?;
+    let body = &b[body_at..end];
+    if body.len() != 4 + usize::from(oti.symbol_size()) {
+        return Err("wrong symbol size (damaged or cut off)".into());
+    }
+    let pkt = EncodingPacket::deserialize(body);
+    if usize::from(pkt.payload_id().source_block_number()) >= sizes.len() {
+        return Err("source block number out of range".into());
+    }
+    Ok(Parsed { cfg, object, pkt })
 }
 
-/// Write source packets plus `repair` extra RaptorQ packets of the whole .sg1.
+/// Write source packets plus `repair` extra RaptorQ packets of the whole .sg1,
+/// with random ESIs (the default; see the module docs).
 pub fn deluge_fountain(file: &[u8], dir: &Path, repair: u32) -> Result<u32> {
+    deluge_fountain_opts(file, dir, repair, false)
+}
+
+/// Like [`deluge_fountain`]; `sequential` writes ESIs 0..K+repair-1 per block
+/// (the order used before random numbering).
+pub fn deluge_fountain_opts(file: &[u8], dir: &Path, repair: u32, sequential: bool) -> Result<u32> {
     if file.len() >= 4 && file.starts_with(&crate::work::WORK_MAGIC) {
-        return Err(crate::Error::Msg(
-            "work pack: fountain each star, or Scatter the pack first.".into(),
+        return Err(err(
+            "work pack: fountain each star, or Scatter the pack first.",
         ));
     }
-    fs::create_dir_all(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    if file.is_empty() {
+        return Err(err("nothing to rain: the file is empty"));
+    }
+    fs::create_dir_all(dir).map_err(|e| err(e.to_string()))?;
     let enc = Encoder::with_defaults(file, MTU);
     let cfg = enc.get_config().serialize();
-    let packets = enc.get_encoded_packets(repair);
+    let object: [u8; 32] = Sha256::digest(file).into();
     let mut n = 0u32;
-    for (i, pkt) in packets.iter().enumerate() {
-        let path = dir.join(format!("rain-{i:05}.rq"));
-        if path.exists() {
+    if sequential {
+        for (i, pkt) in enc.get_encoded_packets(repair).iter().enumerate() {
+            let path = dir.join(format!("rain-{i:05}.rq"));
+            if !path.exists() {
+                write_new(&path, &packet_v2(&cfg, &object, pkt))?;
+            }
             n += 1;
-            continue;
         }
-        write_rq(dir, i as u32, &cfg, pkt)?;
-        n += 1;
+        return Ok(n);
+    }
+    for block in enc.get_block_encoders() {
+        let source = block.source_packets();
+        let k = source.len() as u32;
+        let sbn = source
+            .first()
+            .map(|p| p.payload_id().source_block_number())
+            .unwrap_or(0);
+        let want = k.saturating_add(repair) as usize;
+        let mut esis: Vec<u32> = Vec::with_capacity(want);
+        let mut seen = HashSet::with_capacity(want);
+        while esis.len() < want {
+            let mut r = [0u8; 4];
+            getrandom::getrandom(&mut r).map_err(|e| err(format!("random ESI: {e}")))?;
+            let esi = u32::from_le_bytes(r) & MAX_ESI;
+            if seen.insert(esi) {
+                esis.push(esi);
+            }
+        }
+        for esi in esis {
+            let pkt = if esi < k {
+                source
+                    .get(esi as usize)
+                    .cloned()
+                    .ok_or_else(|| err("internal: source symbol out of range"))?
+            } else {
+                block
+                    .repair_packets(esi - k, 1)
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| err("internal: no repair packet"))?
+            };
+            debug_assert_eq!(pkt.payload_id(), &PayloadId::new(sbn, esi));
+            let path = dir.join(format!("rain-{sbn:03}-{esi:08}.rq"));
+            if !path.exists() {
+                write_new(&path, &packet_v2(&cfg, &object, &pkt))?;
+            }
+            n += 1;
+        }
     }
     Ok(n)
 }
 
+/// Write a packet file whole (temp + rename), so a reader never sees half of one.
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut part = path.as_os_str().to_os_string();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    fs::write(&part, bytes).map_err(|e| err(e.to_string()))?;
+    fs::rename(&part, path).map_err(|e| err(e.to_string()))
+}
+
+/// What gather did with the packet files in a folder.
+#[derive(Debug, Default, Clone)]
+pub struct FountainReport {
+    /// Distinct packets used for the chosen object.
+    pub packets: usize,
+    /// Source symbols needed in total (sum of K over the source blocks).
+    pub needed: u32,
+    /// `.rq` files skipped as damaged / unreadable, with the reason.
+    pub bad: Vec<(PathBuf, String)>,
+    /// `.rq` files skipped because they belong to another file (stray).
+    pub stray: Vec<PathBuf>,
+    /// Duplicate packets (same block and ESI) ignored.
+    pub duplicates: usize,
+}
+
+impl FountainReport {
+    /// One line naming the skipped files, or empty.
+    pub fn skipped_note(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.bad.is_empty() {
+            parts.push(format!("{} damaged", self.bad.len()));
+        }
+        if !self.stray.is_empty() {
+            parts.push(format!("{} from another file", self.stray.len()));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("skipped packet files: {}", parts.join(", "))
+        }
+    }
+}
+
 pub fn gather_fountain(dir: &Path) -> Result<Vec<u8>> {
-    let mut cfg: Option<[u8; 12]> = None;
-    let mut pkts = Vec::new();
-    let rd = fs::read_dir(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) != Some("rq") {
+    gather_fountain_report(dir).map(|(d, _)| d)
+}
+
+/// Rebuild from the `.rq` packets in `dir`. Damaged and stray packet files are
+/// skipped (listed in the report); when too few are left the error says how many
+/// more are needed ("have 4 of 10 needed, need 6 more").
+pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
+    let mut rep = FountainReport::default();
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(|e| err(e.to_string()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+        .collect();
+    files.sort();
+    let mut parsed = Vec::new();
+    for p in files {
+        match fs::read(&p) {
+            Ok(b) => match parse_packet(&b) {
+                Ok(x) => parsed.push((p, x)),
+                Err(why) => rep.bad.push((p, why)),
+            },
+            Err(e) => rep.bad.push((p, e.to_string())),
+        }
+    }
+    if parsed.is_empty() {
+        let note = rep.skipped_note();
+        return Err(err(if note.is_empty() {
+            "no .rq fountain packets here".to_string()
+        } else {
+            format!("no usable .rq fountain packets here ({note})")
+        }));
+    }
+    // Choose the object: the v2 object with the most packets, else the commonest v1 config.
+    let mut by_obj: BTreeMap<([u8; 12], [u8; 32]), usize> = BTreeMap::new();
+    let mut by_cfg: BTreeMap<[u8; 12], usize> = BTreeMap::new();
+    for (_, x) in &parsed {
+        match x.object {
+            Some(o) => *by_obj.entry((x.cfg, o)).or_default() += 1,
+            None => *by_cfg.entry(x.cfg).or_default() += 1,
+        }
+    }
+    let chosen: ([u8; 12], Option<[u8; 32]>) = match by_obj
+        .iter()
+        .max_by_key(|(k, n)| (**n, std::cmp::Reverse(**k)))
+    {
+        Some(((c, o), _)) => (*c, Some(*o)),
+        None => match by_cfg
+            .iter()
+            .max_by_key(|(k, n)| (**n, std::cmp::Reverse(**k)))
+        {
+            Some((c, _)) => (*c, None),
+            None => return Err(err("no .rq fountain packets here")),
+        },
+    };
+    // v2 packets of the chosen object first; old v1 packets with the same transmission
+    // parameters after them (they carry no object id; the final check still applies).
+    let mut ordered: Vec<EncodingPacket> = Vec::new();
+    let mut v1_tail: Vec<EncodingPacket> = Vec::new();
+    for (p, x) in parsed {
+        if x.cfg != chosen.0 {
+            rep.stray.push(p);
             continue;
         }
-        let (c, pkt) = read_rq(&p)?;
-        if let Some(old) = cfg {
-            if old != c {
-                return Err(crate::Error::Msg(
-                    "mixed fountain configs in this folder".into(),
-                ));
-            }
+        match (x.object, chosen.1) {
+            (Some(o), Some(c)) if o == c => ordered.push(x.pkt),
+            (Some(_), _) => rep.stray.push(p),
+            (None, _) => v1_tail.push(x.pkt),
+        }
+    }
+    ordered.extend(v1_tail);
+    let oti = ObjectTransmissionInformation::deserialize(&chosen.0);
+    let sizes = block_sizes(&oti).ok_or_else(|| err("unusable transmission parameters"))?;
+    rep.needed = sizes.iter().sum();
+    let mut seen: HashSet<(u8, u32)> = HashSet::new();
+    let mut have = vec![0u32; sizes.len()];
+    let mut uniq = Vec::with_capacity(ordered.len());
+    for pkt in ordered {
+        let id = pkt.payload_id();
+        if seen.insert((id.source_block_number(), id.encoding_symbol_id())) {
+            have[usize::from(id.source_block_number())] += 1;
+            uniq.push(pkt);
         } else {
-            cfg = Some(c);
+            rep.duplicates += 1;
         }
-        pkts.push(pkt);
     }
-    let cfg = cfg.ok_or_else(|| crate::Error::Msg("no .rq fountain packets here".into()))?;
-    let oti = ObjectTransmissionInformation::deserialize(&cfg);
+    rep.packets = uniq.len();
     let mut dec = Decoder::new(oti);
-    for pkt in pkts {
+    let mut out = None;
+    for pkt in uniq {
         if let Some(data) = dec.decode(pkt) {
-            return Ok(data);
+            out = Some(data);
+            break;
         }
     }
-    Err(crate::Error::Msg(
-        "not enough fountain packets yet (keep raining)".into(),
-    ))
+    let note = rep.skipped_note();
+    let note = if note.is_empty() {
+        String::new()
+    } else {
+        format!("; {note}")
+    };
+    let Some(data) = out else {
+        let usable: u32 = have.iter().zip(&sizes).map(|(h, k)| (*h).min(*k)).sum();
+        let more: u32 = have
+            .iter()
+            .zip(&sizes)
+            .map(|(h, k)| k.saturating_sub(*h))
+            .sum();
+        return Err(err(if more > 0 {
+            format!(
+                "not enough fountain packets yet: have {usable} of {} needed, need {more} more (keep raining){note}",
+                rep.needed
+            )
+        } else {
+            format!(
+                "not enough fountain packets yet: have {} for {} needed; RaptorQ sometimes needs 1-2 extra, keep raining{note}",
+                rep.packets, rep.needed
+            )
+        }));
+    };
+    if let Some(want) = chosen.1 {
+        let got: [u8; 32] = Sha256::digest(&data).into();
+        if got != want {
+            return Err(err(
+                "rebuilt bytes do not match the packets' object SHA-256 (forged or mixed packets); nothing written",
+            ));
+        }
+    }
+    Ok((data, rep))
 }
 
 pub fn is_fountain_dir(dir: &Path) -> bool {
@@ -98,4 +385,218 @@ pub fn is_fountain_dir(dir: &Path) -> bool {
         .flatten()
         .flatten()
         .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rq"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "sigil-ft-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn mark(n: usize) -> Vec<u8> {
+        let mut x = 0x9e3779b97f4a7c15u64;
+        let data: Vec<u8> = (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        crate::seal(&data, crate::Mode::Glyph, None, "f.bin", false).unwrap()
+    }
+
+    fn rq_files(d: &Path) -> Vec<PathBuf> {
+        let mut v: Vec<_> = fs::read_dir(d)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn esi_of(p: &Path) -> (u8, u32) {
+        let x = parse_packet(&fs::read(p).unwrap()).unwrap();
+        (
+            x.pkt.payload_id().source_block_number(),
+            x.pkt.payload_id().encoding_symbol_id(),
+        )
+    }
+
+    #[test]
+    fn random_esis_span_the_24_bit_space_and_round_trip() {
+        let m = mark(200_000);
+        let d = scratch("rand");
+        let n = deluge_fountain(&m, &d, 4).unwrap();
+        let files = rq_files(&d);
+        assert_eq!(files.len() as u32, n);
+        let esis: Vec<u32> = files.iter().map(|p| esi_of(p).1).collect();
+        assert!(esis.iter().all(|e| *e <= MAX_ESI));
+        // With K small and 2^24 choices, random ESIs land far above the old 0..K+extra.
+        assert!(esis.iter().any(|e| *e > 1_000_000), "{esis:?}");
+        let (back, rep) = gather_fountain_report(&d).unwrap();
+        assert_eq!(back, m);
+        assert!(rep.bad.is_empty() && rep.stray.is_empty());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sequential_keeps_the_old_order() {
+        let m = mark(100_000);
+        let d = scratch("seq");
+        deluge_fountain_opts(&m, &d, 3, true).unwrap();
+        let files = rq_files(&d);
+        let k = rq_files(&d).len() as u32 - 3;
+        let esis: Vec<u32> = files.iter().map(|p| esi_of(p).1).collect();
+        assert_eq!(esis, (0..k + 3).collect::<Vec<_>>());
+        assert_eq!(gather_fountain(&d).unwrap(), m);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn pooled_partial_shares_from_independent_senders_rebuild() {
+        let m = mark(300_000);
+        let (a, b, pool) = (scratch("a"), scratch("b"), scratch("pool"));
+        deluge_fountain(&m, &a, 0).unwrap();
+        deluge_fountain(&m, &b, 0).unwrap();
+        let fa = rq_files(&a);
+        let k = fa.len();
+        assert!(k >= 4, "need a multi-symbol object, got k={k}");
+        // Each sender alone shares only ~60%: not enough.
+        let take = k * 6 / 10;
+        for p in fa.iter().take(take) {
+            fs::copy(p, pool.join(p.file_name().unwrap())).unwrap();
+        }
+        let e = gather_fountain(&pool).unwrap_err().to_string();
+        assert!(
+            e.contains(&format!(
+                "have {take} of {k} needed, need {} more",
+                k - take
+            )),
+            "{e}"
+        );
+        for p in rq_files(&b).iter().take(take) {
+            fs::copy(p, pool.join(p.file_name().unwrap())).unwrap();
+        }
+        // Pooled, the two partial shares overlap in (almost) nothing and rebuild.
+        let (back, rep) = gather_fountain_report(&pool).unwrap();
+        assert_eq!(back, m);
+        assert!(
+            rep.duplicates <= 1,
+            "random ESIs should rarely collide: {}",
+            rep.duplicates
+        );
+        // Sequential senders overlap completely: the same pooling is still short.
+        let (sa, sb, sp) = (scratch("sa"), scratch("sb"), scratch("sp"));
+        deluge_fountain_opts(&m, &sa, 0, true).unwrap();
+        deluge_fountain_opts(&m, &sb, 0, true).unwrap();
+        for (i, p) in rq_files(&sa).iter().take(take).enumerate() {
+            fs::copy(p, sp.join(format!("a-{i}.rq"))).unwrap();
+        }
+        for (i, p) in rq_files(&sb).iter().take(take).enumerate() {
+            fs::copy(p, sp.join(format!("b-{i}.rq"))).unwrap();
+        }
+        let e = gather_fountain(&sp).unwrap_err().to_string();
+        assert!(e.contains("need"), "{e}");
+        for d in [a, b, pool, sa, sb, sp] {
+            let _ = fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    fn overlapping_rain_from_two_runs_into_one_folder_rebuilds() {
+        let m = mark(150_000);
+        let d = scratch("overlap");
+        deluge_fountain(&m, &d, 2).unwrap();
+        let first = rq_files(&d).len();
+        deluge_fountain(&m, &d, 2).unwrap();
+        // Second run adds new packets (random ESIs), it does not just rewrite the first.
+        assert!(rq_files(&d).len() > first);
+        let (back, _) = gather_fountain_report(&d).unwrap();
+        assert_eq!(back, m);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn damaged_truncated_and_stray_packets_are_skipped() {
+        let m = mark(200_000);
+        let other = mark(90_000);
+        let d = scratch("skip");
+        deluge_fountain(&m, &d, 6).unwrap();
+        let files = rq_files(&d);
+        // bit flip in one, truncate another, garbage, an empty .rq, a 17-byte v1 stub
+        let mut b = fs::read(&files[0]).unwrap();
+        b[60] ^= 0x01;
+        fs::write(&files[0], b).unwrap();
+        let b = fs::read(&files[1]).unwrap();
+        fs::write(&files[1], &b[..b.len() / 2]).unwrap();
+        fs::write(d.join("junk.rq"), b"hello").unwrap();
+        fs::write(d.join("empty.rq"), b"").unwrap();
+        let mut stub = FT_MAGIC.to_vec();
+        stub.push(1);
+        stub.extend_from_slice(&[0u8; 12]);
+        fs::write(d.join("stub.rq"), &stub).unwrap();
+        // stray packets of a different file
+        let o = scratch("other");
+        deluge_fountain(&other, &o, 0).unwrap();
+        for (i, p) in rq_files(&o).iter().take(2).enumerate() {
+            fs::copy(p, d.join(format!("zz-stray-{i}.rq"))).unwrap();
+        }
+        let (back, rep) = gather_fountain_report(&d).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(rep.bad.len(), 5, "{:?}", rep.bad);
+        assert_eq!(rep.stray.len(), 2);
+        assert!(rep.skipped_note().contains("5 damaged"));
+        let _ = fs::remove_dir_all(&d);
+        let _ = fs::remove_dir_all(&o);
+    }
+
+    #[test]
+    fn forged_packet_with_valid_checksum_fails_closed() {
+        let m = mark(120_000);
+        let d = scratch("forge");
+        deluge_fountain_opts(&m, &d, 0, true).unwrap();
+        // Rewrite one packet's symbol and recompute its (unkeyed) checksum.
+        let p = &rq_files(&d)[0];
+        let b = fs::read(p).unwrap();
+        let end = b.len() - 32;
+        let mut body = b[..end].to_vec();
+        body[60] ^= 0xFF;
+        let h: [u8; 32] = Sha256::digest(&body).into();
+        body.extend_from_slice(&h);
+        fs::write(p, body).unwrap();
+        let e = gather_fountain(&d).unwrap_err().to_string();
+        assert!(e.contains("do not match"), "{e}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn hostile_headers_do_not_panic() {
+        let d = scratch("hostile");
+        // block number out of range, absurd transfer length, zero symbol size
+        let m = mark(50_000);
+        deluge_fountain_opts(&m, &d, 0, true).unwrap();
+        let good = fs::read(&rq_files(&d)[0]).unwrap();
+        for (at, val) in [(49usize, 0xFFu8), (5, 0xFF), (11, 0), (12, 0)] {
+            let mut b = good[..good.len() - 32].to_vec();
+            b[at] = val;
+            let h: [u8; 32] = Sha256::digest(&b).into();
+            b.extend_from_slice(&h);
+            let _ = parse_packet(&b);
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
 }

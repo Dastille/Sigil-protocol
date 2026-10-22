@@ -90,7 +90,10 @@ pub use folder::{
     scry_dir_checked, scry_dir_keys, sealed_dir_body, unseal_dir, unseal_dir_mend_keys,
     unseal_dir_only, unseal_dir_only_keys, DirEntry,
 };
-pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
+pub use fountain::{
+    deluge_fountain, deluge_fountain_opts, gather_fountain, gather_fountain_report,
+    is_fountain_dir, FountainReport, MAX_ESI,
+};
 pub use header::{
     locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION,
 };
