@@ -180,8 +180,13 @@ Out of scope (what is not claimed)
       - the ciphertext length, i.e. the compressed size plus ~72 bytes plus
         the name. Opt-in padding (size buckets / power of two) is a
         follow-up; until then the folded length can fingerprint a file.
-      - folder packs (SGDR): member names and sizes inside the folder
-        record, and per-member plaintext SHA-256 for large members.
+      - folder packs (SGDR) written before sealed directories, or protected
+        only by per-file wards: member names and sizes inside the folder
+        record, and per-member plaintext SHA-256 for large members. An
+        encrypted pack is now written as SGDR ver=2 ("SGDR" | 2 | count u32
+        | body_len u64 | body), where body is one encrypted mark or work pack
+        whose plaintext is the ver=1 pack; only the file count and the total
+        ciphertext length stay visible (docs/PRIVATE-LABEL.md).
       - vault CHART version lines: plaintext SHA-256 and size of each
         version (sidecar file, not the .sg1).
       - segment-log INDEX lines: plaintext size, SHA-256 and log-add path

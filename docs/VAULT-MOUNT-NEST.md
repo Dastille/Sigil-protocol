@@ -17,7 +17,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mar
 A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CONTAINER.md](CONTAINER.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
 
-`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` marks.
+`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` marks.
 
 ## When to use which
 
@@ -134,7 +134,7 @@ An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A sta
 ./sigil path tree.sg1 --pass house --ward photos/secret.jpg=room --into photos
 ```
 
-Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
+Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. An encrypted folder pack (sealed directory) cannot be path-walked; unseal or mount it with the key. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
 
 What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart history. Path extract and mount export only write cleartext (or nested mark bytes) to the destination you named.
 
@@ -168,7 +168,7 @@ Constellations take `--to` on `constellation add` (stars + card) and `--identity
 
 - Vault track/commit live tip: a regular file, or a directory (folder vault, SGDR versions).
 - Dirty `--from-export` re-seal: single-file and folder vault tips; bare (non-vault) SGDR exports must be tracked or re-inscribed.
-- Folder vault restore mends torn inner stars in an SGDR version — small classic members **and** the 4 MiB chunk stars of large-file WORK/SGWK members — then sets `mended` and rewrites the version seal (atomic temp + rename, only after the restored tree matches the chart true-name). Healed chunk stars must keep their SGFC facet true-name. Same layout and size; plain seals unaffected. Not RS-coded, so refused rather than guessed: the outer SGDR framing and a WORK member's head / per-star length framing. A chunk star beyond its mode's budget fails the restore with the member and star named, and the seal is left untouched.
+- Folder vault restore mends torn inner stars in an SGDR version — small classic members **and** the 4 MiB chunk stars of large-file WORK/SGWK members — then sets `mended` and rewrites the version seal (atomic temp + rename, only after the restored tree matches the chart true-name). Healed chunk stars must keep their SGFC facet true-name. Same layout and size; plain seals unaffected. An encrypted (sealed-directory, ver=2) version mends its encrypted body instead; the inner pack is authenticated by AES-256-GCM. Not RS-coded, so refused rather than guessed: the outer SGDR framing and a WORK member's head / per-star length framing. A chunk star beyond its mode's budget fails the restore with the member and star named, and the seal is left untouched.
 - FUSE: read-only; writable needs `--export-dir`.
 - Nested seals: mount shows one layer; `sigil path` walks deeper.
 - Constellation encrypt-to: give the same `--to` set on every `add` (an encrypt-to card refuses an add without `--to`); stars minted earlier keep their original recipients. Top-level `sigil scry` of a locked card points at `sigil constellation scry --identity/--pass`.

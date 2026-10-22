@@ -60,6 +60,8 @@ pub struct VaultFs {
     by_path: HashMap<String, u64>,
     next_ino: u64,
     cache: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
+    /// Inner v1 pack of a sealed (v2) folder pack, decrypted in memory only.
+    sealed_inner: Option<Arc<Vec<u8>>>,
     uid: u32,
     gid: u32,
 }
@@ -102,6 +104,7 @@ impl VaultFs {
             by_path: HashMap::new(),
             next_ino: 2,
             cache: Mutex::new(HashMap::new()),
+            sealed_inner: None,
             uid: current_uid(),
             gid: current_gid(),
         };
@@ -142,6 +145,7 @@ impl VaultFs {
             by_path: HashMap::new(),
             next_ino: 2,
             cache: Mutex::new(HashMap::new()),
+            sealed_inner: None,
             uid: current_uid(),
             gid: current_gid(),
         };
@@ -385,7 +389,19 @@ impl VaultFs {
     }
 
     fn build_dir_pack(&mut self) -> Result<()> {
-        let entries = list_dir_pack(&self.seal)?;
+        let entries = if crate::folder::is_sealed_dir_pack(&self.seal) {
+            let inner = crate::folder::open_sealed_inner(
+                &self.seal,
+                self.pass.as_deref(),
+                &[],
+                &self.identities,
+            )?;
+            let entries = crate::folder::list_v1_bytes(&inner)?;
+            self.sealed_inner = Some(Arc::new(inner));
+            entries
+        } else {
+            list_dir_pack(&self.seal)?
+        };
         for e in entries {
             self.add_entry(&e)?;
         }
@@ -539,7 +555,10 @@ impl VaultFs {
                 decode_whole(&star, self.pass.as_deref(), &self.identities)?
             }
             FileSrc::Entry { rel } => {
-                let star = read_dir_entry_star(&self.seal, &rel)?;
+                let star = match &self.sealed_inner {
+                    Some(inner) => crate::folder::read_entry_star_v1_bytes(inner, &rel)?,
+                    None => read_dir_entry_star(&self.seal, &rel)?,
+                };
                 let file_pass = pass_for(&rel, self.pass.as_deref(), &self.wards);
                 decode_star(&star, file_pass.as_deref(), &self.identities)?
             }

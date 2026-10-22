@@ -2284,24 +2284,21 @@ mod tests {
         track_ex(&live, Mode::Reflection, None, &[id.public()], &[]).unwrap();
         let v1 = version_seal_path(&live, 1).unwrap();
         let clean = fs::read(&v1).unwrap();
-        let members = sgdr_members(&clean);
-        let (_, b0, b1) = members
-            .iter()
-            .find(|(n, _, _)| n == "big.bin")
-            .unwrap()
-            .clone();
-        let (_, s0, s1) = members
-            .iter()
-            .find(|(n, _, _)| n == "notes/small.txt")
-            .unwrap()
-            .clone();
+        // Encrypted folder versions are sealed directories (SGDR v2): one encrypted
+        // body (here a WORK pack, the folder is > 4 MiB) carries the repair data.
+        assert_eq!(
+            &clean[0..5],
+            b"SGDR\x02",
+            "encrypt-to folder pack hides names"
+        );
+        assert!(!clean.windows(9).any(|w| w == b"small.txt"), "name leaked");
+        let (b0, b1) = (17usize, clean.len());
         let stars = work_star_spans(&clean, b0, b1);
-        assert!(stars.len() >= 2, "expected a multi-chunk WORK member");
+        assert!(stars.len() >= 2, "expected a multi-chunk WORK body");
 
         let mut torn = clean.clone();
         smash(&mut torn, stars[0].0, stars[0].1, 0); // chunk 0: one shard
         smash(&mut torn, stars[1].0, stars[1].1, 1); // chunk 1: another shard
-        smash(&mut torn, s0, s1, 0); // classic member too
         fs::write(&v1, &torn).unwrap();
 
         fs::remove_dir_all(&live).unwrap();
@@ -2330,7 +2327,6 @@ mod tests {
         for (a, b) in work_star_spans(&healed, b0, b1) {
             assert!(!crate::work::star_torn(&healed[a..b]));
         }
-        assert!(!crate::work::star_torn(&healed[s0..s1]));
         assert!(!PathBuf::from(format!(
             "{}.mend-part",
             version_seal_path(&live, 1).unwrap().display()

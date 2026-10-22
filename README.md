@@ -117,9 +117,7 @@ ok  v3  live=16/16 need=12 merkle=closed keystone=intact label=private (name, si
 ```
 
 Repair and checking still work without the key. Ciphertext length is still
-visible, and so are member names in an encrypted folder pack (confirmed: the
-name `b.txt` appears in the clear in an encrypted folder pack). Details:
-[docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md).
+visible. Details: [docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md).
 
 ### Folder packs
 
@@ -136,6 +134,30 @@ de-scribed 2 files → album-out
 $ sigil unseal --only sub/b.txt -o just-b album.sg1
 de-scribed 1 files → just-b
 ```
+
+An **encrypted** folder pack (`--pass` or `--to`) hides its file names, folder
+layout and per-file sizes. There is no flag for this; it is always on. Without the
+key, `scry` shows only how many files there are and whether the pack is healthy:
+
+```
+$ sigil seal --pass 'correct horse' -o secret-album.sg1 album
+folder 2 files, 4 bytes → secret-album.sg1
+$ sigil scry secret-album.sg1
+folder  2 files (names hidden)
+body  ok  v3  live=16/16 need=12 merkle=closed keystone=intact label=private (name, size and fingerprint inside the lock)
+$ sigil scry --pass 'correct horse' secret-album.sg1
+folder  files=2 dirs=1
+dir   sub/
+file  a.txt
+file  sub/b.txt
+$ sigil unseal --pass 'correct horse' --only sub/b.txt -o just-b secret-album.sg1
+de-scribed 1 files → just-b
+```
+
+`mend`, `scry`, `verify` and `doctor` still work without the key. Encrypted
+folder packs written before this change still open (and still show their names);
+seal the folder again to hide them. Details: "Folder packs" in
+[docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md).
 
 ### Segment log (append-only backups)
 
@@ -240,7 +262,15 @@ commits or PRs. Run the checks above locally.
 - Damage near the start of a file costs more: the header region is used to find
   everything else, so recovery there leans on the spare header copies (Keystone)
   and loses more margin than the same damage in the middle.
-- Encrypted files still reveal their ciphertext length; encrypted folder packs reveal member names.
+- Encrypted files still reveal their ciphertext length. Encrypted folder packs
+  reveal how many files they hold and their total encrypted size (not names or
+  per-file sizes).
+- A folder pack protected only by per-file `--ward` passphrases (no `--pass` /
+  `--to`) still shows member names; encrypted folder packs made before October 2026
+  do too until they are sealed again.
+- `sigil path` cannot walk into an encrypted folder pack; use `unseal --only` or
+  `mount --pass`.
+- With the key, `scry` of an encrypted folder pack lists names but not per-file sizes.
 
 ## History
 

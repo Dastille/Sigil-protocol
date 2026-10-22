@@ -298,6 +298,23 @@ fn health_file(path: &Path) -> Health {
     if crate::work::is_work_pack(path) {
         return health_work_pack(path);
     }
+    if crate::is_sealed_dir_pack(path) {
+        // Sealed directory: members are inside the encrypted body; check the body.
+        return match crate::sealed_dir_body(path) {
+            Err(e) => Health::Damaged(format!("sealed folder pack unreadable: {e}")),
+            Ok(None) => Health::Damaged("sealed folder pack unreadable".into()),
+            Ok(Some((_, body))) if body.starts_with(&crate::work::WORK_MAGIC) => {
+                let tmp = temp_path("sealed-body");
+                let h = match fs::write(&tmp, &body) {
+                    Ok(()) => health_work_pack(&tmp),
+                    Err(e) => Health::Damaged(format!("scratch write failed: {e}")),
+                };
+                let _ = fs::remove_file(&tmp);
+                h
+            }
+            Ok(Some((_, body))) => health_bytes(&body),
+        };
+    }
     if crate::is_dir_pack(path) {
         let entries = match crate::list_dir_pack(path) {
             Ok(e) => e,
