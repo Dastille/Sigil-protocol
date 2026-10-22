@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/brand/mark.svg" alt="Sigil logo" width="96" height="96"></p>
+
 # Sigil
 
 Sigil wraps a file or folder into a `.sg1` file that carries its own repair data.
