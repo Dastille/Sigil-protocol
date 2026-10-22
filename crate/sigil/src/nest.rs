@@ -1,9 +1,7 @@
 //! Nest + breadcrumb: walk into .sg1 seals embedded in SGDR packs (or wrapped marks)
 //! without permanently unpacking the durable store.
 
-use crate::folder::{
-    list_dir_pack, looks_like_nest_name, read_dir_entry_star, DirEntry, DIR_MAGIC,
-};
+use crate::folder::{looks_like_nest_name, DirEntry, DIR_MAGIC};
 use crate::keys::Identity;
 use crate::work::WORK_MAGIC;
 use crate::{hex32, locate_header, unseal_ex_keys, Result};
@@ -152,15 +150,9 @@ fn check_depth(depth: usize, max_depth: usize) -> Result<()> {
 }
 
 fn view_dir_bytes(data: &[u8], trail: Vec<String>, seen: Vec<[u8; 32]>) -> Result<PathView> {
-    let tmp = std::env::temp_dir().join(format!(
-        "sigil-nest-list-{}-{}",
-        std::process::id(),
-        trail.len()
-    ));
-    fs::write(&tmp, data).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let entries = list_dir_pack(&tmp);
-    let _ = fs::remove_file(&tmp);
-    let entries = entries?;
+    // Parsed in memory: no shared temp file (two walks at the same depth used to
+    // write and delete the same `sigil-nest-list-<pid>-<depth>` path).
+    let entries = crate::folder::list_v1_bytes(data)?;
     Ok(PathView {
         trail,
         kind: NestKind::DirPack,
@@ -192,15 +184,8 @@ fn view_mark_bytes(
         NestKind::Work => {
             let name = if data.len() >= 4 {
                 // work head name is after magic+ver+chunk+orig — reuse payload via temp
-                let tmp = std::env::temp_dir().join(format!(
-                    "sigil-nest-wk-{}-{}",
-                    std::process::id(),
-                    trail.len()
-                ));
-                fs::write(&tmp, data).map_err(|e| crate::Error::Msg(e.to_string()))?;
-                let n = crate::work::payload_name(&tmp).ok();
-                let _ = fs::remove_file(&tmp);
-                n
+                let tmp = crate::staging::TempFile::with_bytes("nest-wk", data)?;
+                crate::work::payload_name(tmp.path()).ok()
             } else {
                 None
             };
@@ -332,12 +317,10 @@ fn payload_label(data: &[u8]) -> Option<String> {
     match kind_of_bytes(data) {
         NestKind::DirPack => Some("folder.sg1".into()),
         NestKind::Work | NestKind::Mark => {
-            let tmp = std::env::temp_dir().join(format!("sigil-nest-lbl-{}", std::process::id()));
-            let _ = fs::write(&tmp, data);
-            let n = crate::work::payload_name(&tmp)
+            let tmp = crate::staging::TempFile::with_bytes("nest-lbl", data).ok()?;
+            let n = crate::work::payload_name(tmp.path())
                 .ok()
                 .filter(|s| !s.is_empty());
-            let _ = fs::remove_file(&tmp);
             n.or_else(|| {
                 locate_header(data)
                     .ok()
@@ -375,30 +358,19 @@ fn descend_one(
                     "folder pack needs a path segment (e.g. --into inner.sg1)".into(),
                 ));
             }
-            // Write cur to temp only to reuse streaming reader by path.
-            let tmp = std::env::temp_dir().join(format!(
-                "sigil-nest-dir-{}-{}",
-                std::process::id(),
-                trail.len()
-            ));
-            fs::write(&tmp, cur).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let star = read_dir_entry_star(&tmp, step);
-            let _ = fs::remove_file(&tmp);
-            let star = star?;
+            let star = crate::folder::read_entry_star_v1_bytes(cur, step)?;
             let file_pass = pass_for(step, pass, wards);
             // Star is itself a seal of the file bytes. Unseal → payload (may be nested .sg1).
             if star.starts_with(&WORK_MAGIC) {
-                let tmp2 = std::env::temp_dir().join(format!(
-                    "sigil-nest-wk2-{}-{}",
-                    std::process::id(),
-                    trail.len()
-                ));
-                fs::write(&tmp2, &star).map_err(|e| crate::Error::Msg(e.to_string()))?;
-                let out = tmp2.with_extension("bin");
-                crate::work::unseal_path_keys(&tmp2, &out, file_pass.as_deref(), &[], identities)?;
-                let plain = fs::read(&out).map_err(|e| crate::Error::Msg(e.to_string()))?;
-                let _ = fs::remove_file(&tmp2);
-                let _ = fs::remove_file(&out);
+                // Unsealed in memory: plaintext never touches the temp folder.
+                let mut plain = Vec::new();
+                crate::work::unseal_bytes_into(
+                    &star,
+                    &mut plain,
+                    file_pass.as_deref(),
+                    &[],
+                    identities,
+                )?;
                 Ok(plain)
             } else {
                 unseal_ex_keys(&star, file_pass.as_deref(), &[], identities)
@@ -519,10 +491,13 @@ mod tests {
     use super::*;
     use crate::{seal, Mode};
     fn tmp(name: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let d = std::env::temp_dir().join(format!(
-            "sigil-nest-{}-{}-{}",
+            "sigil-nest-{}-{}-{}-{}",
             name,
             std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -728,6 +703,40 @@ mod tests {
         assert!(bc.contains('→'), "{bc}");
         assert!(bc.contains("outer.sg1"), "{bc}");
         assert!(bc.contains("inner.sg1"), "{bc}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Regression for the flaky `nest_folder_with_inner_sg1` ("No such file or
+    /// directory"): folder walks used one temp file per (pid, depth), so two walks
+    /// at the same depth in one process deleted each other's file. Now they share nothing.
+    #[test]
+    fn concurrent_folder_walks_share_no_temp_files() {
+        let dir = tmp("concurrent");
+        let tree = dir.join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("readme.txt"), b"top").unwrap();
+        let inner = seal(b"deep", Mode::Glyph, None, "n.txt", false).unwrap();
+        fs::write(tree.join("inner.sg1"), &inner).unwrap();
+        let outer = dir.join("outer.sg1");
+        crate::folder::inscribe_dir(&tree, &outer, Mode::Glyph, None, "", &[], 1 << 20, &[])
+            .unwrap();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let outer = outer.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..25 {
+                        let v = path_list(&outer, None, MAX_NEST_DEPTH).unwrap();
+                        assert_eq!(v.entries.len(), 2);
+                        let into = vec!["inner.sg1".to_string()];
+                        let w = path_walk(&outer, &into, None, &[], MAX_NEST_DEPTH).unwrap();
+                        assert_eq!(w.kind, NestKind::Mark);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

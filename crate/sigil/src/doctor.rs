@@ -271,14 +271,13 @@ pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
     }
 }
 
-fn temp_path(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("sigil-doctor-{}-{tag}", std::process::id()))
-}
-
 fn health_work_pack(path: &Path) -> Health {
-    let tmp = temp_path("pack");
-    let r = crate::work::mend_pack_path(path, &tmp, false);
-    let _ = fs::remove_file(&tmp);
+    let tmp = match crate::staging::TempFile::reserve("doctor-pack") {
+        Ok(t) => t,
+        Err(e) => return Health::Damaged(format!("scratch file: {e}")),
+    };
+    let r = crate::work::mend_pack_path(path, tmp.path(), false);
+    drop(tmp);
     match r {
         Ok(rep) if rep.mended.is_empty() && rep.head == crate::HeadSource::Intact => Health::Ok,
         Ok(rep) if rep.head != crate::HeadSource::Intact => Health::Mendable(format!(
@@ -304,13 +303,10 @@ fn health_file(path: &Path) -> Health {
             Err(e) => Health::Damaged(format!("sealed folder pack unreadable: {e}")),
             Ok(None) => Health::Damaged("sealed folder pack unreadable".into()),
             Ok(Some((_, body))) if body.starts_with(&crate::work::WORK_MAGIC) => {
-                let tmp = temp_path("sealed-body");
-                let h = match fs::write(&tmp, &body) {
-                    Ok(()) => health_work_pack(&tmp),
+                match crate::staging::TempFile::with_bytes("doctor-body", &body) {
+                    Ok(tmp) => health_work_pack(tmp.path()),
                     Err(e) => Health::Damaged(format!("scratch write failed: {e}")),
-                };
-                let _ = fs::remove_file(&tmp);
-                h
+                }
             }
             Ok(Some((_, body))) => health_bytes(&body),
         };
@@ -327,15 +323,11 @@ fn health_file(path: &Path) -> Health {
                 Err(err) => return Health::Damaged(format!("{}: {err}", e.path)),
             };
             let h = if star.starts_with(&crate::work::WORK_MAGIC) {
-                let tmp = temp_path("member");
-                let ok = fs::write(&tmp, &star).is_ok();
-                let h = if ok {
-                    health_work_pack(&tmp)
-                } else {
-                    Health::Ok
-                };
-                let _ = fs::remove_file(&tmp);
-                h
+                // A member that could not be checked is never reported healthy.
+                match crate::staging::TempFile::with_bytes("doctor-member", &star) {
+                    Ok(tmp) => health_work_pack(tmp.path()),
+                    Err(e) => Health::Damaged(format!("could not check (scratch file: {e})")),
+                }
             } else {
                 health_bytes(&star)
             };

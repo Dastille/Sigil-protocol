@@ -10,7 +10,7 @@
 use crate::folder::{is_dir_pack, list_dir_pack, read_dir_entry_star, DirEntry};
 use crate::keys::Identity;
 use crate::vault::{self, VAULT_SUFFIX};
-use crate::work::{is_work_pack, payload_name, unseal_path_keys};
+use crate::work::{is_work_pack, payload_name};
 use crate::{locate_header, unseal_ex_keys, Result};
 use std::collections::HashMap;
 use std::fs;
@@ -628,17 +628,9 @@ fn resolve_seal(input: &Path, prefer_vault: bool) -> Result<PathBuf> {
 
 fn decode_whole(seal: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Vec<u8>> {
     if is_work_pack(seal) {
-        let tmp = std::env::temp_dir().join(format!(
-            "sigil-mount-wk-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        unseal_path_keys(seal, &tmp, pass, &[], identities)?;
-        let data = fs::read(&tmp).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let _ = fs::remove_file(&tmp);
+        // Unsealed in memory: plaintext never touches the temp folder.
+        let mut data = Vec::new();
+        crate::work::unseal_path_into(seal, &mut data, pass, &[], identities)?;
         Ok(data)
     } else {
         let bytes = fs::read(seal).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -648,20 +640,8 @@ fn decode_whole(seal: &Path, pass: Option<&str>, identities: &[Identity]) -> Res
 
 fn decode_star(star: &[u8], pass: Option<&str>, identities: &[Identity]) -> Result<Vec<u8>> {
     if star.starts_with(&crate::work::WORK_MAGIC) {
-        let tmp = std::env::temp_dir().join(format!(
-            "sigil-mount-star-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        fs::write(&tmp, star).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let out = tmp.with_extension("bin");
-        unseal_path_keys(&tmp, &out, pass, &[], identities)?;
-        let data = fs::read(&out).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let _ = fs::remove_file(&tmp);
-        let _ = fs::remove_file(&out);
+        let mut data = Vec::new();
+        crate::work::unseal_bytes_into(star, &mut data, pass, &[], identities)?;
         Ok(data)
     } else {
         unseal_ex_keys(star, pass, &[], identities)
