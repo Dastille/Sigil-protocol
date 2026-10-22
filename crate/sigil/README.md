@@ -250,7 +250,7 @@ Track a live file or folder; each commit adds an immutable `vN.sg1` under `<live
 ./sigil constellation remove Sky docs/a.txt    # take a name off the list, free its star
 ```
 
-Append-only segment logs (`./sigil log init|append|ls|read|verify|mend|tombstone|compact|shred`; sealed immutable segments, hash-chained + Merkle index, optional Ed25519 signing, opt-in per-segment keys for crypto-shredding): [docs/SEGMENT-LOG.md](../../docs/SEGMENT-LOG.md).
+Append-only segment logs (`./sigil log init|append|ls|read|verify|mend|tombstone|compact|shred`; sealed immutable segments, hash-chained + Merkle index, optional Ed25519 signing, opt-in per-segment keys for crypto-shredding, opt-in private INDEX that seals sizes, hashes and file names): [docs/SEGMENT-LOG.md](../../docs/SEGMENT-LOG.md).
 
 Details: [docs/VAULT-RETENTION.md](../../docs/VAULT-RETENTION.md). Mount / nest / dirty export glue: [docs/VAULT-MOUNT-NEST.md](../../docs/VAULT-MOUNT-NEST.md).
 

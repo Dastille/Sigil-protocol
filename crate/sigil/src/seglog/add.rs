@@ -68,6 +68,8 @@ pub struct AddOpts<'a> {
     pub checkpoint_files: usize,
     /// Commit a checkpoint after this many plain bytes (0 = [`ADD_CHECKPOINT_BYTES`]).
     pub checkpoint_bytes: u64,
+    /// Private INDEX: extra identities that may open the index key (besides `pass` / `identity`).
+    pub unlock: &'a [Identity],
 }
 
 impl Default for AddOpts<'_> {
@@ -82,6 +84,7 @@ impl Default for AddOpts<'_> {
             no_ignore_file: false,
             checkpoint_files: 0,
             checkpoint_bytes: 0,
+            unlock: &[],
         }
     }
 }
@@ -444,7 +447,11 @@ struct Planned {
 
 /// Seal the new and changed files of folder `src` into the log at `path` (see the module docs).
 pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
-    let log = Log::open(path)?;
+    let mut log = Log::open(path)?;
+    // a private INDEX must be opened to know what is already sealed (a dry run too)
+    if log.privindex {
+        unlock_for_write(&mut log, opts.pass, opts.identity, opts.unlock)?;
+    }
     if !src.is_dir() {
         return Err(err(format!(
             "{}: not a folder (use `sigil log append` for one file)",
@@ -631,6 +638,30 @@ fn seal_plan(
             let seq = next;
             let (sealed, key) =
                 seal_segment(log, seq, &data, opts.mode, opts.pass, opts.recipients)?;
+            // the INDEX line first: a private log refuses an unencrypted star before it is written
+            let body = if log.privindex {
+                private::sealed_body(
+                    log,
+                    seq,
+                    now(),
+                    "",
+                    &sealed,
+                    &Hidden {
+                        size: data.len() as u64,
+                        sha: sha256(&data),
+                        path: Some(p.found.rel.clone()),
+                    },
+                )?
+            } else {
+                format!(
+                    "seq={seq} t={} size={} sha={} path={}{}",
+                    now(),
+                    data.len(),
+                    hex32(&sha256(&data)),
+                    enc_bytes(&p.found.rel),
+                    star_field(&sealed)
+                )
+            };
             let seg = log.segment_path(seq);
             write_atomic(&seg, &sealed)?;
             written.push(seg);
@@ -638,14 +669,7 @@ fn seal_plan(
                 keyed.push(seq);
                 keyring::put(log, seq, m, opts.pass, opts.recipients)?;
             }
-            bodies.push(format!(
-                "seq={seq} t={} size={} sha={} path={}{}",
-                now(),
-                data.len(),
-                hex32(&sha256(&data)),
-                enc_bytes(&p.found.rel),
-                star_field(&sealed)
-            ));
+            bodies.push(body);
             pending_bytes += data.len() as u64;
             pending.push(AddItem {
                 rel: p.found.rel.clone(),

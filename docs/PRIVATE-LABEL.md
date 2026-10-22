@@ -39,4 +39,6 @@ nonzero outer entropy slot, and any label edit.
 ## Still leaks
 
 Ciphertext length (padding is a follow-up, opt-in only), folder-pack (SGDR) member
-names, vault CHART digests/sizes, segment-log INDEX size/SHA-256. See the threat model.
+names, vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
+without `--private-index` (a private INDEX seals them: docs/SEGMENT-LOG.md "Private INDEX").
+See the threat model.

@@ -23,7 +23,7 @@ pub struct ProofHead {
     pub sig: [u8; 64],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Proof {
     pub log_id: String,
     /// Informational (not covered by anything).
@@ -40,6 +40,9 @@ pub struct Proof {
     /// Signer handover entries before `size` (full INDEX lines, ascending), when signed: they
     /// connect the HEAD's signer to the earlier signers. Each carries the outgoing key's signature.
     pub handovers: Vec<String>,
+    /// Private log: the key of this entry's box (`entry-key=`), so `check-proof --file` can compare
+    /// the sealed size and SHA-256. It opens this one entry only.
+    pub entry_key: Option<EntryKey>,
 }
 
 /// `(seq, from, to, sig)` of a handover entry.
@@ -91,6 +94,9 @@ impl Proof {
             for (i, l) in self.handovers.iter().enumerate() {
                 s.push_str(&format!("handover-{}={l}\n", i + 1));
             }
+        }
+        if let Some(k) = &self.entry_key {
+            s.push_str(&format!("entry-key={}\n", k.to_hex()));
         }
         s
     }
@@ -173,6 +179,12 @@ impl Proof {
             root: h32("root")?,
             head,
             handovers,
+            entry_key: match kv.get("entry-key") {
+                None => None,
+                Some(v) => {
+                    Some(EntryKey::from_hex(v.trim()).ok_or_else(|| err("proof: bad entry-key="))?)
+                }
+            },
         })
     }
 }
@@ -181,7 +193,23 @@ impl Proof {
 /// (signed when the log is signed); `at = Some(m)` proves it against the root over the first `m`
 /// entries instead (an older anchor you pinned), signed only if `m` is the HEAD's seq.
 pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
-    let log = Log::open(path)?;
+    prove_with(path, seq, at, None, &[])
+}
+
+/// `prove`; for a private log, `pass` / `ids` open its index key so the receipt carries this
+/// entry's key (`entry-key=`) and `check-proof --file` works. Without them the receipt still proves
+/// inclusion, but not which bytes the entry holds.
+pub fn prove_with(
+    path: &Path,
+    seq: u64,
+    at: Option<u64>,
+    pass: Option<&str>,
+    ids: &[Identity],
+) -> Result<Proof> {
+    let mut log = Log::open(path)?;
+    if pass.is_some() || !ids.is_empty() {
+        log.unlock_index(pass, ids)?;
+    }
     let idx = read_index(&log)?;
     if let Some((line, code, msg)) = &idx.error {
         return Err(err(format!(
@@ -230,6 +258,10 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
         })
     });
     let is_signed = signed.is_some();
+    let entry_key = match (&log.ixkey, e.is_sealed()) {
+        (Some(k), true) => Some(private::entry_key(k, &log.id, e.seq)?),
+        _ => None,
+    };
     Ok(Proof {
         log_id: log.id.clone(),
         name: log.name.clone(),
@@ -256,6 +288,7 @@ pub fn prove(path: &Path, seq: u64, at: Option<u64>) -> Result<Proof> {
         } else {
             Vec::new()
         },
+        entry_key,
     })
 }
 
@@ -288,6 +321,10 @@ impl ProofCheck {
     pub fn render(&self) -> String {
         let e = &self.entry;
         let what = match &e.op {
+            Op::Seg | Op::Compact { .. } if e.is_locked() => {
+                "sealed entry (private INDEX; size and SHA-256 not disclosed by this proof)"
+                    .to_string()
+            }
             Op::Seg => format!("segment, {} byte(s), sha {}", e.size, hex32(&e.sha)),
             Op::Compact { of } => format!(
                 "compaction of {}, {} byte(s), sha {}",
@@ -362,14 +399,24 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         signer: None,
         format: LOG_FORMAT,
         segkeys: false,
+        privindex: false,
+        ixkey: None,
     };
     if seq == 1 && p.prev != probe.genesis() {
         return Err(bad(
             "entry 1 must follow the log's genesis hash (prev= is not it)".into(),
         ));
     }
-    let entry =
+    let mut entry =
         parse_line(&p.line, seq, &p.prev).map_err(|(code, m)| bad(format!("{code}: {m}")))?;
+    match (&p.entry_key, entry.is_sealed()) {
+        (Some(k), true) => private::open_with_entry_key(k, &p.log_id, &mut entry)
+            .map_err(|m| bad(format!("entry-key= does not open the entry: {m}")))?,
+        (Some(_), false) => {
+            return Err(bad("entry-key= given, but the entry is not sealed".into()))
+        }
+        _ => {}
+    }
     if let Op::Signer { from, to, sig } = &entry.op {
         if !handover_sig_ok(&p.log_id, seq, from, to, sig) {
             return Err(bad(
@@ -496,6 +543,11 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
             if matches!(entry.op, Op::Signer { .. }) {
                 return Err(bad(
                     "--file given, but this entry is a signer handover (it holds no bytes)".into(),
+                ));
+            }
+            if entry.is_locked() {
+                return Err(bad(
+                    "--file given, but this entry's size and SHA-256 are sealed (private INDEX) and the proof has no entry-key=; ask for a receipt cut with the log's key (`sigil log prove --pass/--identity`)".into(),
                 ));
             }
             if sha != entry.sha || len != entry.size {

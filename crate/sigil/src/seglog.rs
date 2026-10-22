@@ -23,6 +23,11 @@
 //! with its own key (`rotate.rs`). Verification follows the chain of handovers from the key pinned at
 //! `init`; a log that is never rotated stays at its format, byte for byte.
 //!
+//! Private INDEX (`log=5`, opt-in at `init --private-index`): segment lines carry their plain size,
+//! SHA-256 and `log add` path only inside an AES-256-GCM box under a key wrapped like the key ring
+//! (`private.rs`). Keyless operations see a key-less ("label only") line bound to the segment by the
+//! star's keyed fingerprint.
+//!
 //! Each `append` seals one batch as a normal `.sg1` star (so ECC, `sigil mend`, passphrase
 //! and encrypt-to all work unchanged), then appends a chained INDEX line, then rewrites HEAD.
 //! The `.sg1` byte layout is untouched; a log is only folder structure plus two small text
@@ -44,8 +49,9 @@ pub const KIND: &str = "log";
 /// Highest log format this sigil understands. `log=1` = segments only (slice 1);
 /// `log=2` = the INDEX may also hold tombstone / compaction entries (slice 2);
 /// `log=3` = per-segment keys (`segkeys=1`, a `keys/` key ring, shred entries) (slice 3);
-/// `log=4` = the INDEX may also hold signer handover entries (`op=signer`, `log rotate-signer`).
-pub const LOG_FORMAT: u32 = 4;
+/// `log=4` = the INDEX may also hold signer handover entries (`op=signer`, `log rotate-signer`);
+/// `log=5` = private INDEX (`privindex=1`, `IXKEY.sg1`, sealed `box=` entries; `init --private-index`).
+pub const LOG_FORMAT: u32 = 5;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
@@ -90,6 +96,10 @@ pub struct Log {
     pub format: u32,
     /// `segkeys=1`: every segment is sealed under its own key, kept in the key ring (slice 3).
     pub segkeys: bool,
+    /// `privindex=1`: sizes, SHA-256s and paths are sealed in the INDEX (`log=5`, `private.rs`).
+    pub privindex: bool,
+    /// The unlocked index key of a private log (see `Log::unlock_index`); never written anywhere.
+    ixkey: Option<private::IndexKey>,
 }
 
 /// True when `path` (or `path.sigil`) is a log container.
@@ -159,6 +169,14 @@ impl Log {
         if segkeys && fmt < 3 {
             return Err(err("segment log manifest has segkeys=1 but log<3"));
         }
+        let privindex = match m.extra.get("privindex").map(|v| v.trim()) {
+            None => false,
+            Some("1") => true,
+            Some(other) => return Err(err(format!("bad privindex={other} in manifest"))),
+        };
+        if privindex && fmt < 5 {
+            return Err(err("segment log manifest has privindex=1 but log<5"));
+        }
         Ok(Log {
             dir: dir.to_path_buf(),
             name: m.name,
@@ -166,7 +184,49 @@ impl Log {
             signer,
             format: fmt,
             segkeys,
+            privindex,
+            ixkey: None,
         })
+    }
+
+    /// Unlock the index key of a private log with a passphrase and/or identities, so INDEX reads
+    /// open the sealed sizes, SHA-256s and paths. No-op for an ordinary log or when already unlocked.
+    pub fn unlock_index(&mut self, pass: Option<&str>, ids: &[Identity]) -> Result<()> {
+        if !self.privindex || self.ixkey.is_some() {
+            return Ok(());
+        }
+        self.ixkey = Some(private::unlock_key(&self.dir, pass, ids)?);
+        Ok(())
+    }
+
+    /// Try each key source in turn; true when the INDEX is readable afterwards (always for an
+    /// ordinary log).
+    pub fn try_unlock_index(&mut self, pass: Option<&str>, id_sets: &[&[Identity]]) -> bool {
+        if !self.privindex || self.ixkey.is_some() {
+            return true;
+        }
+        let pass = pass.filter(|p| !p.is_empty());
+        if pass.is_some() && self.unlock_index(pass, &[]).is_ok() {
+            return true;
+        }
+        id_sets
+            .iter()
+            .filter(|ids| !ids.is_empty())
+            .any(|ids| self.unlock_index(None, ids).is_ok())
+    }
+
+    /// True when the INDEX's sealed fields can be read (an ordinary log, or an unlocked private one).
+    pub fn index_readable(&self) -> bool {
+        !self.privindex || self.ixkey.is_some()
+    }
+
+    /// Err unless `index_readable`.
+    pub fn require_index_key(&self) -> Result<()> {
+        if self.index_readable() {
+            Ok(())
+        } else {
+            Err(err(private::LOCKED_MSG))
+        }
     }
 
     pub fn segment_path(&self, seq: u64) -> PathBuf {
@@ -248,6 +308,10 @@ pub struct Entry {
     pub op: Op,
     /// The line up to (not including) ` chain=`; covered by the chain hash. Unknown keys live here.
     body: String,
+    /// Private log: the `log add` path from the opened box (`path()` returns it).
+    hidden_path: Option<Vec<u8>>,
+    /// Private log: the box was opened, so `size` / `sha` are the real values.
+    opened: bool,
 }
 
 impl Entry {
@@ -274,6 +338,7 @@ impl Entry {
                         | "to"
                         | "sig"
                         | "star"
+                        | "box"
                 )
             })
             .collect()
@@ -291,14 +356,32 @@ impl Entry {
         self.star.is_some_and(|d| d == self.sha)
     }
 
-    /// Opened bytes match this entry.
+    /// Opened bytes match this entry. A private entry whose box is still sealed never matches
+    /// (fail closed: its real size and SHA-256 are unknown).
     pub fn plain_matches(&self, plain: &[u8]) -> bool {
+        if self.is_locked() {
+            return false;
+        }
         self.label_only() || (sha256(plain) == self.sha && plain.len() as u64 == self.size)
     }
 
+    /// A private-INDEX entry (`box=`): its size, SHA-256 and path are sealed.
+    pub fn is_sealed(&self) -> bool {
+        private::split_body(&self.body).is_some()
+    }
+
+    /// A sealed entry whose box was not opened (no index key): `size` / `sha` are placeholders.
+    pub fn is_locked(&self) -> bool {
+        self.is_sealed() && !self.opened
+    }
+
     /// The source-relative file path of an entry written by `sigil log add` (additive `path=`
-    /// key, `%XX`-escaped bytes, `/`-separated). `None` for every other entry, or a malformed value.
+    /// key, `%XX`-escaped bytes, `/`-separated; in a private log from the opened box). `None` for
+    /// every other entry, a malformed value, or a box that was not opened.
     pub fn path(&self) -> Option<Vec<u8>> {
+        if self.is_sealed() {
+            return self.hidden_path.clone();
+        }
         self.body
             .split_whitespace()
             .find_map(|t| t.strip_prefix("path="))
@@ -876,6 +959,23 @@ fn parse_line(
         ));
     }
     let star = kv.get("star").and_then(|v| parse_hex32(v));
+    if kv.contains_key("box") {
+        // a private entry has exactly the key-less shape, plus the box as its last field
+        if !matches!(op, Op::Seg | Op::Compact { .. }) {
+            return Err(bad("box= (only segment and compaction entries are sealed)"));
+        }
+        if star.is_none() || size != 0 || Some(sha) != star {
+            return Err(bad("size=0 sha=<star> star= of a private entry"));
+        }
+        if kv.contains_key("path") || kv.contains_key("src") {
+            return Err(bad(
+                "private entry (it must not show path= / src= in the clear)",
+            ));
+        }
+        if private::split_body(body).is_none() {
+            return Err(bad("box= (it must be the last field before chain=)"));
+        }
+    }
     Ok(Entry {
         seq,
         time,
@@ -885,6 +985,8 @@ fn parse_line(
         chain,
         op,
         body: body.to_string(),
+        hidden_path: None,
+        opened: false,
     })
 }
 
@@ -1203,6 +1305,7 @@ fn read_index(log: &Log) -> Result<ParsedIndex> {
             }
         }
     }
+    private::apply(log, &mut idx);
     Ok(idx)
 }
 
@@ -1263,6 +1366,7 @@ mod adopt;
 mod compact;
 mod exclude;
 mod keyring;
+mod private;
 mod proof;
 mod rotate;
 mod shred;
@@ -1272,6 +1376,7 @@ pub use compact::*;
 pub use exclude::{parse_ignore_file, ExcludePattern, Excluder, IGNORE_FILE};
 use keyring::RingCache;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
+pub use private::{EntryKey, Hidden, IXKEY_FILE};
 pub use proof::*;
 pub use rotate::*;
 pub use shred::*;
@@ -1296,6 +1401,46 @@ pub fn init(path: &Path, sign: Option<&Identity>) -> Result<Log> {
 
 /// Like `init`; `segment_keys` opts into per-segment keys (slice 3, makes the log `log=3`).
 pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Result<Log> {
+    init_opts(
+        path,
+        &InitOpts {
+            sign,
+            segment_keys,
+            ..Default::default()
+        },
+    )
+}
+
+/// Options of `init_opts`.
+#[derive(Default)]
+pub struct InitOpts<'a> {
+    /// Pin this identity's Ed25519 key as the signer.
+    pub sign: Option<&'a Identity>,
+    /// Per-segment keys (`log=3`).
+    pub segment_keys: bool,
+    /// Private INDEX (`log=5`): sizes, SHA-256s and paths sealed under an index key wrapped to
+    /// `index_pass` and/or `index_to` (at least one is required).
+    pub private_index: bool,
+    /// Passphrase the index key is wrapped to.
+    pub index_pass: Option<&'a str>,
+    /// Recipients the index key is wrapped to.
+    pub index_to: &'a [PublicIdentity],
+}
+
+/// Create an empty log with the given options (see `InitOpts`).
+pub fn init_opts(path: &Path, o: &InitOpts<'_>) -> Result<Log> {
+    let (sign, segment_keys) = (o.sign, o.segment_keys);
+    if !o.private_index && (o.index_pass.is_some() || !o.index_to.is_empty()) {
+        return Err(err(
+            "--pass / --to at init only wrap the key of a private INDEX: add --private-index",
+        ));
+    }
+    if o.private_index && o.index_pass.filter(|p| !p.is_empty()).is_none() && o.index_to.is_empty()
+    {
+        return Err(err(
+            "--private-index needs --to and/or --pass: the index key must be wrapped to someone who can open it later",
+        ));
+    }
     let dir = dir_for_init(path);
     if dir.exists()
         && fs::read_dir(&dir)
@@ -1317,7 +1462,13 @@ pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Re
     getrandom::getrandom(&mut raw).map_err(|e| err(e.to_string()))?;
     let id = hex::encode(raw);
     fs::create_dir_all(dir.join(SEGMENTS_DIR)).map_err(io)?;
-    let format = if segment_keys { 3 } else { LOG_BASE_FORMAT };
+    let format = if o.private_index {
+        5
+    } else if segment_keys {
+        3
+    } else {
+        LOG_BASE_FORMAT
+    };
     if segment_keys {
         fs::create_dir_all(dir.join(KEYS_DIR)).map_err(io)?;
     }
@@ -1325,6 +1476,9 @@ pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Re
     m.extra.insert("log".into(), format.to_string());
     if segment_keys {
         m.extra.insert("segkeys".into(), "1".into());
+    }
+    if o.private_index {
+        m.extra.insert("privindex".into(), "1".into());
     }
     m.extra.insert("log-id".into(), id.clone());
     let signer = sign.map(|i| {
@@ -1335,6 +1489,11 @@ pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Re
     if let Some(pk) = &signer {
         m.extra.insert("signer".into(), hex32(pk));
     }
+    let ixkey = if o.private_index {
+        Some(private::create_key(&dir, o.index_pass, o.index_to)?)
+    } else {
+        None
+    };
     let log = Log {
         dir: dir.clone(),
         name,
@@ -1342,6 +1501,8 @@ pub fn init_with(path: &Path, sign: Option<&Identity>, segment_keys: bool) -> Re
         signer,
         format,
         segkeys: segment_keys,
+        privindex: o.private_index,
+        ixkey,
     };
     write_atomic(&dir.join(INDEX_FILE), format!("{INDEX_MAGIC}\n").as_bytes())?;
     write_atomic(
@@ -1381,6 +1542,8 @@ pub struct AppendOpts<'a> {
     pub recipients: &'a [PublicIdentity],
     /// Signing key (required when the log pinned a signer; refused for an unsigned log).
     pub identity: Option<&'a Identity>,
+    /// Private INDEX: extra identities that may open the index key (besides `pass` / `identity`).
+    pub unlock: &'a [Identity],
 }
 
 impl Default for AppendOpts<'_> {
@@ -1390,8 +1553,29 @@ impl Default for AppendOpts<'_> {
             pass: None,
             recipients: &[],
             identity: None,
+            unlock: &[],
         }
     }
+}
+
+/// Unlock a private log for a writer: `--pass`, then the signing identity, then `--unlock` keys.
+pub(crate) fn unlock_for_write(
+    log: &mut Log,
+    pass: Option<&str>,
+    identity: Option<&Identity>,
+    unlock: &[Identity],
+) -> Result<()> {
+    let signing: &[Identity] = match identity {
+        Some(i) => std::slice::from_ref(i),
+        None => &[],
+    };
+    if log.try_unlock_index(pass, &[signing, unlock]) {
+        return Ok(());
+    }
+    // report the real reason (wrong key vs. no key vs. damaged IXKEY.sg1)
+    let mut all: Vec<Identity> = signing.to_vec();
+    all.extend_from_slice(unlock);
+    log.unlock_index(pass, &all)
 }
 
 #[derive(Clone, Debug)]
@@ -1533,8 +1717,15 @@ fn commit_index(log: &Log, idx: ParsedIndex, bodies: &[String]) -> Result<Vec<En
             .unwrap_or_else(|| log.genesis());
         let chain = chain_hash(&prev, body);
         let line = format!("{body} chain={}", hex32(&chain));
-        let e = parse_line(&line, entries.len() as u64 + 1, &prev)
+        let mut e = parse_line(&line, entries.len() as u64 + 1, &prev)
             .map_err(|(c, m)| err(format!("internal: new INDEX line rejected ({c}: {m})")))?;
+        if let Some(k) = log.ixkey.as_ref() {
+            private::open_entry(k, &log.id, &mut e).map_err(|m| {
+                err(format!(
+                    "internal: new private INDEX line does not open ({m})"
+                ))
+            })?;
+        }
         text.push_str(&line);
         text.push('\n');
         entries.push(e);
@@ -1623,7 +1814,8 @@ fn seal_segment(
 
 /// Seal `data` as the next immutable segment and extend the chain.
 pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendReport> {
-    let log = Log::open(path)?;
+    let mut log = Log::open(path)?;
+    unlock_for_write(&mut log, opts.pass, opts.identity, opts.unlock)?;
     signer_gate(&log, opts.identity)?;
     let _guard = lock(&log)?;
     let (idx, notes) = prepare_write(&log)?;
@@ -1632,6 +1824,29 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
     let seq = n as u64 + 1;
     let sha = sha256(data);
     let (sealed, own_key) = seal_segment(&log, seq, data, opts.mode, opts.pass, opts.recipients)?;
+    // the INDEX line first (a private log refuses an unencrypted star before anything is written)
+    let t = now();
+    let body = if log.privindex {
+        private::sealed_body(
+            &log,
+            seq,
+            t,
+            "",
+            &sealed,
+            &Hidden {
+                size: data.len() as u64,
+                sha,
+                path: None,
+            },
+        )?
+    } else {
+        format!(
+            "seq={seq} t={t} size={} sha={}{}",
+            data.len(),
+            hex32(&sha),
+            star_field(&sealed)
+        )
+    };
     // 1. segment (atomic; replaces an unindexed leftover from a crash at the same seq), then its key
     //    (a record without an INDEX line is an orphan `gc` reclaims; the next append replaces it)
     let seg = log.segment_path(seq);
@@ -1640,13 +1855,6 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
         keyring::put(&log, seq, m, opts.pass, opts.recipients)?;
     }
     // 2. INDEX line, 3. HEAD
-    let t = now();
-    let body = format!(
-        "seq={seq} t={t} size={} sha={}{}",
-        data.len(),
-        hex32(&sha),
-        star_field(&sealed)
-    );
     let (_entries, head) = commit(&log, idx, &[body], opts.identity)?;
     Ok(AppendReport {
         seq,
@@ -1674,9 +1882,17 @@ pub struct Listing {
     pub present: Vec<bool>,
 }
 
-/// Index-only listing (no segment bytes are read).
+/// Index-only listing (no segment bytes are read). A private log lists its entries sealed.
 pub fn list(path: &Path) -> Result<Listing> {
-    let log = Log::open(path)?;
+    list_with(path, None, &[])
+}
+
+/// `list`, opening a private INDEX with `--pass` / `--identity` (an ordinary log ignores them).
+pub fn list_with(path: &Path, pass: Option<&str>, ids: &[Identity]) -> Result<Listing> {
+    let mut log = Log::open(path)?;
+    if pass.is_some() || !ids.is_empty() {
+        log.unlock_index(pass, ids)?;
+    }
     let idx = read_index(&log)?;
     if let Some((line, _, msg)) = &idx.error {
         return Err(err(format!(
@@ -1753,6 +1969,13 @@ impl Listing {
                 }
             ));
         }
+        if self.log.privindex {
+            s.push_str(if self.log.index_readable() {
+                "  [private index: opened]"
+            } else {
+                "  [private index: sizes, hashes and names sealed; give --pass / --identity to open]"
+            });
+        }
         if !st.handovers().is_empty() {
             s.push_str(&format!(
                 "  [log={}: signer handed over {} time(s)]",
@@ -1765,6 +1988,7 @@ impl Listing {
         for (e, p) in self.entries.iter().zip(&self.present) {
             let (size, sha) = match e.op {
                 Op::Tomb { .. } | Op::Signer { .. } => ("-".to_string(), "-".to_string()),
+                _ if e.is_locked() => ("sealed".to_string(), "sealed".to_string()),
                 _ => (e.size.to_string(), format!("{}…", &hex32(&e.sha)[..16])),
             };
             let file = if *p { "ok" } else { "MISSING" };
@@ -1854,6 +2078,9 @@ fn read_holder(
     e: &Entry,
     opts: &ReadOpts<'_>,
 ) -> Result<(Vec<u8>, bool)> {
+    if e.is_locked() {
+        return Err(err(private::LOCKED_MSG));
+    }
     let p = log.segment_path(e.seq);
     let file = fs::read(&p).map_err(|er| err(format!("segment {} unreadable: {er}", e.seq)))?;
     let (plain, keyed) = if log.segkeys {
@@ -2009,7 +2236,10 @@ pub fn read_range(
     opts: &ReadOpts<'_>,
     mode: ReadMode,
 ) -> Result<ReadOut> {
-    let log = Log::open(path)?;
+    let mut log = Log::open(path)?;
+    if log.privindex {
+        log.unlock_index(opts.pass, opts.identities)?;
+    }
     let loaded = load(&log, &CheckOpts::default());
     if let Some(f) = loaded
         .findings
@@ -2321,7 +2551,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             return Ok(rep);
         }
     }
-    let log = match Log::open_dir(&dir) {
+    let mut log = match Log::open_dir(&dir) {
         Ok(l) => l,
         Err(e) => {
             rep.findings.push(fnd(
@@ -2334,6 +2564,10 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             return Ok(rep);
         }
     };
+    let mut keyed = opts.pass.is_some() || !opts.identities.is_empty();
+    if log.privindex {
+        check_private(&mut log, opts, &mut keyed, &mut rep);
+    }
     let loaded = load(&log, opts);
     rep.findings.extend(loaded.findings);
     rep.signed = loaded
@@ -2401,7 +2635,6 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     }
     // Only entries the HEAD vouches for may declare a file dead; everything beyond is assumed live.
     let st_t = State::build(&entries[..trusted]);
-    let keyed = opts.pass.is_some() || !opts.identities.is_empty();
     let mut ring = RingCache::new(&log);
     for e in &entries {
         if !st.has_file(e.seq) {
@@ -2605,6 +2838,59 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     Ok(rep)
 }
 
+/// Private INDEX checks: the wrapped index key file is present and healthy, and the given keys (if
+/// any) open it. Without a key the content checks are skipped and an info says why; a key that does
+/// not open it is an error and the content checks are skipped too (they could only fail).
+fn check_private(log: &mut Log, opts: &CheckOpts<'_>, keyed: &mut bool, rep: &mut CheckReport) {
+    let p = log.dir.join(IXKEY_FILE);
+    match fs::read(&p) {
+        Err(e) => rep.findings.push(fnd(
+            Severity::Error,
+            "ixkey-missing",
+            IXKEY_FILE,
+            format!("the wrapped index key is unreadable ({e}): sizes, hashes and names in the INDEX cannot be opened"),
+            Some("restore IXKEY.sg1 from a copy of the log; the segments still open with their own keys"),
+        )),
+        Ok(bytes) => match health_bytes(&bytes) {
+            Health::Ok => {}
+            Health::Mendable(m) => rep.findings.push(fnd(
+                Severity::Warn,
+                "bit-rot",
+                IXKEY_FILE,
+                m,
+                Some("sigil log mend"),
+            )),
+            Health::Damaged(m) => rep.findings.push(fnd(
+                Severity::Error,
+                "bit-rot-unrecoverable",
+                IXKEY_FILE,
+                m,
+                Some("restore IXKEY.sg1 from a copy of the log"),
+            )),
+        },
+    }
+    if !*keyed {
+        rep.findings.push(fnd(
+            Severity::Info,
+            "private-index",
+            INDEX_FILE,
+            "sizes, SHA-256s and file names are sealed in this INDEX; keyless checks bind each segment by its keyed fingerprint (give --pass / --identity to also check contents)",
+            None,
+        ));
+        return;
+    }
+    if let Err(e) = log.unlock_index(opts.pass, opts.identities) {
+        rep.findings.push(fnd(
+            Severity::Error,
+            "index-key",
+            IXKEY_FILE,
+            e.to_string(),
+            Some("give the --pass / --identity the index key was wrapped to at init"),
+        ));
+        *keyed = false;
+    }
+}
+
 /// Key ring checks of a segment-keys log (needs no key): every needed segment has its record, no
 /// record outlives its segment, a shred is complete, the shards are healthy.
 fn check_keys(
@@ -2781,7 +3067,8 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
         if matches!(
             n.as_str(),
             container::CONTAINER_FILE | INDEX_FILE | HEAD_FILE
-        ) {
+        ) || (log.privindex && n == IXKEY_FILE)
+        {
             continue;
         }
         if p.is_dir() && (n == SEGMENTS_DIR || (n == KEYS_DIR && log.segkeys)) {
@@ -2984,6 +3271,10 @@ pub struct MendReport {
     pub keys_mended: Vec<u64>,
     /// Key ring shards ECC cannot heal.
     pub keys_unrecoverable: Vec<(u64, String)>,
+    /// Private log: `IXKEY.sg1` was healed in place.
+    pub ixkey_mended: bool,
+    /// Private log: `IXKEY.sg1` is missing or beyond repair.
+    pub ixkey_unrecoverable: Option<String>,
 }
 
 /// Heal every repairable segment in place (atomic replace). Never changes the INDEX / HEAD:
@@ -3034,6 +3325,23 @@ pub fn mend(path: &Path) -> Result<MendReport> {
         let (m, b) = keyring::mend_shards(&log)?;
         rep.keys_mended = m;
         rep.keys_unrecoverable = b;
+    }
+    if log.privindex {
+        let p = log.dir.join(IXKEY_FILE);
+        match fs::read(&p).map(|b| (health_bytes(&b), b)) {
+            Ok((Health::Ok, _)) => {}
+            Ok((Health::Mendable(_), bytes)) => match crate::mend_bytes(&bytes) {
+                Ok(healed) => {
+                    if healed != bytes {
+                        write_atomic(&p, &healed)?;
+                        rep.ixkey_mended = true;
+                    }
+                }
+                Err(e) => rep.ixkey_unrecoverable = Some(e.to_string()),
+            },
+            Ok((Health::Damaged(m), _)) => rep.ixkey_unrecoverable = Some(m),
+            Err(e) => rep.ixkey_unrecoverable = Some(e.to_string()),
+        }
     }
     Ok(rep)
 }
@@ -3316,6 +3624,8 @@ mod tests {
             signer: None,
             format: 1,
             segkeys: false,
+            privindex: false,
+            ixkey: None,
         };
         let h = make_head(&log, &[], Some(&id));
         let back = Head::parse(&h.render()).unwrap();
