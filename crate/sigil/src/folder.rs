@@ -159,7 +159,8 @@ pub fn inscribe_dir_to(
     // mode because the body carries the repair budget), then seal it as one body.
     let inner = Scratch(scratch_beside(output, "sgdr-inner"));
     let total = {
-        let mut w = BufWriter::new(File::create(&inner.0).map_err(io)?);
+        // Holds member names in the clear until it is sealed: owner-only, created exclusively.
+        let mut w = BufWriter::new(crate::staging::create_private(&inner.0)?);
         let t = write_v1(
             root,
             &files,
@@ -893,18 +894,10 @@ fn v1_unrecoverable(input: &Path) -> Result<Option<String>> {
 }
 
 /// Scry line of a sealed body (written to a private scratch file: it is ciphertext).
-fn scry_body(input: &Path, body: &[u8]) -> Result<String> {
-    let tmp = Scratch(scratch_beside(
-        &std::env::temp_dir().join(
-            input
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new("pack")),
-        ),
-        "scry-body",
-    ));
-    fs::write(&tmp.0, body).map_err(io)?;
+fn scry_body(_input: &Path, body: &[u8]) -> Result<String> {
+    let tmp = crate::staging::TempFile::with_bytes("scry-body", body)?;
+    let line = crate::work::scry_path(tmp.path())?;
     // First line only: later lines (attestation lookup) would describe the scratch path.
-    let line = crate::work::scry_path(&tmp.0)?;
     Ok(line.lines().next().unwrap_or_default().to_string())
 }
 

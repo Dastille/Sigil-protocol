@@ -25,6 +25,79 @@ fn io(e: std::io::Error) -> crate::Error {
     crate::Error::Msg(e.to_string())
 }
 
+/// A scratch file in the system temp folder for code that needs a path (it only ever
+/// holds sealed bytes, never plaintext). Named `sigil-<tag>-<pid>-<counter>-<random>`
+/// and created exclusively (`create_new`), so two threads or processes never share
+/// one and a planted file or symlink is never written through; mode 0600 on Unix.
+/// Removed when dropped.
+pub(crate) struct TempFile {
+    path: PathBuf,
+}
+
+impl TempFile {
+    /// Create an empty scratch file.
+    pub(crate) fn reserve(tag: &str) -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let mut last = None;
+        for _ in 0..16 {
+            let mut r = [0u8; 8];
+            getrandom::getrandom(&mut r)
+                .map_err(|e| crate::Error::Msg(format!("temp name: {e}")))?;
+            let path = std::env::temp_dir().join(format!(
+                "sigil-{tag}-{}-{}-{:016x}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed),
+                u64::from_le_bytes(r)
+            ));
+            let mut o = OpenOptions::new();
+            o.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                o.mode(0o600);
+            }
+            match o.open(&path) {
+                Ok(_) => return Ok(TempFile { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+                Err(e) => return Err(io(e)),
+            }
+        }
+        Err(io(last.unwrap_or_else(|| {
+            std::io::Error::other("no free temp name")
+        })))
+    }
+
+    /// Create a scratch file holding `bytes`.
+    pub(crate) fn with_bytes(tag: &str, bytes: &[u8]) -> Result<Self> {
+        let t = Self::reserve(tag)?;
+        fs::write(&t.path, bytes).map_err(io)?;
+        Ok(t)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Create `path` exclusively (never through an existing file or symlink), mode 0600 on Unix.
+pub(crate) fn create_private(path: &Path) -> Result<File> {
+    let mut o = OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o.open(path).map_err(io)
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 /// Output files of one restore, held as part files until [`Staging::commit`].
 pub(crate) struct Staging {
     /// `(part file, final destination)` in the order they were written.
@@ -209,5 +282,37 @@ mod tests {
         assert!(s.commit().is_err());
         assert_eq!(names(&root), vec!["taken"]);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn temp_files_are_unique_private_and_removed() {
+        let a = TempFile::with_bytes("t", b"one").unwrap();
+        let b = TempFile::with_bytes("t", b"two").unwrap();
+        assert_ne!(a.path(), b.path());
+        assert_eq!(fs::read(a.path()).unwrap(), b"one");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = fs::metadata(a.path()).unwrap().permissions().mode();
+            assert_eq!(m & 0o777, 0o600, "{m:o}");
+        }
+        let p = a.path().to_path_buf();
+        drop(a);
+        assert!(!p.exists());
+        // create_private never writes through an existing file or symlink.
+        let d = std::env::temp_dir().join(format!("sigil-staging-excl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let victim = d.join("victim");
+        fs::write(&victim, b"keep").unwrap();
+        #[cfg(unix)]
+        {
+            let link = d.join("link");
+            std::os::unix::fs::symlink(&victim, &link).unwrap();
+            assert!(create_private(&link).is_err());
+        }
+        assert!(create_private(&victim).is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"keep");
+        let _ = fs::remove_dir_all(&d);
     }
 }
