@@ -87,8 +87,8 @@ pub use constellation::{
 pub use folder::{
     inscribe_dir, inscribe_dir_to, is_dir_pack, is_sealed_dir_pack, list_dir_pack,
     list_dir_pack_keys, looks_like_nest_name, mend_sealed_dir, read_dir_entry_star, scry_dir,
-    scry_dir_keys, sealed_dir_body, unseal_dir, unseal_dir_mend_keys, unseal_dir_only,
-    unseal_dir_only_keys, DirEntry,
+    scry_dir_checked, scry_dir_keys, sealed_dir_body, unseal_dir, unseal_dir_mend_keys,
+    unseal_dir_only, unseal_dir_only_keys, DirEntry,
 };
 pub use fountain::{deluge_fountain, gather_fountain, is_fountain_dir};
 pub use header::{
@@ -148,10 +148,10 @@ pub use vault::{
 pub use work::{
     choose_overture, index_pack, index_pack_keys, inscribe_path, inscribe_path_to,
     inscribe_stars_dir, inscribe_stars_dir_to, is_damaged_work_pack, is_work_pack, mend_pack_path,
-    overture_report, payload_label_keys, payload_name, read_facet_digests, scry_facets, scry_path,
-    suggested_output_name, unseal_path, unseal_path_keys, unseal_range, unseal_range_keys,
-    unseal_star_at, unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
-    OVERTURE, WORK_MAGIC,
+    overture_report, path_unrecoverable, payload_label_keys, payload_name, read_facet_digests,
+    scry_facets, scry_path, scry_path_checked, star_bytes_unrecoverable, suggested_output_name,
+    unseal_path, unseal_path_keys, unseal_range, unseal_range_keys, unseal_star_at,
+    unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
@@ -521,6 +521,12 @@ pub fn seal_kn_mds_to_opts(
     recipients: &[keys::PublicIdentity],
     opts: &privacy::SealOpts,
 ) -> Result<Vec<u8>> {
+    // Safe by default: an empty passphrase would silently write an unencrypted file.
+    if pass == Some("") {
+        return Err(Error::Msg(
+            "an empty passphrase is refused: it would not protect anything (leave out the passphrase for an unencrypted file)".into(),
+        ));
+    }
     let pass_nonempty = pass.filter(|s| !s.is_empty());
     // New passphrase seals go through SGTO too: random CEK, wrapped with Argon2id whose
     // parameters are stored in the wrap record. The legacy Ward (PBKDF2, fixed 80k iterations,

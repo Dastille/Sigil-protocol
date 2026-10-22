@@ -511,7 +511,7 @@ fn manifest_rules_keep_old_logs_and_private_logs_apart() {
     assert!(fails(&d, &["log", "init", "x2", "--private-index"]).contains("--to and/or --pass"));
     assert!(
         fails(&d, &["log", "init", "x3", "--private-index", "--pass", ""])
-            .contains("--to and/or --pass")
+            .contains("empty passphrase")
     );
     assert!(
         d.join("x1.sigil").exists() && !d.join("x2.sigil").exists() && !d.join("x3.sigil").exists()
@@ -536,7 +536,7 @@ fn private_logs_refuse_what_would_leak() {
             "log", "append", "ev", "a.txt", "--unlock", "me.sgk", "--pass", "",
         ],
     );
-    assert!(o.contains("must be encrypted"), "{o}");
+    assert!(o.contains("empty passphrase"), "{o}");
     assert!(!d.join("ev.sigil/segments/0000/0000000001.sg1").exists());
     // no key to open the index: refused (public --to alone cannot write a box)
     assert!(fails(&d, &["log", "append", "ev", "a.txt", "--to", "me.pub"]).contains("private"));

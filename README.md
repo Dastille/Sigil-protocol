@@ -66,7 +66,17 @@ ok  v2  live=16/16 need=12 merkle=closed keystone=intact orig=3000000 entropy=80
 ```
 
 `live` is how many pieces are intact, `need` how many are required. Neither
-command needs a passphrase. See "Known limitations": read `live`/`need`, not just `ok`.
+command needs a passphrase. When too few pieces are left (`live` below `need`),
+the line starts with `NOT recoverable` instead of `ok` and the command exits
+with code 2:
+
+```
+$ sigil scry dead.sg1
+NOT recoverable  v2  live=5/16 need=12 merkle=open keystone=intact ...
+NOT recoverable (live=5/16 need=12): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
+```
+
+`sigil --version` prints the version.
 
 ### Repair: mend
 
@@ -91,7 +101,7 @@ need 12 pieces, have 5
 
 ```
 $ sigil seal --pass 'correct horse' -o secret.sg1 photo.jpg
-$ sigil unseal -o out.jpg secret.sg1
+$ sigil unseal -o out.jpg secret.sg1 < /dev/null
 passphrase or --identity required
 $ sigil unseal --pass wrong -o out.jpg secret.sg1
 could not unwrap CEK — need matching --identity or passphrase
@@ -99,8 +109,24 @@ $ sigil unseal --pass 'correct horse' -o out.jpg secret.sg1
 de-scribed 3000000 bytes → out.jpg
 ```
 
-Encryption is AES-256-GCM. The passphrase is given on the command line (there is
-no prompt yet), so it can land in shell history. Other key options (`--to` a
+Encryption is AES-256-GCM. To type the passphrase without it showing (and
+without it landing in shell history), use `--pass -`; `seal` asks twice:
+
+```
+$ sigil seal --pass - -o secret.sg1 photo.jpg
+Passphrase:
+Same passphrase again:
+inscribed 3000000 bytes → secret.sg1
+$ sigil unseal -o out.jpg secret.sg1
+Passphrase:
+de-scribed 3000000 bytes → out.jpg
+```
+
+`unseal` of an encrypted file with no key asks on its own when run in a
+terminal. `--pass VALUE` still works for scripts, but the value can end up in
+your shell history and is visible to other programs on the computer while
+`sigil` runs; prefer `--pass -` when typing by hand. An empty passphrase
+(`--pass ""`) is refused everywhere. Other key options (`--to` a
 public key, `--identity`, `--talisman` key file, passkeys) are described in
 `sigil seal --help` and [docs/START.md](docs/START.md); they are not shown here.
 
@@ -258,11 +284,10 @@ commits or PRs. Run the checks above locally.
 
 ## Known limitations
 
-- `scry` and `verify` print `ok` and exit 0 even when a file can no longer be
-  recovered (for example `live=5/16 need=12`). Compare `live` with `need`, or try `unseal`.
-- `--pass ''` (empty passphrase) writes an unencrypted file without warning.
-- There is no `--version` flag.
-- There is no interactive passphrase prompt; `--pass` takes the value on the command line.
+- `--pass VALUE` puts the passphrase on the command line (shell history, process
+  list). Use `--pass -` to type it. `--pass -` needs a terminal: it never reads a
+  piped stdin. Only `unseal` asks on its own when a key is missing.
+- `scry` of a constellation does not yet report `NOT recoverable`; check it with `doctor`.
 - Damage near the start of a file costs more: the header region is used to find
   everything else, so recovery there leans on the spare header copies (Keystone)
   and loses more margin than the same damage in the middle.

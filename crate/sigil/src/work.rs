@@ -1531,6 +1531,97 @@ fn basename_only(name: &str) -> Option<String> {
     }
 }
 
+/// Why a sealed star (classic `.sg1` bytes or an in-memory SGWK pack) cannot be
+/// restored without more pieces: `None` when every part has at least `need`
+/// intact pieces. Keyless; nothing is decrypted.
+pub fn star_bytes_unrecoverable(star: &[u8]) -> Option<String> {
+    if star.starts_with(&WORK_MAGIC) {
+        let l = match packhead::layout(&mut packhead::MemSrc(star)) {
+            Ok(l) => l,
+            Err(e) => return Some(format!("large-file pack unreadable: {e}")),
+        };
+        if (l.stars.len() as u64) < u64::from(l.head.stars) {
+            return Some(format!(
+                "only {} of {} parts present",
+                l.stars.len(),
+                l.head.stars
+            ));
+        }
+        for (i, &(o, n)) in l.stars.iter().enumerate() {
+            let (a, b) = (o as usize, (o + n) as usize);
+            let Some(part) = star.get(a..b) else {
+                return Some(format!("part {i} is cut off"));
+            };
+            if let Some(why) = classic_unrecoverable(part) {
+                return Some(format!("part {i}: {why}"));
+            }
+        }
+        return None;
+    }
+    classic_unrecoverable(star)
+}
+
+fn classic_unrecoverable(star: &[u8]) -> Option<String> {
+    match crate::verify(star) {
+        Ok((h, _, live, k, _)) if live < k => Some(format!("live={live}/{} need={k}", h.n)),
+        Ok(_) => None,
+        Err(e) => Some(format!("unreadable: {e}")),
+    }
+}
+
+/// Like [`star_bytes_unrecoverable`] for a file on disk; a large-file pack is
+/// checked one part at a time (never loaded whole).
+pub fn path_unrecoverable(input: &Path) -> Result<Option<String>> {
+    if !is_work_pack(input) {
+        let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        return Ok(classic_unrecoverable(&data));
+    }
+    let (head, locs) = index_pack(input)?;
+    if (locs.len() as u64) < u64::from(head.stars) {
+        return Ok(Some(format!(
+            "only {} of {} parts present",
+            locs.len(),
+            head.stars
+        )));
+    }
+    let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    for loc in &locs {
+        use std::io::Seek;
+        f.seek(std::io::SeekFrom::Start(loc.file_off))
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let mut part = Vec::new();
+        (&mut f)
+            .take(loc.star_len)
+            .read_to_end(&mut part)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        if (part.len() as u64) < loc.star_len {
+            return Ok(Some(format!("part {} is cut off", loc.index)));
+        }
+        if let Some(why) = classic_unrecoverable(&part) {
+            return Ok(Some(format!("part {}: {why}", loc.index)));
+        }
+    }
+    Ok(None)
+}
+
+/// [`scry_path`] plus a recoverability verdict. When the file can no longer be
+/// restored, the report's first line starts with `NOT recoverable` (not `ok`)
+/// and the verdict is `Some(reason)`.
+pub fn scry_path_checked(input: &Path) -> Result<(String, Option<String>)> {
+    let s = scry_path(input)?;
+    let bad = path_unrecoverable(input)?;
+    Ok(match bad {
+        None => (s, None),
+        Some(why) => {
+            let s = match s.strip_prefix("ok  ") {
+                Some(rest) => format!("NOT recoverable  {rest}"),
+                None => format!("{s}\nNOT recoverable: {why}"),
+            };
+            (s, Some(why))
+        }
+    })
+}
+
 pub fn scry_path(input: &Path) -> Result<String> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mag = [0u8; 4];
