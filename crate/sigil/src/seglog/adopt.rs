@@ -238,6 +238,12 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
              so existing stars cannot be adopted as they are; unseal them and `sigil log append` the bytes instead",
         ));
     }
+    if log.privindex {
+        return Err(err(
+            "this log keeps its INDEX private: adopting copies stars without opening them, so their sizes and hashes \
+             could not be sealed; unseal them and `sigil log append` the bytes instead",
+        ));
+    }
     signer_gate(&log, opts.identity)?;
     if sources.is_empty() {
         return Err(err("give at least one .sg1 star or a folder of them"));

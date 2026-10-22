@@ -120,7 +120,18 @@ line in a `.sigilignore` file at the top of the folder (`#` starts a comment), o
 `--exclude '.tools-venv/'` (repeatable). A skipped folder is skipped with everything inside it;
 `--dry-run` lists what would be skipped, and files already in the log are never removed by this.
 
-Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder")
+To keep the file names, sizes and fingerprints themselves private (for example a family photo
+backup on a drive someone else could pick up), create the log with `--private-index`:
+
+```
+./sigil log init photos --identity me.sgk --private-index --to me.pub
+./sigil log add photos ./Photos --mode seal --to me.pub --identity me.sgk
+./sigil log ls photos --identity me.sgk                  # names and sizes need the key
+```
+
+Without the key the log's list shows only "sealed" rows; verify, mend and gc still work.
+
+Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder", "Private INDEX")
 
 ### Lock a mark to someone’s public key (encrypt-to)
 

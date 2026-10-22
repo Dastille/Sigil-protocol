@@ -14,6 +14,9 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
+/// A tombstone / shred reason is plain text in the INDEX; a private log would leak it.
+pub(super) const PRIVATE_REASON_MSG: &str = "this log keeps its INDEX private and --reason would be stored in the clear; leave it out (sealed reasons are a later slice)";
+
 // ---------------------------------------------------------------------------
 // tombstone
 // ---------------------------------------------------------------------------
@@ -52,6 +55,9 @@ pub fn tombstone(
     if let Some(r) = reason {
         if r.len() > 500 {
             return Err(err("--reason is limited to 500 bytes"));
+        }
+        if log.privindex {
+            return Err(err(PRIVATE_REASON_MSG));
         }
     }
     let _guard = lock(&log)?;
@@ -435,6 +441,10 @@ fn crash(opts: &CompactOpts<'_>, at: CrashPoint) -> Result<()> {
 /// Merge / erase according to `opts`. Dry-run unless `opts.apply`.
 pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
     let mut log = Log::open(path)?;
+    // merging cuts batches by their sizes, which a private INDEX seals: open it first (dry run too)
+    if log.privindex {
+        log.unlock_index(opts.read.pass, opts.read.identities)?;
+    }
     let _guard = if opts.apply { Some(lock(&log)?) } else { None };
     let mut loaded = load(&log, &CheckOpts::default());
     let refuse = |l: &Loaded| -> Result<()> {
@@ -601,6 +611,30 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
                     opts.recipients,
                 )?,
             };
+            let of = fmt_ranges(&compress(&g.members));
+            // the INDEX line first: a private log refuses an unencrypted merged star before it is written
+            let body = if log.privindex {
+                private::sealed_body(
+                    &log,
+                    g.new_seq,
+                    t_now,
+                    &format!(" op=compact of={of}"),
+                    &sealed,
+                    &Hidden {
+                        size: plain.len() as u64,
+                        sha,
+                        path: None,
+                    },
+                )?
+            } else {
+                format!(
+                    "seq={} t={t_now} size={} sha={} op=compact of={of}{}",
+                    g.new_seq,
+                    plain.len(),
+                    hex32(&sha),
+                    star_field(&sealed)
+                )
+            };
             let dest = log.segment_path(g.new_seq);
             write_atomic(&dest, &sealed)?;
             written.push(dest);
@@ -609,14 +643,7 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
                 keyring::put(&log, g.new_seq, m, opts.seal_pass, opts.recipients)?;
             }
             rep.bytes_after += sealed.len() as u64;
-            bodies.push(format!(
-                "seq={} t={t_now} size={} sha={} op=compact of={}{}",
-                g.new_seq,
-                plain.len(),
-                hex32(&sha),
-                fmt_ranges(&compress(&g.members)),
-                star_field(&sealed)
-            ));
+            bodies.push(body);
         }
         Ok(())
     })();

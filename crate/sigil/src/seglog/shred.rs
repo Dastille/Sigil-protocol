@@ -46,6 +46,9 @@ pub fn shred(
     if reason.map(|r| r.len() > 500).unwrap_or(false) {
         return Err(err("--reason is limited to 500 bytes"));
     }
+    if reason.is_some() && log.privindex {
+        return Err(err(super::compact::PRIVATE_REASON_MSG));
+    }
     let _guard = lock(&log)?;
     let (idx, notes) = prepare_write(&log)?;
     signer_gate_at(&log, &idx.entries, identity)?;

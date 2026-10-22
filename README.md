@@ -166,7 +166,28 @@ result: healthy
 
 `log ls`, `log read`, `log prove`, `log tombstone`, `log compact` and more:
 `sigil log --help` and [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
-The log INDEX records each entry's path, size and SHA-256 in the clear.
+By default the log INDEX records each entry's path, size and SHA-256 in the clear.
+
+**Private INDEX.** Create the log with `--private-index` and those three are
+sealed (AES-256-GCM) under an index key wrapped to `--to` / `--pass`. Every
+segment must then be encrypted. Without the key, `log ls` shows `sealed`:
+
+```
+$ sigil log init photos --identity me.sgk --private-index --to me.pub
+$ sigil log add photos Photos --to me.pub --identity me.sgk
+  + 2024/beach.jpg  3 bytes  new → segment 1
+$ sigil log ls photos
+  1    2026-10-22T13:14:30Z  sealed      sealed             ok
+$ sigil log ls photos --identity me.sgk
+  1    2026-10-22T13:14:30Z  3           98ea6e4f216f2fb4…  ok  2024/beach.jpg
+$ sigil log prove photos --seq 1 --identity me.sgk -o beach.proof
+$ sigil log check-proof beach.proof --file Photos/2024/beach.jpg --signer me.pub
+  file matches the entry's bytes (SHA-256 and size)
+```
+
+Keyless `log verify`, `mend` and `gc` still work. Entry count, times and
+on-disk segment sizes stay visible. Details: "Private INDEX" in
+[docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
 
 ### Other commands
 

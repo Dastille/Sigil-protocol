@@ -743,6 +743,19 @@ enum LogCmd {
         /// in a small key ring wrapped to the --pass / --to given at each append. The log becomes `log=3`
         #[arg(long = "segment-keys")]
         segment_keys: bool,
+        /// Keep the INDEX private: each entry's size, SHA-256 and file name are sealed (AES-256-GCM)
+        /// under an index key wrapped to --to and/or --pass; every segment must be encrypted. The log
+        /// becomes `log=5`. Keyless verify / mend / gc keep working
+        #[arg(long = "private-index")]
+        private_index: bool,
+        /// Private INDEX: passphrase the index key is wrapped to
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Private INDEX: recipient the index key is wrapped to: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
     },
     /// Seal FILE (or `-` for stdin) as the next immutable segment and extend the chain.
     Append {
@@ -762,6 +775,10 @@ enum LogCmd {
         /// Signing identity (.sgk); required exactly when the log was created with --identity
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Private INDEX: another identity (.sgk) that opens the log's index key, when it is not
+        /// the signing --identity (repeatable)
+        #[arg(long = "unlock")]
+        unlock: Vec<PathBuf>,
     },
     /// Back up a folder: seal every file under DIR that is new or changed since the last add as its
     /// own segment (recursive, stable order; symlinks and special files are skipped and listed).
@@ -800,9 +817,23 @@ enum LogCmd {
         /// Do not read DIR/.sigilignore (only --exclude patterns apply)
         #[arg(long = "no-ignore-file")]
         no_ignore_file: bool,
+        /// Private INDEX: another identity (.sgk) that opens the log's index key, when it is not
+        /// the signing --identity (repeatable)
+        #[arg(long = "unlock")]
+        unlock: Vec<PathBuf>,
     },
-    /// List segments (from the INDEX; reads no segment bytes).
-    Ls { path: PathBuf },
+    /// List segments (from the INDEX; reads no segment bytes). A private INDEX shows its sizes,
+    /// hashes and file names only with --pass / --identity.
+    Ls {
+        path: PathBuf,
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens a private INDEX (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+    },
     /// Write segment bytes (checked against the INDEX) to stdout or -o. Default: all, in order.
     Read {
         path: PathBuf,
@@ -870,6 +901,14 @@ enum LogCmd {
         /// Write the proof here (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Private INDEX: open the index key so the receipt carries this entry's key (and
+        /// `check-proof --file` can compare the bytes)
+        #[arg(long)]
+        pass: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
     },
     /// Check a proof from `log prove` offline. Exit 0 when it verifies, 2 when it does not.
     CheckProof {
@@ -2804,9 +2843,24 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             path,
             identity,
             segment_keys,
+            private_index,
+            pass,
+            talisman,
+            to,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
-            let log = seglog::init_with(&path, id.as_ref(), segment_keys)?;
+            let pass = resolve_pass(pass, talisman)?;
+            let recipients = load_recipients(&to)?;
+            let log = seglog::init_opts(
+                &path,
+                &seglog::InitOpts {
+                    sign: id.as_ref(),
+                    segment_keys,
+                    private_index,
+                    index_pass: pass.as_deref(),
+                    index_to: &recipients,
+                },
+            )?;
             println!(
                 "log {}  created ({}{})",
                 log.dir.display(),
@@ -2816,6 +2870,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
                 if segment_keys { "; per-segment keys: append with --pass and/or --to to wrap each segment's key, then `sigil log shred` can destroy it" } else { "" }
             );
+            if private_index {
+                println!("private INDEX: sizes, hashes and file names are sealed; writers and readers need the --pass / --identity the index key was wrapped to");
+            }
         }
         LogCmd::Append {
             path,
@@ -2825,10 +2882,12 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             to,
             identity,
+            unlock,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let id = identity.as_deref().map(Identity::load).transpose()?;
+            let unlock = load_identities(&unlock)?;
             let data = if input == "-" {
                 use std::io::Read;
                 let mut b = Vec::new();
@@ -2845,6 +2904,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     pass: pass.as_deref(),
                     recipients: &recipients,
                     identity: id.as_ref(),
+                    unlock: &unlock,
                 },
             )?;
             for n in &r.notes {
@@ -2872,10 +2932,12 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
             exclude,
             no_ignore_file,
+            unlock,
         } => {
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let id = identity.as_deref().map(Identity::load).transpose()?;
+            let unlock = load_identities(&unlock)?;
             let r = seglog::add(
                 &path,
                 &dir,
@@ -2887,6 +2949,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     dry_run,
                     exclude: &exclude,
                     no_ignore_file,
+                    unlock: &unlock,
                     ..Default::default()
                 },
             )?;
@@ -2898,7 +2961,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(1);
             }
         }
-        LogCmd::Ls { path } => print!("{}", seglog::list(&path)?.render()),
+        LogCmd::Ls {
+            path,
+            pass,
+            talisman,
+            identity,
+        } => {
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            print!(
+                "{}",
+                seglog::list_with(&path, pass.as_deref(), &identities)?.render()
+            )
+        }
         LogCmd::Read {
             path,
             seq,
@@ -3209,8 +3284,13 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             seq,
             at,
             output,
+            pass,
+            talisman,
+            identity,
         } => {
-            let p = seglog::prove(&path, seq, at)?;
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let p = seglog::prove_with(&path, seq, at, pass.as_deref(), &identities)?;
             let text = p.render();
             match output {
                 Some(o) => {
@@ -3289,6 +3369,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             for (s, m) in &r.keys_unrecoverable {
                 println!("  key ring shard {s:04}: cannot be healed: {m}");
             }
+            if r.ixkey_mended {
+                println!("  {} (wrapped index key) healed", seglog::IXKEY_FILE);
+            }
+            if let Some(m) = &r.ixkey_unrecoverable {
+                println!(
+                    "  {}: cannot be healed: {m} (restore it from a copy)",
+                    seglog::IXKEY_FILE
+                );
+            }
             for s in &r.missing {
                 println!("  segment {s}: file missing (restore from a copy)");
             }
@@ -3298,6 +3387,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             if !r.missing.is_empty()
                 || !r.unrecoverable.is_empty()
                 || !r.keys_unrecoverable.is_empty()
+                || r.ixkey_unrecoverable.is_some()
             {
                 std::process::exit(2);
             }

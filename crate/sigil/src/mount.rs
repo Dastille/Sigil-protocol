@@ -1121,6 +1121,11 @@ fn run_log_mount(
         ));
     }
     let log = crate::seglog::Log::open(input)?;
+    if log.privindex {
+        return Err(crate::Error::Msg(
+            "mounting a log with a private INDEX is not supported yet; use `sigil log read LOG --seq N` (with --pass / --identity)".into(),
+        ));
+    }
     let index_path = log.dir.join(crate::seglog::INDEX_FILE);
     let before = sha_of(&index_path)?;
     let fs = VaultFs::open_log(input, pass, identities)?;

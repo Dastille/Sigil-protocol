@@ -22,7 +22,9 @@ keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / 
 `kind=log` container), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
 shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log), and **signer
 rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key), and **folder
-backup shipped** (`log add LOG DIR`: seal only the files that are new or changed since the last add). Approved 2026-10-06 as a general-purpose mode (not tied to any one
+backup shipped** (`log add LOG DIR`: seal only the files that are new or changed since the last add), and the
+**private INDEX shipped** (`log init --private-index`, `log=5`: sizes, SHA-256s and file names sealed in the
+INDEX). Approved 2026-10-06 as a general-purpose mode (not tied to any one
 application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
 (see the end).
 
@@ -44,6 +46,9 @@ that does not opt in never becomes `log=3`, never grows a `keys/` folder and nev
 manifest key. `log=4` = the INDEX may also hold **signer handover** entries (`op=signer`); a log is
 raised to `log=4` only by its first `sigil log rotate-signer` (manifest first), whatever it was
 before (a `--segment-keys` log keeps `segkeys=1`). A log that is never rotated never becomes `log=4`.
+`log=5` = a **private INDEX** (`privindex=1`, an `IXKEY.sg1` member, sealed `box=` entries); only
+`sigil log init --private-index` creates it, from its first byte, and a log that does not opt in never
+becomes `log=5` (see "Private INDEX" below).
 A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
@@ -60,6 +65,7 @@ events.sigil/                       one container per log
   segments/0000/0000000002.sg1
   segments/0001/0000001000.sg1
   keys/0000.sg1                     only with `init --segment-keys` (log=3): the key ring, 1000 keys per shard
+  IXKEY.sg1                         only with `init --private-index` (log=5): the wrapped index key
 ```
 
 * A **segment** is a normal star made by the normal seal path: ECC (Glyph / Reflection / Seal
@@ -80,6 +86,7 @@ seq=8 t=1760000050 op=tomb del=2,4-5 reason=user%20request chain=<64 hex>      t
 seq=9 t=1760000090 size=…  sha=<64 hex> op=compact of=1,3,6-7 chain=<64 hex>   compaction (log=2)
 seq=10 t=1760000120 op=tomb del=3 shred=1 reason=gdpr chain=<64 hex>               crypto-shred (log=3)
 seq=11 t=1760000200 op=signer from=<64 hex> to=<64 hex> sig=<128 hex> chain=<64 hex>   signer handover (log=4)
+seq=12 t=1760000300 size=0 sha=<star> star=<star> box=<hex> chain=<64 hex>             private segment entry (log=5)
 ```
 
 | Field   | Meaning |
@@ -94,7 +101,8 @@ seq=11 t=1760000200 op=signer from=<64 hex> to=<64 hex> sig=<128 hex> chain=<64 
 | `reason`| tombstone, optional: free text, `%XX`-escaped so the value stays one token. The INDEX is not secret: no secrets in reasons |
 | `of`    | compaction: the original segment seqs whose plain bytes were concatenated (ascending) into this entry's segment |
 | `src`   | `log adopt`, optional: SHA-256 of the adopted star file (makes re-runs idempotent) |
-| `path`  | `log add`, optional: the file's path relative to the folder that was added, `/`-separated, `%XX`-escaped like `reason` (any byte outside `A-Z a-z 0-9 - _ . ~ , : / @`), so any file name round-trips. The INDEX is not secret: file names are visible in it |
+| `path`  | `log add`, optional: the file's path relative to the folder that was added, `/`-separated, `%XX`-escaped like `reason` (any byte outside `A-Z a-z 0-9 - _ . ~ , : / @`), so any file name round-trips. In an ordinary log the INDEX is not secret: file names are visible in it. In a private log (`log=5`) the path is inside `box` |
+| `box`   | private log only (`log=5`): `size`, `sha` and `path` sealed with AES-256-GCM; the visible `size` is then `0` and `sha` repeats `star` (see "Private INDEX"). Always the last field before `chain` |
 | `from`, `to`, `sig` | signer handover: the outgoing and the new Ed25519 key, and `from`'s signature over `"sigil-log-signer-v1\nid=<log-id>\nseq=<this seq>\nfrom=<hex>\nto=<hex>\n"` |
 | `chain` | `SHA-256("sigil-log-entry-v1\0" ‖ previous chain ‖ line text before " chain=")` |
 
@@ -143,18 +151,18 @@ sigil log append events batch.json --identity me.sgk
 ## Operations
 
 ```sh
-sigil log init events [--identity me.sgk] [--segment-keys]
+sigil log init events [--identity me.sgk] [--segment-keys] [--private-index --to me.pub|--pass …]
 sigil log append events FILE|-  [--mode glyph|reflection|seal] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]
-sigil log ls events                           # also: sigil ls events
+sigil log ls events [--pass … | --identity …]  # also: sigil ls events (a private INDEX shows sizes/names only with a key)
 sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --identity key.sgk]…
 sigil log verify events [--quick] [--pass … | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
-sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]   # back up a folder
+sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk] [--unlock KEY.sgk]   # back up a folder
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
-sigil log prove events --seq N [--at M] [-o receipt.proof]   # receipt: this entry is in the log
+sigil log prove events --seq N [--at M] [-o receipt.proof] [--pass … | --identity …]   # receipt: this entry is in the log
 sigil log check-proof receipt.proof [--file BATCH] [--signer KEY] [--anchor SEQ:ROOT]   # offline, no log, no keys
 sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--apply] [--target-size BYTES]
                          [--pass …|--identity …] [--seal-pass …|--to RECIPIENT]… [--mode …] [--allow-decrypt]
@@ -599,6 +607,101 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
   FILE` restores one. A whole-folder restore by path is a later slice (today `sigil mount
   --export-dir` gives one file per seq).
 
+## Private INDEX (`sigil log init --private-index`, `log=5`)
+
+Without this option the INDEX shows, for every entry, the batch's plain size, its plain SHA-256 and
+(for `log add`) the file's path. Anyone who can read the log folder learns the names and sizes of
+everything in it, and can confirm a guess about a file's content by hashing the guess. A private log
+seals those three values; everything else about the log works as before.
+
+```sh
+sigil log init photos --identity me.sgk --private-index --to me.pub     # or --pass, or both
+sigil log add photos ./Photos --to me.pub --identity me.sgk             # --identity signs and opens the index key
+sigil log ls photos                                                     # sizes, hashes, names: "sealed"
+sigil log ls photos --identity me.sgk                                   # the full listing
+sigil log prove photos --seq 7 --identity me.sgk -o beach.proof         # receipt carries entry 7's key
+sigil log check-proof beach.proof --file beach.jpg --signer me.pub      # still checks the file, offline
+```
+
+**In plain words.** The log's table of contents is now written in code. Without the key, someone who
+finds the backup drive sees only how many entries there are and when they were added, not file
+names, sizes or fingerprints. With the key, everything (backing up only new files, receipts, clean-up)
+works exactly as before.
+
+**Format.** A private segment or compaction line is
+
+```text
+seq=7 t=1760000000 size=0 sha=<star> star=<star> box=<hex> chain=<hex>
+seq=9 t=1760000090 size=0 sha=<star> op=compact of=1,3 star=<star> box=<hex> chain=<hex>
+```
+
+* `star` is the segment star's **keyed fingerprint** (the v3 private label; see
+  [PRIVATE-LABEL.md](PRIVATE-LABEL.md)): it binds the file to the line without revealing anything
+  about its plain bytes. The visible part has exactly the shape of a key-less ("label only") entry,
+  so every keyless check (`verify`, `doctor`, `mend`, `gc`, `tombstone`, `shred`, `rotate-signer`)
+  runs unchanged and needs no key.
+* `box` (hex) = `01` ‖ key commitment (32 bytes) ‖ nonce (12) ‖ AES-256-GCM ciphertext + tag of a
+  short text record `sigil-log-box=1`, `size=`, `sha=`, optional `path=` (escaped like `path=`
+  above), zero-padded to a multiple of 64 bytes so the box length does not give away the exact
+  length of a file name. Associated data: `"sigil-log-box-v1\0"` ‖ log-id ‖ `0x00` ‖ seq (8 bytes,
+  big-endian) ‖ the visible part of the line (everything before ` box=`). The box is also covered by
+  the hash chain and the Merkle root like every other field.
+* **Keys** (HKDF-SHA-256, RFC 5869; AES-256-GCM, NIST SP 800-38D; nothing new):
+  * index key: 32 random bytes made at `init`, wrapped with the existing SGTO machinery (X25519
+    `--to` recipients and/or an Argon2id `--pass`, exactly as the key ring and `seal --to` do) and
+    stored in `IXKEY.sg1`, a small **unencrypted** Seal-mode star that holds only the wrap, so it
+    heals with `sigil log mend` and `verify` checks it keylessly (`ixkey-missing`, `bit-rot`);
+  * entry key of entry `seq` = HKDF(salt `"sigil-log-box-v1\0"` ‖ log-id, ikm index key, info
+    `"sigil log box v1 entry"` ‖ seq as 8 big-endian bytes);
+  * from the entry key, HKDF (no salt) with info `"sigil log box v1 aead key"` → the AES-256-GCM key,
+    and info `"sigil log box v1 key commitment"` → the 32-byte commitment stored in the box. AES-GCM on
+    its own does not commit to its key (one ciphertext can be built to open under two keys; Albertini,
+    Duong, Gueron, Kölbl, Luykx, Schmieg, "How to Abuse and Fix Authenticated Encryption Without Key
+    Commitment", USENIX Security 2022). Checking the commitment first makes the receipt's key the only
+    one that opens its box.
+  * Every box gets a fresh random 96-bit nonce; each entry key encrypts one line (a crashed append that
+    reuses its seq draws a new nonce), far below GCM's per-key limit.
+
+**Who needs the key.** Everything that must know sizes or names: `log add` (also `--dry-run`: it has
+to know what is already in the log), `log append` (to write the box), `log read`, `log compact`
+(it cuts batches by their sizes), `log ls` for the full listing, and keyed `log verify`. Writers open
+the index key with `--pass`, then their signing `--identity`, then any `--unlock KEY.sgk` (for an
+unsigned log, whose `--identity` is refused for signing). A key that does not open it is an error
+(`verify` reports `index-key`, exit 2), never a silent fallback. Keyless: `verify`, `doctor`, `mend`,
+`gc`, `tombstone`, `shred`, `rotate-signer`, and `prove` (inclusion only).
+
+**What stays the same.** `log add` still skips unchanged files (same path, size and SHA-256, now read
+from the opened boxes) and still checks the segment file's header against `star`. Anchors, signed
+HEADs and the Merkle root work as before (they cover the lines as written, boxes included).
+Tombstones, compaction (compaction lines are sealed too) and crypto-shredding (with
+`--segment-keys`, which combines with `--private-index`) are unchanged.
+
+**Receipts.** `log prove --pass/--identity` adds `entry-key=<hex>`: the key of that one box. It
+opens only that entry (HKDF is one-way, so no other entry key, nor the index key, can be derived from
+it). `check-proof` checks the commitment, opens the box and then compares `--file` with the sealed
+size and SHA-256. A receipt without `entry-key=` still proves inclusion, but `--file` is refused
+("sealed … ask for a receipt cut with the log's key"). Giving a receipt away discloses that entry's
+size, hash and file name to whoever holds it.
+
+**Refused in a private log (fail closed).** An unencrypted segment (no `--pass` / `--to`, or
+`--pass ""`): its header would show the plain size and SHA-256 the INDEX hides; refused before
+anything is written. `--reason` on `tombstone` / `shred` (a reason is plain text in the INDEX; leave it
+out). `log adopt` (it copies stars without opening them, so their metadata could not be sealed).
+`sigil mount` of the log (not supported yet; use `log read --seq N`). In the INDEX: a plaintext
+segment / compaction line in a private log (`index-private`), a `box=` line in a log without
+`privindex=1` (`log-format`), `privindex=1` under `log<5` (manifest error), and with the key, any box
+that does not open (`index-box`: altered, truncated, moved to another line, or wrong key).
+
+**What it still shows.** The number of entries, their times (`t=`), the entry types and the
+tombstone / compaction structure (`del=`, `of=`), each segment file's size on disk (close to the
+compressed batch size), and the signer keys. A file that appears twice is not recognisable as such
+from the INDEX (each box and each keyed fingerprint is unique).
+
+**Compatibility.** Additive: a log without `--private-index` is byte-identical to what earlier slices
+write, never gets `IXKEY.sg1` and never becomes `log=5`; `.sg1` layout untouched. A sigil that only
+knows `log=4` refuses a private log ("newer than this sigil understands; upgrade sigil") instead of
+misreading it.
+
 ## Invariants
 
 1. A segment, once appended, is never modified except by ECC repair that preserves its plain bytes.
@@ -619,6 +722,8 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
 7. Signer handovers are opt-in by use (`log=4` from the first one); a log that is never rotated is
    byte-identical to what earlier slices write. The manifest pin never changes; a HEAD covering
    entries `1..n` must be signed by the key the handovers with seq < `n` lead to from the pin.
+8. A private INDEX is opt-in at `init` (`log=5`, `privindex=1`). In it every segment / compaction line
+   is sealed and every segment is an encrypted v3 star; a log without it never holds a `box=` line.
 
 ## Threat model
 
@@ -651,7 +756,12 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
 | `log add`: typo or unsupported syntax in `--exclude` / `.sigilignore` (`!x`, `[abc`, …) | refused before the folder is read; nothing written |
 | `log add`: a source file deleted, renamed or emptied | never deletes anything from the log: listed as missing (a rename = missing + new); an emptied file is a new, empty version |
 | Attacker with segment write access and the plain data | can replace a segment only by a star with the same true-name = same plain bytes |
-| Confidentiality | per segment via `--pass` / `--to`; INDEX leaks sequence, time, sizes and plain true-names (hashes of the batches). Do not use it for low-entropy secrets you cannot afford to have confirmed by guessing. Hiding that metadata = deferred |
+| Confidentiality | per segment via `--pass` / `--to`. An ordinary INDEX leaks sequence, time, sizes, plain true-names (hashes of the batches) and `log add` paths: do not use it for low-entropy secrets you cannot afford to have confirmed by guessing. With `--private-index` sizes, true-names and paths are sealed; sequence, times, entry structure and on-disk segment sizes stay visible |
+| Private INDEX: box edited, truncated, or moved to another line (and the chain re-computed, unsigned log) | the box does not authenticate (GCM tag over seq, log-id and the visible fields) → `index-box`; readers and writers refuse |
+| Private INDEX: wrong `--pass` / `--identity` | the index key does not unwrap → refused (`index-key` in verify); never a silent keyless fallback |
+| Private INDEX: a receipt with a forged or swapped `entry-key=` | key commitment mismatch → `check-proof` exit 2 |
+| Private INDEX: plaintext line inserted, or `privindex=1` removed from the manifest | `index-private` / `log-format` error, keyless |
+| Private INDEX: `IXKEY.sg1` lost | `ixkey-missing` (error); sizes and names cannot be opened, the segments still open with their own keys. Keep copies of the whole container |
 | Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, cold kit) of the container |
 
 Unauthorised concurrent writers are not a security feature: `LOG.lock` is advisory and local. One
@@ -829,8 +939,11 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Adding a signer to an unsigned log after `init`; *consistency proofs* (this anchor is a prefix of that one) without the full INDEX.
-* Streaming appends / segments above memory size (work-pack chunking); metadata-hiding INDEX (this
-  would also hide `log add` file names).
+* Streaming appends / segments above memory size (work-pack chunking).
+* Private INDEX follow-ups: sealed tombstone / shred reasons, `sigil mount` of a private log, adopting
+  stars into one (with a key), padding segment files so on-disk sizes leak less, re-wrapping the index
+  key to new recipients, and converting an existing log (today: `--private-index` at init only).
+* Folder packs (SGDR) still show member names in an encrypted pack (see PRIVATE-LABEL.md).
 * `log add` follow-ups: restore a whole folder (or one path) by name, per-file receipts by path, and
   an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
@@ -839,4 +952,4 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 
 ## Private label (v3)
 
-Encrypted segments are v3 marks. INDEX lines gain an additive `star=<hex>` field holding the star label digest (keyed fingerprint); verify/mend compare it keylessly. `size` and `sha` remain the plaintext values (receipts and compaction rely on them), so the INDEX still reveals them. Adopted v3 stars are label-only (`star` = `sha`) and are not merged by compaction.
+Encrypted segments are v3 marks. INDEX lines gain an additive `star=<hex>` field holding the star label digest (keyed fingerprint); verify/mend compare it keylessly. `size` and `sha` remain the plaintext values (receipts and compaction rely on them), so the INDEX still reveals them, unless the log was created with `--private-index` (see "Private INDEX"). Adopted v3 stars are label-only (`star` = `sha`) and are not merged by compaction.

@@ -184,8 +184,10 @@ Out of scope (what is not claimed)
         record, and per-member plaintext SHA-256 for large members.
       - vault CHART version lines: plaintext SHA-256 and size of each
         version (sidecar file, not the .sg1).
-      - segment-log INDEX lines: plaintext size and SHA-256 per entry
-        (receipts and compaction rely on them); the star= field is keyed.
+      - segment-log INDEX lines: plaintext size, SHA-256 and log-add path
+        per entry, unless the log was created with --private-index
+        (log=5: sealed with AES-256-GCM under an HKDF-derived per-entry
+        key; see docs/SEGMENT-LOG.md "Private INDEX"); star= is keyed.
       - constellation card member names: hidden only when the card itself
         is encrypted; star counts and sizes are always visible.
     Until padding ships: give encrypted outputs neutral names and do not
