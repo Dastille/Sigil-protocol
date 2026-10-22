@@ -840,6 +840,58 @@ pub fn scry_dir_keys(
     Ok(render_listing(&list_dir_pack(input)?))
 }
 
+/// [`scry_dir_keys`] plus a keyless recoverability verdict: `Some(reason)` when a
+/// member (v1) or the encrypted body (v2) has fewer intact pieces than it needs.
+pub fn scry_dir_checked(
+    input: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<(String, Option<String>)> {
+    let text = scry_dir_keys(input, pass, companions, identities)?;
+    let bad = if let Some((_, body)) = sealed_dir_body(input)? {
+        crate::work::star_bytes_unrecoverable(&body).map(|w| format!("encrypted body: {w}"))
+    } else {
+        v1_unrecoverable(input)?
+    };
+    Ok(match bad {
+        None => (text, None),
+        Some(why) => (format!("{text}\nNOT recoverable: {why}"), Some(why)),
+    })
+}
+
+/// First member of a v1 pack that cannot be restored (one member in memory at a time).
+fn v1_unrecoverable(input: &Path) -> Result<Option<String>> {
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    for i in 0..n {
+        let mut lb = [0u8; 2];
+        if reader.read_exact(&mut lb).is_err() {
+            return Ok(Some(format!("folder pack cut off at member {i} of {n}")));
+        }
+        let mut name = vec![0u8; u16::from_le_bytes(lb) as usize];
+        let mut sl = [0u8; 8];
+        if reader.read_exact(&mut name).is_err() || reader.read_exact(&mut sl).is_err() {
+            return Ok(Some(format!("folder pack cut off at member {i} of {n}")));
+        }
+        let rel = String::from_utf8_lossy(&name).into_owned();
+        let slen = u64::from_le_bytes(sl);
+        let mut star = Vec::new();
+        reader
+            .by_ref()
+            .take(slen)
+            .read_to_end(&mut star)
+            .map_err(io)?;
+        if (star.len() as u64) < slen {
+            return Ok(Some(format!("{rel}: cut off")));
+        }
+        if let Some(why) = crate::work::star_bytes_unrecoverable(&star) {
+            return Ok(Some(format!("{rel}: {why}")));
+        }
+    }
+    Ok(None)
+}
+
 /// Scry line of a sealed body (written to a private scratch file: it is ciphertext).
 fn scry_body(input: &Path, body: &[u8]) -> Result<String> {
     let tmp = Scratch(scratch_beside(

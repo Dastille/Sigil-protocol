@@ -6,15 +6,14 @@ use sigil::{
     is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
     mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
     place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
-    run_showing, scatter_pieces, scry_constellation, scry_path, seal_kn_mds_to, sha256,
-    sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
-    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
-    vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
-    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
-    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
-    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
-    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, VaultRetention, CDC_DEDUP,
-    CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    run_showing, scatter_pieces, scry_constellation, seal_kn_mds_to, sha256, sha256_path,
+    talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys,
+    unseal_path_keys, unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex,
+    vault_format_recipients, vault_format_retention, vault_format_status, vault_format_versions,
+    vault_get_recipients, vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit,
+    vault_prune_with, vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status,
+    vault_track_ex, vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode,
+    VaultRetention, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -24,6 +23,7 @@ use std::process::{Command, Stdio};
 #[derive(Parser)]
 #[command(
     name = "sigil",
+    version,
     about = "Wrap a file so a damaged copy can still be restored, and so you can tell if it was swapped.",
     long_about = "Inscribe makes a .sg1. Scry checks it without unpacking. De-scribe gets the original back.\nDefault lock style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nGitHub: tag v1.0 yourself — this tool does not log in for you.",
     after_long_help = "See docs/START.md in the repo for a plain-English map of everyday commands."
@@ -43,7 +43,7 @@ enum Cmd {
         output: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         /// USB/file key (Talisman). Hex of its hash becomes the Ward. Instead of --pass.
         #[arg(long)]
@@ -94,7 +94,7 @@ enum Cmd {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -124,7 +124,7 @@ enum Cmd {
     Verify {
         input: PathBuf,
         /// Key for an encrypted folder pack: list its (hidden) member names
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -135,7 +135,7 @@ enum Cmd {
     Scry {
         input: PathBuf,
         /// Key for an encrypted folder pack: list its (hidden) member names
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -181,7 +181,7 @@ enum Cmd {
         output: PathBuf,
         #[arg(long)]
         open: bool,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         /// Wait for parts to show up. Write VESSEL when rebuilt so the sender can stop.
         #[arg(long)]
@@ -222,7 +222,7 @@ enum Cmd {
         /// Other people's rain folders: user@host:rain/ or a local path
         #[arg(long = "peer")]
         peers: Vec<String>,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         open: bool,
@@ -246,7 +246,7 @@ enum Cmd {
         /// Write this exact .strm path
         #[arg(long)]
         strm: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         /// Seconds with no reads before the temp copy is deleted (default 20 min)
         #[arg(long, default_value_t = 1200)]
@@ -257,7 +257,7 @@ enum Cmd {
     /// De-scribe to temp, open in the usual app, delete when you press Enter.
     Open {
         input: PathBuf,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -344,7 +344,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
         /// Optional: open the card to also check no star goes missing
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -364,7 +364,7 @@ enum Cmd {
         #[arg(long = "dry-run", conflicts_with = "apply")]
         dry_run: bool,
         /// Passphrase of a warded constellation card (gc must read the list)
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -391,7 +391,7 @@ enum Cmd {
         #[arg(long)]
         quick: bool,
         /// Passphrase of a warded constellation card
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -429,7 +429,7 @@ enum Cmd {
         /// Descend into this entry / nest layer (repeatable). Use `.` to unwrap a single-file nest.
         #[arg(long = "into")]
         into: Vec<String>,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -459,7 +459,7 @@ enum Cmd {
         input: PathBuf,
         /// Empty directory mountpoint (ignored with --export-dir)
         mountpoint: PathBuf,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -545,7 +545,7 @@ enum VaultCmd {
         path: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -571,7 +571,7 @@ enum VaultCmd {
         from_export: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -602,7 +602,7 @@ enum VaultCmd {
         /// Version number (default: tip)
         #[arg(long)]
         version: Option<u32>,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -709,7 +709,7 @@ enum BootCmd {
         root: PathBuf,
         #[arg(long, value_enum, default_value = "seal")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -724,7 +724,7 @@ enum BootCmd {
     Mend {
         /// Mounted USB root. Omit with --scan to search disks.
         root: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -764,7 +764,7 @@ enum LogCmd {
         #[arg(long = "public-index")]
         public_index: bool,
         /// Private INDEX: passphrase the index key is wrapped to
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -779,7 +779,7 @@ enum LogCmd {
         input: String,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -811,7 +811,7 @@ enum LogCmd {
         dir: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -841,7 +841,7 @@ enum LogCmd {
     /// hashes and file names only with --pass / --identity.
     Ls {
         path: PathBuf,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -866,7 +866,7 @@ enum LogCmd {
         /// In a range, fail on a deleted segment instead of skipping it
         #[arg(long)]
         strict: bool,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -881,7 +881,7 @@ enum LogCmd {
         /// Skip bit-level ECC verification (existence + header digest only)
         #[arg(long)]
         quick: bool,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -918,7 +918,7 @@ enum LogCmd {
         output: Option<PathBuf>,
         /// Private INDEX: open the index key so the receipt carries this entry's key (and
         /// `check-proof --file` can compare the bytes)
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -1034,7 +1034,7 @@ enum LogCmd {
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
         /// Passphrase that opens the source segments
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -1042,7 +1042,7 @@ enum LogCmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
         /// Passphrase for the merged segments
-        #[arg(long = "seal-pass")]
+        #[arg(value_parser = parse_new_pass, long = "seal-pass")]
         seal_pass: Option<String>,
         /// Encrypt-to recipient for the merged segments (repeatable)
         #[arg(long = "to")]
@@ -1068,7 +1068,7 @@ enum SkyCmd {
         as_name: Option<String>,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(long)]
+        #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -1098,7 +1098,7 @@ enum SkyCmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Passphrase of a warded card (the card is read to find every star)
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -1114,7 +1114,7 @@ enum SkyCmd {
         /// List name(s) to remove (`docs/a.txt`, or `docs/` for everything under it)
         names: Vec<String>,
         /// Passphrase of a warded card
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -1133,7 +1133,7 @@ enum SkyCmd {
     },
     Scry {
         sky: PathBuf,
-        #[arg(long)]
+        #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -1179,6 +1179,62 @@ fn binds(paths: &[PathBuf]) -> Result<Vec<[u8; 32]>, Box<dyn std::error::Error>>
     paths.iter().map(|p| Ok(sha256(&fs::read(p)?))).collect()
 }
 
+const EMPTY_PASS: &str =
+    "an empty passphrase (--pass \"\") is refused: it would not protect anything. \
+Leave out --pass for an unencrypted file, or use --pass - to type one without it showing";
+
+/// `--pass VALUE`: refuse an empty value; `-` asks on the terminal (hidden).
+fn parse_pass(v: &str) -> Result<String, String> {
+    pass_arg(v, false)
+}
+
+/// `--pass` that encrypts something new: like [`parse_pass`], and `-` asks twice.
+fn parse_new_pass(v: &str) -> Result<String, String> {
+    pass_arg(v, true)
+}
+
+fn pass_arg(v: &str, confirm: bool) -> Result<String, String> {
+    if v.is_empty() {
+        return Err(EMPTY_PASS.into());
+    }
+    if v == "-" {
+        return prompt_pass("Passphrase: ", confirm).map_err(|e| e.to_string());
+    }
+    Ok(v.to_string())
+}
+
+/// Read a passphrase from the terminal without echo (rpassword). Refuses an empty one;
+/// with `confirm`, asks again and refuses a mismatch.
+fn prompt_pass(label: &str, confirm: bool) -> Result<String, Box<dyn std::error::Error>> {
+    let first = rpassword::prompt_password(label).map_err(|e| {
+        format!("could not read a passphrase from the terminal ({e}); use --pass VALUE in scripts")
+    })?;
+    if first.is_empty() {
+        return Err(EMPTY_PASS.into());
+    }
+    if confirm {
+        let again = rpassword::prompt_password("Same passphrase again: ")
+            .map_err(|e| format!("could not read a passphrase from the terminal ({e})"))?;
+        if again != first {
+            return Err("the two passphrases do not match; nothing was written".into());
+        }
+    }
+    Ok(first)
+}
+
+/// True when stdin and stderr are a terminal (someone can answer a prompt).
+fn can_prompt() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+/// The error says a key is needed (as opposed to a wrong key or damage).
+fn needs_key(msg: &str) -> bool {
+    msg.contains("passphrase or --identity required")
+        || msg.contains("member names are hidden")
+        || msg.contains("this pack is locked")
+}
+
 fn resolve_pass(
     pass: Option<String>,
     talisman: Option<PathBuf>,
@@ -1221,10 +1277,10 @@ fn load_recipients(
 
 fn parse_wards(v: &[String]) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
     v.iter()
-        .map(|s| {
-            s.split_once('=')
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .ok_or_else(|| format!("--ward needs path=password, got {s}").into())
+        .map(|s| match s.split_once('=') {
+            Some((_, "")) => Err(format!("--ward {s}: {EMPTY_PASS}").into()),
+            Some((a, b)) => Ok((a.to_string(), b.to_string())),
+            None => Err(format!("--ward needs path=password, got {s}").into()),
         })
         .collect()
 }
@@ -1373,6 +1429,14 @@ fn main() {
         eprintln!("{e}");
         std::process::exit(classify_exit(&e.to_string()));
     }
+}
+
+/// Error text for a file `scry` / `verify` found beyond repair (exit 2: "too damaged").
+fn not_recoverable(why: &str) -> String {
+    format!(
+        "NOT recoverable ({why}): too damaged to restore from this copy; \
+         find another copy or more pieces (sigil gather), then try again"
+    )
 }
 
 fn classify_exit(msg: &str) -> i32 {
@@ -1633,83 +1697,98 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let mds_be = resolve_mds(&mds)?;
-            if mds_be.name() != "vandermonde" {
-                if star.is_some()
-                    || from_mb.is_some()
-                    || to_mb.is_some()
-                    || is_dir_pack(&input)
-                    || is_constellation_input(&input)
+            let attempt = |pass: Option<&str>| -> Result<(), Box<dyn std::error::Error>> {
+                if mds_be.name() != "vandermonde" {
+                    if star.is_some()
+                        || from_mb.is_some()
+                        || to_mb.is_some()
+                        || is_dir_pack(&input)
+                        || is_constellation_input(&input)
+                    {
+                        return Err("Cauchy --mds De-scribe is plain .sg1 only for now".into());
+                    }
+                    let data = fs::read(&input)?;
+                    let plain =
+                        unseal_ex_mds_keys(&data, pass, &companions, &*mds_be, &identities)?;
+                    let n = plain.len();
+                    fs::write(&output, &plain)?;
+                    println!(
+                        "de-scribed {n} bytes → {} (mds {})",
+                        output.display(),
+                        mds_be.name()
+                    );
+                    return Ok(());
+                }
+                if star.is_some() || from_mb.is_some() || to_mb.is_some() {
+                    let (head, _) = sigil::index_pack(&input)?;
+                    let from = if let Some(s) = star {
+                        s
+                    } else {
+                        let mb = from_mb.unwrap_or(0) as u64;
+                        ((mb * 1024 * 1024) / head.chunk_size.max(1) as u64) as u32
+                    };
+                    let to = if let Some(s) = star {
+                        s
+                    } else if let Some(mb) = to_mb {
+                        (((mb as u64) * 1024 * 1024) / head.chunk_size.max(1) as u64) as u32
+                    } else {
+                        head.stars.saturating_sub(1)
+                    };
+                    let (n, stars) = unseal_range_keys(
+                        &input,
+                        &output,
+                        pass,
+                        &companions,
+                        from,
+                        to,
+                        &identities,
+                    )?;
+                    println!(
+                        "de-scribed {stars} slices ({n} bytes) → {}",
+                        output.display()
+                    );
+                } else if is_dir_pack(&input) {
+                    let n = unseal_dir_only_keys(
+                        &input,
+                        &output,
+                        pass,
+                        &companions,
+                        &only,
+                        &wards,
+                        &identities,
+                    )?;
+                    println!("de-scribed {n} files → {}", output.display());
+                } else if is_constellation_input(&input) {
+                    let n = sigil::unseal_constellation_keys(
+                        &input,
+                        &output,
+                        pass,
+                        &companions,
+                        &only,
+                        &identities,
+                    )?;
+                    println!("de-scribed {n} files → {}", output.display());
+                } else {
+                    if !only.is_empty() {
+                        return Err("--only is for a folder wrap. This is one file.".into());
+                    }
+                    let n = unseal_path_keys(&input, &output, pass, &companions, &identities)?;
+                    println!("de-scribed {n} bytes → {}", output.display());
+                }
+                Ok(())
+            };
+            match attempt(pass.as_deref()) {
+                // Encrypted and no key given: ask on the terminal (hidden) instead of failing.
+                Err(e)
+                    if pass.is_none()
+                        && identities.is_empty()
+                        && needs_key(&e.to_string())
+                        && can_prompt() =>
                 {
-                    return Err("Cauchy --mds De-scribe is plain .sg1 only for now".into());
+                    let typed = prompt_pass("Passphrase: ", false)?;
+                    attempt(Some(&typed))?;
                 }
-                let data = fs::read(&input)?;
-                let plain =
-                    unseal_ex_mds_keys(&data, pass.as_deref(), &companions, &*mds_be, &identities)?;
-                let n = plain.len();
-                fs::write(&output, &plain)?;
-                println!(
-                    "de-scribed {n} bytes → {} (mds {})",
-                    output.display(),
-                    mds_be.name()
-                );
-                return Ok(());
-            }
-            if star.is_some() || from_mb.is_some() || to_mb.is_some() {
-                let (head, _) = sigil::index_pack(&input)?;
-                let from = if let Some(s) = star {
-                    s
-                } else {
-                    let mb = from_mb.unwrap_or(0) as u64;
-                    ((mb * 1024 * 1024) / head.chunk_size.max(1) as u64) as u32
-                };
-                let to = if let Some(s) = star {
-                    s
-                } else if let Some(mb) = to_mb {
-                    (((mb as u64) * 1024 * 1024) / head.chunk_size.max(1) as u64) as u32
-                } else {
-                    head.stars.saturating_sub(1)
-                };
-                let (n, stars) = unseal_range_keys(
-                    &input,
-                    &output,
-                    pass.as_deref(),
-                    &companions,
-                    from,
-                    to,
-                    &identities,
-                )?;
-                println!(
-                    "de-scribed {stars} slices ({n} bytes) → {}",
-                    output.display()
-                );
-            } else if is_dir_pack(&input) {
-                let n = unseal_dir_only_keys(
-                    &input,
-                    &output,
-                    pass.as_deref(),
-                    &companions,
-                    &only,
-                    &wards,
-                    &identities,
-                )?;
-                println!("de-scribed {n} files → {}", output.display());
-            } else if is_constellation_input(&input) {
-                let n = sigil::unseal_constellation_keys(
-                    &input,
-                    &output,
-                    pass.as_deref(),
-                    &companions,
-                    &only,
-                    &identities,
-                )?;
-                println!("de-scribed {n} files → {}", output.display());
-            } else {
-                if !only.is_empty() {
-                    return Err("--only is for a folder wrap. This is one file.".into());
-                }
-                let n =
-                    unseal_path_keys(&input, &output, pass.as_deref(), &companions, &identities)?;
-                println!("de-scribed {n} bytes → {}", output.display());
+                r => r?,
             }
         }
         Cmd::Verify {
@@ -1732,12 +1811,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else if is_dir_pack(&input) {
                 let pass = resolve_pass(pass, talisman)?;
                 let identities = load_identities(&identity)?;
-                println!(
-                    "{}",
-                    sigil::scry_dir_keys(&input, pass.as_deref(), &[], &identities)?
-                );
+                let (text, bad) =
+                    sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)?;
+                println!("{text}");
+                if let Some(why) = bad {
+                    return Err(not_recoverable(&why).into());
+                }
             } else {
-                println!("{}", scry_path(&input)?);
+                let (text, bad) = sigil::scry_path_checked(&input)?;
+                println!("{text}");
+                if let Some(why) = bad {
+                    return Err(not_recoverable(&why).into());
+                }
             }
         }
         Cmd::Scatter { input, output } => {
