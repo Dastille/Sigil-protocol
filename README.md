@@ -190,14 +190,16 @@ result: healthy
 
 `log ls`, `log read`, `log prove`, `log tombstone`, `log compact` and more:
 `sigil log --help` and [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
-By default the log INDEX records each entry's path, size and SHA-256 in the clear.
+The log INDEX records each entry's path, size and SHA-256. A log created with
+no key (as above) keeps them in the clear, and `log init` says so.
 
-**Private INDEX.** Create the log with `--private-index` and those three are
-sealed (AES-256-GCM) under an index key wrapped to `--to` / `--pass`. Every
-segment must then be encrypted. Without the key, `log ls` shows `sealed`:
+**Private INDEX (default with a key).** Create the log with `--pass` and/or
+`--to` and those three are sealed (AES-256-GCM) under an index key wrapped to
+them; no extra flag is needed. Every segment must then be encrypted. Without the
+key, `log ls` shows `sealed`:
 
 ```
-$ sigil log init photos --identity me.sgk --private-index --to me.pub
+$ sigil log init photos --identity me.sgk --to me.pub
 $ sigil log add photos Photos --to me.pub --identity me.sgk
   + 2024/beach.jpg  3 bytes  new → segment 1
 $ sigil log ls photos
@@ -210,7 +212,9 @@ $ sigil log check-proof beach.proof --file Photos/2024/beach.jpg --signer me.pub
 ```
 
 Keyless `log verify`, `mend` and `gc` still work. Entry count, times and
-on-disk segment sizes stay visible. Details: "Private INDEX" in
+on-disk segment sizes stay visible. `--private-index` is still accepted.
+`--public-index` opts out (names, sizes and hashes in the clear) and prints a
+warning. Logs created before this change keep the INDEX they were made with. Details: "Private INDEX" in
 [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
 
 ### Other commands
