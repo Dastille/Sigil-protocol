@@ -121,10 +121,11 @@ line in a `.sigilignore` file at the top of the folder (`#` starts a comment), o
 `--dry-run` lists what would be skipped, and files already in the log are never removed by this.
 
 To keep the file names, sizes and fingerprints themselves private (for example a family photo
-backup on a drive someone else could pick up), create the log with `--private-index`:
+backup on a drive someone else could pick up), create the log with a key (`--to` and/or `--pass`);
+the INDEX is then private by default. A log created with no key keeps names in the clear.
 
 ```
-./sigil log init photos --identity me.sgk --private-index --to me.pub
+./sigil log init photos --identity me.sgk --to me.pub
 ./sigil log add photos ./Photos --mode seal --to me.pub --identity me.sgk
 ./sigil log ls photos --identity me.sgk                  # names and sizes need the key
 ```

@@ -47,8 +47,8 @@ manifest key. `log=4` = the INDEX may also hold **signer handover** entries (`op
 raised to `log=4` only by its first `sigil log rotate-signer` (manifest first), whatever it was
 before (a `--segment-keys` log keeps `segkeys=1`). A log that is never rotated never becomes `log=4`.
 `log=5` = a **private INDEX** (`privindex=1`, an `IXKEY.sg1` member, sealed `box=` entries); only
-`sigil log init --private-index` creates it, from its first byte, and a log that does not opt in never
-becomes `log=5` (see "Private INDEX" below).
+`sigil log init` with `--pass` / `--to` (or `--private-index`) creates it, from its first byte, and a
+log created without a key or with `--public-index` never becomes `log=5` (see "Private INDEX" below).
 A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
@@ -65,7 +65,7 @@ events.sigil/                       one container per log
   segments/0000/0000000002.sg1
   segments/0001/0000001000.sg1
   keys/0000.sg1                     only with `init --segment-keys` (log=3): the key ring, 1000 keys per shard
-  IXKEY.sg1                         only with `init --private-index` (log=5): the wrapped index key
+  IXKEY.sg1                         only in a private-INDEX log (log=5): the wrapped index key
 ```
 
 * A **segment** is a normal star made by the normal seal path: ECC (Glyph / Reflection / Seal
@@ -151,7 +151,7 @@ sigil log append events batch.json --identity me.sgk
 ## Operations
 
 ```sh
-sigil log init events [--identity me.sgk] [--segment-keys] [--private-index --to me.pub|--pass …]
+sigil log init events [--identity me.sgk] [--segment-keys] [--to me.pub|--pass … (private INDEX) [--public-index]]
 sigil log append events FILE|-  [--mode glyph|reflection|seal] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]
 sigil log ls events [--pass … | --identity …]  # also: sigil ls events (a private INDEX shows sizes/names only with a key)
 sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --identity key.sgk]…
@@ -607,15 +607,22 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
   FILE` restores one. A whole-folder restore by path is a later slice (today `sigil mount
   --export-dir` gives one file per seq).
 
-## Private INDEX (`sigil log init --private-index`, `log=5`)
+## Private INDEX (default for `sigil log init --pass/--to`, `log=5`)
 
-Without this option the INDEX shows, for every entry, the batch's plain size, its plain SHA-256 and
+**Default.** `log init` with `--pass` and/or `--to` creates a private INDEX; no flag is needed
+(`--private-index` is still accepted and means the same). `--public-index` opts out: the log is
+created with a public INDEX, `--pass` / `--to` are not used at init (give them to each append to
+encrypt the segments), and a warning is printed. `log init` with no key creates a public INDEX (there
+is nothing to wrap an index key to) and prints a note saying so. Existing logs never change: a log
+keeps the INDEX kind it was created with (`privindex=1` in `CONTAINER`).
+
+A public INDEX shows, for every entry, the batch's plain size, its plain SHA-256 and
 (for `log add`) the file's path. Anyone who can read the log folder learns the names and sizes of
 everything in it, and can confirm a guess about a file's content by hashing the guess. A private log
 seals those three values; everything else about the log works as before.
 
 ```sh
-sigil log init photos --identity me.sgk --private-index --to me.pub     # or --pass, or both
+sigil log init photos --identity me.sgk --to me.pub                     # or --pass, or both: private by default
 sigil log add photos ./Photos --to me.pub --identity me.sgk             # --identity signs and opens the index key
 sigil log ls photos                                                     # sizes, hashes, names: "sealed"
 sigil log ls photos --identity me.sgk                                   # the full listing

@@ -506,17 +506,15 @@ fn manifest_rules_keep_old_logs_and_private_logs_apart() {
     assert_eq!(code, 2, "{o}");
     assert!(o.contains("log-format"), "{o}");
 
-    // init: wrap keys only with --private-index, and --private-index needs a wrap key
-    assert!(fails(&d, &["log", "init", "x1", "--pass", "pw"]).contains("--private-index"));
+    // init: --private-index needs a wrap key (a key alone now makes it private by default)
+    assert!(ok(&d, &["log", "init", "x1", "--pass", "pw"]).contains("private INDEX"));
     assert!(fails(&d, &["log", "init", "x2", "--private-index"]).contains("--to and/or --pass"));
     assert!(
         fails(&d, &["log", "init", "x3", "--private-index", "--pass", ""])
             .contains("--to and/or --pass")
     );
     assert!(
-        !d.join("x1.sigil").exists()
-            && !d.join("x2.sigil").exists()
-            && !d.join("x3.sigil").exists()
+        d.join("x1.sigil").exists() && !d.join("x2.sigil").exists() && !d.join("x3.sigil").exists()
     );
 }
 

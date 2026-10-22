@@ -755,9 +755,14 @@ enum LogCmd {
         segment_keys: bool,
         /// Keep the INDEX private: each entry's size, SHA-256 and file name are sealed (AES-256-GCM)
         /// under an index key wrapped to --to and/or --pass; every segment must be encrypted. The log
-        /// becomes `log=5`. Keyless verify / mend / gc keep working
-        #[arg(long = "private-index")]
+        /// becomes `log=5`. Keyless verify / mend / gc keep working. This is the default whenever
+        /// --pass or --to is given; the flag is kept for scripts
+        #[arg(long = "private-index", conflicts_with = "public_index")]
         private_index: bool,
+        /// Opt out of the private INDEX for a log created with --pass / --to: sizes, SHA-256s and
+        /// file names are written in the clear (as in a log created with no key). Prints a warning
+        #[arg(long = "public-index")]
+        public_index: bool,
         /// Private INDEX: passphrase the index key is wrapped to
         #[arg(long)]
         pass: Option<String>,
@@ -2877,13 +2882,32 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             segment_keys,
             private_index,
+            public_index,
             pass,
             talisman,
             to,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
-            let pass = resolve_pass(pass, talisman)?;
-            let recipients = load_recipients(&to)?;
+            let mut pass = resolve_pass(pass, talisman)?;
+            let mut recipients = load_recipients(&to)?;
+            let keyed = pass.is_some() || !recipients.is_empty();
+            // Safe by default: a log created with a key gets a private INDEX.
+            let private_index = private_index || (keyed && !public_index);
+            if public_index {
+                eprintln!(
+                    "WARNING: --public-index: every entry's file name, size and SHA-256 will be \
+                     readable by anyone who can see the log folder (and a guessed file can be \
+                     confirmed by hashing it). Leave out --public-index to seal them."
+                );
+                if keyed {
+                    eprintln!(
+                        "WARNING: --pass / --to are not used by a public INDEX; give them to each \
+                         `log append` / `log add` to encrypt the segments."
+                    );
+                    pass = None;
+                    recipients.clear();
+                }
+            }
             let log = seglog::init_opts(
                 &path,
                 &seglog::InitOpts {
@@ -2905,6 +2929,8 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
             if private_index {
                 println!("private INDEX: sizes, hashes and file names are sealed; writers and readers need the --pass / --identity the index key was wrapped to");
+            } else if !public_index {
+                println!("public INDEX: no --pass / --to given, so file names, sizes and SHA-256s are stored in the clear (create the log with --pass or --to to seal them)");
             }
         }
         LogCmd::Append {

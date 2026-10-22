@@ -65,5 +65,5 @@ nonzero outer entropy slot, and any label edit.
 Ciphertext length (padding is a follow-up, opt-in only), the file count of an
 encrypted folder pack (names are sealed: see above), member names of folder packs
 written before sealed directories or protected only by wards, vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
-without `--private-index` (a private INDEX seals them: docs/SEGMENT-LOG.md "Private INDEX").
+with no key or with `--public-index` (a private INDEX, the default for a keyed log, seals them: docs/SEGMENT-LOG.md "Private INDEX").
 See the threat model.
