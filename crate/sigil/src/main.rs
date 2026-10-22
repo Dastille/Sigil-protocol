@@ -1,19 +1,19 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
-    add_to_constellation, attest, backend_by_name, copy_sigil_binary, deluge_fountain,
-    deluge_pieces, format_bakeoff_report, gather_fountain, gather_pieces, hex32, inject_initrd,
-    inscribe_dir_to, inscribe_path_to, inscribe_stars_dir_to, install_hooks,
-    is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
-    mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
-    place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
-    run_showing, scatter_pieces, scry_constellation, seal_kn_mds_to, sha256, sha256_path,
-    talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys,
-    unseal_path_keys, unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex,
-    vault_format_recipients, vault_format_retention, vault_format_status, vault_format_versions,
-    vault_get_recipients, vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit,
-    vault_prune_with, vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status,
-    vault_track_ex, vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode,
-    VaultRetention, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    add_to_constellation, attest, backend_by_name, copy_sigil_binary, deluge_pieces,
+    format_bakeoff_report, gather_pieces, hex32, inject_initrd, inscribe_dir_to, inscribe_path_to,
+    inscribe_stars_dir_to, install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir,
+    keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_kit, mend_scan, overture_report,
+    path_extract_keys, path_walk_keys, place_kit, prepare_boot, resolve_recipient, run_bakeoff,
+    run_mount_keys, run_open_keys, run_showing, scatter_pieces, scry_constellation, seal_kn_mds_to,
+    sha256, sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
+    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
+    vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
+    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
+    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
+    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
+    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, VaultRetention, CDC_DEDUP,
+    CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -172,8 +172,14 @@ enum Cmd {
         #[arg(long)]
         watch: bool,
         /// RaptorQ rain (no 255 cap). Writes .rq packets. Gather rebuilds from any enough set.
+        /// Each packet gets a random symbol ID from RaptorQ's full 24-bit space (RFC 6330 3.2),
+        /// so independent senders rarely overlap and partial shares can be pooled.
         #[arg(long)]
         fountain: bool,
+        /// With --fountain: number packets 0, 1, 2, ... (the old order) instead of at random.
+        /// Two senders using this send the same packets
+        #[arg(long, requires = "fountain")]
+        sequential: bool,
     },
     Gather {
         input: PathBuf,
@@ -1431,6 +1437,20 @@ fn main() {
     }
 }
 
+/// Fountain gather that prints which packet files were skipped (stderr).
+fn gather_fountain_noted(
+    dir: &Path,
+) -> Result<(Vec<u8>, sigil::FountainReport), Box<dyn std::error::Error>> {
+    let (data, rep) = sigil::gather_fountain_report(dir)?;
+    for (p, why) in &rep.bad {
+        eprintln!("skipped {}: {why}", p.display());
+    }
+    for p in &rep.stray {
+        eprintln!("skipped {}: belongs to another file", p.display());
+    }
+    Ok((data, rep))
+}
+
 /// Error text for a file `scry` / `verify` found beyond repair (exit 2: "too damaged").
 fn not_recoverable(why: &str) -> String {
     format!(
@@ -1841,11 +1861,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             wormhole,
             watch,
             fountain,
+            sequential,
         } => {
             let data = fs::read(&input)?;
             if fountain {
-                let n = deluge_fountain(&data, &output, extra as u32)?;
-                println!("fountain {n} packets (.rq) → {}", output.display());
+                let n = sigil::deluge_fountain_opts(&data, &output, extra as u32, sequential)?;
+                println!(
+                    "fountain {n} packets (.rq, {} symbol IDs) → {}",
+                    if sequential { "sequential" } else { "random" },
+                    output.display()
+                );
                 println!("far side: sigil gather -o rebuilt.sg1 <folder>");
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {
@@ -1929,14 +1954,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     input.display()
                 );
                 loop {
-                    let gathered = if is_fountain_dir(&input) {
-                        gather_fountain(&input)
+                    let fountain = is_fountain_dir(&input);
+                    let mut ft_count = None;
+                    let gathered = if fountain {
+                        gather_fountain_noted(&input).map(|(d, r)| {
+                            ft_count = Some((r.packets, r.needed as usize));
+                            d
+                        })
                     } else {
-                        gather_pieces(&input)
+                        gather_pieces(&input).map_err(|e| e.into())
                     };
+                    let gathered: Result<Vec<u8>, Box<dyn std::error::Error>> = gathered;
                     match gathered {
                         Ok(sg1) => {
-                            let (have, k, _) = tally_pieces(&input).unwrap_or((0, 0, 0));
+                            let (have, k, _) = match ft_count {
+                                Some((h, k)) => (h, k, 0),
+                                None => tally_pieces(&input).unwrap_or((0, 0, 0)),
+                            };
                             if open {
                                 let plain = unseal_ex(&sg1, pass.as_deref(), &[])?;
                                 fs::write(&output, plain)?;
@@ -1952,6 +1986,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             println!("Vessel is full. Sender can stop.");
                             break;
                         }
+                        Err(e) if fountain => {
+                            println!("waiting… {e}");
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
                         Err(_) => {
                             if let Ok((have, k, _)) = tally_pieces(&input) {
                                 println!("waiting… {have} good parts, need {k}");
@@ -1964,7 +2002,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             } else {
                 let sg1 = if is_fountain_dir(&input) {
-                    gather_fountain(&input)?
+                    gather_fountain_noted(&input)?.0
                 } else {
                     gather_pieces(&input)?
                 };

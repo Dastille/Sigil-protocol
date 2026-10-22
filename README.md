@@ -245,6 +245,12 @@ warning. Logs created before this change keep the INDEX they were made with. Det
 
 ### Other commands
 
+`sigil deluge --fountain` writes RaptorQ packets with random symbol IDs, so
+several people can rain the same file into one folder without coordinating
+(`--sequential` = the old 0, 1, 2, ... order); `sigil gather` skips damaged or
+stray packet files and, when short, says `have 4 of 10 needed, need 6 more`
+([docs/FOUNTAIN-v2.md](docs/FOUNTAIN-v2.md)).
+
 `sigil --help` lists the rest (pieces/`deluge`/`gather`, `dispatch`, `boot` for
 live USBs, `vault`, `mount`, `kit`, `sign`, `import-pgp`, ...). They are not
 covered by the examples here; see [docs/START.md](docs/START.md) and
