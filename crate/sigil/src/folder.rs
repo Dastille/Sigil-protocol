@@ -643,6 +643,9 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
     ))
 }
 
+/// One folder-pack member: `(relative path, star bytes)`.
+type Member = (String, Vec<u8>);
+
 /// Restore `entries` into `dest` (all-or-nothing). With `mend`, torn member stars
 /// are healed and the healed list is returned when anything changed.
 #[allow(clippy::too_many_arguments)]
@@ -655,7 +658,7 @@ fn restore_entries(
     wards: &[(String, String)],
     identities: &[Identity],
     mend: bool,
-) -> Result<(u32, Option<Vec<(String, Vec<u8>)>>)> {
+) -> Result<(u32, Option<Vec<Member>>)> {
     let mut staged = Staging::new();
     staged.make_dir(dest)?;
     let mut healed_stars: Vec<(String, Vec<u8>)> = Vec::with_capacity(entries.len());
