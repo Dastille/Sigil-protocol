@@ -76,7 +76,9 @@ NOT recoverable  v2  live=5/16 need=12 merkle=open keystone=intact ...
 NOT recoverable (live=5/16 need=12): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
 ```
 
-`sigil --version` prints the version.
+`sigil --version` prints the version and the git commit it was built from, e.g.
+`sigil 1.0.0 (commit 76d0639)` (`-dirty` after the SHA if the checkout had
+uncommitted changes, `unknown` when built without git, e.g. from a source tarball).
 
 ### Repair: mend
 
@@ -247,7 +249,11 @@ warning. Logs created before this change keep the INDEX they were made with. Det
 
 `sigil deluge --fountain` writes RaptorQ packets with random symbol IDs, so
 several people can rain the same file into one folder without coordinating
-(`--sequential` = the old 0, 1, 2, ... order); `sigil gather` skips damaged or
+(`--sequential` = the old 0, 1, 2, ... order). `--extra N` is a target, not an
+increment: running deluge again into the same folder tops it up to N spare packets
+beyond what the file needs (only valid packets of that file count; damaged, forged or
+other files' packets are reported and left alone), and writes nothing if it is already
+there. `sigil gather` skips damaged or
 stray packet files and, when short, says `have 4 of 10 needed, need 6 more`
 ([docs/FOUNTAIN-v2.md](docs/FOUNTAIN-v2.md)).
 

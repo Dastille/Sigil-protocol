@@ -43,7 +43,14 @@ ESIs 0..K-1 of a block are its source symbols, K and up are repair symbols (sect
 - **Default:** `deluge --fountain` gives each packet a random ESI from the whole 24-bit space
   (K + `--extra` distinct ones per block, files `rain-<block>-<esi>.rq`). People raining the same
   file without coordinating almost never send the same packet, so partial shares pooled in one
-  folder add up, and running deluge again adds new packets instead of rewriting the same ones.
+  folder add up.
+- **`--extra N` is a target, not an increment** (both modes): each source block ends up with
+  K + N valid packets of this file. Running deluge again into the same folder counts the packets
+  already there (v1 or v2, any file name) that are byte-for-byte this file's packet for their ESI,
+  and writes only the missing number with fresh random ESIs that collide with none already there;
+  at or above the target it writes nothing and says so. Damaged packets, packets that claim this
+  file but do not match it (forged), and other files' packets are reported (`not counted ...` on
+  stderr), never counted, and never overwritten. A smaller `--extra` never deletes packets.
 - **`--sequential`:** the old order, ESIs 0..K+extra-1 (`rain-00000.rq` ...). Two senders using it
   send identical packets.
 - **Packet file v2:** `"SGFT" | 2 | OTI (12) | object SHA-256 (32) | payload id (4) | symbol |

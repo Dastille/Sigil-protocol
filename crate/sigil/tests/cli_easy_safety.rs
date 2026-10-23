@@ -168,6 +168,17 @@ fn version_flag() {
     let v = ok(&d, &["--version"]);
     assert!(v.starts_with("sigil "), "{v}");
     assert!(v.contains(env!("CARGO_PKG_VERSION")), "{v}");
+    // ... plus the git commit the build came from, or "unknown" (never a build failure).
+    let line = v.trim_end();
+    let tail = line
+        .strip_prefix(&format!("sigil {} (commit ", env!("CARGO_PKG_VERSION")))
+        .and_then(|t| t.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("{v}"));
+    let sha = tail.strip_suffix("-dirty").unwrap_or(tail);
+    assert!(
+        sha == "unknown" || (sha.len() >= 7 && sha.bytes().all(|b| b.is_ascii_hexdigit())),
+        "{v}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
 
