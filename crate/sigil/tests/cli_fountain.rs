@@ -149,3 +149,40 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn extra_is_a_target_top_up_not_an_increment() {
+    let d = scratch("topup");
+    let mark = fx().join("mark.sg1");
+    let m = mark.to_str().unwrap();
+    // mark.sg1 has 6 source symbols: --extra 2 = 8 packets.
+    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "2", "-o", "r"]);
+    assert!(o.contains("fountain 8 packets"), "{o}");
+    assert!(
+        !o.contains("topped up") && !o.contains("nothing written"),
+        "{o}"
+    );
+    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "5", "-o", "r"]);
+    assert!(o.contains("fountain 11 packets"), "{o}");
+    assert!(o.contains("kept 8 already there, wrote 3 new"), "{o}");
+    assert_eq!(rq(&d.join("r")).len(), 11);
+    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "5", "-o", "r"]);
+    assert!(o.contains("nothing written"), "{o}");
+    assert_eq!(rq(&d.join("r")).len(), 11);
+    // Old v1 packets of the same file count toward the target too.
+    let v1 = d.join("v1");
+    std::fs::create_dir_all(&v1).unwrap();
+    for p in rq(&fx().join("rain")) {
+        std::fs::copy(&p, v1.join(p.file_name().unwrap())).unwrap();
+    }
+    std::fs::write(v1.join("junk.rq"), b"not a packet").unwrap();
+    let (o, e) = ok(&d, &["deluge", m, "--fountain", "--extra", "2", "-o", "v1"]);
+    assert!(o.contains("nothing written"), "{o}");
+    assert!(e.contains("not counted") && e.contains("junk.rq"), "{e}");
+    ok(&d, &["gather", "-o", "back.sg1", "r"]);
+    assert_eq!(
+        std::fs::read(d.join("back.sg1")).unwrap(),
+        std::fs::read(&mark).unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

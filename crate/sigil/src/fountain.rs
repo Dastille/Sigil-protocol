@@ -14,6 +14,10 @@
 //! several senders add up. `--sequential` keeps the old order (source symbols
 //! 0..K-1, then K..K+extra-1 per block).
 //!
+//! `--extra N` is a target: rerunning into the same folder tops each block up to
+//! K + N valid packets of this file and writes nothing once it is there
+//! ([`DelugeReport`]).
+//!
 //! ## Packet file
 //!
 //! - v1 (old, still read): `"SGFT" | 1 | OTI (12) | payload id (4) | symbol`.
@@ -130,15 +134,83 @@ fn parse_packet(b: &[u8]) -> std::result::Result<Parsed, String> {
     Ok(Parsed { cfg, object, pkt })
 }
 
+/// What `deluge --fountain` found and wrote in the output folder.
+///
+/// `--extra N` is a target, not an increment: each source block ends up with
+/// K + N valid packets of this file (K = its source-symbol count). Packets already
+/// in the folder count toward it only if they are byte-for-byte the packet this
+/// file produces for their symbol ID; nothing that is already there is overwritten.
+#[derive(Debug, Default, Clone)]
+pub struct DelugeReport {
+    /// Valid packets of this file wanted in the folder: sum over blocks of K + extra.
+    pub target: u32,
+    /// Valid packets of this file that were already there and were kept (counted
+    /// toward the target; may exceed it when an earlier run used a bigger `--extra`).
+    pub kept: u32,
+    /// New packet files written by this run.
+    pub written: u32,
+    /// `.rq` files not counted: unreadable, damaged, or claiming to be this file
+    /// but not matching it. Left in place.
+    pub bad: Vec<(PathBuf, String)>,
+    /// `.rq` files of another file. Left in place, not counted.
+    pub stray: Vec<PathBuf>,
+    /// Extra copies of a packet already counted (same block and symbol ID).
+    pub duplicates: usize,
+}
+
+impl DelugeReport {
+    /// Valid packets of this file in the folder after the run.
+    pub fn total(&self) -> u32 {
+        self.kept.saturating_add(self.written)
+    }
+}
+
 /// Write source packets plus `repair` extra RaptorQ packets of the whole .sg1,
-/// with random ESIs (the default; see the module docs).
+/// with random ESIs (the default; see the module docs). Returns how many valid
+/// packets of this file the folder holds afterwards.
 pub fn deluge_fountain(file: &[u8], dir: &Path, repair: u32) -> Result<u32> {
     deluge_fountain_opts(file, dir, repair, false)
 }
 
 /// Like [`deluge_fountain`]; `sequential` writes ESIs 0..K+repair-1 per block
-/// (the order used before random numbering).
+/// (the order used before random numbering). See [`deluge_fountain_report`].
 pub fn deluge_fountain_opts(file: &[u8], dir: &Path, repair: u32, sequential: bool) -> Result<u32> {
+    deluge_fountain_report(file, dir, repair, sequential).map(|r| r.total())
+}
+
+/// The packet this file's encoder produces for `esi` in one source block.
+fn expected_packet(
+    block: &raptorq::SourceBlockEncoder,
+    source: &[EncodingPacket],
+    esi: u32,
+) -> Result<EncodingPacket> {
+    let k = source.len() as u32;
+    if esi < k {
+        source
+            .get(esi as usize)
+            .cloned()
+            .ok_or_else(|| err("internal: source symbol out of range"))
+    } else {
+        block
+            .repair_packets(esi - k, 1)
+            .into_iter()
+            .next()
+            .ok_or_else(|| err("internal: no repair packet"))
+    }
+}
+
+/// Top the folder up to `repair` spare packets per source block beyond K (see
+/// [`DelugeReport`]). Random mode (default) counts the valid packets of this file
+/// already in `dir` (any name, v1 or v2) and writes only the missing number, with
+/// fresh random ESIs that collide with none already there; at or above the target
+/// it writes nothing. `sequential` fills in the missing `rain-NNNNN.rq` files of
+/// ESIs 0..K+repair-1; an existing one that does not match is reported, not replaced.
+pub fn deluge_fountain_report(
+    file: &[u8],
+    dir: &Path,
+    repair: u32,
+    sequential: bool,
+) -> Result<DelugeReport> {
     if file.len() >= 4 && file.starts_with(&crate::work::WORK_MAGIC) {
         return Err(err(
             "work pack: fountain each star, or Scatter the pack first.",
@@ -151,57 +223,112 @@ pub fn deluge_fountain_opts(file: &[u8], dir: &Path, repair: u32, sequential: bo
     let enc = Encoder::with_defaults(file, MTU);
     let cfg = enc.get_config().serialize();
     let object: [u8; 32] = Sha256::digest(file).into();
-    let mut n = 0u32;
+    let blocks = enc.get_block_encoders();
+    let sources: Vec<Vec<EncodingPacket>> = blocks.iter().map(|b| b.source_packets()).collect();
+    let mut rep = DelugeReport::default();
     if sequential {
         for (i, pkt) in enc.get_encoded_packets(repair).iter().enumerate() {
+            rep.target = rep.target.saturating_add(1);
             let path = dir.join(format!("rain-{i:05}.rq"));
-            if !path.exists() {
-                write_new(&path, &packet_v2(&cfg, &object, pkt))?;
+            let want = packet_v2(&cfg, &object, pkt);
+            if path.exists() {
+                if fs::read(&path).ok().as_deref() == Some(want.as_slice()) {
+                    rep.kept += 1;
+                } else {
+                    rep.bad.push((
+                        path,
+                        "does not match this file's packet; left in place".into(),
+                    ));
+                }
+            } else {
+                write_new(&path, &want)?;
+                rep.written += 1;
             }
-            n += 1;
         }
-        return Ok(n);
+        return Ok(rep);
     }
-    for block in enc.get_block_encoders() {
-        let source = block.source_packets();
+    // Per block: ESIs of valid packets of this file, and every ESI any packet of
+    // this file claims (valid or not), so new ones never collide.
+    let mut valid: Vec<HashSet<u32>> = vec![HashSet::new(); blocks.len()];
+    let mut taken: Vec<HashSet<u32>> = vec![HashSet::new(); blocks.len()];
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(|e| err(e.to_string()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+        .collect();
+    files.sort();
+    for p in files {
+        let x = match fs::read(&p) {
+            Ok(b) => match parse_packet(&b) {
+                Ok(x) => x,
+                Err(why) => {
+                    rep.bad.push((p, why));
+                    continue;
+                }
+            },
+            Err(e) => {
+                rep.bad.push((p, e.to_string()));
+                continue;
+            }
+        };
+        if x.cfg != cfg || x.object.is_some_and(|o| o != object) {
+            rep.stray.push(p);
+            continue;
+        }
+        let id = x.pkt.payload_id();
+        let (sbn, esi) = (
+            usize::from(id.source_block_number()),
+            id.encoding_symbol_id(),
+        );
+        let (Some(block), Some(source)) = (blocks.get(sbn), sources.get(sbn)) else {
+            rep.bad.push((p, "source block number out of range".into()));
+            continue;
+        };
+        let want = expected_packet(block, source, esi)?;
+        if want.serialize() != x.pkt.serialize() {
+            if x.object.is_some() {
+                taken[sbn].insert(esi);
+                rep.bad.push((
+                    p,
+                    "symbol does not match this file (damaged or forged)".into(),
+                ));
+            } else {
+                // v1 carries no object id: same parameters, but another file.
+                rep.stray.push(p);
+            }
+            continue;
+        }
+        taken[sbn].insert(esi);
+        if valid[sbn].insert(esi) {
+            rep.kept += 1;
+        } else {
+            rep.duplicates += 1;
+        }
+    }
+    for (sbn, (block, source)) in blocks.iter().zip(&sources).enumerate() {
         let k = source.len() as u32;
-        let sbn = source
-            .first()
-            .map(|p| p.payload_id().source_block_number())
-            .unwrap_or(0);
-        let want = k.saturating_add(repair) as usize;
-        let mut esis: Vec<u32> = Vec::with_capacity(want);
-        let mut seen = HashSet::with_capacity(want);
-        while esis.len() < want {
+        let sbn_u8 = u8::try_from(sbn).map_err(|_| err("internal: too many source blocks"))?;
+        let want = k.saturating_add(repair);
+        rep.target = rep.target.saturating_add(want);
+        let mut missing = want.saturating_sub(valid[sbn].len() as u32);
+        while missing > 0 {
             let mut r = [0u8; 4];
             getrandom::getrandom(&mut r).map_err(|e| err(format!("random ESI: {e}")))?;
             let esi = u32::from_le_bytes(r) & MAX_ESI;
-            if seen.insert(esi) {
-                esis.push(esi);
+            let path = dir.join(format!("rain-{sbn_u8:03}-{esi:08}.rq"));
+            if taken[sbn].contains(&esi) || path.exists() {
+                continue;
             }
-        }
-        for esi in esis {
-            let pkt = if esi < k {
-                source
-                    .get(esi as usize)
-                    .cloned()
-                    .ok_or_else(|| err("internal: source symbol out of range"))?
-            } else {
-                block
-                    .repair_packets(esi - k, 1)
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| err("internal: no repair packet"))?
-            };
-            debug_assert_eq!(pkt.payload_id(), &PayloadId::new(sbn, esi));
-            let path = dir.join(format!("rain-{sbn:03}-{esi:08}.rq"));
-            if !path.exists() {
-                write_new(&path, &packet_v2(&cfg, &object, &pkt))?;
-            }
-            n += 1;
+            let pkt = expected_packet(block, source, esi)?;
+            debug_assert_eq!(pkt.payload_id(), &PayloadId::new(sbn_u8, esi));
+            write_new(&path, &packet_v2(&cfg, &object, &pkt))?;
+            taken[sbn].insert(esi);
+            rep.written += 1;
+            missing -= 1;
         }
     }
-    Ok(n)
+    Ok(rep)
 }
 
 /// Write a packet file whole (temp + rename), so a reader never sees half of one.
@@ -517,16 +644,131 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_rain_from_two_runs_into_one_folder_rebuilds() {
+    fn rerun_with_the_same_extra_is_a_no_op_and_still_rebuilds() {
         let m = mark(150_000);
         let d = scratch("overlap");
         deluge_fountain(&m, &d, 2).unwrap();
-        let first = rq_files(&d).len();
-        deluge_fountain(&m, &d, 2).unwrap();
-        // Second run adds new packets (random ESIs), it does not just rewrite the first.
-        assert!(rq_files(&d).len() > first);
+        let first = rq_files(&d);
+        let rep = deluge_fountain_report(&m, &d, 2, false).unwrap();
+        // --extra is a target: the folder already has K + 2, so nothing is written.
+        assert_eq!((rep.written, rep.kept), (0, first.len() as u32));
+        assert_eq!(rq_files(&d), first);
         let (back, _) = gather_fountain_report(&d).unwrap();
         assert_eq!(back, m);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    fn distinct_esis(d: &Path) -> HashSet<(u8, u32)> {
+        rq_files(d).iter().map(|p| esi_of(p)).collect()
+    }
+
+    #[test]
+    fn random_extra_tops_up_to_the_target_instead_of_adding() {
+        let m = mark(150_000);
+        let d = scratch("topup");
+        deluge_fountain(&m, &d, 2).unwrap();
+        let k = rq_files(&d).len() - 2;
+        let rep = deluge_fountain_report(&m, &d, 5, false).unwrap();
+        assert_eq!(rq_files(&d).len(), k + 5);
+        assert_eq!(
+            (rep.target, rep.kept, rep.written),
+            (k as u32 + 5, k as u32 + 2, 3)
+        );
+        assert!(rep.bad.is_empty() && rep.stray.is_empty());
+        // No ESI collides: every file is a distinct (block, ESI).
+        assert_eq!(distinct_esis(&d).len(), k + 5);
+        // Repeat: no-op. A smaller --extra: also no-op (never deletes).
+        let before = rq_files(&d);
+        for extra in [5, 3, 0] {
+            let rep = deluge_fountain_report(&m, &d, extra, false).unwrap();
+            assert_eq!((rep.written, rep.kept), (0, k as u32 + 5));
+        }
+        assert_eq!(rq_files(&d), before);
+        // Still decodes after the top-up.
+        assert_eq!(gather_fountain(&d).unwrap(), m);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sequential_extra_still_tops_up() {
+        let m = mark(100_000);
+        let d = scratch("seqtop");
+        deluge_fountain_opts(&m, &d, 2, true).unwrap();
+        let k = rq_files(&d).len() as u32 - 2;
+        let rep = deluge_fountain_report(&m, &d, 5, true).unwrap();
+        assert_eq!((rep.target, rep.kept, rep.written), (k + 5, k + 2, 3));
+        let esis: Vec<u32> = rq_files(&d).iter().map(|p| esi_of(p).1).collect();
+        assert_eq!(esis, (0..k + 5).collect::<Vec<_>>());
+        let rep = deluge_fountain_report(&m, &d, 5, true).unwrap();
+        assert_eq!(rep.written, 0);
+        assert_eq!(gather_fountain(&d).unwrap(), m);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Rewrite one packet's symbol and recompute its (unkeyed) checksum.
+    fn forge(p: &Path) {
+        let b = fs::read(p).unwrap();
+        let end = b.len() - 32;
+        let mut body = b[..end].to_vec();
+        body[60] ^= 0xFF;
+        let h: [u8; 32] = Sha256::digest(&body).into();
+        body.extend_from_slice(&h);
+        fs::write(p, body).unwrap();
+    }
+
+    #[test]
+    fn top_up_does_not_count_damaged_forged_or_stray_packets() {
+        let m = mark(150_000);
+        let d = scratch("toptamper");
+        deluge_fountain(&m, &d, 2).unwrap();
+        let files = rq_files(&d);
+        let k = files.len() as u32 - 2;
+        // One bit flip (checksum fails), one forgery (checksum recomputed), one stray.
+        let mut b = fs::read(&files[0]).unwrap();
+        b[60] ^= 0x01;
+        fs::write(&files[0], &b).unwrap();
+        forge(&files[1]);
+        let forged = fs::read(&files[1]).unwrap();
+        let o = scratch("topother");
+        deluge_fountain(&mark(90_000), &o, 0).unwrap();
+        fs::copy(&rq_files(&o)[0], d.join("zz-stray.rq")).unwrap();
+        let rep = deluge_fountain_report(&m, &d, 2, false).unwrap();
+        assert_eq!((rep.kept, rep.written, rep.target), (k, 2, k + 2));
+        assert_eq!(rep.bad.len(), 2, "{:?}", rep.bad);
+        assert!(
+            rep.bad.iter().any(|(_, w)| w.contains("forged")),
+            "{:?}",
+            rep.bad
+        );
+        assert_eq!(rep.stray.len(), 1);
+        // Nothing already there was overwritten.
+        assert_eq!(fs::read(&files[0]).unwrap(), b);
+        assert_eq!(fs::read(&files[1]).unwrap(), forged);
+        // Existing design: the forged packet makes gather fail closed...
+        let e = gather_fountain(&d).unwrap_err().to_string();
+        assert!(e.contains("do not match"), "{e}");
+        // ...and without it the topped-up folder rebuilds (damaged + stray skipped).
+        fs::remove_file(&files[1]).unwrap();
+        let (back, rep) = gather_fountain_report(&d).unwrap();
+        assert_eq!(back, m);
+        assert_eq!((rep.bad.len(), rep.stray.len()), (1, 1));
+        let _ = fs::remove_dir_all(&d);
+        let _ = fs::remove_dir_all(&o);
+    }
+
+    #[test]
+    fn sequential_top_up_reports_a_mismatched_file_and_leaves_it() {
+        let m = mark(100_000);
+        let d = scratch("seqtamper");
+        deluge_fountain_opts(&m, &d, 1, true).unwrap();
+        let p = d.join("rain-00000.rq");
+        forge(&p);
+        let forged = fs::read(&p).unwrap();
+        let rep = deluge_fountain_report(&m, &d, 1, true).unwrap();
+        assert_eq!(rep.written, 0);
+        assert_eq!(rep.kept + 1, rep.target);
+        assert_eq!(rep.bad.len(), 1);
+        assert_eq!(fs::read(&p).unwrap(), forged);
         let _ = fs::remove_dir_all(&d);
     }
 

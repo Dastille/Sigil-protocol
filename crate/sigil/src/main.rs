@@ -23,7 +23,7 @@ use std::process::{Command, Stdio};
 #[derive(Parser)]
 #[command(
     name = "sigil",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("SIGIL_GIT_COMMIT"), ")"),
     about = "Wrap a file so a damaged copy can still be restored, and so you can tell if it was swapped.",
     long_about = "Inscribe makes a .sg1. Scry checks it without unpacking. De-scribe gets the original back.\nDefault lock style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nGitHub: tag v1.0 yourself — this tool does not log in for you.",
     after_long_help = "See docs/START.md in the repo for a plain-English map of everyday commands."
@@ -1865,12 +1865,32 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let data = fs::read(&input)?;
             if fountain {
-                let n = sigil::deluge_fountain_opts(&data, &output, extra as u32, sequential)?;
+                let rep = sigil::deluge_fountain_report(&data, &output, extra as u32, sequential)?;
+                for (p, why) in &rep.bad {
+                    eprintln!("not counted {}: {why}", p.display());
+                }
+                for p in &rep.stray {
+                    eprintln!("not counted {}: belongs to another file", p.display());
+                }
                 println!(
-                    "fountain {n} packets (.rq, {} symbol IDs) → {}",
+                    "fountain {} packets (.rq, {} symbol IDs) → {}",
+                    rep.total(),
                     if sequential { "sequential" } else { "random" },
                     output.display()
                 );
+                if rep.kept > 0 {
+                    if rep.written == 0 {
+                        println!(
+                            "already {} packets of this file there (target {} = source symbols + --extra {extra}): nothing written",
+                            rep.kept, rep.target
+                        );
+                    } else {
+                        println!(
+                            "topped up to {} (source symbols + --extra {extra}): kept {} already there, wrote {} new",
+                            rep.target, rep.kept, rep.written
+                        );
+                    }
+                }
                 println!("far side: sigil gather -o rebuilt.sg1 <folder>");
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {

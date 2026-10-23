@@ -126,6 +126,7 @@ Encrypt-to constellations: `--to` on `constellation add` encrypts every new star
 # unlimited extra packets (RaptorQ), not stuck at 255. Each packet gets a random
 # symbol ID (RFC 6330: 24-bit ESI), so several senders can pool into one folder.
 # --sequential keeps the old 0, 1, 2, ... order. A short folder says how many more it needs.
+# --extra is a target: rerunning into ./rain tops it up to 32 spare packets (or writes nothing).
 ./sigil deluge dump.sg1 --fountain --extra 32 -o ./rain
 ./sigil gather ./rain -o dump.sg1
 

@@ -91,8 +91,8 @@ pub use folder::{
     unseal_dir_only, unseal_dir_only_keys, DirEntry,
 };
 pub use fountain::{
-    deluge_fountain, deluge_fountain_opts, gather_fountain, gather_fountain_report,
-    is_fountain_dir, FountainReport, MAX_ESI,
+    deluge_fountain, deluge_fountain_opts, deluge_fountain_report, gather_fountain,
+    gather_fountain_report, is_fountain_dir, DelugeReport, FountainReport, MAX_ESI,
 };
 pub use header::{
     locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION,
