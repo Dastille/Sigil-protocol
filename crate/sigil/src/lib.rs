@@ -22,6 +22,7 @@ pub mod container;
 pub mod doctor;
 mod folder;
 mod fountain;
+pub mod fountain_loss;
 pub mod gc;
 mod gf;
 mod header;

@@ -192,6 +192,11 @@ enum Cmd {
         /// Two senders using this send the same packets
         #[arg(long, requires = "fountain")]
         sequential: bool,
+        /// With --fountain: expected packet loss (0.1 or 10%). Sigil works out the extra
+        /// packets per block so the chance the far side cannot rebuild without a resend is at
+        /// most 1 in 10 000, assuming each packet is lost independently (no bursts). Replaces --extra.
+        #[arg(long, value_name = "P", requires = "fountain", conflicts_with = "extra", value_parser = sigil::fountain_loss::parse_loss)]
+        loss: Option<f64>,
     },
     Gather {
         input: PathBuf,
@@ -2028,10 +2033,36 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             watch,
             fountain,
             sequential,
+            loss,
         } => {
             let data = fs::read(&input)?;
             if fountain {
-                let rep = sigil::deluge_fountain_report(&data, &output, extra as u32, sequential)?;
+                let (count, what) = match loss {
+                    Some(p) => {
+                        let plan = sigil::fountain_loss::loss_plan(
+                            data.len() as u64,
+                            p,
+                            sigil::fountain_loss::LOSS_TARGET_FAILURE,
+                        )?;
+                        println!(
+                            "--loss {:.4}%: {} extra packets per block ({} block(s), {} packets); chance of needing a resend at most {:.1e} if losses are independent",
+                            p * 100.0,
+                            plan.extra,
+                            plan.blocks.len(),
+                            plan.packets(),
+                            plan.failure_bound
+                        );
+                        if sequential {
+                            println!("note: with --sequential that chance is measured, not guaranteed (RFC 6330 5.8 assumes random symbol IDs)");
+                        }
+                        (
+                            plan.extra,
+                            format!("--loss {:.4}% = {} extra", p * 100.0, plan.extra),
+                        )
+                    }
+                    None => (u32::from(extra), format!("--extra {extra}")),
+                };
+                let rep = sigil::deluge_fountain_report(&data, &output, count, sequential)?;
                 for (p, why) in &rep.bad {
                     eprintln!("not counted {}: {why}", p.display());
                 }
@@ -2047,12 +2078,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if rep.kept > 0 {
                     if rep.written == 0 {
                         println!(
-                            "already {} packets of this file there (target {} = source symbols + --extra {extra}): nothing written",
+                            "already {} packets of this file there (target {} = source symbols + {what}): nothing written",
                             rep.kept, rep.target
                         );
                     } else {
                         println!(
-                            "topped up to {} (source symbols + --extra {extra}): kept {} already there, wrote {} new",
+                            "topped up to {} (source symbols + {what}): kept {} already there, wrote {} new",
                             rep.target, rep.kept, rep.written
                         );
                     }

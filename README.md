@@ -275,7 +275,10 @@ several people can rain the same file into one folder without coordinating
 increment: running deluge again into the same folder tops it up to N spare packets
 beyond what the file needs (only valid packets of that file count; damaged, forged or
 other files' packets are reported and left alone), and writes nothing if it is already
-there. `sigil gather` skips damaged or
+there. `--loss P` (for example `--loss 10%`) replaces `--extra`: Sigil works out
+how many spare packets to send so the chance the far side cannot rebuild without a
+resend is at most 1 in 10 000, assuming each packet is lost independently (no long
+outages); the math and its limits are in `crate/sigil/src/fountain_loss.rs`. `sigil gather` skips damaged or
 stray packet files and, when short, says `have 4 of 10 needed, need 6 more`
 ([docs/FOUNTAIN-v2.md](docs/FOUNTAIN-v2.md)).
 

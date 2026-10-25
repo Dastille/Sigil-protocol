@@ -186,3 +186,79 @@ fn extra_is_a_target_top_up_not_an_increment() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn loss_picks_the_packet_count_and_bad_values_are_refused() {
+    let d = scratch("loss");
+    // 82 source symbols of 16 KiB (one source block), deterministic bytes.
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let data: Vec<u8> = (0..1_336_608)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    std::fs::write(d.join("f.bin"), &data).unwrap();
+    // K=82 at 10% loss, target 1e-4: 23 extra (exact-rational reference in fountain_loss).
+    let (out, _) = ok(
+        &d,
+        &["deluge", "f.bin", "-o", "r", "--fountain", "--loss", "10%"],
+    );
+    assert!(out.contains("23 extra packets per block"), "{out}");
+    assert_eq!(rq(&d.join("r")).len(), 105);
+    let (out, _) = ok(
+        &d,
+        &[
+            "deluge",
+            "f.bin",
+            "-o",
+            "s",
+            "--fountain",
+            "--sequential",
+            "--loss",
+            "0.1",
+        ],
+    );
+    assert!(out.contains("measured, not guaranteed"), "{out}");
+    assert_eq!(rq(&d.join("s")).len(), 105);
+    // Ten packets lost (under 10%): rebuilds the exact bytes.
+    let files = rq(&d.join("r"));
+    for f in files.iter().step_by(10) {
+        std::fs::remove_file(f).unwrap();
+    }
+    ok(&d, &["gather", "r", "-o", "back.bin"]);
+    assert_eq!(std::fs::read(d.join("back.bin")).unwrap(), data);
+    // Fewer than K left: refuses and writes nothing.
+    for f in rq(&d.join("r")).iter().skip(81) {
+        std::fs::remove_file(f).unwrap();
+    }
+    let o = sigil(&d, &["gather", "r", "-o", "short.bin"]);
+    assert!(!o.status.success());
+    assert!(!d.join("short.bin").exists());
+    // Refused: no --fountain, with --extra, a bare 10, 100%, negative, junk.
+    for args in [
+        &["deluge", "f.bin", "-o", "x", "--loss", "0.1"][..],
+        &[
+            "deluge",
+            "f.bin",
+            "-o",
+            "x",
+            "--fountain",
+            "--loss",
+            "0.1",
+            "--extra",
+            "5",
+        ],
+        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "10"],
+        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "100%"],
+        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "-0.1"],
+        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "nan"],
+    ] {
+        let o = sigil(&d, args);
+        assert!(!o.status.success(), "{args:?} should be refused");
+        assert!(!d.join("x").exists(), "{args:?} wrote packets");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
