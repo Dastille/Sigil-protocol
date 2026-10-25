@@ -69,3 +69,48 @@ fn mend_work_pack_cli() {
     assert_eq!(std::fs::read(dir.join("back.bin")).unwrap(), data);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Scattered bit flips in every shard: plain unseal and plain mend refuse,
+/// `mend --soft` repairs them column by column and the unseal is exact.
+#[test]
+fn mend_soft_cli_repairs_scattered_bit_flips() {
+    let dir = std::env::temp_dir().join(format!("sigil-cli-mend-flips-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut x = 0x9e3779b97f4a7c15u64;
+    let mut next = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let data: Vec<u8> = (0..300_000).map(|_| next() as u8).collect();
+    std::fs::write(dir.join("in.bin"), &data).unwrap();
+    assert!(sigil(&dir, &["seal", "-o", "a.sg1", "in.bin"])
+        .status
+        .success());
+    let mut mark = std::fs::read(dir.join("a.sg1")).unwrap();
+    for _ in 0..200 {
+        let bit = (next() % (mark.len() as u64 * 8)) as usize;
+        mark[bit / 8] ^= 1 << (bit % 8);
+    }
+    std::fs::write(dir.join("t.sg1"), &mark).unwrap();
+    assert!(!sigil(&dir, &["unseal", "-o", "o1.bin", "t.sg1"])
+        .status
+        .success());
+    assert!(!dir.join("o1.bin").exists());
+    assert!(!sigil(&dir, &["mend", "-o", "m0.sg1", "t.sg1"])
+        .status
+        .success());
+    let out = sigil(&dir, &["mend", "--soft", "-o", "m.sg1", "t.sg1"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(sigil(&dir, &["unseal", "-o", "o.bin", "m.sg1"])
+        .status
+        .success());
+    assert_eq!(std::fs::read(dir.join("o.bin")).unwrap(), data);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1509,6 +1509,175 @@ mod tests {
         assert_eq!(sha256(msg), read_header(&healed).unwrap().digest);
     }
 
+    /// Flip `count` distinct random bits anywhere in `bytes` (xorshift, fixed seed).
+    fn flip_scattered_bits(bytes: &[u8], count: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        let mut out = bytes.to_vec();
+        let mut done = std::collections::BTreeSet::new();
+        while done.len() < count {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let bit = (x % (bytes.len() as u64 * 8)) as usize;
+            if done.insert(bit) {
+                out[bit / 8] ^= 1 << (bit % 8);
+            }
+        }
+        out
+    }
+
+    fn noise(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mend_soft_column_repair_fixes_scattered_bit_flips() {
+        let msg = noise(200_000, 0x5eed);
+        for mode in [Mode::Reflection, Mode::Seal] {
+            let bytes = seal(&msg, mode, None, "flips.bin", false).unwrap();
+            for (count, seed) in [(16usize, 1u64), (64, 2), (256, 3)] {
+                let torn = flip_scattered_bits(&bytes, count, seed);
+                // Classic erasure decode loses: every shard has a bad CRC.
+                assert!(unseal(&torn, None).is_err(), "{mode:?} {count}");
+                assert!(crate::pieces::mend_bytes(&torn).is_err());
+                let (healed, used_soft) = crate::pieces::mend_bytes_ex(&torn, true).unwrap();
+                assert!(used_soft);
+                assert_eq!(
+                    healed, bytes,
+                    "{mode:?} {count}: mend rewrites the exact original mark"
+                );
+                assert_eq!(unseal(&healed, None).unwrap(), msg);
+            }
+        }
+    }
+
+    #[test]
+    fn mend_soft_column_repair_encrypted_and_wrong_key() {
+        let msg = noise(120_000, 0xc0de);
+        let bytes = seal(&msg, Mode::Reflection, Some("deep space"), "enc.bin", false).unwrap();
+        let torn = flip_scattered_bits(&bytes, 64, 9);
+        assert!(unseal(&torn, Some("deep space")).is_err());
+        // No passphrase needed to mend; the Merkle binding gates the ciphertext.
+        let (healed, _) = crate::pieces::mend_bytes_ex(&torn, true).unwrap();
+        assert_eq!(unseal(&healed, Some("deep space")).unwrap(), msg);
+        assert!(unseal(&healed, Some("wrong")).is_err());
+    }
+
+    #[test]
+    fn mend_soft_column_repair_with_truncation_and_flips() {
+        let msg = noise(200_000, 0x7a11);
+        let bytes = seal(&msg, Mode::Seal, None, "cut.bin", false).unwrap();
+        // Cut the last ~3 shards off (erasures) and flip bits in what is left.
+        let cut = &bytes[..bytes.len() * 13 / 16];
+        let torn = flip_scattered_bits(cut, 32, 4);
+        let (healed, _) = crate::pieces::mend_bytes_ex(&torn, true).unwrap();
+        assert_eq!(unseal(&healed, None).unwrap(), msg);
+    }
+
+    #[test]
+    fn mend_soft_column_repair_fails_closed_when_flooded() {
+        // Far past the per-column budget: refuse, never wrong bytes.
+        let msg = noise(50_000, 0xf100d);
+        let bytes = seal(&msg, Mode::Reflection, None, "flood.bin", false).unwrap();
+        let torn = flip_scattered_bits(&bytes, bytes.len() * 8 / 20, 5);
+        match crate::pieces::mend_bytes_ex(&torn, true) {
+            Err(_) => {}
+            Ok((healed, _)) => assert_eq!(unseal(&healed, None).unwrap(), msg),
+        }
+        assert!(unseal(&torn, None).is_err());
+        // Payload columns rewritten consistently (an attacker, not radiation)
+        // re-encode to a different Merkle root: refused.
+        let h = read_header(&bytes).unwrap();
+        let prefix = header::body_prefix(&h);
+        let stride = header::shard_stride(&h);
+        let lead =
+            if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let sl = h.shard_len as usize;
+        let mut forged = bytes.clone();
+        let mut p = unseal_folded_for_test(&bytes);
+        p[100] ^= 0x55;
+        for (i, s) in (0..h.n as usize)
+            .map(|i| crate::rs::encode_shard_index(&p, h.k as usize, i, true).unwrap())
+            .enumerate()
+        {
+            let off = prefix + i * stride + lead;
+            forged[off..off + sl].copy_from_slice(&s);
+        }
+        assert!(crate::pieces::mend_bytes_ex(&forged, true).is_err());
+        assert!(unseal(&forged, None).is_err());
+    }
+
+    #[test]
+    fn mend_from_ember_header_restores_exact_front_header() {
+        // All four front header copies and shard 0's Ember are gone, so the
+        // header comes from a later Ember (which stores its slot in the
+        // entropy word). The mended mark must carry the original header bytes,
+        // and an encrypted (v3) mark must still unlock after the mend.
+        let msg = noise(60_000, 0xe4be);
+        for pass in [None, Some("ember pass")] {
+            let bytes = seal(&msg, Mode::Reflection, pass, "ember.bin", false).unwrap();
+            let h = read_header(&bytes).unwrap();
+            let prefix = header::body_prefix_file(&h, &bytes);
+            let mut torn = bytes.clone();
+            torn[..header::KEYSTONE_SPAN].fill(0);
+            torn[prefix..prefix + HEADER_SIZE].fill(0);
+            let healed = crate::pieces::mend_bytes(&torn).unwrap();
+            assert_eq!(unseal(&healed, pass).unwrap(), msg);
+            assert_eq!(healed, bytes, "pass={pass:?}");
+        }
+    }
+
+    #[test]
+    fn mend_soft_finds_body_offset_when_front_header_and_all_crcs_are_gone() {
+        // Front header + Keystone wiped, 13 of 16 Embers damaged and one flipped
+        // bit in every shard body: no shard passes its CRC, so the body offset
+        // must come from where the surviving Embers sit, not from CRC-good shards.
+        let msg = noise(100_000, 0x0ff5e7);
+        let bytes = seal(&msg, Mode::Seal, None, "offset.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let prefix = header::body_prefix_file(&h, &bytes);
+        let stride = header::shard_stride(&h);
+        let lead =
+            if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let mut torn = bytes.clone();
+        torn[..header::KEYSTONE_SPAN].fill(0);
+        for i in 0..h.n as usize {
+            torn[prefix + i * stride + lead + 17 * (i + 1)] ^= 0x10;
+            // Most Embers are hit too (so their bodies are found only by
+            // offset); three stay readable.
+            if ![5usize, 9, 12].contains(&i) {
+                torn[prefix + i * stride + 50] ^= 0x01;
+            }
+        }
+        let live = header::gather_live_shards(&torn, &h, prefix);
+        assert!(live.iter().all(|s| s.is_none()));
+        let (healed, used_soft) = crate::pieces::mend_bytes_ex(&torn, true).unwrap();
+        assert!(used_soft);
+        assert_eq!(healed, bytes);
+        assert_eq!(unseal(&healed, None).unwrap(), msg);
+    }
+
+    /// The folded payload of a healthy plain mark (data shards concatenated).
+    fn unseal_folded_for_test(bytes: &[u8]) -> Vec<u8> {
+        let h = read_header(bytes).unwrap();
+        let prefix = header::body_prefix(&h);
+        let live = header::gather_live_shards(bytes, &h, prefix);
+        let parts: Vec<(usize, Vec<u8>)> = live
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|b| (i, b.clone())))
+            .collect();
+        crate::rs::decode_indexed(&parts, h.k as usize, h.folded_len as usize, true).unwrap()
+    }
+
     #[test]
     fn mend_soft_true_name_rejects_garbage() {
         let msg = b"true-name must gate soft accept -- longer payload for shards";

@@ -178,7 +178,7 @@ pub enum GradedShard {
 }
 
 impl GradedShard {
-    #[allow(dead_code)]
+    /// The shard bytes as read (CRC-good or not); `None` when the shard is missing.
     pub fn body(&self) -> Option<&[u8]> {
         match self {
             GradedShard::Hard(b) | GradedShard::Soft(b) => Some(b),
@@ -402,6 +402,13 @@ pub fn read_vow(buf: &[u8]) -> Option<(String, Vec<[u8; 32]>)> {
     Some((cov, geas))
 }
 
+/// Rank a candidate body offset for a header found only through an Ember.
+///
+/// Primary key: shards whose CRC32 matches at that offset. Tie-break (only
+/// matters when bit rot left few or no CRC-good shards): Ember copies sitting
+/// exactly where this offset puts them (1 point for the `SGEM` magic, 1 more
+/// when that Ember parses and carries the same binding). The CRC count always
+/// dominates, so offsets that won before still win.
 fn score_prefix(file: &[u8], h: &Header, prefix: usize) -> i32 {
     if prefix > file.len() {
         return -1;
@@ -409,9 +416,19 @@ fn score_prefix(file: &[u8], h: &Header, prefix: usize) -> i32 {
     let stride = shard_stride(h);
     let body = &file[prefix..];
     let mut live = 0i32;
+    let mut embers = 0i32;
     for i in 0..h.n as usize {
         let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { VOW_SIZE } else { 0 };
-        let off = i * stride + lead;
+        let start = i * stride;
+        if h.ember() && body.get(start..start + 4) == Some(&MAGIC_EMBER[..]) {
+            embers += 1;
+            if let Ok(eh) = parse_header(&body[start..], &MAGIC_EMBER) {
+                if eh.merkle == h.merkle {
+                    embers += 1;
+                }
+            }
+        }
+        let off = start + lead;
         if off + h.shard_len as usize + 4 > body.len() {
             continue;
         }
@@ -423,7 +440,8 @@ fn score_prefix(file: &[u8], h: &Header, prefix: usize) -> i32 {
             live += 1;
         }
     }
-    live
+    // n <= 255, so 2 * n Ember points < 1024 never outweigh one CRC-good shard.
+    live * 1024 + embers
 }
 
 fn locate_from_ember(file: &[u8]) -> Option<(Header, usize)> {
@@ -434,7 +452,11 @@ fn locate_from_ember(file: &[u8]) -> Option<(Header, usize)> {
             i += 1;
             continue;
         }
-        if let Ok(h) = parse_header(&file[i..], &MAGIC_EMBER) {
+        if let Ok(mut h) = parse_header(&file[i..], &MAGIC_EMBER) {
+            // An Ember keeps its slot in the top byte of the entropy word; the
+            // front header always has 0 there (entropy is at most 8000 milli-bits),
+            // so clear it to get the front header's exact bytes back.
+            h.entropy_milli &= 0x00ff_ffff;
             if h.ember() {
                 let stride = shard_stride(&h);
                 if stride > 0 {

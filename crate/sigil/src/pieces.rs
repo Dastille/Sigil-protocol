@@ -288,8 +288,11 @@ pub fn mend_bytes(file: &[u8]) -> Result<Vec<u8>> {
     mend_bytes_ex(file, false).map(|(bytes, _)| bytes)
 }
 
-/// Soft-capable mend. When `soft`, falls back to graded Soft shards + GMD-lite
-/// after hard CRC-kill fails. Returns `(mark, used_soft_salvage)`.
+/// Soft-capable mend. When `soft`, falls back after hard CRC-kill fails to
+/// per-column errors-and-erasures repair ([`rs::decode_column_errors`], which
+/// fixes scattered bit flips), then graded Soft shards + GMD-lite. Every path
+/// is accepted only if the Merkle binding (and true name when not encrypted)
+/// match. Returns `(mark, used_soft_salvage)`.
 pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     if file.len() >= 4 && &file[0..4] == b"SGWK" {
         return Err(crate::Error::Msg(
@@ -357,6 +360,34 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
             "soft mend needs {k} shards with some data, have {present} (hard live {live_count})"
         )));
     }
+    // Column repair first: decode every byte column on its own (errors and
+    // erasures), so scattered bit flips cost a symbol each, not a whole shard.
+    // Same acceptance gate as every other path (Merkle binding + true name).
+    let systematic = h.version >= 2;
+    let bodies: Vec<(usize, Vec<u8>)> = graded
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| g.body().map(|b| (i, b.to_vec())))
+        .collect();
+    if let Ok((payload, _rep)) = rs::decode_column_errors(
+        &bodies,
+        k,
+        h.shard_len as usize,
+        h.folded_len as usize,
+        systematic,
+    ) {
+        if accept_folded(&h, &payload) {
+            let shards: Vec<Vec<u8>> = (0..n)
+                .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
+                .collect::<Result<_>>()?;
+            return Ok((
+                assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
+                true,
+            ));
+        }
+    }
+    drop(bodies);
+
     let parts: Vec<rs::SoftPart> = graded
         .iter()
         .enumerate()
@@ -375,7 +406,6 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
         })
         .collect();
 
-    let systematic = h.version >= 2;
     let payload = rs::decode_soft(&parts, k, n, h.folded_len as usize, systematic, |p| {
         accept_folded(&h, p)
     })?;

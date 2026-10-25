@@ -270,6 +270,225 @@ pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Column error correction (errors-and-erasures), decoder side only.
+//
+// Every byte column j (byte j of each shard) is one Reed–Solomon codeword:
+// the evaluations at x = index + 1 of a polynomial of degree < k (v1 and v2
+// differ only in how the payload maps to that polynomial). Classic decode treats
+// a shard as either intact or erased. Here each column is decoded on its own,
+// so one flipped bit damages one symbol of one column instead of a whole shard.
+// With p shards present a column can absorb up to (p - k) / 2 unknown symbol
+// errors; missing shards are erasures. Nothing on disk changes.
+
+/// What [`decode_column_errors`] had to fix.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ColumnRepair {
+    /// Byte columns whose symbols were not one consistent codeword.
+    pub dirty_columns: usize,
+    /// Shard bytes changed to make every column a codeword again.
+    pub corrected_symbols: usize,
+    /// Most unknown errors each column could absorb: (present - k) / 2.
+    pub per_column_budget: usize,
+}
+
+/// Solve `a · v = rhs` over GF(256) (`a` is `rows × cols`, row-major). Free
+/// variables are set to 0. `None` if the system is inconsistent.
+fn solve_any(rows: usize, cols: usize, a: &mut [u8], rhs: &mut [u8]) -> Option<Vec<u8>> {
+    let mut pivots: Vec<usize> = Vec::with_capacity(cols);
+    let mut r = 0usize;
+    for c in 0..cols {
+        if r == rows {
+            break;
+        }
+        let Some(p) = (r..rows).find(|&i| a[i * cols + c] != 0) else {
+            continue;
+        };
+        if p != r {
+            for t in 0..cols {
+                a.swap(r * cols + t, p * cols + t);
+            }
+            rhs.swap(r, p);
+        }
+        let invp = gf::inv(a[r * cols + c]);
+        for t in 0..cols {
+            a[r * cols + t] = gf::mul(a[r * cols + t], invp);
+        }
+        rhs[r] = gf::mul(rhs[r], invp);
+        for i in 0..rows {
+            let f = a[i * cols + c];
+            if i == r || f == 0 {
+                continue;
+            }
+            for t in 0..cols {
+                a[i * cols + t] ^= gf::mul(f, a[r * cols + t]);
+            }
+            rhs[i] ^= gf::mul(f, rhs[r]);
+        }
+        pivots.push(c);
+        r += 1;
+    }
+    if rhs[r..rows].iter().any(|&v| v != 0) {
+        return None;
+    }
+    let mut v = vec![0u8; cols];
+    for (row, &c) in pivots.iter().enumerate() {
+        v[c] = rhs[row];
+    }
+    Some(v)
+}
+
+/// Berlekamp–Welch for one column: the polynomial of degree < k (coefficients,
+/// low first) within `e` symbol errors of `(xs, ys)`, if one exists.
+/// Needs `xs.len() >= k + 2e` and distinct non-zero points.
+fn berlekamp_welch(xs: &[u8], ys: &[u8], k: usize, e: usize) -> Option<Vec<u8>> {
+    let p = xs.len();
+    if k == 0 || p < k + 2 * e {
+        return None;
+    }
+    let qn = k + e; // Q has degree < k + e
+    let cols = qn + e; // plus E's e low coefficients (E is monic of degree e)
+    let mut a = vec![0u8; p * cols];
+    let mut rhs = vec![0u8; p];
+    for i in 0..p {
+        let (x, y) = (xs[i], ys[i]);
+        // Q(x) + y·(E_low(x)) = y·x^e  (characteristic 2: minus is plus)
+        let mut pw = 1u8;
+        for j in 0..qn {
+            a[i * cols + j] = pw;
+            if j < e {
+                a[i * cols + qn + j] = gf::mul(y, pw);
+            }
+            if j == e {
+                rhs[i] = gf::mul(y, pw);
+            }
+            pw = gf::mul(pw, x);
+        }
+    }
+    let v = solve_any(p, cols, &mut a, &mut rhs)?;
+    // Long division Q / E, E = x^e + sum e_l x^l.
+    let mut q = v[..qn].to_vec();
+    let mut el = v[qn..].to_vec();
+    el.push(1);
+    let mut quot = vec![0u8; k];
+    for d in (e..qn).rev() {
+        let c = q[d];
+        if c == 0 {
+            continue;
+        }
+        quot[d - e] = c;
+        for (l, &ec) in el.iter().enumerate() {
+            q[d - e + l] ^= gf::mul(c, ec);
+        }
+    }
+    if q[..e].iter().any(|&r| r != 0) {
+        return None;
+    }
+    Some(quot)
+}
+
+/// Errors-and-erasures decode, one byte column at a time.
+///
+/// `parts` are the shard bodies that are present (CRC-good or not), tagged with
+/// their index. Bodies of the wrong length, indexes above 254 and repeated
+/// indexes are ignored (treated as erasures). Columns that are already a
+/// codeword cost one matrix pass; each other column is decoded with
+/// Berlekamp–Welch and corrected only if at most `(present - k) / 2` of its
+/// symbols disagree with the decoded polynomial. Any column beyond that budget
+/// makes the whole call fail: there is no partial result.
+///
+/// The returned payload is **not** verified here. A column with more errors
+/// than the budget can decode to a different codeword, so callers must accept
+/// it only after the Merkle binding (and true name, when not encrypted) match,
+/// exactly like [`decode_soft`].
+pub fn decode_column_errors(
+    parts: &[(usize, Vec<u8>)],
+    k: usize,
+    shard_len: usize,
+    payload_len: usize,
+    systematic: bool,
+) -> Result<(Vec<u8>, ColumnRepair), Error> {
+    if k == 0 || shard_len == 0 {
+        return Err(Error::Msg("column repair: empty geometry".into()));
+    }
+    let mut seen = [false; 255];
+    let mut live: Vec<(usize, Vec<u8>)> = Vec::new();
+    for (i, b) in parts {
+        if *i > 254 || b.len() != shard_len || seen[*i] {
+            continue;
+        }
+        seen[*i] = true;
+        live.push((*i, b.clone()));
+    }
+    live.sort_by_key(|p| p.0);
+    let p = live.len();
+    if p < k {
+        return Err(Error::Msg(format!(
+            "column repair needs {k} shards with data, have {p}"
+        )));
+    }
+    let budget = (p - k) / 2;
+    let xs: Vec<u8> = live.iter().map(|(i, _)| x_of(*i)).collect();
+    let mut rep = ColumnRepair {
+        per_column_budget: budget,
+        ..ColumnRepair::default()
+    };
+    if p > k {
+        // Predict the other p - k shards from the first k; a column is clean
+        // when every prediction matches what was read.
+        let others: Vec<u8> = xs[k..].to_vec();
+        let m = gf::matmul(
+            &power_matrix(&others, k),
+            &vandermonde_inverse(&xs[..k])?,
+            others.len(),
+            k,
+            k,
+        );
+        let ins: Vec<&[u8]> = live[..k].iter().map(|(_, b)| b.as_slice()).collect();
+        let mut pred = vec![vec![0u8; shard_len]; p - k];
+        {
+            let mut outs: Vec<&mut [u8]> = pred.iter_mut().map(|v| v.as_mut_slice()).collect();
+            gf::matrix_apply(&m, &ins, &mut outs);
+        }
+        let dirty: Vec<usize> = (0..shard_len)
+            .filter(|&j| (0..p - k).any(|o| pred[o][j] != live[k + o].1[j]))
+            .collect();
+        drop(pred);
+        rep.dirty_columns = dirty.len();
+        if !dirty.is_empty() && budget == 0 {
+            return Err(Error::Msg(format!(
+                "column repair: {} damaged columns but only {p} of the shards (need {}) are present to locate errors",
+                dirty.len(),
+                k + 2
+            )));
+        }
+        let mut ys = vec![0u8; p];
+        for &j in &dirty {
+            for (t, (_, b)) in live.iter().enumerate() {
+                ys[t] = b[j];
+            }
+            let poly = berlekamp_welch(&xs, &ys, k, budget).ok_or_else(|| {
+                Error::Msg(format!(
+                    "column repair: byte column {j} has more than {budget} damaged symbols"
+                ))
+            })?;
+            let fixed: Vec<u8> = xs.iter().map(|&x| gf::eval_poly(&poly, x)).collect();
+            let wrong = fixed.iter().zip(&ys).filter(|(a, b)| a != b).count();
+            if wrong > budget {
+                return Err(Error::Msg(format!(
+                    "column repair: byte column {j} has more than {budget} damaged symbols"
+                )));
+            }
+            for (t, v) in fixed.into_iter().enumerate() {
+                live[t].1[j] = v;
+            }
+            rep.corrected_symbols += wrong;
+        }
+    }
+    let payload = decode_indexed(&live, k, payload_len, systematic)?;
+    Ok((payload, rep))
+}
+
 /// Soft-RS stripe width within a shard payload (v0).
 pub const SOFT_STRIPE: usize = 4096;
 
@@ -828,5 +1047,119 @@ mod tests {
         // Distinct points still invert, and k = 255 (the header maximum) still encodes.
         assert!(vandermonde_inverse(&[1, 2, 3]).is_ok());
         assert_eq!(encode_shards(&payload, 255, 256).unwrap().len(), 256);
+    }
+
+    // ---- Column error correction (errors-and-erasures) ----
+
+    #[test]
+    fn column_errors_fix_scattered_symbols_and_erasures() {
+        let mut r = Rng(0x0dee_95ac);
+        for &(k, n) in &[(12usize, 16usize), (8, 16), (3, 7), (20, 30), (1, 5)] {
+            for sys in [true, false] {
+                for _ in 0..6 {
+                    let len = 1 + r.below(30_000);
+                    let p = r.bytes(len);
+                    let shards = if sys {
+                        encode_shards(&p, k, n).unwrap()
+                    } else {
+                        encode_shards_v1(&p, k, n).unwrap()
+                    };
+                    let sl = shards[0].len();
+                    // f whole shards missing, then up to (n - f - k) / 2 bad symbols per column.
+                    let f = r.below(n - k + 1);
+                    let mut parts: Vec<(usize, Vec<u8>)> =
+                        shards.iter().cloned().enumerate().skip(f).collect();
+                    let budget = (parts.len() - k) / 2;
+                    let mut flipped = 0usize;
+                    if budget > 0 {
+                        let mut used = std::collections::BTreeSet::new();
+                        for _ in 0..1 + r.below(200) {
+                            let j = r.below(sl);
+                            if !used.insert(j) {
+                                continue; // one damage pattern per column
+                            }
+                            let mut rows: Vec<usize> = (0..parts.len()).collect();
+                            for i in (1..rows.len()).rev() {
+                                rows.swap(i, r.below(i + 1));
+                            }
+                            for &t in rows.iter().take(1 + r.below(budget)) {
+                                if parts[t].1[j] == shards[parts[t].0][j] {
+                                    flipped += 1;
+                                }
+                                parts[t].1[j] = shards[parts[t].0][j] ^ (1 + r.below(255) as u8);
+                            }
+                        }
+                    }
+                    let (got, rep) = decode_column_errors(&parts, k, sl, len, sys).unwrap();
+                    assert_eq!(got, p, "k={k} n={n} f={f} sys={sys}");
+                    assert_eq!(rep.corrected_symbols, flipped);
+                    assert_eq!(rep.per_column_budget, budget);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn column_errors_clean_input_matches_erasure_decode() {
+        let mut r = Rng(0xc1ea);
+        let p = r.bytes(10_000);
+        let shards = encode_shards(&p, 12, 16).unwrap();
+        let parts: Vec<(usize, Vec<u8>)> = shards.iter().cloned().enumerate().collect();
+        let (got, rep) = decode_column_errors(&parts, 12, shards[0].len(), p.len(), true).unwrap();
+        assert_eq!(got, p);
+        assert_eq!(rep.dirty_columns, 0);
+        assert_eq!(rep.corrected_symbols, 0);
+    }
+
+    #[test]
+    fn column_errors_beyond_budget_never_return_the_original_unchecked() {
+        // 3 bad symbols in one column of a (12,16) code: budget is 2. The call
+        // must either refuse or return bytes the caller's Merkle check rejects;
+        // it must never claim a repair that equals the original by luck of the
+        // test (it cannot: the original is 3 symbols away).
+        let mut r = Rng(0xbeef);
+        let mut refused = 0;
+        for _ in 0..50 {
+            let p = r.bytes(5_000);
+            let shards = encode_shards(&p, 12, 16).unwrap();
+            let sl = shards[0].len();
+            let mut parts: Vec<(usize, Vec<u8>)> = shards.iter().cloned().enumerate().collect();
+            let j = r.below(sl);
+            for t in [1usize, 6, 14] {
+                parts[t].1[j] ^= 1 + r.below(255) as u8;
+            }
+            match decode_column_errors(&parts, 12, sl, p.len(), true) {
+                Err(_) => refused += 1,
+                Ok((got, _)) => assert_ne!(got, p),
+            }
+        }
+        assert!(refused > 0);
+    }
+
+    #[test]
+    fn column_errors_without_spare_shards_refuse() {
+        let p = vec![7u8; 4_000];
+        let shards = encode_shards(&p, 12, 16).unwrap();
+        let sl = shards[0].len();
+        // 13 present (budget 0) and one flipped byte: detectable, not locatable.
+        let mut parts: Vec<(usize, Vec<u8>)> =
+            shards.iter().cloned().enumerate().take(13).collect();
+        parts[3].1[10] ^= 1;
+        assert!(decode_column_errors(&parts, 12, sl, p.len(), true).is_err());
+        // Fewer than k, wrong-length bodies, empty geometry and k = 0 are refused, not panics.
+        assert!(decode_column_errors(&parts[..11], 12, sl, p.len(), true).is_err());
+        let short: Vec<(usize, Vec<u8>)> =
+            parts.iter().map(|(i, b)| (*i, b[1..].to_vec())).collect();
+        assert!(decode_column_errors(&short, 12, sl, p.len(), true).is_err());
+        assert!(decode_column_errors(&parts, 12, 0, p.len(), true).is_err());
+        assert!(decode_column_errors(&parts, 0, sl, p.len(), true).is_err());
+        // Repeated and out-of-range indexes are ignored rather than trusted.
+        let mut dup: Vec<(usize, Vec<u8>)> = shards.iter().cloned().enumerate().collect();
+        dup.push((3, vec![0u8; sl]));
+        dup.push((300, vec![0u8; sl]));
+        assert_eq!(
+            decode_column_errors(&dup, 12, sl, p.len(), true).unwrap().0,
+            p
+        );
     }
 }
