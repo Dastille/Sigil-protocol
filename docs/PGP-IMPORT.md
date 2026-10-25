@@ -37,7 +37,7 @@ Passphrase-protected secret exports import directly. This is what `gpg --export-
 ```bash
 gpg --export-secret-keys --armor <FPR> > me-sec.asc        # stays encrypted; no temp plaintext
 ./sigil import-pgp me-sec.asc -o me.sgk                    # prompts (no echo)
-./sigil import-pgp me-sec.asc -o me.sgk --passphrase-file ~/.secrets/pgp-pass   # first line of the file
+./sigil import-pgp me-sec.asc -o me.sgk --passphrase-file ~/.secrets/pgp-pass   # first line; file must be chmod 600
 SIGIL_PGP_PASSPHRASE=… ./sigil import-pgp me-sec.asc -o me.sgk                 # scripts / CI
 ./sigil import-pgp me-sec.asc -o me.sgk --passkey          # straight into a passkey-locked .sgk
 ```

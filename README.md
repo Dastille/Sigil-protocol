@@ -125,10 +125,25 @@ de-scribed 3000000 bytes → out.jpg
 ```
 
 `unseal` of an encrypted file with no key asks on its own when run in a
-terminal. `--pass VALUE` still works for scripts, but the value can end up in
-your shell history and is visible to other programs on the computer while
-`sigil` runs; prefer `--pass -` when typing by hand. An empty passphrase
-(`--pass ""`) is refused everywhere. Other key options (`--to` a
+terminal. An empty passphrase (`--pass ""`) is refused everywhere.
+
+For scripts, put the passphrase in a file only you can read and use
+`--pass-file` (accepted everywhere `--pass` is; `log compact` also has
+`--seal-pass-file`):
+
+```
+$ printf '%s\n' 'correct horse' > ~/.sigil-pass && chmod 600 ~/.sigil-pass
+$ sigil seal --pass-file ~/.sigil-pass -o secret.sg1 photo.jpg
+$ sigil unseal --pass-file ~/.sigil-pass -o out.jpg secret.sg1
+```
+
+Sigil uses the file's first line (a trailing newline or CRLF is dropped) and
+refuses, writing nothing, if the file is missing, empty, or readable or writable
+by other users (`chmod 600` fixes that). A pipe works too:
+`--pass-file <(pass show sigil)` or `--pass-file /dev/stdin`.
+`--pass VALUE` still works, but it now prints a WARNING: while `sigil` runs, any
+program on the computer can see the command line (`ps`), and your shell may save
+it in history. See "Passphrases in scripts" in [docs/START.md](docs/START.md). Other key options (`--to` a
 public key, `--identity`, `--talisman` key file, passkeys) are described in
 `sigil seal --help` and [docs/START.md](docs/START.md); they are not shown here.
 
@@ -297,7 +312,8 @@ commits or PRs. Run the checks above locally.
 ## Known limitations
 
 - `--pass VALUE` puts the passphrase on the command line (shell history, process
-  list). Use `--pass -` to type it. `--pass -` needs a terminal: it never reads a
+  list); it warns but is not refused yet. Use `--pass-file PATH` in scripts or
+  `--pass -` to type it. `--pass -` needs a terminal: it never reads a
   piped stdin. Only `unseal` asks on its own when a key is missing.
 - `scry` of a constellation does not yet report `NOT recoverable`; check it with `doctor`.
 - Damage near the start of a file costs more: the header region is used to find

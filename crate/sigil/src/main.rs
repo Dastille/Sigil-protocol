@@ -45,6 +45,9 @@ enum Cmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         /// USB/file key (Talisman). Hex of its hash becomes the Ward. Instead of --pass.
         #[arg(long)]
         talisman: Option<PathBuf>,
@@ -96,6 +99,9 @@ enum Cmd {
         output: PathBuf,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity file (.sgk) to unwrap encrypt-to CEK (repeatable). Tried before failing passphrase-required.
@@ -126,6 +132,9 @@ enum Cmd {
         /// Key for an encrypted folder pack: list its (hidden) member names
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -137,6 +146,9 @@ enum Cmd {
         /// Key for an encrypted folder pack: list its (hidden) member names
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -189,6 +201,9 @@ enum Cmd {
         open: bool,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         /// Wait for parts to show up. Write VESSEL when rebuilt so the sender can stop.
         #[arg(long)]
         watch: bool,
@@ -230,6 +245,9 @@ enum Cmd {
         peers: Vec<String>,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         open: bool,
         /// New parts to mint each time we are already whole (for the others)
@@ -254,6 +272,9 @@ enum Cmd {
         strm: Option<PathBuf>,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         /// Seconds with no reads before the temp copy is deleted (default 20 min)
         #[arg(long, default_value_t = 1200)]
         idle: u64,
@@ -265,6 +286,9 @@ enum Cmd {
         input: PathBuf,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -352,6 +376,9 @@ enum Cmd {
         /// Optional: open the card to also check no star goes missing
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens an encrypt-to card (repeatable; optional)
@@ -372,6 +399,9 @@ enum Cmd {
         /// Passphrase of a warded constellation card (gc must read the list)
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens an encrypt-to card (repeatable)
@@ -399,6 +429,9 @@ enum Cmd {
         /// Passphrase of a warded constellation card
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens an encrypt-to card (repeatable)
@@ -437,6 +470,9 @@ enum Cmd {
         into: Vec<String>,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -467,6 +503,9 @@ enum Cmd {
         mountpoint: PathBuf,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -553,6 +592,9 @@ enum VaultCmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
@@ -579,6 +621,9 @@ enum VaultCmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
@@ -610,6 +655,9 @@ enum VaultCmd {
         version: Option<u32>,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) to unwrap encrypt-to CEK (repeatable)
@@ -717,6 +765,9 @@ enum BootCmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Delete the original squashfs after wrapping (needs a writable stick).
@@ -732,6 +783,9 @@ enum BootCmd {
         root: Option<PathBuf>,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long, default_value = "/run/sigil")]
@@ -772,6 +826,9 @@ enum LogCmd {
         /// Private INDEX: passphrase the index key is wrapped to
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Private INDEX: recipient the index key is wrapped to: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable)
@@ -787,6 +844,9 @@ enum LogCmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Encrypt-to recipient for this segment: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable).
@@ -819,6 +879,9 @@ enum LogCmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Encrypt-to recipient for each new segment: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable).
@@ -849,6 +912,9 @@ enum LogCmd {
         path: PathBuf,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens a private INDEX (repeatable)
@@ -874,6 +940,9 @@ enum LogCmd {
         strict: bool,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens encrypt-to segments (repeatable)
@@ -889,6 +958,9 @@ enum LogCmd {
         quick: bool,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -926,6 +998,9 @@ enum LogCmd {
         /// `check-proof --file` can compare the bytes)
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
@@ -1042,6 +1117,9 @@ enum LogCmd {
         /// Passphrase that opens the source segments
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens encrypt-to segments; for a signed log also the signing key (repeatable)
@@ -1050,6 +1128,9 @@ enum LogCmd {
         /// Passphrase for the merged segments
         #[arg(value_parser = parse_new_pass, long = "seal-pass")]
         seal_pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "seal-pass-file", value_name = "PATH", conflicts_with = "seal_pass", value_parser = parse_pass_file)]
+        seal_pass_file: Option<String>,
         /// Encrypt-to recipient for the merged segments (repeatable)
         #[arg(long = "to")]
         to: Vec<String>,
@@ -1076,6 +1157,9 @@ enum SkyCmd {
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         #[arg(long)]
@@ -1106,6 +1190,9 @@ enum SkyCmd {
         /// Passphrase of a warded card (the card is read to find every star)
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens an encrypt-to card (repeatable)
@@ -1122,6 +1209,9 @@ enum SkyCmd {
         /// Passphrase of a warded card
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Encrypt-to recipient(s) the rewritten card keeps (same as on add)
@@ -1141,6 +1231,9 @@ enum SkyCmd {
         sky: PathBuf,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
         #[arg(long)]
         talisman: Option<PathBuf>,
         /// Identity (.sgk) that opens an encrypt-to card (repeatable)
@@ -1206,14 +1299,82 @@ fn pass_arg(v: &str, confirm: bool) -> Result<String, String> {
     if v == "-" {
         return prompt_pass("Passphrase: ", confirm).map_err(|e| e.to_string());
     }
+    eprintln!("{LITERAL_PASS_WARNING}");
     Ok(v.to_string())
+}
+
+/// Printed (stderr) when a passphrase is typed straight onto the command line.
+const LITERAL_PASS_WARNING: &str =
+    "WARNING: a passphrase given as --pass VALUE is visible to other \
+programs on this computer (process list) and may be saved in your shell history. \
+Use --pass-file PATH (a file only you can read) or --pass - (type it, hidden) instead";
+
+/// Largest passphrase file accepted: a passphrase, not a document.
+const PASS_FILE_MAX: u64 = 64 * 1024;
+
+/// `--pass-file PATH` (and `--seal-pass-file`): the passphrase from [`read_pass_file`].
+fn parse_pass_file(v: &str) -> Result<String, String> {
+    read_pass_file(Path::new(v)).map(|p| p.as_str().to_owned())
+}
+
+/// Read a passphrase file: the first line, minus its `\n` / `\r\n` ending.
+/// Fails closed: a missing or unreadable file, an empty first line, text that is not
+/// UTF-8, a file over 64 KiB, or (on unix) a regular file that other users can read
+/// or change (any group/other permission bit) is refused. Pipes such as `/dev/fd/3`
+/// or `<(pass show sigil)` are accepted; they have no lasting permissions to check.
+fn read_pass_file(path: &Path) -> Result<zeroize::Zeroizing<String>, String> {
+    use std::io::Read;
+    let shown = path.display();
+    let file = fs::File::open(path)
+        .map_err(|e| format!("cannot read passphrase file {shown}: {e}; nothing was done"))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| format!("cannot read passphrase file {shown}: {e}; nothing was done"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if meta.is_file() && mode & 0o077 != 0 {
+            return Err(format!(
+                "passphrase file {shown} can be read or changed by other users (mode {mode:03o}); \
+run  chmod 600 {shown}  so only you can, then try again. Nothing was done"
+            ));
+        }
+    }
+    if meta.is_dir() {
+        return Err(format!(
+            "passphrase file {shown} is a folder; nothing was done"
+        ));
+    }
+    let mut raw = zeroize::Zeroizing::new(Vec::new());
+    file.take(PASS_FILE_MAX + 1)
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("cannot read passphrase file {shown}: {e}; nothing was done"))?;
+    if raw.len() as u64 > PASS_FILE_MAX {
+        return Err(format!(
+            "passphrase file {shown} is larger than 64 KiB; it should hold one line"
+        ));
+    }
+    let line = raw.split(|&b| b == b'\n').next().unwrap_or(&[]);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    if line.is_empty() {
+        return Err(format!(
+            "passphrase file {shown} is empty (or its first line is): an empty passphrase \
+would not protect anything; nothing was done"
+        ));
+    }
+    let text = std::str::from_utf8(line)
+        .map_err(|_| format!("passphrase file {shown} is not UTF-8 text; nothing was done"))?;
+    Ok(zeroize::Zeroizing::new(text.to_owned()))
 }
 
 /// Read a passphrase from the terminal without echo (rpassword). Refuses an empty one;
 /// with `confirm`, asks again and refuses a mismatch.
 fn prompt_pass(label: &str, confirm: bool) -> Result<String, Box<dyn std::error::Error>> {
     let first = rpassword::prompt_password(label).map_err(|e| {
-        format!("could not read a passphrase from the terminal ({e}); use --pass VALUE in scripts")
+        format!(
+            "could not read a passphrase from the terminal ({e}); use --pass-file PATH in scripts"
+        )
     })?;
     if first.is_empty() {
         return Err(EMPTY_PASS.into());
@@ -1251,17 +1412,13 @@ fn resolve_pass(
     Ok(pass)
 }
 
-/// PGP secret passphrase: --passphrase-file (first line), $SIGIL_PGP_PASSPHRASE, or prompt.
+/// PGP secret passphrase: --passphrase-file (same rules as --pass-file: [`read_pass_file`]),
+/// $SIGIL_PGP_PASSPHRASE, or prompt.
 fn pgp_passphrase(
     file: Option<&Path>,
 ) -> Result<zeroize::Zeroizing<String>, Box<dyn std::error::Error>> {
     if let Some(f) = file {
-        let raw = zeroize::Zeroizing::new(fs::read(f)?);
-        let line = raw.split(|&b| b == b'\n').next().unwrap_or(&[]);
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        return Ok(zeroize::Zeroizing::new(
-            String::from_utf8(line.to_vec()).map_err(|_| "passphrase file is not UTF-8")?,
-        ));
+        return Ok(read_pass_file(f)?);
     }
     if let Ok(v) = std::env::var("SIGIL_PGP_PASSPHRASE") {
         return Ok(zeroize::Zeroizing::new(v));
@@ -1498,6 +1655,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             mode,
             pass,
+            pass_file,
             talisman,
             to,
             ward,
@@ -1514,6 +1672,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             rclone,
             wormhole,
         } => {
+            let pass = pass.or(pass_file);
             let geas = binds(&bind)?;
             let cov = covenant.as_deref().unwrap_or("");
             let wards = parse_wards(&ward)?;
@@ -1702,6 +1861,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             pass,
+            pass_file,
             talisman,
             identity,
             ward,
@@ -1712,6 +1872,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             to_mb,
             mds,
         } => {
+            let pass = pass.or(pass_file);
             let companions = companion_bytes(&bind)?;
             let wards = parse_wards(&ward)?;
             let pass = resolve_pass(pass, talisman)?;
@@ -1814,15 +1975,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Verify {
             input,
             pass,
+            pass_file,
             talisman,
             identity,
         }
         | Cmd::Scry {
             input,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             if is_constellation_input(&input) {
                 let text = scry_constellation(&input, None).map_err(|e| {
                     format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
@@ -1966,8 +2130,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             open,
             pass,
+            pass_file,
             watch,
         } => {
+            let pass = pass.or(pass_file);
             if watch {
                 println!(
                     "watching {}. Rebuilds when enough parts arrive, then writes {VESSEL} so the sender stops.",
@@ -2101,9 +2267,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             peers,
             pass,
+            pass_file,
             open,
             extra,
         } => {
+            let pass = pass.or(pass_file);
             fs::create_dir_all(&input)?;
             println!(
                 "Coven on {}. Share parts. First to rebuild mints new parts. Ctrl-C to stop.",
@@ -2167,8 +2335,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             plex,
             strm,
             pass,
+            pass_file,
             idle,
         } => {
+            let pass = pass.or(pass_file);
             if plex.is_none() && strm.is_none() {
                 eprintln!("tip: pass --plex /path/to/Plex/Movies so a .strm stub is written there");
             }
@@ -2188,12 +2358,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Open {
             input,
             pass,
+            pass_file,
             talisman,
             identity,
             ward,
             only,
             keep,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             run_open_keys(
@@ -2351,9 +2523,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             path,
             dry_run,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let report = sigil::container::tidy(
@@ -2373,10 +2547,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             fix,
             quick,
             pass,
+            pass_file,
             talisman,
             identity,
             temp_age,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             match sigil::doctor::doctor(
@@ -2408,10 +2584,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             apply,
             dry_run: _,
             pass,
+            pass_file,
             talisman,
             identity,
             temp_age,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let r = sigil::gc::gc(
@@ -2431,12 +2609,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             segments,
             into,
             pass,
+            pass_file,
             talisman,
             identity,
             ward,
             depth,
             output,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let wards = parse_wards(&ward)?;
@@ -2520,6 +2700,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             mountpoint,
             pass,
+            pass_file,
             talisman,
             identity,
             ward,
@@ -2527,6 +2708,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             export_dir,
             writable,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let pass = match pass {
@@ -2684,10 +2866,12 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             path,
             mode,
             pass,
+            pass_file,
             talisman,
             to,
             ward,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let wards = parse_wards(&ward)?;
@@ -2716,6 +2900,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             from_export,
             mode,
             pass,
+            pass_file,
             talisman,
             to,
             ward,
@@ -2724,6 +2909,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             cold,
             force_drop,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let wards = parse_wards(&ward)?;
@@ -2818,11 +3004,13 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             path,
             version,
             pass,
+            pass_file,
             talisman,
             identity,
             ward,
             force,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let wards = parse_wards(&ward)?;
@@ -3027,9 +3215,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             private_index,
             public_index,
             pass,
+            pass_file,
             talisman,
             to,
         } => {
+            let pass = pass.or(pass_file);
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let mut pass = resolve_pass(pass, talisman)?;
             let mut recipients = load_recipients(&to)?;
@@ -3081,11 +3271,13 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             input,
             mode,
             pass,
+            pass_file,
             talisman,
             to,
             identity,
             unlock,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let id = identity.as_deref().map(Identity::load).transpose()?;
@@ -3128,6 +3320,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             dir,
             mode,
             pass,
+            pass_file,
             talisman,
             to,
             identity,
@@ -3136,6 +3329,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             no_ignore_file,
             unlock,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let id = identity.as_deref().map(Identity::load).transpose()?;
@@ -3166,9 +3360,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
         LogCmd::Ls {
             path,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             print!(
@@ -3184,9 +3380,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             output,
             strict,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let n = seglog::list(&path)?.entries.len() as u64;
@@ -3235,6 +3433,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             path,
             quick,
             pass,
+            pass_file,
             talisman,
             identity,
             signer,
@@ -3242,6 +3441,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             json,
             temp_age,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let signer = signer.as_deref().map(parse_signer).transpose()?;
@@ -3391,12 +3591,16 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             target_size,
             mode,
             pass,
+            pass_file,
             talisman,
             identity,
             seal_pass,
+            seal_pass_file,
             to,
             allow_decrypt,
         } => {
+            let pass = pass.or(pass_file);
+            let seal_pass = seal_pass.or(seal_pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let recipients = load_recipients(&to)?;
@@ -3487,9 +3691,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             at,
             output,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let p = seglog::prove_with(&path, seq, at, pass.as_deref(), &identities)?;
@@ -3607,6 +3813,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             as_name,
             mode,
             pass,
+            pass_file,
             talisman,
             covenant,
             bind,
@@ -3617,6 +3824,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let geas = binds(&bind)?;
             let pass = resolve_pass(pass, talisman)?;
             let cov = covenant.unwrap_or_default();
@@ -3687,9 +3895,11 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             sky,
             output,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let sky = sigil::container::sky_for_read(&sky);
@@ -3708,12 +3918,14 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             sky,
             names,
             pass,
+            pass_file,
             talisman,
             to,
             identity,
             keep_stars,
             dry_run,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let identities = load_identities(&identity)?;
@@ -3751,9 +3963,11 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
         SkyCmd::Scry {
             sky,
             pass,
+            pass_file,
             talisman,
             identity,
         } => {
+            let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             println!(
@@ -3785,10 +3999,12 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
             root,
             mode,
             pass,
+            pass_file,
             talisman,
             only_mark,
             no_inject,
         } => {
+            let pass = pass.or(pass_file);
             let pass = boot_pass(pass, talisman)?;
             let find = prepare_boot(&root, mode.into(), pass.as_deref(), only_mark)?;
             println!(
@@ -3824,10 +4040,12 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
         BootCmd::Mend {
             root,
             pass,
+            pass_file,
             talisman,
             stage,
             scan,
         } => {
+            let pass = pass.or(pass_file);
             let pass = boot_pass(pass, talisman)?;
             let out = if scan {
                 mend_scan(&stage, pass.as_deref())?

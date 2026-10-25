@@ -27,6 +27,16 @@ fn text(o: &Output) -> String {
     )
 }
 
+/// A private (mode 600) passphrase file for `--pass-file`; exact-output reads use it
+/// because a literal `--pass VALUE` adds a WARNING line to stderr.
+fn pw_file(dir: &Path, name: &str, pass: &str) {
+    fs::write(dir.join(name), format!("{pass}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
 fn ok(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
     assert!(o.status.success(), "{args:?}: {}", text(&o));
@@ -213,10 +223,19 @@ fn round_trip_with_recipients_and_passphrase() {
     // a passphrase wraps the key just as well (and a log can mix wraps per append)
     fs::write(d.join("b.txt"), "batch 4\n").unwrap();
     ok(&d, &["log", "append", "ev", "b.txt", "--pass", "hunter2"]);
+    pw_file(&d, "hunter2.pw", "hunter2");
     assert_eq!(
         ok(
             &d,
-            &["log", "read", "ev", "--pass", "hunter2", "--seq", "4"]
+            &[
+                "log",
+                "read",
+                "ev",
+                "--pass-file",
+                "hunter2.pw",
+                "--seq",
+                "4"
+            ]
         ),
         "batch 4\n"
     );
@@ -229,8 +248,12 @@ fn round_trip_with_recipients_and_passphrase() {
             "log", "append", "ev", "b.txt", "--pass", "p2", "--to", "a.pub",
         ],
     );
+    pw_file(&d, "p2.pw", "p2");
     assert_eq!(
-        ok(&d, &["log", "read", "ev", "--pass", "p2", "--seq", "5"]),
+        ok(
+            &d,
+            &["log", "read", "ev", "--pass-file", "p2.pw", "--seq", "5"]
+        ),
         "batch 5\n"
     );
     assert_eq!(read_keyed(&d, &["--seq", "5"]), "batch 5\n");

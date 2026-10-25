@@ -314,10 +314,17 @@ fn keys_and_encrypted_segments() {
     assert!(v.contains("healthy"), "{v}");
     // reading needs the key
     fails(&d, &["log", "read", "ev", "--seq", "1"]);
+    // (read via a private passphrase file: a literal --pass would add a WARNING line)
+    fs::write(d.join("pw"), "hunter2\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(d.join("pw"), fs::Permissions::from_mode(0o600)).unwrap();
+    }
     assert_eq!(
         ok(
             &d,
-            &["log", "read", "ev", "--seq", "1", "--pass", "hunter2"]
+            &["log", "read", "ev", "--seq", "1", "--pass-file", "pw"]
         ),
         "secret one\n"
     );

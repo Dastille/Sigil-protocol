@@ -22,6 +22,16 @@ fn sigil(dir: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::process::Outp
     c.args(args).output().expect("run sigil")
 }
 
+/// Passphrase files must be private (mode 600): sigil refuses ones others can read.
+fn secret(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 #[test]
 fn import_protected_pgp_secret_then_open() {
     let dir = std::env::temp_dir().join(format!("sigil-cli-pgp-{}", std::process::id()));
@@ -34,7 +44,7 @@ fn import_protected_pgp_secret_then_open() {
     std::fs::write(dir.join("f.bin"), b"protected pgp import round trip").unwrap();
 
     // Wrong passphrase: refused, nothing written, passphrase not echoed.
-    std::fs::write(dir.join("bad.txt"), "nope\n").unwrap();
+    secret(&dir.join("bad.txt"), "nope\n");
     let o = sigil(
         &dir,
         &[],
@@ -60,7 +70,7 @@ fn import_protected_pgp_secret_then_open() {
     assert!(!dir.join("me.sgk").exists());
 
     // Passphrase file (first line; CRLF tolerated).
-    std::fs::write(dir.join("pw.txt"), "hunter2\r\nignored\n").unwrap();
+    secret(&dir.join("pw.txt"), "hunter2\r\nignored\n");
     ok(sigil(
         &dir,
         &[],
@@ -141,7 +151,7 @@ fn import_rfc9580_aead_argon2_and_v6_keys_then_open() {
     std::fs::write(dir.join("f.bin"), b"rfc 9580 import round trip").unwrap();
 
     // v4 key, Argon2id + AES-256-GCM (OpenPGP.js), passphrase file.
-    std::fs::write(dir.join("pw.txt"), "gcm pass\n").unwrap();
+    secret(&dir.join("pw.txt"), "gcm pass\n");
     let gcm = fx("opjs-gcm-sec.asc");
     let o = ok(sigil(
         &dir,
@@ -176,7 +186,7 @@ fn import_rfc9580_aead_argon2_and_v6_keys_then_open() {
     );
 
     // Wrong passphrase on an AEAD key: refused, nothing written.
-    std::fs::write(dir.join("bad.txt"), "gcm pas\n").unwrap();
+    secret(&dir.join("bad.txt"), "gcm pas\n");
     let o = sigil(
         &dir,
         &[],

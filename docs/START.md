@@ -5,7 +5,7 @@ Friendly map of Sigil. Pick what you want to do, run the short command, then ope
 **Defaults that keep things simple**
 
 - Everyday marks use **Reflection** (default). Use **Seal** when the copy might take heavy damage (about half the pieces can die).
-- A **passphrase Ward** (`--pass`) is still fine for a personal lock.
+- A **passphrase Ward** (`--pass`) is still fine for a personal lock. Type it with `--pass -`, or in scripts read it from a private file with `--pass-file PATH` (see [Passphrases in scripts](#passphrases-in-scripts)).
 - **Encrypt-to** (`--to`) is opt-in — only when you want a recipient’s public key to open the mark.
 - **Cauchy** MDS is opt-in lab math; leave the default alone unless you know you need it.
 
@@ -143,6 +143,39 @@ Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder", "Private INDEX")
 ```
 
 A fingerprint printed by Sigil is just a **long ID number in code form** — you do not need to edit it by hand; copy-paste or compare with a friend.
+
+### Passphrases in scripts
+
+**In plain words:** anything you type after a command is not secret. While the
+command runs, every other program on the computer can read it (that is what `ps`
+shows), and your shell usually saves it in its history file. So
+`--pass 'my secret'` hands your passphrase to anyone else on the machine. Put the
+passphrase in a small file that only you can read, and point Sigil at the file.
+
+```
+printf '%s\n' 'my secret' > ~/.sigil-pass
+chmod 600 ~/.sigil-pass                       # only you can read or change it
+./sigil seal --pass-file ~/.sigil-pass -o out.sg1 file.bin
+./sigil log add backup.sigil ~/Photos --pass-file ~/.sigil-pass
+```
+
+What Sigil promises (each checked by `tests/cli_pass_file.rs`):
+
+- `--pass-file PATH` works everywhere `--pass` does (seal, unseal, scry, log, vault,
+  constellation, boot, kit, …) and opens the same files: the passphrase is the
+  file's **first line**, with one trailing newline or CRLF dropped.
+- **It fails closed.** A missing file, an empty file (or empty first line), or the
+  wrong passphrase stops with an error and writes nothing.
+- **It refuses a file other people can read or change** (any group/other permission,
+  like 644). The fix is `chmod 600 FILE`. Pipes are fine:
+  `--pass-file <(pass show sigil)` or `--pass-file /dev/stdin`.
+- `--pass` and `--pass-file` together are refused. Pick one.
+- `--pass VALUE` still works so older scripts keep running, but it prints a
+  one-line WARNING suggesting `--pass-file` or `--pass -`. The warning does not
+  repeat your passphrase.
+- Damaged or cut-off files still fail closed (or come back byte-exact after repair)
+  when the key comes from a file.
+- `import-pgp --passphrase-file` follows the same rules (private file, first line).
 
 ### Unlock with a hardware passkey
 
