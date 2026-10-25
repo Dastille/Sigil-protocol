@@ -58,3 +58,13 @@ and `staging::tests`.
 ## Private label (v3)
 
 New encrypted marks authenticate their label as AES-GCM associated data. A rewritten name, size, fingerprint, salt, nonce, version or binding, a swapped label, or an outer entropy score makes unseal refuse. See docs/PRIVATE-LABEL.md.
+
+## Passphrase files (`--pass-file`)
+
+`--pass-file PATH` (and `log compact --seal-pass-file`, `import-pgp --passphrase-file`)
+refuses before doing any work, and writes nothing, when the file is missing or
+unreadable, empty, not UTF-8, over 64 KiB, or (unix) a regular file with any
+group/other permission bit (`chmod 600` fixes it). A wrong passphrase from a file
+fails exactly like a wrong `--pass`. A literal `--pass VALUE` is still accepted but
+warns on stderr that the command line is visible to other programs. Tests:
+`tests/cli_pass_file.rs`.
