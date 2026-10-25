@@ -115,10 +115,14 @@ In scope (what is claimed)
      Repair is SHARD ERASURE. A shard whose CRC32 fails is dropped whole,
      so one flipped bit costs a whole shard. Up to n-k damaged shards are
      tolerated however the damage is spread (Reflection 4 of 16, Seal 8
-     of 16 at the default n). Bit flips scattered across more than n-k
-     shards are NOT recoverable, even at very low rates (see the README
-     for measured numbers). Keystone and Ember copies keep the header
-     findable when the front of the file is destroyed.
+     of 16 at the default n). For unseal and plain mend, bit flips
+     scattered across more than n-k shards are NOT recoverable, even at
+     very low rates. `sigil mend --soft` (reference implementation, no
+     layout change) also decodes each byte column on its own and fixes up
+     to (present-k)/2 wrong symbols per column, accepting the result only
+     if the Merkle binding and true name match; measured numbers are in
+     docs/research/DEEP-SPACE.md. Keystone and Ember copies keep the
+     header findable when the front of the file is destroyed.
   P  With a Ward or encrypt-to wrap, payload content is protected by
      AES-256-GCM under a 256-bit key. The fold is not a cipher.
   A  On encrypted marks the GCM tag rejects any change to the payload.

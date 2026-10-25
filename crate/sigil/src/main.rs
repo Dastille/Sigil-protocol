@@ -215,7 +215,9 @@ enum Cmd {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        /// Salvage CRC-failed (bit-rotten) shard bodies with soft-RS / GMD-lite
+        /// Salvage CRC-failed (bit-rotten) shard bodies: per-column Reed-Solomon error
+        /// correction (scattered bit flips), then soft-RS / GMD-lite. Output is kept only if
+        /// the Merkle binding and true name match
         #[arg(long)]
         soft: bool,
     },

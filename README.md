@@ -91,6 +91,13 @@ $ sigil mend torn.sg1 -o fixed.sg1
 mended torn.sg1 → fixed.sg1 (live 16/16, need 12, merkle ok)
 ```
 
+Scattered bit flips (radiation, bit rot) spread over many pieces break every
+piece's checksum, so plain `unseal` and `mend` refuse. `sigil mend --soft` repairs
+them byte column by byte column (up to 2 wrong bytes per column in Reflection, 4
+in Seal, fewer when pieces are missing) and keeps the result only if the hash
+tree and file hash match. Measured on a 1 MB file: 1 024 flipped bits repaired in
+10 of 10 trials (Reflection). Details and limits: [docs/research/DEEP-SPACE.md](docs/research/DEEP-SPACE.md).
+
 `unseal` also works directly on a damaged file while enough pieces are live.
 When too many are gone it refuses rather than guessing:
 
