@@ -39,7 +39,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const FT_MAGIC: [u8; 4] = *b"SGFT";
-const MTU: u16 = 16 * 1024;
+/// Largest packet symbol (bytes); also what `deluge --fountain` asks the encoder for.
+pub(crate) const MTU: u16 = 16 * 1024;
 /// Largest Encoding Symbol ID: RFC 6330 section 3.2, the ESI is a 24-bit field.
 pub const MAX_ESI: u32 = (1 << 24) - 1;
 /// Largest source block RFC 6330 supports (K'max, section 5.1.2 / Table 2).
@@ -75,7 +76,7 @@ struct Parsed {
 
 /// Number of source symbols in each source block (RFC 6330 section 4.4.1.2:
 /// Kt = ceil(F/T), Partition[Kt, Z]). `None` when the OTI is not one we will decode.
-fn block_sizes(oti: &ObjectTransmissionInformation) -> Option<Vec<u32>> {
+pub(crate) fn block_sizes(oti: &ObjectTransmissionInformation) -> Option<Vec<u32>> {
     let (f, t, z) = (
         oti.transfer_length(),
         u64::from(oti.symbol_size()),
@@ -211,6 +212,26 @@ pub fn deluge_fountain_report(
     repair: u32,
     sequential: bool,
 ) -> Result<DelugeReport> {
+    deluge_fountain_with(file, dir, repair, sequential, &mut random_esi)
+}
+
+/// A fresh ESI from the OS random source, masked to the 24-bit ESI space.
+fn random_esi() -> Result<u32> {
+    let mut r = [0u8; 4];
+    getrandom::getrandom(&mut r).map_err(|e| err(format!("random ESI: {e}")))?;
+    Ok(u32::from_le_bytes(r) & MAX_ESI)
+}
+
+/// [`deluge_fountain_report`] with the source of random ESIs passed in, so tests
+/// can make a whole transfer repeatable with a seeded generator. Values above
+/// [`MAX_ESI`] are masked into range.
+pub(crate) fn deluge_fountain_with(
+    file: &[u8],
+    dir: &Path,
+    repair: u32,
+    sequential: bool,
+    next_esi: &mut dyn FnMut() -> Result<u32>,
+) -> Result<DelugeReport> {
     if file.len() >= 4 && file.starts_with(&crate::work::WORK_MAGIC) {
         return Err(err(
             "work pack: fountain each star, or Scatter the pack first.",
@@ -313,9 +334,7 @@ pub fn deluge_fountain_report(
         rep.target = rep.target.saturating_add(want);
         let mut missing = want.saturating_sub(valid[sbn].len() as u32);
         while missing > 0 {
-            let mut r = [0u8; 4];
-            getrandom::getrandom(&mut r).map_err(|e| err(format!("random ESI: {e}")))?;
-            let esi = u32::from_le_bytes(r) & MAX_ESI;
+            let esi = next_esi()? & MAX_ESI;
             let path = dir.join(format!("rain-{sbn_u8:03}-{esi:08}.rq"));
             if taken[sbn].contains(&esi) || path.exists() {
                 continue;

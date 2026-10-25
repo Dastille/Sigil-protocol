@@ -367,7 +367,10 @@ in rare cases, RFC 6330 §5.8).
    rule until it has more field time. Test: for each §5.2 bit-flip row,
    `unseal --repair` gives the same ok/refused counts as `mend --soft` + `unseal`,
    with no output file on refusal.
-3. **Fountain sizing from a loss estimate: `deluge --fountain --loss P`.** Pick
+3. **Fountain sizing from a loss estimate: `deluge --fountain --loss P`.** BUILT
+   (`crate/sigil/src/fountain_loss.rs`, `cli_fountain::loss_picks_the_packet_count_and_bad_values_are_refused`;
+   seeded trials at P ∈ {0.05, 0.10, 0.25, 0.5} rebuild 100 of 100, and the packets written equal
+   the formula exactly). Pick
    extras so that P[surviving packets < K'+2] stays below a target, using the
    binomial tail. Test: for P ∈ {0.05, 0.10, 0.25}, 100 trials of random
    deletion at rate P each rebuild in ≥ 99. A second test checks that the
@@ -480,8 +483,8 @@ the file regularly, before damage piles up, matters as much as the repair
 itself: eight rounds of damage were survived 9 times out of 10 with regular
 repair and 0 times out of 10 without it. For sending files to Mars, Sigil can
 already send extra "spare" packets so the far side can rebuild the file without
-asking again, which can take most of an hour. The next step is to let Sigil
-work out how many spares to send for a given amount of expected loss.
+asking again, which can take most of an hour, and with `--loss 10%` it now
+works out how many spares to send for a given amount of expected loss.
 
 ## Appendix: raw benchmark output
 

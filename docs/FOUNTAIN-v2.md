@@ -51,6 +51,14 @@ ESIs 0..K-1 of a block are its source symbols, K and up are repair symbols (sect
   at or above the target it writes nothing and says so. Damaged packets, packets that claim this
   file but do not match it (forged), and other files' packets are reported (`not counted ...` on
   stderr), never counted, and never overwritten. A smaller `--extra` never deletes packets.
+- **`--loss P` instead of `--extra`:** P is the expected fraction of packets lost (`0.1` or `10%`;
+  a bare `10` is refused with a hint). Sigil picks the smallest extra count per block so the chance
+  that the far side cannot rebuild without a resend is at most 1e-4, from the exact binomial tail and
+  the RFC 6330 section 5.8 decoder bound (1e-2 / 1e-4 / 1e-6 at K', K'+1, K'+2), with a union bound
+  across source blocks. Example: one 82-symbol block at 10% loss gets 23 extra (105 packets).
+  Assumes independent losses; bursts, outages, or more loss than stated are not covered, and then
+  gather refuses rather than writing wrong bytes. With `--sequential` the ESIs are not random, so
+  the bound is only measured, not claimed. Model and tests: `crate/sigil/src/fountain_loss.rs`.
 - **`--sequential`:** the old order, ESIs 0..K+extra-1 (`rain-00000.rq` ...). Two senders using it
   send identical packets.
 - **Packet file v2:** `"SGFT" | 2 | OTI (12) | object SHA-256 (32) | payload id (4) | symbol |
