@@ -192,7 +192,7 @@ fn pass_file_readable_by_others_is_refused() {
         &d,
         &[
             "import-pgp",
-            &locked,
+            locked,
             "-o",
             "me.sgk",
             "--passphrase-file",

@@ -26,6 +26,16 @@ fn text(o: &Output) -> String {
     )
 }
 
+/// A private (mode 600) passphrase file for `--pass-file`; exact-output reads use it
+/// because a literal `--pass VALUE` adds a WARNING line to stderr.
+fn pw_file(dir: &Path, name: &str, pass: &str) {
+    fs::write(dir.join(name), format!("{pass}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
 fn ok(dir: &Path, args: &[&str]) -> String {
     let o = sigil_cmd(dir, args);
     assert!(o.status.success(), "{args:?}: {}", text(&o));
@@ -862,8 +872,20 @@ fn encrypted_sources_are_never_silently_decrypted_by_compaction() {
         ],
     );
     fails(&d, &["log", "read", "ev", "--pass", "hunter2"]);
+    pw_file(&d, "s3cret.pw", "s3cret");
     assert_eq!(
-        ok(&d, &["log", "read", "ev", "--pass", "s3cret", "--seq", "2"]),
+        ok(
+            &d,
+            &[
+                "log",
+                "read",
+                "ev",
+                "--pass-file",
+                "s3cret.pw",
+                "--seq",
+                "2"
+            ]
+        ),
         "secret 2\n"
     );
     // key-free verify is fine, keyed verify checks every member inside the merged segment
