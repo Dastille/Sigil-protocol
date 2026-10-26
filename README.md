@@ -98,6 +98,16 @@ in Seal, fewer when pieces are missing) and keeps the result only if the hash
 tree and file hash match. Measured on a 1 MB file: 1 024 flipped bits repaired in
 10 of 10 trials (Reflection). Details and limits: [docs/research/DEEP-SPACE.md](docs/research/DEEP-SPACE.md).
 
+Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default):
+
+- `sigil unseal --repair -o out.jpg flipped.sg1` repairs in memory and opens, without
+  writing a mended copy. It prints a warning that the file on disk is still damaged,
+  and writes nothing at all if the repair or the checks fail (wrong passphrase too).
+- `sigil doctor --scrub DIR` checks every `.sg1` in a folder, repairs flipped bits, and
+  rewrites a mark only when the hash tree and file hash match. A mark it cannot fix is
+  listed as UNCORRECTABLE and left byte-for-byte as it was (exit code 2). Run it on a
+  schedule so small damage is fixed before it piles up.
+
 `unseal` also works directly on a damaged file while enough pieces are live.
 When too many are gone it refuses rather than guessing:
 
@@ -281,6 +291,13 @@ resend is at most 1 in 10 000, assuming each packet is lost independently (no lo
 outages); the math and its limits are in `crate/sigil/src/fountain_loss.rs`. `sigil gather` skips damaged or
 stray packet files and, when short, says `have 4 of 10 needed, need 6 more`
 ([docs/FOUNTAIN-v2.md](docs/FOUNTAIN-v2.md)).
+
+On a slow or one-way link the receiver can ask for just what is missing:
+`sigil gather --report rx/` prints one short line (`SGNAK1 <id> <blocks> <have>/<need>
+<list>`, under 1 KiB even for 100 blocks). Send that line back; the sender runs
+`sigil deluge --fountain --answer "<line>" -o out/ file.sg1`, which writes exactly the
+missing number of fresh packets per block. A report for a different file is refused.
+RaptorQ occasionally needs one or two packets beyond the exact count; report again if so.
 
 `sigil --help` lists the rest (pieces/`deluge`/`gather`, `dispatch`, `boot` for
 live USBs, `vault`, `mount`, `kit`, `sign`, `import-pgp`, ...). They are not

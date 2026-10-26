@@ -41,6 +41,7 @@ mod pieces;
 pub mod privacy;
 mod rs;
 mod rs_ref;
+pub mod scrub;
 pub mod seglog;
 
 /// Benchmark / oracle hooks for the RS codec (not a stable API).
@@ -92,8 +93,9 @@ pub use folder::{
     unseal_dir_only, unseal_dir_only_keys, DirEntry,
 };
 pub use fountain::{
-    deluge_fountain, deluge_fountain_opts, deluge_fountain_report, gather_fountain,
-    gather_fountain_report, is_fountain_dir, DelugeReport, FountainReport, MAX_ESI,
+    deluge_answer_report, deluge_fountain, deluge_fountain_opts, deluge_fountain_report,
+    gather_fountain, gather_fountain_report, is_fountain_dir, parse_report_for, receiver_report,
+    DelugeReport, FountainReport, MAX_ESI, NAK_MAGIC,
 };
 pub use header::{
     locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION,
@@ -1000,6 +1002,29 @@ pub fn unseal_ex_keys(
     identities: &[keys::Identity],
 ) -> Result<Vec<u8>> {
     unseal_ex_mds_keys(file, pass, companions, &*mds::default_backend(), identities)
+}
+
+/// Opt-in repair-then-open (`sigil unseal --repair`). First tries a normal open; if that
+/// fails, runs the same in-memory salvage as `mend --soft` (per-column Reed-Solomon error
+/// correction, then soft-RS / GMD-lite, each accepted only when the Merkle binding and true
+/// name match) and opens the repaired bytes. Nothing is written to disk. Wrong keys and
+/// damage beyond repair still fail closed. Returns `(plaintext, repaired)`.
+pub fn unseal_repair_keys(
+    file: &[u8],
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[keys::Identity],
+) -> Result<(Vec<u8>, bool)> {
+    match unseal_ex_keys(file, pass, companions, identities) {
+        Ok(p) => Ok((p, false)),
+        Err(first) => {
+            let healed = match mend_bytes_ex(file, true) {
+                Ok((h, _)) => h,
+                Err(_) => return Err(first),
+            };
+            unseal_ex_keys(&healed, pass, companions, identities).map(|p| (p, true))
+        }
+    }
 }
 
 pub fn verify(file: &[u8]) -> Result<(Header, bool, usize, usize, bool)> {
