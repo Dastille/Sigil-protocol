@@ -293,6 +293,16 @@ fn health_work_pack(path: &Path) -> Health {
 }
 
 /// Verify a `.sg1` file of any shape: single mark, work pack, or SGDR folder pack.
+/// `Some(reason)` when the star file at `path` is damaged beyond repair (the same
+/// test `doctor` uses for `bit-rot-unrecoverable`); `None` when it is healthy or
+/// still repairable. Read-only.
+pub(crate) fn star_unrecoverable(path: &Path) -> Option<String> {
+    match health_file(path) {
+        Health::Damaged(m) => Some(m),
+        Health::Ok | Health::Mendable(_) => None,
+    }
+}
+
 fn health_file(path: &Path) -> Health {
     if crate::work::is_work_pack(path) {
         return health_work_pack(path);
