@@ -126,6 +126,11 @@ enum Cmd {
         /// Must match Inscribe --mds when Cauchy was used. Env SIGIL_MDS.
         #[arg(long, default_value = "vandermonde")]
         mds: String,
+        /// Opt-in: if the mark will not open, repair scattered bit flips in memory (same
+        /// salvage as `mend --soft`, Merkle + true name checked) and open that. Writes no
+        /// mended file; output is written only on success. Plain .sg1 only.
+        #[arg(long)]
+        repair: bool,
     },
     Verify {
         input: PathBuf,
@@ -197,11 +202,20 @@ enum Cmd {
         /// most 1 in 10 000, assuming each packet is lost independently (no bursts). Replaces --extra.
         #[arg(long, value_name = "P", requires = "fountain", conflicts_with = "extra", value_parser = sigil::fountain_loss::parse_loss)]
         loss: Option<f64>,
+        /// With --fountain: answer a receiver's `gather --report` line by writing exactly
+        /// the packets each block is missing (fresh random IDs). A report for another file is refused.
+        #[arg(long, value_name = "REPORT", requires = "fountain", conflicts_with_all = ["extra", "loss", "sequential", "watch"])]
+        answer: Option<String>,
     },
     Gather {
         input: PathBuf,
-        #[arg(short, long)]
-        output: PathBuf,
+        #[arg(short, long, required_unless_present = "report")]
+        output: Option<PathBuf>,
+        /// Fountain folder: print a one-line "have / need" receiver report (fits one
+        /// uplink packet) instead of rebuilding. Send it back; the sender runs
+        /// `sigil deluge --fountain --answer "<line>"` to send exactly what is missing.
+        #[arg(long, conflicts_with_all = ["watch", "open"])]
+        report: bool,
         #[arg(long)]
         open: bool,
         #[arg(value_parser = parse_pass, long)]
@@ -433,6 +447,11 @@ enum Cmd {
         /// Skip bit-level verification (existence and structure only)
         #[arg(long)]
         quick: bool,
+        /// Treat PATH as a folder of .sg1 marks: repair scattered bit flips (as `mend --soft`)
+        /// and rewrite a mark only when Merkle + true name pass; uncorrectable marks are
+        /// reported and left byte-identical. Exit 2 if any are uncorrectable.
+        #[arg(long, conflicts_with_all = ["json", "fix", "quick"])]
+        scrub: bool,
         /// Passphrase of a warded constellation card
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
@@ -1878,6 +1897,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             from_mb,
             to_mb,
             mds,
+            repair,
         } => {
             let pass = pass.or(pass_file);
             let companions = companion_bytes(&bind)?;
@@ -1886,6 +1906,44 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let identities = load_identities(&identity)?;
             let mds_be = resolve_mds(&mds)?;
             let attempt = |pass: Option<&str>| -> Result<(), Box<dyn std::error::Error>> {
+                if repair {
+                    if mds_be.name() != "vandermonde"
+                        || star.is_some()
+                        || from_mb.is_some()
+                        || to_mb.is_some()
+                        || !only.is_empty()
+                        || is_dir_pack(&input)
+                        || is_constellation_input(&input)
+                        || sigil::is_work_pack(&input)
+                    {
+                        return Err(
+                            "--repair is for a plain .sg1 only (use `sigil mend --soft` for packs)"
+                                .into(),
+                        );
+                    }
+                    let data = fs::read(&input)?;
+                    let (plain, repaired) =
+                        sigil::unseal_repair_keys(&data, pass, &companions, &identities)?;
+                    if repaired {
+                        eprintln!("warning: --repair corrected damage in memory (Merkle + true name checked); the mark on disk is still damaged — run `sigil mend --soft` to keep a healthy copy");
+                    }
+                    let mut tmp = output.as_os_str().to_os_string();
+                    tmp.push(".unseal-part");
+                    let tmp = PathBuf::from(tmp);
+                    fs::write(&tmp, &plain)?;
+                    fs::rename(&tmp, &output)?;
+                    println!(
+                        "de-scribed {} bytes → {}{}",
+                        plain.len(),
+                        output.display(),
+                        if repaired {
+                            " (repaired in memory)"
+                        } else {
+                            ""
+                        }
+                    );
+                    return Ok(());
+                }
                 if mds_be.name() != "vandermonde" {
                     if star.is_some()
                         || from_mb.is_some()
@@ -2034,8 +2092,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             fountain,
             sequential,
             loss,
+            answer,
         } => {
             let data = fs::read(&input)?;
+            if let Some(line) = answer {
+                let n = sigil::deluge_answer_report(&data, &output, &line)?;
+                println!(
+                    "answered report: wrote {n} missing packets → {}",
+                    output.display()
+                );
+                dispatch(&output, &rsync, &rclone, wormhole, false)?;
+                return Ok(());
+            }
             if fountain {
                 let (count, what) = match loss {
                     Some(p) => {
@@ -2165,8 +2233,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pass,
             pass_file,
             watch,
+            report,
         } => {
             let pass = pass.or(pass_file);
+            if report {
+                println!("{}", sigil::receiver_report(&input)?);
+                return Ok(());
+            }
+            let output = output.ok_or("gather needs -o")?;
             if watch {
                 println!(
                     "watching {}. Rebuilds when enough parts arrive, then writes {VESSEL} so the sender stops.",
@@ -2579,12 +2653,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             json,
             fix,
             quick,
+            scrub,
             pass,
             pass_file,
             talisman,
             identity,
             temp_age,
         } => {
+            if scrub {
+                match sigil::scrub::scrub_dir(&path) {
+                    Ok(r) => {
+                        print!("{}", r.render());
+                        std::process::exit(r.exit_code());
+                    }
+                    Err(e) => {
+                        eprintln!("sigil doctor --scrub: {e}");
+                        std::process::exit(3);
+                    }
+                }
+            }
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;

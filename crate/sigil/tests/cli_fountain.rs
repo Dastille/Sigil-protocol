@@ -262,3 +262,82 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `gather --report` prints one short line; `deluge --fountain --answer` sends exactly
+/// what it lists, and a report for another file is refused with nothing written.
+#[test]
+fn gather_report_then_deluge_answer_fills_the_gap() {
+    let dir = std::env::temp_dir().join(format!("sigil-cli-nak-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("rx")).unwrap();
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let data: Vec<u8> = (0..150_000u32)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    std::fs::write(dir.join("in.bin"), &data).unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_sigil"))
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["inscribe", "-o", "a.sg1", "in.bin"]).status.success());
+    assert!(
+        run(&["deluge", "--fountain", "--extra", "0", "-o", "tx", "a.sg1"])
+            .status
+            .success()
+    );
+    let mut pkts: Vec<_> = std::fs::read_dir(dir.join("tx"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    pkts.sort();
+    for p in pkts.iter().take(3) {
+        std::fs::copy(p, dir.join("rx").join(p.file_name().unwrap())).unwrap();
+    }
+    let rep = run(&["gather", "--report", "rx"]);
+    assert!(
+        rep.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rep.stderr)
+    );
+    let line = String::from_utf8(rep.stdout).unwrap().trim().to_string();
+    assert!(line.starts_with("SGNAK1 ") && line.len() <= 1024, "{line}");
+    assert!(pkts.len() > 3, "{} packets", pkts.len());
+    let missing = pkts.len() - 3;
+    assert!(run(&[
+        "deluge",
+        "--fountain",
+        "--answer",
+        &line,
+        "-o",
+        "rx",
+        "a.sg1"
+    ])
+    .status
+    .success());
+    let n = std::fs::read_dir(dir.join("rx")).unwrap().count();
+    assert_eq!(n, 3 + missing);
+    std::fs::write(dir.join("b.bin"), b"some other file entirely").unwrap();
+    assert!(run(&["inscribe", "-o", "b.sg1", "b.bin"]).status.success());
+    assert!(!run(&[
+        "deluge",
+        "--fountain",
+        "--answer",
+        &line,
+        "-o",
+        "rx2",
+        "b.sg1"
+    ])
+    .status
+    .success());
+    assert!(!dir.join("rx2").exists() || std::fs::read_dir(dir.join("rx2")).unwrap().count() == 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}

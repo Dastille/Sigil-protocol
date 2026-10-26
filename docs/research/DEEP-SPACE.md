@@ -362,7 +362,7 @@ in rare cases, RFC 6330 §5.8).
 1. **Column repair in `mend --soft`.** PROTOTYPED on this branch (§8).
    Verify: §5.2 table rows for 16–16 384 flips. Tests in `rs::tests::column_errors_*`,
    `tests::mend_soft_column_repair_*`, `cli_mend::mend_soft_cli_repairs_scattered_bit_flips`.
-2. **Opt-in `unseal --repair`** (column repair in memory, then open, without
+2. **Opt-in `unseal --repair`** BUILT (`tests/cli_unseal_repair.rs`). (column repair in memory, then open, without
    writing a mended file). It must stay opt-in under the "safest by default"
    rule until it has more field time. Test: for each §5.2 bit-flip row,
    `unseal --repair` gives the same ok/refused counts as `mend --soft` + `unseal`,
@@ -381,12 +381,14 @@ in rare cases, RFC 6330 §5.8).
    Test: drop every packet of one chunk. `gather --partial` (opt-in) writes the
    other chunks verified into a part file plus a map of the missing ranges,
    and never writes the final name. A normal `gather` still refuses.
-5. **Compact receiver report (deferred-NAK style).** `gather --report` prints a
+5. **Compact receiver report (deferred-NAK style).** BUILT as `gather --report` +
+   `deluge --fountain --answer` (`fountain::tests::report_*`, `cli_fountain::gather_report_then_deluge_answer_fills_the_gap`). `gather --report` prints a
    short line per source block, "have / need", that fits in one uplink packet,
    for the CFDP-acknowledged style follow-up. Test: the report size for a
    100-block object is ≤ 1 KiB. Feeding it to `deluge --extra` on the sender
    produces exactly the missing count per block.
-6. **Scrub command: `sigil doctor --scrub DIR`.** Periodically run column repair
+6. **Scrub command: `sigil doctor --scrub DIR`.** BUILT (`crate/sigil/src/scrub.rs`,
+   `tests/cli_doctor_scrub.rs`: 10 flipped marks, ≥9/10 open after scrub, 0/10 before). Periodically run column repair
    on every mark and rewrite only when the Merkle/true-name check passes, then
    log what changed. Test: the §5.3 experiment run through the command, with
    9/10 or better scrubbed vs 0/10 unscrubbed. A mark with an uncorrectable

@@ -399,7 +399,16 @@ pub fn gather_fountain(dir: &Path) -> Result<Vec<u8>> {
 /// Rebuild from the `.rq` packets in `dir`. Damaged and stray packet files are
 /// skipped (listed in the report); when too few are left the error says how many
 /// more are needed ("have 4 of 10 needed, need 6 more").
-pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
+/// Packets of the chosen object in a folder, deduplicated, with per-block counts.
+struct Collected {
+    rep: FountainReport,
+    chosen: ([u8; 12], Option<[u8; 32]>),
+    sizes: Vec<u32>,
+    have: Vec<u32>,
+    uniq: Vec<EncodingPacket>,
+}
+
+fn collect(dir: &Path) -> Result<Collected> {
     let mut rep = FountainReport::default();
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .map_err(|e| err(e.to_string()))?
@@ -479,8 +488,25 @@ pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
             rep.duplicates += 1;
         }
     }
+    Ok(Collected {
+        rep,
+        chosen,
+        sizes,
+        have,
+        uniq,
+    })
+}
+
+pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
+    let Collected {
+        mut rep,
+        chosen,
+        sizes,
+        have,
+        uniq,
+    } = collect(dir)?;
     rep.packets = uniq.len();
-    let mut dec = Decoder::new(oti);
+    let mut dec = Decoder::new(ObjectTransmissionInformation::deserialize(&chosen.0));
     let mut out = None;
     for pkt in uniq {
         if let Some(data) = dec.decode(pkt) {
@@ -522,6 +548,160 @@ pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
         }
     }
     Ok((data, rep))
+}
+
+/// Magic word at the start of a receiver report line (`gather --report`).
+pub const NAK_MAGIC: &str = "SGNAK1";
+
+/// Compact receiver report (deferred-NAK style, `sigil gather --report`): one short
+/// ASCII line `SGNAK1 <object-id-prefix> <blocks> <have>/<needed> <need-list>` that fits
+/// in one uplink packet. `<need-list>` gives, per source block, how many more packets
+/// that block needs (K minus the distinct packets held, never negative), run-length
+/// coded as comma-separated `count*value` or `value` items. Needs v2 packets (they carry
+/// the object id). Reports what is here; it does not claim the data rebuilds.
+pub fn receiver_report(dir: &Path) -> Result<String> {
+    let c = collect(dir)?;
+    let Some(obj) = c.chosen.1 else {
+        return Err(err(
+            "these are old v1 packets (no object id); --report needs packets from a current `deluge --fountain`",
+        ));
+    };
+    let need: Vec<u32> = c
+        .have
+        .iter()
+        .zip(&c.sizes)
+        .map(|(h, k)| k.saturating_sub(*h))
+        .collect();
+    let usable: u32 = c.have.iter().zip(&c.sizes).map(|(h, k)| (*h).min(*k)).sum();
+    let needed: u32 = c.sizes.iter().sum();
+    Ok(format_report(&obj, &need, usable, needed))
+}
+
+/// Hex of the first 8 bytes of the object SHA-256 (the report's object id).
+fn obj_prefix(obj: &[u8; 32]) -> String {
+    obj[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn format_report(obj: &[u8; 32], need: &[u32], usable: u32, needed: u32) -> String {
+    let mut items: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < need.len() {
+        let v = need[i];
+        let mut run = 1;
+        while i + run < need.len() && need[i + run] == v {
+            run += 1;
+        }
+        items.push(if run == 1 {
+            v.to_string()
+        } else {
+            format!("{run}*{v}")
+        });
+        i += run;
+    }
+    format!(
+        "{NAK_MAGIC} {} {} {usable}/{needed} {}",
+        obj_prefix(obj),
+        need.len(),
+        items.join(",")
+    )
+}
+
+/// Parse a receiver report and check it is for `file` (object id and block count must
+/// match, or it is refused). Returns the per-block missing counts.
+pub fn parse_report_for(file: &[u8], report: &str) -> Result<Vec<u32>> {
+    let bad = || {
+        err("not a Sigil receiver report (expected `SGNAK1 <id> <blocks> <have>/<need> <list>`)")
+    };
+    let parts: Vec<&str> = report.split_whitespace().collect();
+    if parts.len() != 5 || parts[0] != NAK_MAGIC {
+        return Err(bad());
+    }
+    let object: [u8; 32] = Sha256::digest(file).into();
+    if parts[1] != obj_prefix(&object) {
+        return Err(err(
+            "this report is for a different file (object id does not match); nothing written",
+        ));
+    }
+    let blocks: usize = parts[2].parse().map_err(|_| bad())?;
+    let enc = Encoder::with_defaults(file, MTU);
+    let sizes: Vec<u32> = enc
+        .get_block_encoders()
+        .iter()
+        .map(|b| b.source_packets().len() as u32)
+        .collect();
+    if blocks != sizes.len() {
+        return Err(err(
+            "report block count does not match this file; nothing written",
+        ));
+    }
+    let mut need = Vec::with_capacity(blocks);
+    for item in parts[4].split(',') {
+        let (run, v) = match item.split_once('*') {
+            Some((r, v)) => (
+                r.parse::<usize>().map_err(|_| bad())?,
+                v.parse::<u32>().map_err(|_| bad())?,
+            ),
+            None => (1, item.parse::<u32>().map_err(|_| bad())?),
+        };
+        if run == 0 || need.len() + run > blocks {
+            return Err(bad());
+        }
+        need.extend(std::iter::repeat_n(v, run));
+    }
+    if need.len() != blocks {
+        return Err(bad());
+    }
+    for (n, k) in need.iter().zip(&sizes) {
+        if n > k {
+            return Err(err(
+                "report asks for more packets than a block has source symbols; refused",
+            ));
+        }
+    }
+    Ok(need)
+}
+
+/// Answer a receiver report: write exactly the missing count of fresh random-ESI
+/// packets per block of `file` into `dir` (never overwriting). Returns packets written.
+pub fn deluge_answer_report(file: &[u8], dir: &Path, report: &str) -> Result<u32> {
+    let need = parse_report_for(file, report)?;
+    answer_with(file, dir, &need, &mut random_esi)
+}
+
+fn answer_with(
+    file: &[u8],
+    dir: &Path,
+    need: &[u32],
+    next_esi: &mut dyn FnMut() -> Result<u32>,
+) -> Result<u32> {
+    fs::create_dir_all(dir).map_err(|e| err(e.to_string()))?;
+    let enc = Encoder::with_defaults(file, MTU);
+    let cfg = enc.get_config().serialize();
+    let object: [u8; 32] = Sha256::digest(file).into();
+    let mut written = 0u32;
+    for (sbn, (block, n)) in enc.get_block_encoders().iter().zip(need).enumerate() {
+        let source = block.source_packets();
+        let k = source.len() as u32;
+        let sbn_u8 = u8::try_from(sbn).map_err(|_| err("internal: too many source blocks"))?;
+        let mut taken = HashSet::new();
+        let mut left = *n;
+        while left > 0 {
+            // Fresh repair symbols only (ESI >= K): the receiver may hold any source ones.
+            let esi = next_esi()? & MAX_ESI;
+            if esi < k || !taken.insert(esi) {
+                continue;
+            }
+            let path = dir.join(format!("rain-{sbn_u8:03}-{esi:08}.rq"));
+            if path.exists() {
+                continue;
+            }
+            let pkt = expected_packet(block, &source, esi)?;
+            write_new(&path, &packet_v2(&cfg, &object, &pkt))?;
+            written += 1;
+            left -= 1;
+        }
+    }
+    Ok(written)
 }
 
 pub fn is_fountain_dir(dir: &Path) -> bool {
@@ -580,6 +760,77 @@ mod tests {
             x.pkt.payload_id().source_block_number(),
             x.pkt.payload_id().encoding_symbol_id(),
         )
+    }
+
+    #[test]
+    fn report_for_100_blocks_fits_in_1kib() {
+        let obj = [7u8; 32];
+        // Worst case: every block needs a different (large) count, so no runs compress.
+        let need: Vec<u32> = (0..100u32).map(|i| 56_403 - i).collect();
+        let line = format_report(&obj, &need, 1_000_000, 5_640_300);
+        assert!(line.len() <= 1024, "{} bytes", line.len());
+        let all_done = format_report(&obj, &[0; 100], 10, 10);
+        assert!(all_done.ends_with(" 100*0"), "{all_done}");
+    }
+
+    #[test]
+    fn report_round_trip_answers_exact_missing_and_rebuilds() {
+        let m = mark(200_000);
+        let full = scratch("nak-full");
+        deluge_fountain(&m, &full, 6).unwrap();
+        let rx = scratch("nak-rx");
+        // Receiver keeps only 5 packets: far short of K.
+        for p in rq_files(&full).into_iter().take(5) {
+            fs::copy(&p, rx.join(p.file_name().unwrap())).unwrap();
+        }
+        let line = receiver_report(&rx).unwrap();
+        assert!(line.starts_with("SGNAK1 ") && line.len() <= 1024, "{line}");
+        let need = parse_report_for(&m, &line).unwrap();
+        let sizes: Vec<u32> = Encoder::with_defaults(&m, MTU)
+            .get_block_encoders()
+            .iter()
+            .map(|b| b.source_packets().len() as u32)
+            .collect();
+        let want: u32 = sizes.iter().sum::<u32>() - 5;
+        assert_eq!(need.iter().sum::<u32>(), want);
+        // Sender answers into the receiver's folder: exactly the missing count.
+        let mut seed = 0x1234_5678u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            Ok(seed as u32)
+        };
+        let wrote = answer_with(&m, &rx, &need, &mut next).unwrap();
+        assert_eq!(wrote, want);
+        let after = receiver_report(&rx).unwrap();
+        assert!(
+            after.ends_with(&format!(" {}*0", sizes.len())) || after.ends_with(" 0"),
+            "{after}"
+        );
+        // RaptorQ at exactly K almost always decodes; top up 2 more if this seed is unlucky.
+        if gather_fountain(&rx).is_err() {
+            answer_with(&m, &rx, &vec![2; sizes.len()], &mut next).unwrap();
+        }
+        assert_eq!(gather_fountain(&rx).unwrap(), m);
+    }
+
+    #[test]
+    fn report_for_other_file_or_garbage_is_refused() {
+        let m = mark(50_000);
+        let d = scratch("nak-other");
+        deluge_fountain(&m, &d, 1).unwrap();
+        let line = receiver_report(&d).unwrap();
+        let other = mark(60_000);
+        assert!(parse_report_for(&other, &line).is_err());
+        assert!(parse_report_for(&m, "SGNAK1 zz 1 0/1 1").is_err());
+        assert!(parse_report_for(&m, "hello").is_err());
+        let id = line.split_whitespace().nth(1).unwrap();
+        assert!(parse_report_for(&m, &format!("SGNAK1 {id} 1 0/1 99999999")).is_err());
+        assert!(parse_report_for(&m, &format!("SGNAK1 {id} 1 0/1 2*0")).is_err());
+        let out = scratch("nak-other-out");
+        assert!(deluge_answer_report(&other, &out, &line).is_err());
+        assert!(rq_files(&out).is_empty());
     }
 
     #[test]
