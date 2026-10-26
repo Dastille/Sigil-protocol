@@ -922,30 +922,53 @@ pub fn scry_dir_checked(
     identities: &[Identity],
 ) -> Result<(String, Option<String>)> {
     let text = scry_dir_keys(input, pass, companions, identities)?;
-    let bad = if let Some((_, body)) = sealed_dir_body(input)? {
-        crate::work::star_bytes_unrecoverable(&body).map(|w| format!("encrypted body: {w}"))
+    let (bad, torn) = if let Some((_, body)) = sealed_dir_body(input)? {
+        let bad =
+            crate::work::star_bytes_unrecoverable(&body).map(|w| format!("encrypted body: {w}"));
+        let torn = if bad.is_none() && crate::work::star_bytes_torn(&body) {
+            vec!["encrypted body".to_string()]
+        } else {
+            Vec::new()
+        };
+        (bad, torn)
     } else {
         v1_unrecoverable(input)?
     };
     Ok(match bad {
-        None => (text, None),
+        None if torn.is_empty() => (text, None),
+        None => (
+            format!(
+                "{text}\nneeds mend: {} (damaged but repairable, like merkle=open on one file; run `sigil mend {} -o fixed.sg1`)",
+                torn.join(", "),
+                input.display()
+            ),
+            None,
+        ),
         Some(why) => (format!("{text}\nNOT recoverable: {why}"), Some(why)),
     })
 }
 
-/// First member of a v1 pack that cannot be restored (one member in memory at a time).
-fn v1_unrecoverable(input: &Path) -> Result<Option<String>> {
+/// First member of a v1 pack that cannot be restored, and the members that are damaged
+/// but repairable (one member in memory at a time).
+fn v1_unrecoverable(input: &Path) -> Result<(Option<String>, Vec<String>)> {
+    let mut torn = Vec::new();
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
     for i in 0..n {
         let mut lb = [0u8; 2];
         if reader.read_exact(&mut lb).is_err() {
-            return Ok(Some(format!("folder pack cut off at member {i} of {n}")));
+            return Ok((
+                Some(format!("folder pack cut off at member {i} of {n}")),
+                torn,
+            ));
         }
         let mut name = vec![0u8; u16::from_le_bytes(lb) as usize];
         let mut sl = [0u8; 8];
         if reader.read_exact(&mut name).is_err() || reader.read_exact(&mut sl).is_err() {
-            return Ok(Some(format!("folder pack cut off at member {i} of {n}")));
+            return Ok((
+                Some(format!("folder pack cut off at member {i} of {n}")),
+                torn,
+            ));
         }
         let rel = String::from_utf8_lossy(&name).into_owned();
         let slen = u64::from_le_bytes(sl);
@@ -956,13 +979,16 @@ fn v1_unrecoverable(input: &Path) -> Result<Option<String>> {
             .read_to_end(&mut star)
             .map_err(io)?;
         if (star.len() as u64) < slen {
-            return Ok(Some(format!("{rel}: cut off")));
+            return Ok((Some(format!("{rel}: cut off")), torn));
         }
         if let Some(why) = crate::work::star_bytes_unrecoverable(&star) {
-            return Ok(Some(format!("{rel}: {why}")));
+            return Ok((Some(format!("{rel}: {why}")), torn));
+        }
+        if crate::work::star_bytes_torn(&star) {
+            torn.push(rel);
         }
     }
-    Ok(None)
+    Ok((None, torn))
 }
 
 /// Scry line of a sealed body (written to a private scratch file: it is ciphertext).

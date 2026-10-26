@@ -118,6 +118,9 @@ Folder wraps mend too: `sigil mend folder.sg1 -o fixed.sg1` heals each damaged f
 inside (small files and large ones) and says which. If any file inside is beyond
 repair, nothing is written. The folder's own index (file names and sizes) has no
 spare copy — if that is hit, mend says so; restore from another copy.
+`sigil verify folder.sg1` prints `needs mend: <files>` when files inside are damaged
+but still repairable (exit 0, like `merkle=open` on one file), and `NOT recoverable`
+(exit 2) when they are not.
 
 Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default):
 

@@ -128,3 +128,43 @@ fn mend_fails_closed_when_a_member_is_beyond_repair() {
     assert!(!d.join("m.sg1").exists());
     assert!(!d.join("m.sg1.mend-part").exists());
 }
+
+/// `verify` on a plain folder pack says "needs mend" for repairable damage (like
+/// `merkle=open` on one file), stays quiet when healthy, and exits 2 beyond repair.
+#[test]
+fn verify_reports_needs_mend_then_clean_after_mend() {
+    for big in [false, true] {
+        let d = scratch(if big { "vbig" } else { "vsmall" });
+        pack(&d, big);
+        let o = sigil(&d, &["verify", "f.sg1"]);
+        assert!(o.status.success());
+        assert!(!String::from_utf8_lossy(&o.stdout).contains("needs mend"));
+        let mut raw = std::fs::read(d.join("f.sg1")).expect("r");
+        let at = find(&raw, b"a.bin") + 5 + 8 + if big { 300_000 } else { 2000 };
+        flip(&mut raw, at, 10, 40);
+        std::fs::write(d.join("d.sg1"), &raw).expect("w");
+        let o = sigil(&d, &["verify", "d.sg1"]);
+        let t = String::from_utf8_lossy(&o.stdout).into_owned();
+        assert!(o.status.success(), "repairable is not a failure: {t}");
+        assert!(t.contains("needs mend: a.bin"), "{t}");
+        assert!(!t.contains("NOT recoverable"), "{t}");
+        ok(&d, &["mend", "d.sg1", "-o", "m.sg1"]);
+        let t = ok(&d, &["verify", "m.sg1"]);
+        assert!(!t.contains("needs mend"), "{t}");
+    }
+}
+
+#[test]
+fn verify_beyond_repair_exits_2() {
+    let d = scratch("vdead");
+    pack(&d, false);
+    let mut raw = std::fs::read(d.join("f.sg1")).expect("r");
+    let at = find(&raw, b"a.bin") + 5 + 8;
+    for x in raw.iter_mut().skip(at).take(180_000) {
+        *x = 0;
+    }
+    std::fs::write(d.join("d.sg1"), &raw).expect("w");
+    let o = sigil(&d, &["verify", "d.sg1"]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("NOT recoverable"));
+}
