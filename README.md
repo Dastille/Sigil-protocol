@@ -315,9 +315,10 @@ cargo audit
 cargo test
 ```
 
-`.github/workflows/ci.yml` and `release.yml` are kept for reference, but GitHub
-Actions do not run on this account (free plan billing), so no CI results appear on
-commits or PRs. Run the checks above locally.
+`.github/workflows/ci.yml` and `release.yml` are manual-only (`workflow_dispatch`):
+they do not run on push, pull requests, tags, or a schedule (free plan billing), so
+no CI results appear on commits or PRs. The merge gate is the local fmt / clippy /
+audit / test checks above.
 
 ## Known limitations
 
