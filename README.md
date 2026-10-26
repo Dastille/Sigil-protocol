@@ -89,6 +89,7 @@ star  star  a.txt  17 bytes  d7db...
 star  MISSING  sub/big.bin  200000 bytes  6705...
 missing  sub/big.bin (6705...)
 NOT recoverable: 1 star(s) missing: sub/big.bin
+NOT recoverable (1 star(s) missing: sub/big.bin): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
 ```
 
 `sigil --version` prints the version and the git commit it was built from, e.g.
