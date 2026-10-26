@@ -304,6 +304,60 @@ live USBs, `vault`, `mount`, `kit`, `sign`, `import-pgp`, ...). They are not
 covered by the examples here; see [docs/START.md](docs/START.md) and
 [crate/sigil/README.md](crate/sigil/README.md).
 
+## Scripts and pipes
+
+**Seal straight from a pipe.** Use `-` as the input and Sigil reads stdin:
+
+```sh
+pg_dump mydb | sigil seal - --pass-file ~/.sigil-pass -o dump.sg1 --stdin-name mydb.sql
+```
+
+- The pipe is copied into a private temp folder next to `-o` (so big dumps take the
+  normal large-file path) and that folder is removed when the seal ends.
+- **Empty stdin is refused** (exit 1, no mark written): if `pg_dump` failed you get an
+  error, not an empty backup. A terminal on stdin is refused too.
+- Passphrase rules are the same as always: use `--pass-file` or `--to` in scripts
+  (stdin is busy carrying the data). `--stdin-name` sets the name stored inside.
+
+**Unseal to stdout.** `sigil unseal dump.sg1 --pass-file ~/.sigil-pass -o - | psql mydb`.
+Works for one file (plain `.sg1` or a large-file pack, also with `--star` / `--from-mb` /
+`--to-mb`). Not for folder wraps or constellations. A large pack streams part by part;
+if a later part fails, the exit code is not 0 — treat that output as incomplete.
+
+**`--json`** on `seal`, `unseal`, `verify` (and `doctor`, which already had it) prints
+exactly one JSON line on stdout; the friendly lines move to stderr.
+
+```json
+{"ok":true,"cmd":"seal","exit":0,"output":"dump.sg1","output_bytes":12345}
+{"ok":false,"cmd":"unseal","exit":1,"error":"..."}
+```
+
+`verify --json` adds `"report"` (the normal text) and, with a deep read, `"read_data"`.
+
+**Exit codes** (seal / unseal / verify):
+
+| code | meaning |
+|------|---------|
+| 0 | it worked / the mark is healthy |
+| 1 | error or refused (bad key, missing file, empty stdin, wrong option combo) |
+| 2 | too damaged to restore, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
+| 3 | no boot mark found |
+
+`doctor` keeps its own documented codes.
+
+**Deep read: `verify --read-data` / `--read-data-subset 10%`.** Plain `verify` is
+cheap: it checks structure and repair checksums and needs no key. Add `--read-data` to
+open every part all the way back to the original bytes (decrypt + true-name check), or
+`--read-data-subset 10%` to open an evenly spaced tenth. The sample moves each day, so
+a daily 10% check covers the whole file in about ten days (like restic). Encrypted marks
+need `--pass-file` / `--identity`. Nothing is written to disk. Pin the sample with
+`--subset-offset N`. Works on one `.sg1` or a large-file pack (not folder wraps yet).
+
+```sh
+sigil verify dump.sg1 --pass-file ~/.sigil-pass --read-data-subset 10% --json
+# ... "read_data":{"kind":"work","percent":10,"offset":20752,"total_parts":40,"checked":[...],"bytes_read":...,"failed":[]}
+```
+
 ## Web lab
 
 The browser lab (a TypeScript implementation that seals and opens the same `.sg1`
