@@ -559,6 +559,70 @@ pub const NAK_MAGIC: &str = "SGNAK1";
 /// that block needs (K minus the distinct packets held, never negative), run-length
 /// coded as comma-separated `count*value` or `value` items. Needs v2 packets (they carry
 /// the object id). Reports what is here; it does not claim the data rebuilds.
+/// How far a fountain folder got, for `gather --partial`. Never fails: a folder with no
+/// usable packets reports zeros (damaged files counted, never as progress).
+#[derive(Debug, Clone, Default)]
+pub struct FountainProgress {
+    /// Distinct packets of the chosen object (duplicates, damaged and stray not counted).
+    pub packets_accepted: usize,
+    /// Accepted packets that count toward a block (capped at each block's K).
+    pub usable: u32,
+    /// Source symbols needed in total.
+    pub needed: u32,
+    /// Packets still missing (at least; RaptorQ may want 1-2 extra).
+    pub more: u32,
+    pub blocks: usize,
+    pub damaged: usize,
+    pub stray: usize,
+    pub duplicates: usize,
+    /// The `gather --report` line, when the packets carry an object id.
+    pub report: Option<String>,
+}
+
+pub fn fountain_progress(dir: &Path) -> FountainProgress {
+    match collect(dir) {
+        Ok(c) => {
+            let usable: u32 = c.have.iter().zip(&c.sizes).map(|(h, k)| (*h).min(*k)).sum();
+            let more: u32 = c
+                .have
+                .iter()
+                .zip(&c.sizes)
+                .map(|(h, k)| k.saturating_sub(*h))
+                .sum();
+            let report = c.chosen.1.map(|obj| {
+                let need: Vec<u32> = c
+                    .have
+                    .iter()
+                    .zip(&c.sizes)
+                    .map(|(h, k)| k.saturating_sub(*h))
+                    .collect();
+                format_report(&obj, &need, usable, c.rep.needed)
+            });
+            FountainProgress {
+                packets_accepted: c.uniq.len(),
+                usable,
+                needed: c.rep.needed,
+                more,
+                blocks: c.sizes.len(),
+                damaged: c.rep.bad.len(),
+                stray: c.rep.stray.len(),
+                duplicates: c.rep.duplicates,
+                report,
+            }
+        }
+        Err(_) => FountainProgress {
+            damaged: fs::read_dir(dir)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rq"))
+                        .count()
+                })
+                .unwrap_or(0),
+            ..FountainProgress::default()
+        },
+    }
+}
+
 pub fn receiver_report(dir: &Path) -> Result<String> {
     let c = collect(dir)?;
     let Some(obj) = c.chosen.1 else {
