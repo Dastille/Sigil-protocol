@@ -197,6 +197,9 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
             json: true, output, ..
         } => Some(("unseal", Some(output.clone()))),
         Cmd::Verify { json: true, .. } => Some(("verify", None)),
+        Cmd::Gather {
+            json: true, output, ..
+        } => Some(("gather", output.clone())),
         _ => None,
     }
 }
@@ -432,6 +435,13 @@ enum Cmd {
         /// Wait for parts to show up. Write VESSEL when rebuilt so the sender can stop.
         #[arg(long)]
         watch: bool,
+        /// If it cannot fully rebuild: still exit 2 and write no mark, but leave a JSON
+        /// progress receipt at OUTPUT.partial.json (or on stdout with --json)
+        #[arg(long, conflicts_with_all = ["watch", "report"])]
+        partial: bool,
+        /// Machine-readable result on stdout (one JSON line)
+        #[arg(long, conflicts_with = "report")]
+        json: bool,
     },
     /// Rebuild a healthy .sg1 from live shards in a torn mark (no passphrase). Alias: repair.
     /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input.
@@ -1818,6 +1828,56 @@ fn dispatch(
     Ok(())
 }
 
+/// `gather --partial` after a failed rebuild: collect progress, write the receipt (file,
+/// or JSON fields on the stdout result line with `--json`), and return the exit-2 error.
+/// Writes no mark: nothing that looks complete is left behind.
+fn gather_partial(
+    input: &Path,
+    output: &Path,
+    fountain: bool,
+    json: bool,
+    why: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let fields = if fountain {
+        let p = sigil::fountain_progress(input);
+        format!(
+            ",\"partial\":true,\"kind\":\"fountain\",\"packets_accepted\":{},\"packets_usable\":{},\"packets_needed\":{},\"packets_more\":{},\"blocks\":{},\"damaged_files\":{},\"stray_files\":{},\"duplicates\":{},\"report\":{},\"artifact\":null",
+            p.packets_accepted,
+            p.usable,
+            p.needed,
+            p.more,
+            p.blocks,
+            p.damaged,
+            p.stray,
+            p.duplicates,
+            p.report.as_deref().map(jq).unwrap_or_else(|| "null".into()),
+        )
+    } else {
+        let (have, k, _) = tally_pieces(input).unwrap_or((0, 0, 0));
+        format!(
+            ",\"partial\":true,\"kind\":\"pieces\",\"packets_accepted\":{have},\"packets_needed\":{k},\"packets_more\":{},\"artifact\":null",
+            k.saturating_sub(have)
+        )
+    };
+    let msg = format!("gather incomplete (too damaged to rebuild from these packets yet): {why}");
+    if json {
+        json_extra(&fields);
+    } else {
+        let mut rp = output.as_os_str().to_os_string();
+        rp.push(".partial.json");
+        let rp = PathBuf::from(rp);
+        fs::write(
+            &rp,
+            format!(
+                "{{\"ok\":false,\"cmd\":\"gather\",\"exit\":2,\"output\":null,\"reason\":{}{fields}}}\n",
+                jq(why)
+            ),
+        )?;
+        eprintln!("partial receipt → {} (no mark written)", rp.display());
+    }
+    Ok(msg)
+}
+
 /// `verify` / `scry`: the cheap structural check, plus the opt-in deep read.
 fn verify_cmd(
     input: PathBuf,
@@ -2576,15 +2636,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             watch,
             report,
+            partial,
+            json,
         } => {
             let pass = pass.or(pass_file);
             if report {
-                println!("{}", sigil::receiver_report(&input)?);
+                say!("{}", sigil::receiver_report(&input)?);
                 return Ok(());
             }
             let output = output.ok_or("gather needs -o")?;
             if watch {
-                println!(
+                say!(
                     "watching {}. Rebuilds when enough parts arrive, then writes {VESSEL} so the sender stops.",
                     input.display()
                 );
@@ -2609,45 +2671,60 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if open {
                                 let plain = unseal_ex(&sg1, pass.as_deref(), &[])?;
                                 fs::write(&output, plain)?;
-                                println!(
+                                say!(
                                     "enough ({have} ≥ {k}). De-scribed → {}",
                                     output.display()
                                 );
                             } else {
                                 fs::write(&output, sg1)?;
-                                println!("enough ({have} ≥ {k}). Gathered → {}", output.display());
+                                say!("enough ({have} ≥ {k}). Gathered → {}", output.display());
                             }
                             write_vessel(&input, have, k)?;
-                            println!("Vessel is full. Sender can stop.");
+                            say!("Vessel is full. Sender can stop.");
                             break;
                         }
                         Err(e) if fountain => {
-                            println!("waiting… {e}");
+                            say!("waiting… {e}");
                             std::thread::sleep(std::time::Duration::from_secs(1));
                         }
                         Err(_) => {
                             if let Ok((have, k, _)) = tally_pieces(&input) {
-                                println!("waiting… {have} good parts, need {k}");
+                                say!("waiting… {have} good parts, need {k}");
                             } else {
-                                println!("waiting for the first part…");
+                                say!("waiting for the first part…");
                             }
                             std::thread::sleep(std::time::Duration::from_secs(1));
                         }
                     }
                 }
             } else {
-                let sg1 = if is_fountain_dir(&input) {
-                    gather_fountain_noted(&input)?.0
+                let fountain = is_fountain_dir(&input);
+                let got: Result<Vec<u8>, Box<dyn std::error::Error>> = if fountain {
+                    gather_fountain_noted(&input).map(|r| r.0)
                 } else {
-                    gather_pieces(&input)?
+                    gather_pieces(&input).map_err(|e| e.into())
+                };
+                let sg1 = match got {
+                    Ok(b) => b,
+                    Err(e) if partial => {
+                        return Err(gather_partial(
+                            &input,
+                            &output,
+                            fountain,
+                            json,
+                            &e.to_string(),
+                        )?
+                        .into());
+                    }
+                    Err(e) => return Err(e),
                 };
                 if open {
                     let plain = unseal_ex(&sg1, pass.as_deref(), &[])?;
                     fs::write(&output, plain)?;
-                    println!("gathered and de-scribed → {}", output.display());
+                    say!("gathered and de-scribed → {}", output.display());
                 } else {
                     fs::write(&output, sg1)?;
-                    println!("gathered mark → {}", output.display());
+                    say!("gathered mark → {}", output.display());
                 }
             }
         }

@@ -299,6 +299,13 @@ On a slow or one-way link the receiver can ask for just what is missing:
 missing number of fresh packets per block. A report for a different file is refused.
 RaptorQ occasionally needs one or two packets beyond the exact count; report again if so.
 
+**`gather --partial` (for scripts).** If there are not enough packets yet, gather still
+fails (exit 2) and still writes **no** mark — it never leaves a pretend-complete archive.
+With `--partial` it also writes `OUT.partial.json` (or, with `--json`, one JSON line on
+stdout) saying how far it got: `packets_accepted`, `packets_needed`, `packets_more`,
+damaged and foreign packet files (never counted as progress), the `--report` line and
+the reason. When there are enough packets, `--partial` changes nothing.
+
 `sigil --help` lists the rest (pieces/`deluge`/`gather`, `dispatch`, `boot` for
 live USBs, `vault`, `mount`, `kit`, `sign`, `import-pgp`, ...). They are not
 covered by the examples here; see [docs/START.md](docs/START.md) and

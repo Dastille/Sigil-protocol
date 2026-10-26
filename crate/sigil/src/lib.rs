@@ -95,8 +95,8 @@ pub use folder::{
 };
 pub use fountain::{
     deluge_answer_report, deluge_fountain, deluge_fountain_opts, deluge_fountain_report,
-    gather_fountain, gather_fountain_report, is_fountain_dir, parse_report_for, receiver_report,
-    DelugeReport, FountainReport, MAX_ESI, NAK_MAGIC,
+    fountain_progress, gather_fountain, gather_fountain_report, is_fountain_dir, parse_report_for,
+    receiver_report, DelugeReport, FountainProgress, FountainReport, MAX_ESI, NAK_MAGIC,
 };
 pub use header::{
     locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION,
