@@ -2739,6 +2739,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             soft,
+        } if sigil::is_plain_dir_pack(&input) => {
+            println!("{}", sigil::mend_plain_dir(&input, &output, soft)?);
+        }
+        Cmd::Mend {
+            input,
+            output,
+            soft,
         } if sigil::is_work_pack(&input) => {
             mend_pack_report(&input, &output, soft)?;
         }

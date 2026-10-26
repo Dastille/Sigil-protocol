@@ -644,6 +644,78 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
     ))
 }
 
+/// `sigil mend` for a plain (v1, unencrypted-envelope) folder pack: heal each member star
+/// the way a lone `.sg1` / large-file pack is healed, then write the pack again with the
+/// same layout. All-or-nothing: if any damaged member cannot be healed (Merkle + true
+/// name checked), nothing is written and the error names that member.
+pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
+    let raw = fs::read(input).map_err(io)?;
+    let entries = parse_sgdr_entries(&raw)
+        .map_err(|e| crate::Error::Msg(format!("folder pack index unreadable: {e}")))?;
+    drop(raw);
+    let total = entries.len();
+    let mut healed_entries = Vec::with_capacity(total);
+    let mut mended: Vec<String> = Vec::new();
+    let mut soft_used = false;
+    for (rel, star) in entries {
+        if star.starts_with(&crate::work::WORK_MAGIC) {
+            let src = Scratch(scratch_beside(output, "mend-member-in"));
+            let dst = Scratch(scratch_beside(output, "mend-member-out"));
+            fs::write(&src.0, &star).map_err(io)?;
+            let r = crate::work::mend_pack_path(&src.0, &dst.0, soft).map_err(|e| {
+                crate::Error::Msg(format!("member '{rel}' could not be mended: {e}"))
+            })?;
+            soft_used |= r.soft_used;
+            if r.mended.is_empty() {
+                healed_entries.push((rel, star));
+            } else {
+                mended.push(rel.clone());
+                healed_entries.push((rel, fs::read(&dst.0).map_err(io)?));
+            }
+        } else if crate::work::star_torn(&star) {
+            let (h, used) = crate::pieces::mend_bytes_ex(&star, soft).map_err(|e| {
+                crate::Error::Msg(format!("member '{rel}' could not be mended: {e}"))
+            })?;
+            if crate::work::star_torn(&h) {
+                return Err(crate::Error::Msg(format!(
+                    "member '{rel}' is still damaged after mend; nothing written"
+                )));
+            }
+            soft_used |= used;
+            mended.push(rel.clone());
+            healed_entries.push((rel, h));
+        } else {
+            healed_entries.push((rel, star));
+        }
+    }
+    let mut part = output.as_os_str().to_os_string();
+    part.push(".mend-part");
+    let part = PathBuf::from(part);
+    fs::write(&part, encode_sgdr(&healed_entries)?).map_err(io)?;
+    fs::rename(&part, output).map_err(io)?;
+    Ok(format!(
+        "mended {} → {} (folder pack, {total} files, {} healed{}{})",
+        input.display(),
+        output.display(),
+        mended.len(),
+        if mended.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", mended.join(", "))
+        },
+        if soft_used { ", soft salvage" } else { "" }
+    ))
+}
+
+/// True for a plain (v1) folder pack: `SGDR` + version 1.
+pub fn is_plain_dir_pack(input: &Path) -> bool {
+    let Ok(mut f) = File::open(input) else {
+        return false;
+    };
+    let mut head = [0u8; 5];
+    f.read_exact(&mut head).is_ok() && head[0..4] == DIR_MAGIC && head[4] == DIR_VER_PLAIN
+}
+
 /// One folder-pack member: `(relative path, star bytes)`.
 type Member = (String, Vec<u8>);
 

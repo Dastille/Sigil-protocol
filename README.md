@@ -114,6 +114,11 @@ in Seal, fewer when pieces are missing) and keeps the result only if the hash
 tree and file hash match. Measured on a 1 MB file: 1 024 flipped bits repaired in
 10 of 10 trials (Reflection). Details and limits: [docs/research/DEEP-SPACE.md](docs/research/DEEP-SPACE.md).
 
+Folder wraps mend too: `sigil mend folder.sg1 -o fixed.sg1` heals each damaged file
+inside (small files and large ones) and says which. If any file inside is beyond
+repair, nothing is written. The folder's own index (file names and sizes) has no
+spare copy — if that is hit, mend says so; restore from another copy.
+
 Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default):
 
 - `sigil unseal --repair -o out.jpg flipped.sg1` repairs in memory and opens, without
