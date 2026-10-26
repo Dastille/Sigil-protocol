@@ -304,6 +304,28 @@ live USBs, `vault`, `mount`, `kit`, `sign`, `import-pgp`, ...). They are not
 covered by the examples here; see [docs/START.md](docs/START.md) and
 [crate/sigil/README.md](crate/sigil/README.md).
 
+## Play a sealed film or song (`sigil show`)
+
+`sigil show film.sg1 --plex ~/Media/Movies` serves ONE sealed file over plain HTTP at
+`http://127.0.0.1:7845/play` and writes `Film.strm` (a one-line file with that URL) into
+your library folder.
+
+- **Works with anything that plays a URL and seeks with HTTP Range:** Plex and
+  Jellyfin (and Kodi/Emby) through the `.strm`, VLC "Open Network Stream", mpv, a browser.
+  There is no codec plugin — the player just sees an ordinary web video.
+- **Want it in every app (Finder, Explorer, editors)?** Use `sigil mount` (FUSE) instead.
+- **Large-file packs** unlock only the 4 MiB slices the player reads (seeking jumps
+  straight there; at most 8 slices are kept in RAM). A plain small `.sg1` is unsealed
+  once to a temp file, deleted after `--idle` seconds of no reads.
+- Several connections at once are fine (players probe, play and seek in parallel).
+  Seeking near the end (`Range: bytes=-N`) works.
+- If part of a large pack is not copied yet, the player gets "416" with
+  `X-Sigil: overture-incomplete` instead of wrong bytes.
+- Folder wraps and constellations are refused: `show` plays one file.
+- Local only by default (`--bind 127.0.0.1:7845`). If the player is on another PC, set
+  `--bind 0.0.0.0:7845 --public http://THIS-PC:7845` — anyone on the network who can
+  reach that port can then watch it (no password on the HTTP side).
+
 ## Scripts and pipes
 
 **Seal straight from a pipe.** Use `-` as the input and Sigil reads stdin:
