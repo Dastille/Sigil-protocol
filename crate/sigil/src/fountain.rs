@@ -215,6 +215,9 @@ pub fn deluge_fountain_report(
     deluge_fountain_with(file, dir, repair, sequential, &mut random_esi)
 }
 
+/// Consecutive already-taken random ESIs tolerated before a top-up gives up.
+const ESI_MISS_LIMIT: u32 = 100_000;
+
 /// A fresh ESI from the OS random source, masked to the 24-bit ESI space.
 fn random_esi() -> Result<u32> {
     let mut r = [0u8; 4];
@@ -333,12 +336,24 @@ pub(crate) fn deluge_fountain_with(
         let want = k.saturating_add(repair);
         rep.target = rep.target.saturating_add(want);
         let mut missing = want.saturating_sub(valid[sbn].len() as u32);
+        // Fail closed instead of spinning forever if the ESI source keeps repeating
+        // taken IDs (a stuck generator, or a block whose ESI space is used up).
+        let mut misses = 0u32;
         while missing > 0 {
             let esi = next_esi()? & MAX_ESI;
             let path = dir.join(format!("rain-{sbn_u8:03}-{esi:08}.rq"));
             if taken[sbn].contains(&esi) || path.exists() {
+                misses += 1;
+                if misses >= ESI_MISS_LIMIT {
+                    return Err(err(format!(
+                        "could not find a fresh symbol ID for block {sbn} after {misses} tries; \
+                         wrote {} new packet(s), {missing} still short",
+                        rep.written
+                    )));
+                }
                 continue;
             }
+            misses = 0;
             let pkt = expected_packet(block, source, esi)?;
             debug_assert_eq!(pkt.payload_id(), &PayloadId::new(sbn_u8, esi));
             write_new(&path, &packet_v2(&cfg, &object, &pkt))?;
@@ -1019,6 +1034,24 @@ mod tests {
         }
         assert_eq!(rq_files(&d), before);
         // Still decodes after the top-up.
+        assert_eq!(gather_fountain(&d).unwrap(), m);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn random_top_up_with_a_stuck_esi_source_fails_closed() {
+        let m = mark(100_000);
+        let d = scratch("stuck");
+        // A generator that always returns the same ID: the first packet lands, then
+        // every later pick collides. Must error, not hang, and never over-count.
+        let mut gen = || Ok(7u32);
+        let e = deluge_fountain_with(&m, &d, 2, false, &mut gen);
+        assert!(e.is_err(), "stuck generator must fail closed");
+        assert_eq!(rq_files(&d).len(), 1);
+        // A healthy source then tops the same folder up to exactly the target.
+        let rep = deluge_fountain_report(&m, &d, 2, false).unwrap();
+        assert_eq!(rep.kept, 1);
+        assert_eq!(rep.target as usize, rq_files(&d).len());
         assert_eq!(gather_fountain(&d).unwrap(), m);
         let _ = fs::remove_dir_all(&d);
     }
