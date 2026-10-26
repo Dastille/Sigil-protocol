@@ -76,6 +76,21 @@ NOT recoverable  v2  live=5/16 need=12 merkle=open keystone=intact ...
 NOT recoverable (live=5/16 need=12): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
 ```
 
+A constellation (`sigil constellation scry Sky` or `sigil scry Sky.sigil`) gets
+the same verdict: if any listed file's star is missing or damaged beyond repair,
+the report ends with a `NOT recoverable: ...` line naming those files and the
+command exits with code 2. A star that is damaged but still repairable does not
+count; `sigil doctor` lists it so you can mend it.
+
+```
+$ sigil constellation scry Sky
+constellation  title=Sky  stars=2  unique=2
+star  star  a.txt  17 bytes  d7db...
+star  MISSING  sub/big.bin  200000 bytes  6705...
+missing  sub/big.bin (6705...)
+NOT recoverable: 1 star(s) missing: sub/big.bin
+```
+
 `sigil --version` prints the version and the git commit it was built from, e.g.
 `sigil 1.0.0 (commit 76d0639)` (`-dirty` after the SHA if the checkout had
 uncommitted changes, `unknown` when built without git, e.g. from a source tarball).
@@ -426,7 +441,6 @@ audit / test checks above.
   list); it warns but is not refused yet. Use `--pass-file PATH` in scripts or
   `--pass -` to type it. `--pass -` needs a terminal: it never reads a
   piped stdin. Only `unseal` asks on its own when a key is missing.
-- `scry` of a constellation does not yet report `NOT recoverable`; check it with `doctor`.
 - Damage near the start of a file costs more: the header region is used to find
   everything else, so recovery there leans on the spare header copies (Keystone)
   and loses more margin than the same damage in the middle.

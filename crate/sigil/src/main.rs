@@ -5,8 +5,8 @@ use sigil::{
     inscribe_stars_dir_to, install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir,
     keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_kit, mend_scan, overture_report,
     path_extract_keys, path_walk_keys, place_kit, prepare_boot, resolve_recipient, run_bakeoff,
-    run_mount_keys, run_open_keys, run_showing, scatter_pieces, scry_constellation, seal_kn_mds_to,
-    sha256, sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
+    run_mount_keys, run_open_keys, run_showing, scatter_pieces, seal_kn_mds_to, sha256,
+    sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
     vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
     vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
@@ -1888,11 +1888,14 @@ fn verify_cmd(
     subset_offset: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if is_constellation_input(&input) {
-        let text = scry_constellation(&input, None).map_err(|e| {
+        let (text, bad) = sigil::scry_constellation_checked(&input, None, &[]).map_err(|e| {
             format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
         })?;
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
+        if let Some(why) = bad {
+            return Err(not_recoverable(&why).into());
+        }
     } else if is_dir_pack(&input) {
         let pass = resolve_pass(pass.clone(), talisman.clone())?;
         let identities = load_identities(&identity)?;
@@ -4506,10 +4509,12 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            println!(
-                "{}",
-                sigil::scry_constellation_keys(&sky, pass.as_deref(), &identities)?
-            );
+            let (text, bad) =
+                sigil::scry_constellation_checked(&sky, pass.as_deref(), &identities)?;
+            println!("{text}");
+            if let Some(why) = bad {
+                return Err(not_recoverable(&why).into());
+            }
         }
     }
     Ok(())

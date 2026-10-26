@@ -1112,6 +1112,83 @@ pub fn scry_constellation_keys(
     ))
 }
 
+/// [`scry_constellation_keys`] plus a recoverability verdict, like
+/// [`crate::work::scry_path_checked`] for one file. The verdict is `Some(reason)`
+/// when at least one listed member cannot be restored from this copy: its star is
+/// missing (or too damaged to be recognised), or the star is present but beyond
+/// repair. The report then ends with a `NOT recoverable: <reason>` line. Stars
+/// that are damaged but still repairable do not count (`sigil doctor` lists them).
+/// Atlas bags are not checked star by star here; use `sigil doctor` on the bag's sky.
+pub fn scry_constellation_checked(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<(String, Option<String>)> {
+    let resolved = crate::container::sky_for_read(input);
+    let input = resolved.as_path();
+    let (chart, dir) = load_chart_keys(input, pass, identities)?;
+    let card = if input.is_dir() {
+        find_card(input)
+    } else if is_constellation_mark(input) {
+        Some(input.to_path_buf())
+    } else {
+        find_card(&dir)
+    };
+    let in_atlas = is_atlas_file(input);
+    let text = render_scry(&chart, &dir, card.as_deref(), in_atlas);
+    let verdict = if in_atlas {
+        None
+    } else {
+        constellation_verdict(&chart, &dir, card.as_deref())
+    };
+    Ok(match verdict {
+        None => (text, None),
+        Some(why) => (format!("{text}\nNOT recoverable: {why}"), Some(why)),
+    })
+}
+
+/// Why a constellation in `dir` cannot be fully restored, or `None` if every
+/// member is packed in the card or has a star that is healthy or repairable.
+fn constellation_verdict(chart: &Chart, dir: &Path, card: Option<&Path>) -> Option<String> {
+    let by_digest = index_stars(dir, card);
+    let mut missing: Vec<&str> = Vec::new();
+    let mut broken: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for m in chart.members.iter().filter(|m| m.bytes.is_empty()) {
+        match find_member_star(dir, m, &by_digest) {
+            None => missing.push(&m.name),
+            Some(p) => {
+                if !seen.insert(p.clone()) {
+                    continue;
+                }
+                if let Some(why) = crate::doctor::star_unrecoverable(&p) {
+                    broken.push(format!("{}: {why}", m.name));
+                }
+            }
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!(
+            "{} star(s) missing: {}",
+            missing.len(),
+            missing.join(", ")
+        ));
+    }
+    if !broken.is_empty() {
+        parts.push(format!(
+            "{} star(s) beyond repair: {}",
+            broken.len(),
+            broken.join("; ")
+        ));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("; "))
+    }
+}
+
 /// Scry text for a list already in hand (e.g. the one `add` just wrote).
 pub fn scry_chart(sky: &Path, chart: &Chart) -> String {
     let card = find_card(sky);
