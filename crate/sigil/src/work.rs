@@ -1534,6 +1534,23 @@ fn basename_only(name: &str) -> Option<String> {
 /// Why a sealed star (classic `.sg1` bytes or an in-memory SGWK pack) cannot be
 /// restored without more pieces: `None` when every part has at least `need`
 /// intact pieces. Keyless; nothing is decrypted.
+/// True when a star (classic `.sg1` or in-memory large-file pack) still opens but has
+/// damage that `sigil mend` would heal (Merkle open or keystone recovered in any part).
+/// An unreadable pack layout counts as torn; [`star_bytes_unrecoverable`] says if it is fatal.
+pub fn star_bytes_torn(star: &[u8]) -> bool {
+    if star.starts_with(&WORK_MAGIC) {
+        let Ok(l) = packhead::layout(&mut packhead::MemSrc(star)) else {
+            return true;
+        };
+        return l.stars.iter().any(|&(o, n)| {
+            star.get(o as usize..(o + n) as usize)
+                .map(star_torn)
+                .unwrap_or(true)
+        });
+    }
+    star_torn(star)
+}
+
 pub fn star_bytes_unrecoverable(star: &[u8]) -> Option<String> {
     if star.starts_with(&WORK_MAGIC) {
         let l = match packhead::layout(&mut packhead::MemSrc(star)) {
