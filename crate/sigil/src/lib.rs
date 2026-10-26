@@ -39,6 +39,7 @@ pub mod passkey;
 pub mod pgp;
 mod pieces;
 pub mod privacy;
+pub mod readdata;
 mod rs;
 mod rs_ref;
 pub mod scrub;

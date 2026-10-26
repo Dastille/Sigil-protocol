@@ -17,6 +17,189 @@ use sigil::{
 };
 use std::fs;
 use std::io::Read;
+
+/// When set, human status lines go to stderr so stdout stays clean (`--json`, `-o -`).
+static HUMAN_TO_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Extra fields (already JSON, each starting with `,`) for the `--json` result line.
+static JSON_EXTRA: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// A human status line: stdout normally, stderr when stdout carries data or JSON.
+macro_rules! say {
+    ($($t:tt)*) => {
+        if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!($($t)*);
+        } else {
+            println!($($t)*);
+        }
+    };
+}
+
+fn json_extra(field: &str) {
+    if let Ok(mut g) = JSON_EXTRA.lock() {
+        g.push_str(field);
+    }
+}
+
+/// A JSON string literal.
+fn jq(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// `sigil seal - -o X`: stdin copied into a private temp folder beside X (so a large
+/// pipe takes the normal large-file path), removed again when the seal ends.
+struct StdinStage {
+    dir: PathBuf,
+    file: PathBuf,
+}
+
+impl StdinStage {
+    fn from_input(
+        input: &Path,
+        output: &Path,
+        name: Option<&str>,
+    ) -> Result<Option<StdinStage>, Box<dyn std::error::Error>> {
+        if input.as_os_str() != "-" {
+            if name.is_some() {
+                return Err("--stdin-name is only for `sigil seal -` (data on stdin)".into());
+            }
+            return Ok(None);
+        }
+        if output.as_os_str() == "-" {
+            return Err(
+                "seal writes a mark file: give -o PATH (stdout output is not supported)".into(),
+            );
+        }
+        {
+            use std::io::IsTerminal;
+            if std::io::stdin().is_terminal() {
+                return Err("`sigil seal -` reads data from a pipe, but stdin is a terminal. Try: some-command | sigil seal - -o out.sg1".into());
+            }
+        }
+        let name = name.unwrap_or("stdin");
+        if name.is_empty()
+            || name.contains('/')
+            || name.contains('\\')
+            || name == "."
+            || name == ".."
+        {
+            return Err("--stdin-name must be a plain file name (no slashes)".into());
+        }
+        let parent = match output.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let leaf = output
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mark".into());
+        let dir = parent.join(format!(".{leaf}.stdin-{}", std::process::id()));
+        let mut b = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        b.create(&dir)?;
+        let stage = StdinStage {
+            file: dir.join(name),
+            dir,
+        };
+        let n = {
+            let mut f = fs::File::create(&stage.file)?;
+            std::io::copy(&mut std::io::stdin().lock(), &mut f)?
+        };
+        if n == 0 {
+            return Err(
+                "stdin was empty: refusing to seal nothing (did the command before the pipe fail?)"
+                    .into(),
+            );
+        }
+        Ok(Some(stage))
+    }
+}
+
+impl Drop for StdinStage {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.file);
+        let _ = fs::remove_dir(&self.dir);
+    }
+}
+
+/// `sigil unseal X -o -`: one file's original bytes to stdout. A large-file pack is
+/// streamed one checked part at a time; if a later part fails the exit code is non-zero
+/// (treat the output as incomplete).
+fn unseal_to_stdout(
+    input: &Path,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+    star: Option<u32>,
+    from_mb: Option<u32>,
+    to_mb: Option<u32>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if sigil::is_work_pack(input) {
+        let (head, locs) = sigil::index_pack_keys(input, pass, companions, identities)?;
+        let mib =
+            |mb: u32| ((u64::from(mb) * 1024 * 1024) / u64::from(head.chunk_size.max(1))) as u32;
+        let from = star.or(from_mb.map(mib)).unwrap_or(0);
+        let to = star
+            .or(to_mb.map(mib))
+            .unwrap_or(head.stars.saturating_sub(1));
+        let mut n = 0u64;
+        let mut want = from;
+        for loc in locs.iter().filter(|l| l.index >= from && l.index <= to) {
+            if loc.index != want {
+                return Err(format!("work pack incomplete: part {want} is missing").into());
+            }
+            let plain = sigil::unseal_star_at_keys(input, loc, pass, companions, identities)?;
+            out.write_all(&plain)?;
+            n += plain.len() as u64;
+            want += 1;
+        }
+        if want <= to && want < head.stars {
+            return Err(format!("work pack incomplete: part {want} is missing").into());
+        }
+        out.flush()?;
+        return Ok(n);
+    }
+    if star.is_some() || from_mb.is_some() || to_mb.is_some() {
+        return Err("--star / --from-mb / --to-mb are for a large-file pack".into());
+    }
+    let data = fs::read(input)?;
+    let plain = sigil::unseal_ex_keys(&data, pass, companions, identities)?;
+    out.write_all(&plain)?;
+    out.flush()?;
+    Ok(plain.len() as u64)
+}
+
+/// `--json` result context: (command, output path) when the parsed command asked for it.
+fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
+    match cmd {
+        Cmd::Seal {
+            json: true, output, ..
+        } => Some(("seal", Some(output.clone()))),
+        Cmd::Unseal {
+            json: true, output, ..
+        } => Some(("unseal", Some(output.clone()))),
+        Cmd::Verify { json: true, .. } => Some(("verify", None)),
+        _ => None,
+    }
+}
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -38,9 +221,16 @@ enum Cmd {
     /// Inscribe a file or a folder. Optional Dispatch after pack.
     #[command(visible_alias = "inscribe")]
     Seal {
+        /// File or folder to wrap, or `-` to read the data from stdin (a pipe)
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        /// With `-` input: the name stored inside the mark (default `stdin`)
+        #[arg(long = "stdin-name", value_name = "NAME")]
+        stdin_name: Option<String>,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
         #[arg(value_parser = parse_new_pass, long)]
@@ -95,8 +285,12 @@ enum Cmd {
     #[command(visible_aliases = ["de-scribe", "describe"])]
     Unseal {
         input: PathBuf,
+        /// Where to write; `-` streams one file's bytes to stdout
         #[arg(short, long)]
         output: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); not with `-o -`
+        #[arg(long)]
+        json: bool,
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
@@ -134,6 +328,18 @@ enum Cmd {
     },
     Verify {
         input: PathBuf,
+        /// Machine-readable result on stdout (one JSON line)
+        #[arg(long)]
+        json: bool,
+        /// Deep read: open every part to the original bytes (decrypt + true-name check)
+        #[arg(long = "read-data", conflicts_with = "read_data_subset")]
+        read_data: bool,
+        /// Deep read a rolling sample of parts, e.g. 10% (moves each day)
+        #[arg(long = "read-data-subset", value_name = "P%", value_parser = sigil::readdata::parse_subset)]
+        read_data_subset: Option<f64>,
+        /// Fix the sample start instead of the daily rolling one
+        #[arg(long = "subset-offset", value_name = "N")]
+        subset_offset: Option<u64>,
         /// Key for an encrypted folder pack: list its (hidden) member names
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
@@ -1589,7 +1795,7 @@ fn dispatch(
             let mut dst = fs::File::create(&tmp)?;
             let mut taken = src.take(end);
             let n = std::io::copy(&mut taken, &mut dst)?;
-            println!("Overture slice {n} bytes (boot) — did not load the whole file");
+            say!("Overture slice {n} bytes (boot) — did not load the whole file");
             tmp
         }
     } else {
@@ -1597,26 +1803,133 @@ fn dispatch(
     };
     let path = send_path.to_str().ok_or("path is not utf-8")?;
     if let Some(dest) = rsync {
-        println!("dispatch rsync → {dest}");
+        say!("dispatch rsync → {dest}");
         run_cmd("rsync", &["-av", "--partial", "--progress", path, dest])?;
     }
     if let Some(dest) = rclone {
-        println!("dispatch rclone → {dest}");
+        say!("dispatch rclone → {dest}");
         run_cmd("rclone", &["copy", path, dest])?;
     }
     if wormhole {
-        println!("dispatch wormhole send (you and the other person type the code)");
+        say!("dispatch wormhole send (you and the other person type the code)");
         run_cmd("wormhole", &["send", path])?;
     }
-    println!("far side: sha256sum the copy, then  sigil scry <file>  and  sigil de-scribe -o restored <file>");
+    say!("far side: sha256sum the copy, then  sigil scry <file>  and  sigil de-scribe -o restored <file>");
+    Ok(())
+}
+
+/// `verify` / `scry`: the cheap structural check, plus the opt-in deep read.
+fn verify_cmd(
+    input: PathBuf,
+    pass: Option<String>,
+    talisman: Option<PathBuf>,
+    identity: Vec<PathBuf>,
+    subset: Option<f64>,
+    subset_offset: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if is_constellation_input(&input) {
+        let text = scry_constellation(&input, None).map_err(|e| {
+            format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
+        })?;
+        say!("{text}");
+        json_extra(&format!(",\"report\":{}", jq(&text)));
+    } else if is_dir_pack(&input) {
+        let pass = resolve_pass(pass.clone(), talisman.clone())?;
+        let identities = load_identities(&identity)?;
+        let (text, bad) = sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)?;
+        say!("{text}");
+        json_extra(&format!(",\"report\":{}", jq(&text)));
+        if let Some(why) = bad {
+            return Err(not_recoverable(&why).into());
+        }
+    } else {
+        let (text, bad) = sigil::scry_path_checked(&input)?;
+        say!("{text}");
+        json_extra(&format!(",\"report\":{}", jq(&text)));
+        if let Some(why) = bad {
+            return Err(not_recoverable(&why).into());
+        }
+    }
+    if let Some(pct) = subset {
+        if is_constellation_input(&input) || is_dir_pack(&input) {
+            return Err("--read-data is for one .sg1 or a large-file pack (not a folder wrap or constellation yet)".into());
+        }
+        let pass = resolve_pass(pass, talisman)?;
+        let identities = load_identities(&identity)?;
+        let offset = subset_offset.unwrap_or_else(sigil::readdata::rolling_offset);
+        let r =
+            sigil::readdata::read_data_subset(&input, pass.as_deref(), &identities, pct, offset)?;
+        say!(
+            "read-data {pct}%: opened {} of {} part(s), {} bytes, {} failed",
+            r.checked.len(),
+            r.total_parts,
+            r.bytes_read,
+            r.failed.len()
+        );
+        for (i, why) in &r.failed {
+            say!("  part {i}: {why}");
+        }
+        json_extra(&format!(
+            ",\"read_data\":{{\"kind\":\"{}\",\"percent\":{},\"offset\":{},\"total_parts\":{},\"checked\":[{}],\"bytes_read\":{},\"failed\":[{}]}}",
+            r.kind,
+            pct,
+            offset,
+            r.total_parts,
+            r.checked.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
+            r.bytes_read,
+            r.failed
+                .iter()
+                .map(|(i, w)| format!("{{\"part\":{i},\"why\":{}}}", jq(w)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        if !r.ok() {
+            return Err(not_recoverable(&format!(
+                "deep read: {} of {} sampled part(s) would not open",
+                r.failed.len(),
+                r.checked.len()
+            ))
+            .into());
+        }
+    }
     Ok(())
 }
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(e) = run(cli) {
-        eprintln!("{e}");
-        std::process::exit(classify_exit(&e.to_string()));
+    let jctx = json_ctx(&cli.cmd);
+    let piped_out = matches!(&cli.cmd, Cmd::Unseal { output, .. } if output.as_os_str() == "-");
+    if jctx.is_some() || piped_out {
+        HUMAN_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let res = run(cli);
+    let extra = JSON_EXTRA.lock().map(|g| g.clone()).unwrap_or_default();
+    match (res, jctx) {
+        (Ok(()), None) => {}
+        (Ok(()), Some((cmd, out))) => {
+            let mut line = format!("{{\"ok\":true,\"cmd\":\"{cmd}\",\"exit\":0");
+            if let Some(o) = out {
+                line.push_str(&format!(",\"output\":{}", jq(&o.to_string_lossy())));
+                if let Ok(m) = fs::metadata(&o) {
+                    if m.is_file() {
+                        line.push_str(&format!(",\"output_bytes\":{}", m.len()));
+                    }
+                }
+            }
+            line.push_str(&extra);
+            println!("{line}}}");
+        }
+        (Err(e), j) => {
+            let code = classify_exit(&e.to_string());
+            eprintln!("{e}");
+            if let Some((cmd, _)) = j {
+                println!(
+                    "{{\"ok\":false,\"cmd\":\"{cmd}\",\"exit\":{code},\"error\":{}{extra}}}",
+                    jq(&e.to_string())
+                );
+            }
+            std::process::exit(code);
+        }
     }
 }
 
@@ -1679,6 +1992,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Seal {
             input,
             output,
+            stdin_name,
+            json: _,
             mode,
             pass,
             pass_file,
@@ -1698,6 +2013,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             rclone,
             wormhole,
         } => {
+            let stage = StdinStage::from_input(&input, &output, stdin_name.as_deref())?;
+            let input = stage.as_ref().map(|s| s.file.clone()).unwrap_or(input);
             let pass = pass.or(pass_file);
             let geas = binds(&bind)?;
             let cov = covenant.as_deref().unwrap_or("");
@@ -1729,7 +2046,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &recipients,
                 )?;
                 fs::write(&output, &sg1)?;
-                println!(
+                say!(
                     "inscribed {} bytes → {} (mds {}{})",
                     data.len(),
                     output.display(),
@@ -1758,7 +2075,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &wards,
                     &recipients,
                 )?;
-                println!(
+                say!(
                     "folder {n} files, {orig} bytes → {}{}",
                     output.display(),
                     if recipients.is_empty() {
@@ -1787,7 +2104,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &recipients,
                     )?;
                     let n = scatter_pieces(&sg1, &dir)?;
-                    println!("scattered {n} pieces into {}", dir.display());
+                    say!("scattered {n} pieces into {}", dir.display());
                 } else {
                     let (orig, stars) = inscribe_stars_dir_to(
                         &input,
@@ -1803,7 +2120,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         cdc.map(Into::into),
                         &recipients,
                     )?;
-                    println!(
+                    say!(
                         "wrote {stars} stars ({orig} bytes) into {}{}",
                         dir.display(),
                         if recipients.is_empty() {
@@ -1812,7 +2129,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             " (encrypt-to)"
                         },
                     );
-                    println!("Overture list: {}/{OVERTURE}", dir.display());
+                    say!("Overture list: {}/{OVERTURE}", dir.display());
                 }
             } else if !recipients.is_empty() && cdc.is_none() {
                 // Single-star encrypt-to (vandermonde / explicit mds already handled above).
@@ -1832,7 +2149,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &recipients,
                 )?;
                 fs::write(&output, &sg1)?;
-                println!(
+                say!(
                     "inscribed {} bytes → {} (encrypt-to {} recipient{})",
                     data.len(),
                     output.display(),
@@ -1856,7 +2173,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &recipients,
                 )?;
                 if work {
-                    println!(
+                    say!(
                         "work pack {stars} stars, {orig} bytes → {}{}",
                         output.display(),
                         if recipients.is_empty() {
@@ -1865,12 +2182,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             " (encrypt-to)"
                         },
                     );
-                    println!(
+                    say!(
                         "Overture: first {overture_mb} MiB is boot. sigil overture {}",
                         output.display()
                     );
                 } else {
-                    println!(
+                    say!(
                         "inscribed {orig} bytes → {}{}",
                         output.display(),
                         if recipients.is_empty() {
@@ -1886,6 +2203,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Unseal {
             input,
             output,
+            json,
             pass,
             pass_file,
             talisman,
@@ -1905,7 +2223,34 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let mds_be = resolve_mds(&mds)?;
+            let to_stdout = output.as_os_str() == "-";
+            if to_stdout {
+                if json {
+                    return Err("--json and -o - both want stdout; pick one".into());
+                }
+                if repair
+                    || mds_be.name() != "vandermonde"
+                    || !only.is_empty()
+                    || is_dir_pack(&input)
+                    || is_constellation_input(&input)
+                {
+                    return Err("-o - streams one file only (not a folder wrap, constellation, --only, --repair or --mds)".into());
+                }
+            }
             let attempt = |pass: Option<&str>| -> Result<(), Box<dyn std::error::Error>> {
+                if to_stdout {
+                    let n = unseal_to_stdout(
+                        &input,
+                        pass,
+                        &companions,
+                        &identities,
+                        star,
+                        from_mb,
+                        to_mb,
+                    )?;
+                    say!("de-scribed {n} bytes → stdout");
+                    return Ok(());
+                }
                 if repair {
                     if mds_be.name() != "vandermonde"
                         || star.is_some()
@@ -1932,7 +2277,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let tmp = PathBuf::from(tmp);
                     fs::write(&tmp, &plain)?;
                     fs::rename(&tmp, &output)?;
-                    println!(
+                    say!(
                         "de-scribed {} bytes → {}{}",
                         plain.len(),
                         output.display(),
@@ -1958,7 +2303,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         unseal_ex_mds_keys(&data, pass, &companions, &*mds_be, &identities)?;
                     let n = plain.len();
                     fs::write(&output, &plain)?;
-                    println!(
+                    say!(
                         "de-scribed {n} bytes → {} (mds {})",
                         output.display(),
                         mds_be.name()
@@ -1989,7 +2334,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         to,
                         &identities,
                     )?;
-                    println!(
+                    say!(
                         "de-scribed {stars} slices ({n} bytes) → {}",
                         output.display()
                     );
@@ -2003,7 +2348,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &wards,
                         &identities,
                     )?;
-                    println!("de-scribed {n} files → {}", output.display());
+                    say!("de-scribed {n} files → {}", output.display());
                 } else if is_constellation_input(&input) {
                     let n = sigil::unseal_constellation_keys(
                         &input,
@@ -2013,13 +2358,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &only,
                         &identities,
                     )?;
-                    println!("de-scribed {n} files → {}", output.display());
+                    say!("de-scribed {n} files → {}", output.display());
                 } else {
                     if !only.is_empty() {
                         return Err("--only is for a folder wrap. This is one file.".into());
                     }
                     let n = unseal_path_keys(&input, &output, pass, &companions, &identities)?;
-                    println!("de-scribed {n} bytes → {}", output.display());
+                    say!("de-scribed {n} bytes → {}", output.display());
                 }
                 Ok(())
             };
@@ -2039,40 +2384,37 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Verify {
             input,
+            json: _,
+            read_data,
+            read_data_subset,
+            subset_offset,
             pass,
             pass_file,
             talisman,
             identity,
+        } => {
+            let subset = if read_data {
+                Some(100.0)
+            } else {
+                read_data_subset
+            };
+            verify_cmd(
+                input,
+                pass.or(pass_file),
+                talisman,
+                identity,
+                subset,
+                subset_offset,
+            )?;
         }
-        | Cmd::Scry {
+        Cmd::Scry {
             input,
             pass,
             pass_file,
             talisman,
             identity,
         } => {
-            let pass = pass.or(pass_file);
-            if is_constellation_input(&input) {
-                let text = scry_constellation(&input, None).map_err(|e| {
-                    format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
-                })?;
-                println!("{text}");
-            } else if is_dir_pack(&input) {
-                let pass = resolve_pass(pass, talisman)?;
-                let identities = load_identities(&identity)?;
-                let (text, bad) =
-                    sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)?;
-                println!("{text}");
-                if let Some(why) = bad {
-                    return Err(not_recoverable(&why).into());
-                }
-            } else {
-                let (text, bad) = sigil::scry_path_checked(&input)?;
-                println!("{text}");
-                if let Some(why) = bad {
-                    return Err(not_recoverable(&why).into());
-                }
-            }
+            verify_cmd(input, pass.or(pass_file), talisman, identity, None, None)?;
         }
         Cmd::Scatter { input, output } => {
             let data = fs::read(input)?;
