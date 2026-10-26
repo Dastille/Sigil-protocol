@@ -2671,10 +2671,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             if open {
                                 let plain = unseal_ex(&sg1, pass.as_deref(), &[])?;
                                 fs::write(&output, plain)?;
-                                say!(
-                                    "enough ({have} ≥ {k}). De-scribed → {}",
-                                    output.display()
-                                );
+                                say!("enough ({have} ≥ {k}). De-scribed → {}", output.display());
                             } else {
                                 fs::write(&output, sg1)?;
                                 say!("enough ({have} ≥ {k}). Gathered → {}", output.display());

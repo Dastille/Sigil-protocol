@@ -18,7 +18,8 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Output {
     let mut ch = c.spawn().expect("spawn sigil");
     if let Some(b) = stdin {
         let mut i = ch.stdin.take().expect("stdin");
-        i.write_all(b).expect("write stdin");
+        // sigil may refuse and exit before reading (broken pipe is fine).
+        let _ = i.write_all(b);
     }
     ch.wait_with_output().expect("wait sigil")
 }
