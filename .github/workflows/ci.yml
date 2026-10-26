@@ -1,12 +1,9 @@
-# NOTE: GitHub Actions do not run for this repository (free plan billing), so this
-# workflow is kept for reference only. Run the same checks locally (see README.md).
+# NOTE: These workflows are manual-only (workflow_dispatch): they never run on push,
+# pull_request, tags, or schedule, so they cannot auto-fail and spam notifications
+# (free plan billing). Local checks (see README.md) remain the merge gate.
 name: ci
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
