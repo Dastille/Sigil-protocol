@@ -1521,7 +1521,7 @@ fn binds(paths: &[PathBuf]) -> Result<Vec<[u8; 32]>, Box<dyn std::error::Error>>
 }
 
 const EMPTY_PASS: &str =
-    "an empty passphrase (--pass \"\") is refused: it would not protect anything. \
+    "an empty passphrase (--pass \"\", or only spaces) is refused: it would not protect anything. \
 Leave out --pass for an unencrypted file, or use --pass - to type one without it showing";
 
 /// `--pass VALUE`: refuse an empty value; `-` asks on the terminal (hidden).
@@ -1535,7 +1535,7 @@ fn parse_new_pass(v: &str) -> Result<String, String> {
 }
 
 fn pass_arg(v: &str, confirm: bool) -> Result<String, String> {
-    if v.is_empty() {
+    if v.trim().is_empty() {
         return Err(EMPTY_PASS.into());
     }
     if v == "-" {
@@ -1599,9 +1599,9 @@ run  chmod 600 {shown}  so only you can, then try again. Nothing was done"
     }
     let line = raw.split(|&b| b == b'\n').next().unwrap_or(&[]);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
-    if line.is_empty() {
+    if line.iter().all(|b| b.is_ascii_whitespace()) {
         return Err(format!(
-            "passphrase file {shown} is empty (or its first line is): an empty passphrase \
+            "passphrase file {shown} is empty (or its first line is, or holds only spaces): an empty passphrase \
 would not protect anything; nothing was done"
         ));
     }
@@ -1618,7 +1618,7 @@ fn prompt_pass(label: &str, confirm: bool) -> Result<String, Box<dyn std::error:
             "could not read a passphrase from the terminal ({e}); use --pass-file PATH in scripts"
         )
     })?;
-    if first.is_empty() {
+    if first.trim().is_empty() {
         return Err(EMPTY_PASS.into());
     }
     if confirm {

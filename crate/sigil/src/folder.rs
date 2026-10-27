@@ -131,6 +131,7 @@ pub fn inscribe_dir_to(
     wards: &[(String, String)],
     recipients: &[PublicIdentity],
 ) -> Result<(u32, u64)> {
+    crate::refuse_empty_seal_pass(pass)?;
     let mut files = Vec::new();
     walk(root, &mut files)?;
     if files.is_empty() {

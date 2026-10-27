@@ -307,18 +307,26 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Why an empty passphrase is refused when sealing.
-const EMPTY_PASS_SEAL: &str = "an empty passphrase is refused: it would not protect anything (leave out the passphrase for an unencrypted file)";
+const EMPTY_PASS_SEAL: &str = "an empty passphrase (or one that is only spaces) is refused: it would not protect anything (leave out the passphrase for an unencrypted file)";
 
 /// Why an empty passphrase is refused when opening.
-const EMPTY_PASS_OPEN: &str = "an empty passphrase is refused: it is never the same as no passphrase (leave out the passphrase to open an unencrypted file, or give the real one)";
+const EMPTY_PASS_OPEN: &str = "an empty passphrase (or one that is only spaces) is refused: it is never the same as no passphrase (leave out the passphrase to open an unencrypted file, or give the real one)";
 
-/// Fail closed on `Some("")`: the library never reads an empty passphrase as "none",
-/// on the way in or out. `None` (no passphrase) is fine.
+/// Fail closed on `Some("")` and on a passphrase that is only whitespace: the library
+/// never reads a blank passphrase as "none", and never seals or opens with one (on
+/// legacy Ward files it trimmed to empty anyway). `None` (no passphrase) is fine.
+/// Real passphrases with leading/trailing spaces are untouched.
 fn refuse_empty_pass(pass: Option<&str>, why: &str) -> Result<()> {
-    if pass == Some("") {
+    if pass.is_some_and(|p| p.trim().is_empty()) {
         return Err(Error::Msg(why.into()));
     }
     Ok(())
+}
+
+/// [`refuse_empty_pass`] for seal entry points that write files, checked before any
+/// output is created (no empty decoy file is left behind).
+pub(crate) fn refuse_empty_seal_pass(pass: Option<&str>) -> Result<()> {
+    refuse_empty_pass(pass, EMPTY_PASS_SEAL)
 }
 
 /// [`refuse_empty_pass`] for every open path (unseal, scry with a key, packs, folders).
