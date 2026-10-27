@@ -172,6 +172,13 @@ large-file pack functions is an error, never "no passphrase" (pass `None` for an
 unencrypted file). In plain words: an empty password is treated as a mistake, so
 it can never quietly open or write a file without protection.
 
+A password made only of spaces (or tabs) counts as empty too: refused when sealing
+and when opening. Spaces *around* a real password are kept exactly as typed on new
+files (` pw ` and `pw` are different passwords). Very old Ward-locked files always
+ignored surrounding spaces, and still do, so they keep opening. If you ever sealed a
+file with a spaces-only password on an older Sigil, open it with that older version
+and seal it again with a real password.
+
 For scripts, put the passphrase in a file only you can read and use
 `--pass-file` (accepted everywhere `--pass` is; `log compact` also has
 `--seal-pass-file`):

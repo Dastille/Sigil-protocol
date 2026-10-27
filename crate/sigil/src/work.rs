@@ -226,6 +226,7 @@ pub fn inscribe_path_to(
     cdc: Option<CdcProfile>,
     recipients: &[PublicIdentity],
 ) -> Result<(u64, u32, bool)> {
+    crate::refuse_empty_seal_pass(pass)?;
     let meta = std::fs::metadata(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = meta.len();
     let piece_bytes = if piece_bytes == 0 {
@@ -832,6 +833,7 @@ pub fn inscribe_stars_dir_to(
     cdc: Option<CdcProfile>,
     recipients: &[PublicIdentity],
 ) -> Result<(u64, u32)> {
+    crate::refuse_empty_seal_pass(pass)?;
     std::fs::create_dir_all(dir).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let orig = std::fs::metadata(input)
         .map_err(|e| crate::Error::Msg(e.to_string()))?
