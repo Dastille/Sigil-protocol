@@ -166,7 +166,11 @@ de-scribed 3000000 bytes → out.jpg
 ```
 
 `unseal` of an encrypted file with no key asks on its own when run in a
-terminal. An empty passphrase (`--pass ""`) is refused everywhere.
+terminal. An empty passphrase (`--pass ""`) is refused everywhere. The Rust
+library does the same: passing `Some("")` to `seal`, `unseal`, folder or
+large-file pack functions is an error, never "no passphrase" (pass `None` for an
+unencrypted file). In plain words: an empty password is treated as a mistake, so
+it can never quietly open or write a file without protection.
 
 For scripts, put the passphrase in a file only you can read and use
 `--pass-file` (accepted everywhere `--pass` is; `log compact` also has
