@@ -306,6 +306,26 @@ fn inflate(data: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Why an empty passphrase is refused when sealing.
+const EMPTY_PASS_SEAL: &str = "an empty passphrase is refused: it would not protect anything (leave out the passphrase for an unencrypted file)";
+
+/// Why an empty passphrase is refused when opening.
+const EMPTY_PASS_OPEN: &str = "an empty passphrase is refused: it is never the same as no passphrase (leave out the passphrase to open an unencrypted file, or give the real one)";
+
+/// Fail closed on `Some("")`: the library never reads an empty passphrase as "none",
+/// on the way in or out. `None` (no passphrase) is fine.
+fn refuse_empty_pass(pass: Option<&str>, why: &str) -> Result<()> {
+    if pass == Some("") {
+        return Err(Error::Msg(why.into()));
+    }
+    Ok(())
+}
+
+/// [`refuse_empty_pass`] for every open path (unseal, scry with a key, packs, folders).
+pub(crate) fn refuse_empty_open_pass(pass: Option<&str>) -> Result<()> {
+    refuse_empty_pass(pass, EMPTY_PASS_OPEN)
+}
+
 /// Legacy Ward key (read path only).
 fn derive_key(pass: &str, salt: &[u8]) -> [u8; 32] {
     let mut key = [0u8; 32];
@@ -529,11 +549,7 @@ pub fn seal_kn_mds_to_opts(
     opts: &privacy::SealOpts,
 ) -> Result<Vec<u8>> {
     // Safe by default: an empty passphrase would silently write an unencrypted file.
-    if pass == Some("") {
-        return Err(Error::Msg(
-            "an empty passphrase is refused: it would not protect anything (leave out the passphrase for an unencrypted file)".into(),
-        ));
-    }
+    refuse_empty_pass(pass, EMPTY_PASS_SEAL)?;
     let pass_nonempty = pass.filter(|s| !s.is_empty());
     // New passphrase seals go through SGTO too: random CEK, wrapped with Argon2id whose
     // parameters are stored in the wrap record. The legacy Ward (PBKDF2, fixed 80k iterations,
@@ -785,6 +801,7 @@ pub fn seal_meta_keys(
     pass: Option<&str>,
     identities: &[keys::Identity],
 ) -> Result<privacy::SealMeta> {
+    refuse_empty_open_pass(pass)?;
     let (h, _, _) = locate_header(file)?;
     if !h.private_label() {
         return Ok(privacy::SealMeta {
@@ -816,6 +833,7 @@ pub fn keyed_fingerprint_matches(
     identities: &[keys::Identity],
     data: &[u8],
 ) -> Result<bool> {
+    refuse_empty_open_pass(pass)?;
     let (h, _, _) = locate_header(file)?;
     if !h.private_label() {
         return Err(Error::Msg("not a v3 private-label seal".into()));
@@ -839,6 +857,7 @@ fn unseal_meta(
     mds_be: &dyn mds::MdsBackend,
     identities: &[keys::Identity],
 ) -> Result<(Vec<u8>, Option<privacy::SealMeta>)> {
+    refuse_empty_open_pass(pass)?;
     let (h, prefix, _) = locate_header(file)?;
     header::ensure_single_seal(file, &h, prefix)?;
     if h.vow() {
@@ -1016,6 +1035,7 @@ pub fn unseal_repair_keys(
     companions: &[Vec<u8>],
     identities: &[keys::Identity],
 ) -> Result<(Vec<u8>, bool)> {
+    refuse_empty_open_pass(pass)?;
     match unseal_ex_keys(file, pass, companions, identities) {
         Ok(p) => Ok((p, false)),
         Err(first) => {

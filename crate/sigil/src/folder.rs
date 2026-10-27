@@ -429,6 +429,7 @@ pub fn unseal_dir_only_keys(
     wards: &[(String, String)],
     identities: &[Identity],
 ) -> Result<u32> {
+    crate::refuse_empty_open_pass(pass)?;
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let (ver, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
     if ver == DIR_VER_SEALED {
@@ -579,6 +580,7 @@ pub fn unseal_dir_mend_keys(
     wards: &[(String, String)],
     identities: &[Identity],
 ) -> Result<(u32, Option<Vec<u8>>)> {
+    crate::refuse_empty_open_pass(pass)?;
     let raw = fs::read(input).map_err(io)?;
     if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && raw[4] == DIR_VER_SEALED {
         let mut cur = Cursor::new(&raw[..]);

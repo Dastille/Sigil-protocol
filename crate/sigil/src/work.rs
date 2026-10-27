@@ -1265,6 +1265,7 @@ pub fn unseal_path_keys(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<u64> {
+    crate::refuse_empty_open_pass(pass)?;
     if is_work_pack(input) {
         let mut src = packhead::FileSrc::open(input)?;
         let l = packhead::layout(&mut src)?;
@@ -1305,6 +1306,7 @@ pub(crate) fn unseal_path_into<W: Write>(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<u64> {
+    crate::refuse_empty_open_pass(pass)?;
     if is_work_pack(input) {
         let mut src = packhead::FileSrc::open(input)?;
         let l = packhead::layout(&mut src)?;
@@ -1323,6 +1325,7 @@ pub(crate) fn unseal_bytes_into<W: Write>(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<u64> {
+    crate::refuse_empty_open_pass(pass)?;
     let mut src = packhead::MemSrc(data);
     if data.starts_with(&WORK_MAGIC) {
         let l = packhead::layout(&mut src)?;
