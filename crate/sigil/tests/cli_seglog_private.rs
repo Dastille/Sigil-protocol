@@ -138,7 +138,8 @@ fn names_sizes_and_hashes_stay_out_of_the_index_and_add_still_skips_unchanged() 
     for needle in [
         "beach",
         "mum-birthday",
-        "2024",
+        // "2024/" not "2024": the index holds long random hex, which can contain "2024" by chance.
+        "2024/",
         "path=",
         "size=9 ",
         "size=19 ",

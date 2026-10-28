@@ -180,7 +180,11 @@ fn ward_names_visible_is_an_explicit_opt_in_with_a_warning() {
         ],
     );
     ok(&o);
-    assert!(err(&o).contains("WARNING: --ward-names-visible"), "{}", err(&o));
+    assert!(
+        err(&o).contains("WARNING: --ward-names-visible"),
+        "{}",
+        err(&o)
+    );
     let raw = std::fs::read(d.join("v.sg1")).unwrap();
     // Same v1 layout as ward-only packs written before this change.
     assert_eq!(&raw[0..5], b"SGDR\x01");
