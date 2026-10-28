@@ -864,6 +864,9 @@ pub fn track_ex(
     })
 }
 
+/// Why a folder vault locked only by per-file wards is refused (names would show).
+const VAULT_WARD_ONLY_REFUSED: &str = "a folder vault locked only with --ward would show every file name and size to anyone: add --pass (or --to) as well; the wards still lock their files";
+
 fn track_dir(
     live: &Path,
     mode: Mode,
@@ -871,6 +874,10 @@ fn track_dir(
     recipients: &[PublicIdentity],
     wards: &[(String, String)],
 ) -> Result<TrackReport> {
+    // Refuse before the vault directory is created, so nothing is left behind.
+    if !wards.is_empty() && pass.is_none() && recipients.is_empty() {
+        return Err(crate::Error::Msg(VAULT_WARD_ONLY_REFUSED.into()));
+    }
     let (live, vault_dir) = resolve_paths(live)?;
     if vault_dir.join(CHART_NAME).is_file() {
         return Err(crate::Error::Msg(format!(
@@ -975,6 +982,9 @@ fn seal_tree_version(
                 crate::Error::Msg(m) if m == "folder is empty" => crate::Error::Msg(
                     "folder is empty — a folder version needs at least one (non-dot) file".into(),
                 ),
+                crate::Error::Msg(m) if m == crate::folder::WARD_ONLY_REFUSED => {
+                    crate::Error::Msg(VAULT_WARD_ONLY_REFUSED.into())
+                }
                 other => other,
             })
         }

@@ -249,6 +249,24 @@ $ sigil unseal --pass 'correct horse' --only sub/b.txt -o just-b secret-album.sg
 de-scribed 1 files → just-b
 ```
 
+Per-file passwords (`--ward PATH=PASSWORD`) lock single files inside the pack, on
+top of the folder key. A ward needs `--pass` or `--to` as well, so the names stay
+hidden; to open, give both:
+
+```
+$ sigil seal --pass 'correct horse' --ward sub/b.txt=room-key -o secret-album.sg1 album
+folder 2 files, 4 bytes → secret-album.sg1
+$ sigil unseal --pass 'correct horse' --ward sub/b.txt=room-key -o album-out secret-album.sg1
+de-scribed 2 files → album-out
+$ sigil seal --ward sub/b.txt=room-key -o w.sg1 album
+a folder pack locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names
+```
+
+`--ward-names-visible` is the opt-in for a ward-only pack (the old layout): it
+warns, then writes a pack whose names, sizes and unwarded files anyone can read;
+only the warded files' contents are locked. `vault track` refuses ward-only folder
+vaults the same way. Ward-only packs made before this change still open.
+
 `mend`, `scry`, `verify` and `doctor` still work without the key. Encrypted
 folder packs written before this change still open (and still show their names);
 seal the folder again to hide them. Details: "Folder packs" in
@@ -467,9 +485,11 @@ audit / test checks above.
 - Encrypted files still reveal their ciphertext length. Encrypted folder packs
   reveal how many files they hold and their total encrypted size (not names or
   per-file sizes).
-- A folder pack protected only by per-file `--ward` passphrases (no `--pass` /
-  `--to`) still shows member names; encrypted folder packs made before October 2026
-  do too until they are sealed again.
+- Some folder packs still show member names: encrypted packs made before October
+  2026, ward-only packs made before wards needed `--pass` / `--to`, and packs sealed
+  with `--ward-names-visible`. Seal them again with `--pass` / `--to` to hide them.
+- Ward passwords can only be given as `--ward PATH=PASSWORD` on the command line
+  (visible in the process list and shell history); there is no file or prompt form yet.
 - `sigil path` cannot walk into an encrypted folder pack; use `unseal --only` or
   `mount --pass`.
 - With the key, `scry` of an encrypted folder pack lists names but not per-file sizes.

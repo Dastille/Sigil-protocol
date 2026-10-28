@@ -1,19 +1,19 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
     add_to_constellation, attest, backend_by_name, copy_sigil_binary, deluge_pieces,
-    format_bakeoff_report, gather_pieces, hex32, inject_initrd, inscribe_dir_to, inscribe_path_to,
-    inscribe_stars_dir_to, install_hooks, is_constellation_input, is_dir_pack, is_fountain_dir,
-    keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_kit, mend_scan, overture_report,
-    path_extract_keys, path_walk_keys, place_kit, prepare_boot, resolve_recipient, run_bakeoff,
-    run_mount_keys, run_open_keys, run_showing, scatter_pieces, seal_kn_mds_to, sha256,
-    sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
-    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
-    vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
-    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
-    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
-    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
-    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, VaultRetention, CDC_DEDUP,
-    CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    format_bakeoff_report, gather_pieces, hex32, inject_initrd, inscribe_dir_to,
+    inscribe_dir_to_names_visible, inscribe_path_to, inscribe_stars_dir_to, install_hooks,
+    is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
+    mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
+    place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
+    run_showing, scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
+    umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys, unseal_path_keys,
+    unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex, vault_format_recipients,
+    vault_format_retention, vault_format_status, vault_format_versions, vault_get_recipients,
+    vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
+    vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status, vault_track_ex,
+    vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, VaultRetention,
+    CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -248,9 +248,14 @@ enum Cmd {
         /// Alone is enough; with --pass, either passphrase OR matching --identity opens.
         #[arg(long = "to")]
         to: Vec<String>,
-        /// Per-file password inside a folder wrap: --ward photos/cat.jpg=secret (repeatable)
+        /// Per-file password inside a folder wrap: --ward photos/cat.jpg=secret (repeatable).
+        /// Needs --pass or --to as well, so the file names stay hidden.
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Opt-in (less safe): allow --ward without --pass / --to. File names and sizes in the
+        /// pack are then readable without any key; only the warded files' contents are locked.
+        #[arg(long = "ward-names-visible")]
+        ward_names_visible: bool,
         #[arg(long)]
         covenant: Option<String>,
         #[arg(long = "bind")]
@@ -2063,6 +2068,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             to,
             ward,
+            ward_names_visible,
             covenant,
             bind,
             chunk,
@@ -2084,6 +2090,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let wards = parse_wards(&ward)?;
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
+            if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
+            {
+                return Err(
+                    "--ward-names-visible only applies to a folder sealed with --ward and no --pass / --to"
+                        .into(),
+                );
+            }
             let piece_bytes = piece_mb.saturating_mul(1024 * 1024).max(64 * 1024);
             let mds_be = resolve_mds(&mds)?;
             if mds_be.name() != "vandermonde" {
@@ -2127,7 +2140,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if pieces.is_some() {
                     return Err("folder Inscribe writes one pack. Omit --pieces.".into());
                 }
-                let (n, orig) = inscribe_dir_to(
+                let seal_dir = if ward_names_visible {
+                    eprintln!(
+                        "WARNING: --ward-names-visible: every file name and size in {} is readable without a key; only the warded files' contents are locked",
+                        output.display()
+                    );
+                    inscribe_dir_to_names_visible
+                } else {
+                    inscribe_dir_to
+                };
+                let (n, orig) = seal_dir(
                     &input,
                     &output,
                     mode.into(),
