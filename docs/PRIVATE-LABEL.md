@@ -43,9 +43,10 @@ working), in Glyph mode because the body already carries the Reed-Solomon parity
   work as for v1. Readers reject a body whose inner pack does not match the outer
   file count, trailing bytes, a truncated body, and any GCM / Merkle failure.
 - Still visible: the file count and the total ciphertext length.
-- Plain folder packs (no key), and packs whose only keys are `--ward`s, stay v1 with
-  names in the clear. Every v1 pack, including encrypted ones written earlier, opens
-  and lists as before.
+- Plain folder packs (no key) stay v1 with names in the clear. A pack whose only keys
+  are `--ward`s is refused unless `--ward-names-visible` is given (then it is v1, names
+  in the clear, with a warning); add `--pass` / `--to` to get v2. Every v1 pack,
+  including encrypted and ward-only ones written earlier, opens and lists as before.
 
 ## Keyless operations
 
@@ -64,6 +65,6 @@ nonzero outer entropy slot, and any label edit.
 
 Ciphertext length (padding is a follow-up, opt-in only), the file count of an
 encrypted folder pack (names are sealed: see above), member names of folder packs
-written before sealed directories or protected only by wards, vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
+written before sealed directories, ward-only packs (made before wards needed a folder key, or with `--ward-names-visible`), vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
 with no key or with `--public-index` (a private INDEX, the default for a keyed log, seals them: docs/SEGMENT-LOG.md "Private INDEX").
 See the threat model.

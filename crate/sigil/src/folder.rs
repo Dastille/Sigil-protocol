@@ -4,7 +4,9 @@
 //!
 //! - **v1** (plain): `SGDR | 1 | count u32 | { name_len u16 | name | star_len u64 | star }*`.
 //!   Member names and per-member star lengths are in the clear. Written for packs
-//!   sealed with no `--pass` / `--to` (and for packs whose only keys are per-file wards).
+//!   sealed with no `--pass` / `--to`. A pack whose only keys are per-file wards is
+//!   refused by default (its names would show); [`inscribe_dir_to_names_visible`] is the
+//!   explicit opt-in that still writes one.
 //! - **v2** (sealed directory, default for every encrypted folder pack):
 //!   `SGDR | 2 | count u32 | body_len u64 | body`. `body` is one ordinary encrypted
 //!   `.sg1` (or SGWK work pack for a large folder) whose plaintext is the complete v1
@@ -114,13 +116,72 @@ pub fn inscribe_dir(
     inscribe_dir_to(root, output, mode, pass, covenant, geas, chunk, wards, &[])
 }
 
+/// Why a folder pack locked only by per-file wards is refused by default.
+pub const WARD_ONLY_REFUSED: &str = "a folder pack locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names";
+
+/// True when per-file wards are the only keys: no folder passphrase, no recipient.
+fn ward_only(
+    pass: Option<&str>,
+    wards: &[(String, String)],
+    recipients: &[PublicIdentity],
+) -> bool {
+    !wards.is_empty() && pass.is_none() && recipients.is_empty()
+}
+
 /// Like `inscribe_dir`, with encrypt-to recipients applied to every file star.
 ///
 /// With a passphrase or any recipient the pack is written as a sealed directory
 /// (v2): names and per-member sizes are hidden. Without either it is a plain v1 pack.
+///
+/// Safe by default: per-file `wards` with no passphrase and no recipient would leave
+/// the warded files' names and sizes in the clear, so that is refused before anything
+/// is written ([`WARD_ONLY_REFUSED`]). Use [`inscribe_dir_to_names_visible`] to opt in.
 // Justification: see `inscribe_dir`.
 #[allow(clippy::too_many_arguments)]
 pub fn inscribe_dir_to(
+    root: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    wards: &[(String, String)],
+    recipients: &[PublicIdentity],
+) -> Result<(u32, u64)> {
+    if ward_only(pass, wards, recipients) {
+        return Err(crate::Error::Msg(WARD_ONLY_REFUSED.into()));
+    }
+    inscribe_dir_any(
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients,
+    )
+}
+
+/// Explicit opt-in: write a folder pack locked only by per-file `wards` as a plain
+/// v1 pack (the layout every ward-only pack used before). The warded files' contents
+/// are encrypted, but every member name and size, and the unwarded files, are readable
+/// without any key. Same as [`inscribe_dir_to`] in every other case.
+// Justification: see `inscribe_dir`.
+#[allow(clippy::too_many_arguments)]
+pub fn inscribe_dir_to_names_visible(
+    root: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    wards: &[(String, String)],
+    recipients: &[PublicIdentity],
+) -> Result<(u32, u64)> {
+    inscribe_dir_any(
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients,
+    )
+}
+
+// Justification: see `inscribe_dir`.
+#[allow(clippy::too_many_arguments)]
+fn inscribe_dir_any(
     root: &Path,
     output: &Path,
     mode: Mode,
@@ -1375,7 +1436,21 @@ mod tests {
         fs::write(src.join("b.txt"), b"beta").unwrap();
         let pack = root.join("f.sg1");
         let wards = vec![("b.txt".to_string(), "b-secret".to_string())];
-        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &wards).unwrap();
+        // Ward-only is refused by default; this exercises the opt-in (old v1) layout.
+        assert!(inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &wards).is_err());
+        assert!(!pack.exists(), "refused seal left a file behind");
+        inscribe_dir_to_names_visible(
+            &src,
+            &pack,
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            &wards,
+            &[],
+        )
+        .unwrap();
         let dest = root.join("out");
         let wrong = vec![("b.txt".to_string(), "nope".to_string())];
         assert!(unseal_dir_only(&pack, &dest, None, &[], &[], &wrong).is_err());
