@@ -84,64 +84,43 @@ fn build_tree(view: &PathView) -> Node {
     root
 }
 
-/// One body row: left text (already styled), its visible width, optional right text.
-struct Row {
-    left: String,
-    left_w: usize,
-    right: String,
-    right_w: usize,
+fn count_dirs(n: &Node) -> usize {
+    n.dirs.values().map(|c| 1 + count_dirs(c)).sum()
 }
 
-fn row(left: String, left_w: usize, right: String, right_w: usize) -> Row {
-    Row {
-        left,
-        left_w,
-        right,
-        right_w,
+/// Minimum slab width (columns, excluding the 2-space margin): phone-friendly.
+pub const SLAB_MIN: usize = 38;
+const KEY_W: usize = 12;
+
+fn w(s: &str) -> usize {
+    s.chars().count()
+}
+
+impl Style {
+    /// Brand gold (`#c29965`) for kickers, labels, rules: 256-color 179.
+    fn gold(&self, s: &str) -> String {
+        self.paint("38;5;179", s)
     }
 }
 
-fn walk(node: &Node, depth: usize, st: &Style, out: &mut Vec<Row>) {
+/// Tree rows as (name with indent, size, nested?).
+fn tree_rows(node: &Node, depth: usize, out: &mut Vec<(String, String, bool)>) {
     let pad = "  ".repeat(depth);
     for (name, child) in &node.dirs {
-        let label = format!("{name}/");
-        let w = pad.chars().count() + label.chars().count();
-        out.push(row(
-            format!("{pad}{}", st.bold(&label)),
-            w,
-            String::new(),
-            0,
-        ));
-        walk(child, depth + 1, st, out);
+        out.push((format!("{pad}{name}/"), String::new(), false));
+        tree_rows(child, depth + 1, out);
     }
     for (name, size, nest) in &node.files {
-        let tag = if *nest { "  ◆ nest" } else { "" };
-        let tag = if st.unicode {
-            tag.to_string()
-        } else {
-            tag.replace('◆', "*")
-        };
-        let w = pad.chars().count() + name.chars().count() + tag.chars().count();
-        let left = format!("{pad}{name}{}", st.paint("36", &tag));
-        let r = size.map(human_bytes).unwrap_or_default();
-        let rw = r.chars().count();
-        out.push(row(left, w, st.dim(&r), rw));
+        out.push((
+            format!("{pad}{name}"),
+            size.map(human_bytes).unwrap_or_default(),
+            *nest,
+        ));
     }
 }
 
-fn kv(st: &Style, k: &str, v: &str) -> Row {
-    let key = format!("{k:<7}");
-    row(
-        format!("{} {v}", st.dim(&key)),
-        key.chars().count() + 1 + v.chars().count(),
-        String::new(),
-        0,
-    )
-}
-
-/// Turn a Scry report line (`ok  v2  live=16/16 need=12 …`) into health rows.
-/// `bad` is the not-recoverable reason, when Scry gave one.
-fn scry_rows(st: &Style, line: &str, bad: Option<&str>) -> Vec<Row> {
+/// Field rows (KEY, value lines) from a Scry report line (`ok  v2  live=16/16 …`).
+fn scry_fields(st: &Style, line: &str, bad: Option<&str>) -> Vec<(String, Vec<String>)> {
     let mut rows = Vec::new();
     let mut words = line.split_whitespace();
     let status = words.next().unwrap_or("?");
@@ -150,131 +129,215 @@ fn scry_rows(st: &Style, line: &str, bad: Option<&str>) -> Vec<Row> {
         (None, "ok") => ("32", "healthy"),
         (None, other) => ("33", other),
     };
-    let health = st.paint(code, word);
-    rows.push(row(
-        format!("{} {health}", st.dim("health ")),
-        8 + word.chars().count(),
-        String::new(),
-        0,
-    ));
+    rows.push(("HEALTH".into(), vec![st.paint(code, word)]));
     if let Some(why) = bad {
-        rows.push(kv(st, "why", why));
+        rows.push(("WHY".into(), vec![why.to_string()]));
     }
-    let mut facts: Vec<String> = Vec::new();
-    for w in words {
-        if let Some((k, v)) = w.split_once('=') {
+    let (mut shards, mut chain) = (Vec::new(), Vec::new());
+    for wd in words {
+        if let Some((k, v)) = wd.split_once('=') {
             match k {
-                "live" => facts.push(format!("shards {v} live")),
-                "need" => facts.push(format!("need {v}")),
-                "merkle" => facts.push(format!("merkle {v}")),
-                "keystone" => facts.push(format!("keystone {v}")),
+                "live" => shards.push(format!("shards {v} live")),
+                "need" => shards.push(format!("need {v}")),
+                "merkle" => chain.push(format!("merkle {v}")),
+                "keystone" => chain.push(format!("keystone {v}")),
                 "orig" => {
                     if let Ok(n) = v.parse::<u64>() {
-                        rows.push(kv(st, "size", &human_bytes(n)));
+                        rows.push(("SIZE".into(), vec![human_bytes(n)]));
                     }
                 }
                 _ => {}
             }
-        } else if w.starts_with('v') && w.len() <= 3 {
-            rows.push(kv(st, "format", w));
+        } else if wd.starts_with('v') && wd.len() <= 3 {
+            rows.push(("FORMAT".into(), vec![wd.to_string()]));
         }
     }
-    if !facts.is_empty() {
-        rows.push(kv(st, "seal", &facts.join(" · ")));
+    let seal: Vec<String> = [shards, chain]
+        .into_iter()
+        .filter(|g| !g.is_empty())
+        .map(|g| g.join(" · "))
+        .collect();
+    if !seal.is_empty() {
+        rows.push(("SEAL".into(), seal));
     }
     rows
 }
 
-/// Render a [`PathView`] as a framed card. `scry` is an optional Scry report line
-/// plus not-recoverable reason for the outer mark; pass `None` to omit health.
-pub fn render_path_view(view: &PathView, scry: Option<(&str, Option<&str>)>, st: &Style) -> String {
-    let (h, v, tl, tr, bl, br, ml, mr) = if st.unicode {
-        ("─", "│", "┌", "┐", "└", "┘", "├", "┤")
-    } else {
-        ("-", "|", "+", "+", "+", "+", "+", "+")
-    };
-    let crumb_sep = if st.unicode { " → " } else { " > " };
-    let title = format!("{} · {}", view.trail.join(crumb_sep), view.kind.label());
+/// Genesis-block style hexdump rows of a digest: `0000  aa bb … ee ff  |........|`.
+fn hex_rows(st: &Style, d: &[u8; 32]) -> Vec<(String, usize)> {
+    d.chunks(8)
+        .enumerate()
+        .map(|(i, c)| {
+            let hex: Vec<String> = c.iter().map(|b| format!("{b:02x}")).collect();
+            let asc: String = c
+                .iter()
+                .map(|&b| if b.is_ascii_graphic() { b as char } else { '.' })
+                .collect();
+            let off = format!("{:04x}", i * 8);
+            let hex = hex.join(" ");
+            let width = 4 + 2 + w(&hex) + 2 + 10;
+            (
+                format!("{}  {hex}  {}", st.dim(&off), st.dim(&format!("|{asc}|"))),
+                width,
+            )
+        })
+        .collect()
+}
 
-    let mut head: Vec<Row> = Vec::new();
+/// Render a [`PathView`] as a genesis-block style field slab with Sigil brand kickers.
+/// `scry` is an optional Scry report line plus not-recoverable reason for the outer
+/// mark; pass `None` to omit health. The SHA-256 strip shows only for the outer file
+/// (the digest `sigil path` already computes of the bytes on disk).
+pub fn render_path_view(view: &PathView, scry: Option<(&str, Option<&str>)>, st: &Style) -> String {
+    let (rule_ch, dot) = if st.unicode {
+        ("─", "·")
+    } else {
+        ("-", ".")
+    };
+    let sep = if st.unicode { " · " } else { " / " };
+    let crumb = if st.unicode { " → " } else { " > " };
+
+    let mut fields: Vec<(String, Vec<String>)> = Vec::new();
+    let mut plain_fields: Vec<(String, Vec<String>)> = Vec::new();
+    let mut push = |k: &str, v: Vec<String>, pv: Vec<String>| {
+        fields.push((k.into(), v));
+        plain_fields.push((k.into(), pv));
+    };
+    push(
+        "KIND",
+        vec![view.kind.label().into()],
+        vec![view.kind.label().into()],
+    );
     if let Some(name) = &view.payload_name {
         if matches!(view.kind, NestKind::Mark | NestKind::Work) {
-            head.push(kv(st, "name", name));
+            push("NAME", vec![name.clone()], vec![name.clone()]);
         }
     }
-    let mut body: Vec<Row> = Vec::new();
+    let mut tree: Vec<(String, String, bool)> = Vec::new();
     match view.kind {
         NestKind::DirPack => {
-            let tree = build_tree(view);
+            let t = build_tree(view);
             let total: u64 = view.entries.iter().filter_map(|e| e.orig).sum();
             let nests = view.entries.iter().filter(|e| e.nest).count();
-            let mut dirs = 0usize;
-            fn count(n: &Node, d: &mut usize) {
-                for c in n.dirs.values() {
-                    *d += 1;
-                    count(c, d);
-                }
-            }
-            count(&tree, &mut dirs);
-            let mut s = format!(
-                "{} files · {} dirs · {}",
-                view.entries.len(),
-                dirs,
-                human_bytes(total)
-            );
+            let mut parts = vec![
+                format!("{} files", view.entries.len()),
+                format!("{} dirs", count_dirs(&t)),
+                human_bytes(total),
+            ];
             if nests > 0 {
-                s.push_str(&format!(" · {nests} nested"));
+                parts.push(format!("{nests} nested"));
             }
-            head.push(kv(st, "holds", &s));
-            walk(&tree, 0, st, &mut body);
+            let v = parts.join(sep);
+            push("HOLDS", vec![v.clone()], vec![v]);
+            tree_rows(&t, 0, &mut tree);
         }
         NestKind::Leaf => {
             if let Some(n) = view.entries.first().and_then(|e| e.orig) {
-                head.push(kv(st, "size", &human_bytes(n)));
+                push("SIZE", vec![human_bytes(n)], vec![human_bytes(n)]);
             }
         }
         _ => {}
     }
     if let Some((line, bad)) = scry {
-        head.extend(scry_rows(st, line, bad));
+        let plain = Style {
+            color: false,
+            unicode: st.unicode,
+        };
+        for (a, b) in scry_fields(st, line, bad)
+            .into_iter()
+            .zip(scry_fields(&plain, line, bad))
+        {
+            push(&a.0, a.1, b.1);
+        }
     }
     if view.nest_payload {
-        head.push(kv(st, "nest", "payload is a seal — add `.` to descend"));
+        let v = "payload is a seal; add `.` to descend".to_string();
+        push("NEST", vec![v.clone()], vec![v]);
+    }
+    let digest = if view.trail.len() == 1 {
+        view.seen.first()
+    } else {
+        None
+    };
+
+    // Width: widest content, at least SLAB_MIN.
+    let title = view.trail.join(crumb);
+    let mut width = SLAB_MIN.max(w(&title));
+    for (_, vs) in &plain_fields {
+        for v in vs {
+            width = width.max(KEY_W + w(v));
+        }
+    }
+    for (n, sz, nest) in &tree {
+        width = width.max(6 + w(n) + if *nest { 7 } else { 0 } + 2 + w(sz));
+    }
+    if digest.is_some() {
+        width = width.max(41);
     }
 
-    let inner = head
-        .iter()
-        .chain(body.iter())
-        .map(|r| r.left_w + if r.right_w > 0 { r.right_w + 4 } else { 0 })
-        .max()
-        .unwrap_or(0)
-        .max(title.chars().count() + 4)
-        .max(24);
-    let rule = |l: &str, label: &str, r: &str| -> String {
-        let lab = if label.is_empty() {
-            String::new()
-        } else {
-            format!(" {label} ")
-        };
-        let fill = (inner + 2).saturating_sub(1 + lab.chars().count());
-        format!("{l}{h}{}{}{r}", st.bold(&lab), h.repeat(fill))
-    };
-    let line = |r: &Row| -> String {
-        let gap = inner - r.left_w - r.right_w;
-        format!("{v} {}{}{} {v}", r.left, " ".repeat(gap), r.right)
-    };
-    let mut out = vec![rule(tl, &title, tr)];
-    out.extend(head.iter().map(line));
-    if !body.is_empty() {
-        out.push(rule(ml, "tree", mr));
-        out.extend(body.iter().map(line));
+    let m = "  ";
+    let rule = format!("{m}{}", st.dim(&rule_ch.repeat(width)));
+    let kind_tag = view.kind.label().to_uppercase();
+    let dots = width.saturating_sub(5 + w(&kind_tag));
+    let mut out = vec![
+        format!(
+            "{m}{}{}{}",
+            st.gold(&st.bold("SIGIL")),
+            st.dim(&dot.repeat(dots)),
+            st.gold(&kind_tag)
+        ),
+        format!("{m}{}", st.bold(&title)),
+        rule.clone(),
+    ];
+    for ((k, vs), (_, pvs)) in fields.iter().zip(plain_fields.iter()) {
+        for (i, (v, _pv)) in vs.iter().zip(pvs.iter()).enumerate() {
+            let key = if i == 0 { k.as_str() } else { "" };
+            out.push(format!("{m}{}{v}", st.gold(&format!("{key:<KEY_W$}"))));
+        }
     }
-    out.push(rule(bl, "", br));
+    out.push(rule.clone());
+    if !tree.is_empty() {
+        out.push(format!("{m}{}", st.gold("TREE")));
+        for (i, (n, sz, nest)) in tree.iter().enumerate() {
+            let tag = if *nest {
+                if st.unicode {
+                    "  ◆ nest"
+                } else {
+                    "  * nest"
+                }
+            } else {
+                ""
+            };
+            let lw = 6 + w(n) + w(tag);
+            let gap = width.saturating_sub(lw + w(sz));
+            let name = if sz.is_empty() && !*nest {
+                st.bold(n)
+            } else {
+                n.clone()
+            };
+            out.push(format!(
+                "{m}{}  {name}{}{}{}",
+                st.dim(&format!("{i:04}")),
+                st.paint("36", tag),
+                " ".repeat(gap),
+                st.dim(sz)
+            ));
+        }
+        out.push(rule.clone());
+    }
+    if let Some(d) = digest {
+        out.push(format!("{m}{}", st.gold("FILE SHA-256")));
+        for (row, _) in hex_rows(st, d) {
+            out.push(format!("{m}{row}"));
+        }
+        out.push(rule);
+    }
+    let out: Vec<&str> = out.iter().map(|l| l.trim_end()).collect();
     let out = out.join("\n");
     if st.unicode {
         out
     } else {
-        out.replace('·', "/").replace('—', "-").replace('→', ">")
+        out.replace('—', "-").replace('·', "/")
     }
 }
 
@@ -305,24 +368,29 @@ mod tests {
     }
 
     #[test]
-    fn tree_and_frame() {
+    fn slab_layout() {
         let st = Style {
             color: false,
             unicode: true,
         };
         let s = render_path_view(&view(), None, &st);
-        assert!(s.starts_with("┌─ album.sg1 · folder "), "{s}");
-        assert!(s.contains("├─ tree "), "{s}");
-        assert!(s.contains("│ notes/"), "{s}");
-        assert!(s.contains("│   todo.txt"), "{s}");
+        let l: Vec<&str> = s.lines().collect();
+        assert!(
+            l[0].starts_with("  SIGIL·") && l[0].ends_with("FOLDER"),
+            "{s}"
+        );
+        assert_eq!(l[1], "  album.sg1");
+        assert!(s.contains("  KIND        folder"), "{s}");
         assert!(s.contains("3 files · 2 dirs · 15 B"), "{s}");
-        let widths: Vec<usize> = s.lines().map(|l| l.chars().count()).collect();
-        assert!(widths.windows(2).all(|w| w[0] == w[1]), "{s}");
+        assert!(s.contains("  TREE\n  0000  notes/"), "{s}");
+        assert!(s.contains("  0001    todo.txt"), "{s}");
+        assert!(l.iter().all(|x| x.chars().count() <= 42), "{s}");
         assert!(!s.contains('\x1b'));
+        assert!(!s.contains("SHA-256"), "no digest in view → no strip");
     }
 
     #[test]
-    fn ascii_and_health() {
+    fn ascii_health_and_hex() {
         let st = Style {
             color: false,
             unicode: false,
@@ -331,16 +399,38 @@ mod tests {
         v.kind = NestKind::Mark;
         v.entries.clear();
         v.payload_name = Some("one.txt".into());
+        v.seen = vec![[0x41; 32]];
         let s = render_path_view(
             &v,
-            Some(("ok  v2  live=16/16 need=12 merkle=closed orig=2", None)),
+            Some((
+                "ok  v2  live=16/16 need=12 merkle=closed keystone=intact orig=2",
+                None,
+            )),
             &st,
         );
         assert!(s.is_ascii(), "{s}");
-        assert!(s.contains("health  healthy"), "{s}");
-        assert!(s.contains("shards 16/16 live · need 12") || s.contains("shards 16/16 live"));
+        assert!(s.contains("  HEALTH      healthy"), "{s}");
+        assert!(
+            s.contains("  SEAL        shards 16/16 live / need 12\n              merkle closed"),
+            "{s}"
+        );
+        assert!(
+            s.contains("  0000  41 41 41 41 41 41 41 41  |AAAAAAAA|"),
+            "{s}"
+        );
+        assert!(s.contains("  0018  "), "{s}");
         let bad = render_path_view(&v, Some(("torn  v2", Some("too few shards"))), &st);
         assert!(bad.contains("not recoverable"), "{bad}");
+    }
+
+    #[test]
+    fn color_uses_brand_gold() {
+        let st = Style {
+            color: true,
+            unicode: true,
+        };
+        let s = render_path_view(&view(), None, &st);
+        assert!(s.contains("\x1b[38;5;179m"), "{s}");
     }
 
     #[test]

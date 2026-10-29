@@ -34,17 +34,18 @@ fn path_pretty_folder_and_mark() {
     assert!(plain.contains("file  notes/todo.txt  5 bytes"), "{plain}");
 
     let pretty = sigil(&d, &["path", "album.sg1", "--pretty"]);
-    assert!(pretty.contains("album.sg1 · folder"), "{pretty}");
-    assert!(pretty.contains("─ tree "), "{pretty}");
-    assert!(pretty.contains("│ notes/"), "{pretty}");
-    assert!(pretty.contains("│   todo.txt"), "{pretty}");
+    assert!(pretty.starts_with("  SIGIL"), "{pretty}");
+    assert!(pretty.contains("\n  album.sg1\n"), "{pretty}");
+    assert!(pretty.contains("  TREE\n  0000  notes/"), "{pretty}");
+    assert!(pretty.contains("  0001    todo.txt"), "{pretty}");
+    assert!(pretty.contains("FILE SHA-256\n  0000  "), "{pretty}");
     assert!(
         !pretty.contains('\x1b'),
         "piped output must not carry color"
     );
 
     let mark = sigil(&d, &["ls", "one.sg1", "--pretty"]);
-    assert!(mark.contains("health  healthy"), "{mark}");
-    assert!(mark.contains("name    one.txt"), "{mark}");
+    assert!(mark.contains("HEALTH      healthy"), "{mark}");
+    assert!(mark.contains("NAME        one.txt"), "{mark}");
     let _ = std::fs::remove_dir_all(&d);
 }
