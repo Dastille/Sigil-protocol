@@ -748,6 +748,11 @@ enum Cmd {
         /// Extract the current view (nested mark or leaf bytes) to this path — temp-friendly; outer .sg1 unchanged.
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Human inspect card: framed header, tree of members, seal health for a single mark.
+        /// Color when stdout is a terminal (NO_COLOR off; CLICOLOR_FORCE=1 forces). SIGIL_ASCII=1 for +-| frames.
+        /// Default output stays plain and stable for scripts.
+        #[arg(long)]
+        pretty: bool,
     },
     /// Version tip + drift detect for a live path (sidecar `.sgv` chart). Alias: backup.
     #[command(visible_alias = "backup")]
@@ -3268,6 +3273,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ward_file,
             depth,
             output,
+            pretty,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -3329,7 +3335,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let view = path_walk_keys(&input, &steps, pass.as_deref(), &wards, depth, &identities)?;
-            println!("{}", view.format());
+            if pretty {
+                use std::io::IsTerminal;
+                let style = sigil::pretty::Style::from_env(std::io::stdout().is_terminal());
+                // Health only for the outer single-file mark: that is what Scry reads.
+                let scry = if steps.is_empty() && view.kind == sigil::NestKind::Mark {
+                    sigil::scry_path_checked(&input).ok()
+                } else {
+                    None
+                };
+                let scry = scry
+                    .as_ref()
+                    .map(|(t, bad)| (t.lines().next().unwrap_or_default(), bad.as_deref()));
+                println!("{}", sigil::pretty::render_path_view(&view, scry, &style));
+            } else {
+                println!("{}", view.format());
+            }
             if let Some(dest) = output {
                 let (written, trail) = path_extract_keys(
                     &input,

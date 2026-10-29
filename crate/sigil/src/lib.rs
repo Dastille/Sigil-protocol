@@ -38,6 +38,7 @@ mod packhead;
 pub mod passkey;
 pub mod pgp;
 mod pieces;
+pub mod pretty;
 pub mod privacy;
 pub mod readdata;
 mod rs;
