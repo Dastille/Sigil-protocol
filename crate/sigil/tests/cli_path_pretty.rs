@@ -34,18 +34,23 @@ fn path_pretty_folder_and_mark() {
     assert!(plain.contains("file  notes/todo.txt  5 bytes"), "{plain}");
 
     let pretty = sigil(&d, &["path", "album.sg1", "--pretty"]);
-    assert!(pretty.starts_with("  SIGIL"), "{pretty}");
-    assert!(pretty.contains("\n  album.sg1\n"), "{pretty}");
-    assert!(pretty.contains("  TREE\n  0000  notes/"), "{pretty}");
-    assert!(pretty.contains("  0001    todo.txt"), "{pretty}");
-    assert!(pretty.contains("FILE SHA-256\n  0000  "), "{pretty}");
+    assert!(pretty.starts_with("  album.sg1\n"), "{pretty}");
+    assert!(pretty.contains("  KIND      folder pack"), "{pretty}");
+    assert!(
+        pretty.contains("  STATUS    healthy · 2 files checked"),
+        "{pretty}"
+    );
+    assert!(pretty.contains("\n  notes/\n    todo.txt"), "{pretty}");
+    assert!(pretty.contains("  SHA-256   "), "{pretty}");
     assert!(
         !pretty.contains('\x1b'),
         "piped output must not carry color"
     );
 
     let mark = sigil(&d, &["ls", "one.sg1", "--pretty"]);
-    assert!(mark.contains("HEALTH      healthy"), "{mark}");
-    assert!(mark.contains("NAME        one.txt"), "{mark}");
+    assert!(mark.contains("  KIND      sealed file"), "{mark}");
+    assert!(mark.contains("  NAME      one.txt"), "{mark}");
+    assert!(mark.contains("  STATUS    healthy"), "{mark}");
+    assert!(mark.contains("  REPAIR    "), "{mark}");
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -3338,16 +3338,28 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if pretty {
                 use std::io::IsTerminal;
                 let style = sigil::pretty::Style::from_env(std::io::stdout().is_terminal());
-                // Health only for the outer single-file mark: that is what Scry reads.
-                let scry = if steps.is_empty() && view.kind == sigil::NestKind::Mark {
+                // Condition comes from the same Scry verdicts `sigil scry` prints;
+                // only the outer file (no breadcrumb) is checked.
+                let mut extra = sigil::pretty::Extra::default();
+                let mark_scry = if steps.is_empty() && view.kind == sigil::NestKind::Mark {
                     sigil::scry_path_checked(&input).ok()
                 } else {
                     None
                 };
-                let scry = scry
-                    .as_ref()
-                    .map(|(t, bad)| (t.lines().next().unwrap_or_default(), bad.as_deref()));
-                println!("{}", sigil::pretty::render_path_view(&view, scry, &style));
+                if let Some((text, bad)) = &mark_scry {
+                    let line = text.lines().next().unwrap_or_default();
+                    extra.health = sigil::pretty::health_from_mark_scry(line, bad.as_deref());
+                    extra.scry_line = Some(line);
+                }
+                if steps.is_empty() && view.kind == sigil::NestKind::DirPack {
+                    if let Ok((text, bad)) =
+                        sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)
+                    {
+                        extra.health =
+                            Some(sigil::pretty::health_from_dir_scry(&text, bad.as_deref()));
+                    }
+                }
+                println!("{}", sigil::pretty::render_path_view(&view, &extra, &style));
             } else {
                 println!("{}", view.format());
             }
