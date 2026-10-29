@@ -252,6 +252,10 @@ enum Cmd {
         /// Needs --pass or --to as well, so the file names stay hidden.
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         /// Opt-in (less safe): allow --ward without --pass / --to. File names and sizes in the
         /// pack are then readable without any key; only the warded files' contents are locked.
         #[arg(long = "ward-names-visible")]
@@ -311,6 +315,10 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         #[arg(long = "bind")]
         bind: Vec<PathBuf>,
         /// Pull only these paths out of a folder wrap (repeatable). e.g. --only photos/cat.jpg
@@ -537,6 +545,10 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         #[arg(long = "only")]
         only: Vec<String>,
         /// Don't delete the temp copy
@@ -726,6 +738,10 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         /// Max nest depth (hard cap 32).
         #[arg(long, default_value_t = MAX_NEST_DEPTH)]
         depth: usize,
@@ -759,6 +775,10 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         /// Mount the vault tip seal for this live path / `.sgv` dir
         #[arg(long)]
         vault: bool,
@@ -850,6 +870,10 @@ enum VaultCmd {
         /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
     },
     /// Report drift of live bytes vs tip true-name (match | changed | missing-seal | missing-live).
     Status {
@@ -879,6 +903,10 @@ enum VaultCmd {
         /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         /// Commit even when cleartext already matches tip
         #[arg(long)]
         force: bool,
@@ -913,6 +941,10 @@ enum VaultCmd {
         /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
         #[arg(long = "ward")]
         ward: Vec<String>,
+        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
         /// Folder vault: overwrite a live folder that has uncommitted edits
         #[arg(long)]
         force: bool,
@@ -1685,15 +1717,64 @@ fn load_recipients(
     specs.iter().map(|s| Ok(resolve_recipient(s)?)).collect()
 }
 
-fn parse_wards(v: &[String]) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
-    v.iter()
-        .map(|s| match s.split_once('=') {
-            Some((_, "")) => Err(format!("--ward {s}: {EMPTY_PASS}").into()),
-            Some((a, b)) => Ok((a.to_string(), b.to_string())),
-            None => Err(format!("--ward needs path=password, got {s}").into()),
-        })
-        .collect()
+/// Ward passwords from `--ward PATH=PASSWORD` and `--ward-file PATH=PWFILE`.
+/// `--ward PATH=-` asks on the terminal (hidden; twice when `new` encrypts something).
+/// A literal password warns (process list, shell history); an empty one is refused.
+/// One path given twice is refused rather than silently picking one.
+fn parse_wards(
+    v: &[String],
+    files: &[String],
+    new: bool,
+) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    let mut out: Vec<(String, String)> = Vec::with_capacity(v.len() + files.len());
+    for s in v {
+        let (path, pw) = match s.split_once('=') {
+            Some((a, "")) => return Err(format!("--ward {a}=: {EMPTY_PASS}").into()),
+            Some((a, b)) => (a, b),
+            None => return Err("--ward needs PATH=PASSWORD (or PATH=- to type it)".into()),
+        };
+        let pw = if pw == "-" {
+            if !can_prompt() {
+                return Err(format!(
+                    "--ward {path}=- types the ward password on a terminal, and there is none here \
+(input is piped or redirected); use --ward-file {path}=PWFILE in scripts. Nothing was done"
+                )
+                .into());
+            }
+            prompt_pass(&format!("Ward password for {path}: "), new)?
+        } else if pw.trim().is_empty() {
+            return Err(format!("--ward {path}=: {EMPTY_PASS}").into());
+        } else {
+            eprintln!("{LITERAL_WARD_WARNING}");
+            pw.to_string()
+        };
+        out.push((path.to_string(), pw));
+    }
+    for s in files {
+        let Some((path, file)) = s.split_once('=') else {
+            return Err("--ward-file needs PATH=PWFILE".into());
+        };
+        if file.is_empty() {
+            return Err(format!("--ward-file {path}= names no password file").into());
+        }
+        let pw = read_pass_file(Path::new(file))?;
+        out.push((path.to_string(), pw.as_str().to_owned()));
+    }
+    for (i, (a, _)) in out.iter().enumerate() {
+        if out[..i].iter().any(|(b, _)| b == a) {
+            return Err(
+                format!("ward {a} is given more than once; give each file one password").into(),
+            );
+        }
+    }
+    Ok(out)
 }
+
+/// Printed (stderr) when a ward password is typed straight onto the command line.
+const LITERAL_WARD_WARNING: &str =
+    "WARNING: a ward password given as --ward PATH=PASSWORD is visible to other programs on \
+this computer (process list) and may be saved in your shell history. Use --ward-file PATH=PWFILE \
+(a file only you can read) or --ward PATH=- (type it, hidden) instead";
 
 fn companion_bytes(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     paths.iter().map(|p| Ok(fs::read(p)?)).collect()
@@ -2068,6 +2149,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             to,
             ward,
+            ward_file,
             ward_names_visible,
             covenant,
             bind,
@@ -2087,7 +2169,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let geas = binds(&bind)?;
             let cov = covenant.as_deref().unwrap_or("");
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, true)?;
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
@@ -2294,6 +2376,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             ward,
+            ward_file,
             bind,
             only,
             star,
@@ -2304,7 +2387,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let pass = pass.or(pass_file);
             let companions = companion_bytes(&bind)?;
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, false)?;
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let mds_be = resolve_mds(&mds)?;
@@ -2917,6 +3000,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             ward,
+            ward_file,
             only,
             keep,
         } => {
@@ -2926,7 +3010,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             run_open_keys(
                 &input,
                 pass.as_deref(),
-                &parse_wards(&ward)?,
+                &parse_wards(&ward, &ward_file, false)?,
                 &only,
                 keep,
                 &identities,
@@ -3181,13 +3265,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             ward,
+            ward_file,
             depth,
             output,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, false)?;
             let mut steps = into;
             steps.extend(segments);
             // Containers: list / address members by their own names (`Sky.sigil`, `notes.txt.sigil`).
@@ -3272,6 +3357,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             ward,
+            ward_file,
             vault,
             export_dir,
             writable,
@@ -3286,7 +3372,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     _ => None,
                 },
             };
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, false)?;
             run_mount_keys(
                 &input,
                 &mountpoint,
@@ -3438,11 +3524,12 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             to,
             ward,
+            ward_file,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, true)?;
             let report = vault_track_ex(&path, mode.into(), pass.as_deref(), &recipients, &wards)?;
             println!(
                 "vault track → {}  v{}  {} bytes  digest={}",
@@ -3472,6 +3559,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             to,
             ward,
+            ward_file,
             force,
             keep,
             cold,
@@ -3480,7 +3568,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, true)?;
             let (report, status_path) = if let Some(export) = from_export {
                 let report = vault_commit_from_export_ex(
                     &export,
@@ -3576,12 +3664,13 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             ward,
+            ward_file,
             force,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            let wards = parse_wards(&ward)?;
+            let wards = parse_wards(&ward, &ward_file, false)?;
             let report =
                 vault_restore_ex(&path, version, pass.as_deref(), &identities, &wards, force)?;
             println!(
