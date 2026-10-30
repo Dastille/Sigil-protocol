@@ -1,7 +1,8 @@
 //! `sigil mend` on a plain (v1) folder pack: heals damaged member stars (small `.sg1`
 //! members and large-file members) back to the original bytes, leaves a healthy pack
 //! byte-identical, and fails closed (no output) when a member is beyond repair.
-use std::path::{Path, PathBuf};
+mod common;
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 fn sigil(dir: &Path, args: &[&str]) -> Output {
@@ -24,10 +25,8 @@ fn ok(dir: &Path, args: &[&str]) -> String {
     t
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-mendv1-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("mkdir");
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("mendv1-{tag}"));
     d
 }
 

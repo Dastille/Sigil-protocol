@@ -2,7 +2,8 @@
 //! (same rules as `--pass-file`: first line, owner-only permissions, not empty) and
 //! `--ward PATH=-` asks on the terminal. A literal `--ward PATH=PASSWORD` still works
 //! but warns. Every refusal writes nothing.
-use std::path::{Path, PathBuf};
+mod common;
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 fn sigil(dir: &Path, args: &[&str]) -> Output {
@@ -35,9 +36,8 @@ fn write_secret(path: &Path, body: &[u8], mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-cli-wardfile-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("cli-wardfile-{tag}"));
     std::fs::create_dir_all(d.join("album/private-sub")).unwrap();
     std::fs::write(d.join("album/visible-name-a.txt"), b"alpha alpha").unwrap();
     std::fs::write(

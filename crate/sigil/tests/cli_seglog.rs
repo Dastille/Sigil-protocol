@@ -1,5 +1,6 @@
 //! Segment log (`sigil log …`): append / ls / read / verify / mend, tamper detection,
 //! signing, crash recovery, and that gc / doctor understand log containers.
+mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -44,10 +45,8 @@ fn run(dir: &Path, args: &[&str]) -> (i32, String) {
     (o.status.code().unwrap_or(-1), text(&o))
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-seglog-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("seglog-{tag}"));
     d
 }
 

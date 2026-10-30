@@ -1,6 +1,7 @@
 //! Encrypted folder packs hide member names and sizes by default (SGDR v2,
 //! "sealed directory"). Round trip, keyless scry, --only, wrong key, tamper,
 //! truncation, and the old v1 encrypted fixture still opening.
+mod common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -22,9 +23,8 @@ fn ok(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-cli-sealdir-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("cli-sealdir-{tag}"));
     std::fs::create_dir_all(d.join("album/private-sub")).unwrap();
     std::fs::write(d.join("album/visible-name-a.txt"), b"alpha alpha").unwrap();
     std::fs::write(

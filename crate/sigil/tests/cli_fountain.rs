@@ -1,6 +1,7 @@
 //! `deluge --fountain`: random RaptorQ symbol IDs by default, `--sequential` for the
 //! old order, old v1 `.rq` packets still gather, damaged/stray packet files are
 //! skipped, and a short folder says how many more packets are needed.
+mod common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -22,10 +23,8 @@ fn ok(dir: &Path, args: &[&str]) -> (String, String) {
     (a, b)
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-cli-ft-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("cli-ft-{tag}"));
     d
 }
 
@@ -267,8 +266,7 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
 /// what it lists, and a report for another file is refused with nothing written.
 #[test]
 fn gather_report_then_deluge_answer_fills_the_gap() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-nak-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::scratch("cli-nak");
     std::fs::create_dir_all(dir.join("rx")).unwrap();
     let mut x = 0x2545_f491_4f6c_dd1du64;
     let data: Vec<u8> = (0..150_000u32)

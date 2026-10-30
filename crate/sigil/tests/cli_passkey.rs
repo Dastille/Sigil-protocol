@@ -1,4 +1,5 @@
 //! CLI end-to-end: passkey-protected identity via the software test authenticator.
+mod common;
 use std::path::Path;
 use std::process::Command;
 
@@ -13,9 +14,7 @@ fn sigil(dir: &Path, soft: &Path, args: &[&str]) -> std::process::Output {
 
 #[test]
 fn keygen_passkey_encrypt_to_open_sign_unprotect() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-pk-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::scratch("cli-pk");
     let soft = dir.join("soft.bin");
     let data: Vec<u8> = (0..200_000u32)
         .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)

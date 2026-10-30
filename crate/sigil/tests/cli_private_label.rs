@@ -1,6 +1,7 @@
 //! CLI end to end for the v3 private label: what lands on disk for new encrypted
 //! seals, packs, constellation stars and log segments holds no plaintext SHA-256,
 //! no file name and no exact-length encoding; keyless mend and doctor still work.
+mod common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -24,10 +25,8 @@ fn ok(o: Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)
 }
 
-fn setup(tag: &str, len: usize) -> (PathBuf, Vec<u8>) {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-priv-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn setup(tag: &str, len: usize) -> (common::Scratch, Vec<u8>) {
+    let dir = common::scratch(&format!("cli-priv-{tag}"));
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let data: Vec<u8> = (0..len)
         .map(|i| {

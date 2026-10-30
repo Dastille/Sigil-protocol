@@ -1,4 +1,5 @@
 //! CLI: passphrase-protected OpenPGP secret import.
+mod common;
 use std::path::Path;
 use std::process::Command;
 
@@ -34,9 +35,7 @@ fn secret(path: &Path, text: &str) {
 
 #[test]
 fn import_protected_pgp_secret_then_open() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-pgp-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::scratch("cli-pgp");
     let ok = |o: std::process::Output| {
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         o
@@ -141,9 +140,7 @@ fn import_protected_pgp_secret_then_open() {
 #[test]
 fn import_rfc9580_aead_argon2_and_v6_keys_then_open() {
     let fx = |n: &str| format!("{}/tests/fixtures/pgp/{n}", env!("CARGO_MANIFEST_DIR"));
-    let dir = std::env::temp_dir().join(format!("sigil-cli-pgp9580-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::scratch("cli-pgp9580");
     let ok = |o: std::process::Output| {
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         o

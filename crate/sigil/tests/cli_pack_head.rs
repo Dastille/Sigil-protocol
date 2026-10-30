@@ -1,6 +1,7 @@
 //! CLI: a large-file pack whose head is damaged is rebuilt from the facet list
 //! and the stars' own headers (old packs included), and refused when it cannot be.
-use std::path::{Path, PathBuf};
+mod common;
+use std::path::Path;
 use std::process::Command;
 
 fn sigil(dir: &Path, args: &[&str]) -> std::process::Output {
@@ -31,10 +32,8 @@ fn plain() -> Vec<u8> {
         .collect()
 }
 
-fn setup(tag: &str) -> (PathBuf, Vec<u8>) {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-ph-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn setup(tag: &str) -> (common::Scratch, Vec<u8>) {
+    let dir = common::scratch(&format!("cli-ph-{tag}"));
     let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pack-v0");
     let pack = std::fs::read(fx.join("pack-v2-reflection.sg1")).unwrap();
     (dir, pack)

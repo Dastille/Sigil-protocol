@@ -1,6 +1,8 @@
 //! Library API: an empty passphrase (`Some("")`) is refused on the way out too, not
 //! only by the CLI. It never quietly means "no passphrase"; old files keep opening.
 
+mod common;
+
 use sigil::{
     keyed_fingerprint_matches, seal, seal_kn_to, seal_meta_keys, unseal, unseal_ex_keys,
     unseal_meta_keys, unseal_repair_keys, Identity, Mode, DEFAULT_PIECE,
@@ -11,25 +13,6 @@ const FIX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/enc-v2");
 
 fn fix(name: &str) -> PathBuf {
     Path::new(FIX).join(name)
-}
-
-/// A fresh directory that did not exist before (create_dir fails on an existing path).
-fn scratch(tag: &str) -> PathBuf {
-    let base = std::env::temp_dir();
-    for i in 0u32..1000 {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or(0);
-        let d = base.join(format!(
-            "sigil-emptypass-{tag}-{}-{nanos:x}-{i}",
-            std::process::id()
-        ));
-        if std::fs::create_dir(&d).is_ok() {
-            return d;
-        }
-    }
-    panic!("no scratch dir");
 }
 
 fn refused<T>(r: sigil::Result<T>, what: &str) {
@@ -94,7 +77,7 @@ fn unseal_refuses_empty_passphrase_on_every_kind_of_seal() {
 
 #[test]
 fn folder_and_large_file_packs_refuse_empty_passphrase() {
-    let d = scratch("packs");
+    let d = common::scratch("emptypass-packs");
     let src = d.join("src");
     std::fs::create_dir_all(src.join("sub")).unwrap();
     std::fs::write(src.join("a.txt"), b"alpha").unwrap();

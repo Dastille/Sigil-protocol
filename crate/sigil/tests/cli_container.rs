@@ -1,5 +1,6 @@
 //! Tidy container (`name.sigil/`): new-layout round trips, `sigil tidy` migration of old
 //! vaults / constellations (clear, passphrase, encrypt-to), and failed tidy leaves originals intact.
+mod common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,10 +41,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-container-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("container-{tag}"));
     d
 }
 

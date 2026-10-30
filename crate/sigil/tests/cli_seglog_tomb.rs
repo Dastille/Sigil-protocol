@@ -1,6 +1,7 @@
 //! Segment log slice 2: tombstones + compaction (`sigil log tombstone / compact`), the `log=2`
 //! upgrade rule, tamper detection on the new entries, anchors across compaction, crash points,
 //! and that gc / doctor / verify / mend understand both.
+mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,10 +58,8 @@ fn run(dir: &Path, args: &[&str]) -> (i32, String) {
     (o.status.code().unwrap_or(-1), text(&o))
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-seglog2-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("seglog2-{tag}"));
     d
 }
 

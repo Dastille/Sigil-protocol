@@ -1,8 +1,9 @@
 //! A log created with --pass / --to gets a private INDEX by default (`log=5`);
 //! `--public-index` opts out with a warning; a log created with no key stays public.
 //! Old logs (public and --private-index) keep opening exactly as before.
+mod common;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
@@ -34,9 +35,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     )
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-log-privdef-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("log-privdef-{tag}"));
     fs::create_dir_all(d.join("photos/2024")).unwrap();
     fs::write(d.join("photos/2024/holiday-beach.jpg"), "beach day").unwrap();
     d

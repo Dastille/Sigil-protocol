@@ -2,8 +2,9 @@
 //! `NOT recoverable` and exit 2 when a member cannot be restored from this copy
 //! (star missing or beyond repair), and stay `ok` (exit 0) when every star is
 //! healthy or only repairably damaged. Fail-closed: a missing star never passes.
+mod common;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use sigil::container;
@@ -25,13 +26,9 @@ fn text(o: &Output) -> String {
     )
 }
 
-/// Scratch dir under Cargo's per-target temp dir (not a guessable /tmp name).
-fn scratch(tag: &str) -> PathBuf {
-    let d = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("scry-verdict-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
-    d
+/// Private, exclusive scratch dir (see `tests/common`).
+fn scratch(tag: &str) -> common::Scratch {
+    common::scratch(&format!("scry-verdict-{tag}"))
 }
 
 fn noise(n: usize, mut x: u64) -> Vec<u8> {
@@ -46,7 +43,7 @@ fn noise(n: usize, mut x: u64) -> Vec<u8> {
 }
 
 /// A container constellation `Sky.sigil` with two stars (a.txt, sub/big.bin).
-fn make_sky(tag: &str) -> (PathBuf, Vec<u8>) {
+fn make_sky(tag: &str) -> (common::Scratch, Vec<u8>) {
     let dir = scratch(tag);
     fs::create_dir_all(dir.join("docs/sub")).unwrap();
     fs::write(dir.join("docs/a.txt"), b"alpha alpha alpha").unwrap();

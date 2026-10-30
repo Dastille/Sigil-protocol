@@ -1,8 +1,9 @@
 //! Private INDEX (`sigil log init --private-index`, `log=5`): sizes, SHA-256s and `log add` file
 //! names are sealed in the INDEX; keyless verify / mend / gc keep working; `log add` still skips
 //! unchanged files; receipts carry one entry's key; every alteration and every wrong key fails closed.
+mod common;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use sha2::{Digest, Sha256};
@@ -45,10 +46,8 @@ fn run(dir: &Path, args: &[&str]) -> (i32, String) {
     (o.status.code().unwrap_or(-1), text(&o))
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-log-private-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("log-private-{tag}"));
     d
 }
 
@@ -95,7 +94,7 @@ fn entry_lines(d: &Path) -> Vec<String> {
 }
 
 /// A signed private log backing up `photos/` to `me.pub`.
-fn photo_log(tag: &str) -> PathBuf {
+fn photo_log(tag: &str) -> common::Scratch {
     let d = tmp(tag);
     ok(&d, &["keygen", "-o", "me.sgk", "--pub-out", "me.pub"]);
     put(&d, "2024/trip/beach.jpg", "beach day");

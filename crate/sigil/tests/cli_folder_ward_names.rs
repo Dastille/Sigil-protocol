@@ -3,7 +3,8 @@
 //! `--pass` / `--to` is refused (nothing written); with `--pass` the names are hidden
 //! like any other locked folder pack; visible names need the explicit
 //! `--ward-names-visible` opt-in, which warns. Old ward-only (v1) packs still open.
-use std::path::{Path, PathBuf};
+mod common;
+use std::path::Path;
 use std::process::{Command, Output};
 
 fn sigil(dir: &Path, args: &[&str]) -> Output {
@@ -28,9 +29,8 @@ fn err(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-cli-wardnames-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("cli-wardnames-{tag}"));
     std::fs::create_dir_all(d.join("album/private-sub")).unwrap();
     std::fs::write(d.join("album/visible-name-a.txt"), b"alpha alpha").unwrap();
     std::fs::write(

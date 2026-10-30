@@ -1,6 +1,7 @@
 //! `sigil log add LOG DIR`: back a folder up into a segment log, sealing only new or changed files
 //! (one segment per file, additive `path=` key), reporting files gone from the source without ever
 //! deleting them, and failing closed when the INDEX, a segment or the source is tampered with.
+mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,10 +56,8 @@ fn read_seq(dir: &Path, seq: u64, extra: &[&str]) -> Vec<u8> {
     o.stdout
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-log-add-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("log-add-{tag}"));
     d
 }
 

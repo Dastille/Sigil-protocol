@@ -1,8 +1,9 @@
 //! CLI: `--pass-file PATH` gives scripts a passphrase without putting it on the command
 //! line, and a literal `--pass VALUE` warns. Every claim in docs/START.md
 //! "Passphrases in scripts" is checked here.
+mod common;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 const WARN: &str = "WARNING: a passphrase given as --pass VALUE is visible";
@@ -36,10 +37,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-passfile-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("passfile-{tag}"));
     d
 }
 

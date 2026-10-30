@@ -1,5 +1,6 @@
 //! v3 private label for new encrypted seals: what it hides, that it fails closed,
 //! and that old files keep opening. See `src/privacy.rs` and docs/sigil-v1.txt.
+mod common;
 
 use sigil::{
     locate_header, mend_bytes, seal_kn_to, seal_kn_to_opts, unseal_ex_keys, unseal_meta_keys,
@@ -44,10 +45,8 @@ fn seal_pass(data: &[u8], mode: Mode) -> Vec<u8> {
     .unwrap()
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-private-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("private-{tag}"));
     d
 }
 

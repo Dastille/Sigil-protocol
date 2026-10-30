@@ -1,5 +1,6 @@
 //! CLI: `sigil doctor --scrub DIR` repairs bit-flipped marks in place (only when
 //! Merkle + true name pass), leaves clean and uncorrectable marks byte-identical.
+mod common;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -13,8 +14,7 @@ fn sigil(dir: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn scrub_repairs_flips_and_leaves_uncorrectable_identical() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-scrub-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::scratch("cli-scrub");
     std::fs::create_dir_all(dir.join("vault/sub")).unwrap();
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut next = move || {

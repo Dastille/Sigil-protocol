@@ -1,4 +1,5 @@
 //! `sigil log adopt`: tidy a loose pile of .sg1 stars into a segment log, byte-for-byte.
+mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -36,10 +37,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-log-adopt-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("log-adopt-{tag}"));
     d
 }
 

@@ -1,6 +1,7 @@
 //! `sigil log add --exclude PATTERN` and `DIR/.sigilignore`: excluded files and whole folders are
 //! never read or sealed, excluded paths already in the log are left alone (not missing, never
 //! tombstoned), `--dry-run` lists what is skipped, and bad patterns refuse the run (fail closed).
+mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,10 +40,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-log-excl-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("log-excl-{tag}"));
     d
 }
 
