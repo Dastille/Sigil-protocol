@@ -1245,6 +1245,26 @@ pub(crate) fn open_sealed_inner(
     }
 }
 
+/// In-memory folder pack bytes ready to list: a sealed (v2) pack is opened with the
+/// given keys (fails closed with the hidden-names hint when no key is given, or on a
+/// wrong key / tamper); a plain (v1) pack or any other bytes are returned unchanged.
+pub(crate) fn unlock_dir_bytes(
+    data: Vec<u8>,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Vec<u8>> {
+    if data.len() < 5 || data[0..4] != DIR_MAGIC || data[4] != DIR_VER_SEALED {
+        return Ok(data);
+    }
+    if pass.is_none() && identities.is_empty() {
+        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
+    }
+    let mut reader = Cursor::new(&data[..]);
+    let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let body = read_sealed_body(&mut reader)?;
+    open_body(n, &body, pass, &[], identities)
+}
+
 /// Members of an in-memory v1 pack (the inner pack of a sealed directory).
 pub(crate) fn list_v1_bytes(inner: &[u8]) -> Result<Vec<DirEntry>> {
     list_v1(&mut Cursor::new(inner))

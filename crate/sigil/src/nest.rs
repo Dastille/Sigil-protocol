@@ -292,6 +292,7 @@ pub fn path_walk_keys(
                 .filter(|s| !s.is_empty()),
             _ => None,
         };
+        cur = crate::folder::unlock_dir_bytes(cur, pass, identities)?;
         let next = descend_one(&cur, step, pass, wards, &trail, identities)?;
         let id = mark_id(&next);
         push_seen(&mut seen, id)?;
@@ -310,6 +311,7 @@ pub fn path_walk_keys(
         cur = next;
     }
 
+    let cur = crate::folder::unlock_dir_bytes(cur, pass, identities)?;
     view_mark_bytes(&cur, trail, seen, pass, identities)
 }
 
@@ -452,6 +454,7 @@ pub fn path_extract_keys(
     for (i, step) in into.iter().enumerate() {
         check_depth(i + 1, max_depth)?;
         let step = step.trim().trim_start_matches("./");
+        cur = crate::folder::unlock_dir_bytes(cur, pass, identities)?;
         let next = descend_one(
             &cur,
             step,
