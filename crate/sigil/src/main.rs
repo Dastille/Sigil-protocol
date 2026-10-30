@@ -727,6 +727,7 @@ enum Cmd {
         /// Descend into this entry / nest layer (repeatable). Use `.` to unwrap a single-file nest.
         #[arg(long = "into")]
         into: Vec<String>,
+        /// Key for an encrypted folder pack (and locked members): walk its hidden names
         #[arg(value_parser = parse_pass, long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)

@@ -500,9 +500,10 @@ audit / test checks above.
 - Some folder packs still show member names: encrypted packs made before October
   2026, ward-only packs made before wards needed `--pass` / `--to`, and packs sealed
   with `--ward-names-visible`. Seal them again with `--pass` / `--to` to hide them.
-- `sigil path` cannot walk into an encrypted folder pack; use `unseal --only` or
-  `mount --pass`.
-- With the key, `scry` of an encrypted folder pack lists names but not per-file sizes.
+- `sigil path` / `ls` / `walk` open an encrypted folder pack only with its key
+  (`--pass-file`, `--pass -`, `--identity`); without it they refuse and show no names.
+- With the key, `scry` and `path` of an encrypted folder pack list names but not
+  per-file sizes.
 
 ## History
 

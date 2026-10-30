@@ -293,10 +293,12 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
             let t = build_tree(view);
             let total: u64 = view.entries.iter().filter_map(|e| e.orig).sum();
             let nests = view.entries.iter().filter(|e| e.nest).count();
+            let files = view.entries.len();
+            let dirs = count_dirs(&t);
             let mut v = format!(
-                "{} files{sep}{} dirs{sep}{}",
-                view.entries.len(),
-                count_dirs(&t),
+                "{files} {}{sep}{dirs} {}{sep}{}",
+                if files == 1 { "file" } else { "files" },
+                if dirs == 1 { "dir" } else { "dirs" },
                 human_bytes(total)
             );
             if nests > 0 {
