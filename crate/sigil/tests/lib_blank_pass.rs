@@ -2,6 +2,7 @@
 //! when opening, on every kind of file. Real passphrases with leading/trailing spaces
 //! keep their exact meaning (new files: exact match; legacy Ward files: trimmed, as
 //! they always were).
+mod common;
 
 use sigil::{seal, unseal, unseal_ex_keys, Identity, Mode, DEFAULT_PIECE};
 use std::path::Path;
@@ -24,8 +25,7 @@ fn sealing_with_a_blank_passphrase_is_refused() {
     for b in BLANKS {
         refused(seal(&data, Mode::Seal, Some(b), "x.txt", false), "seal");
     }
-    let d = std::env::temp_dir().join(format!("sigil-blank-seal-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    let d = common::scratch("blank-seal");
     std::fs::create_dir_all(d.join("src")).unwrap();
     std::fs::write(d.join("src/a.txt"), b"a").unwrap();
     refused(

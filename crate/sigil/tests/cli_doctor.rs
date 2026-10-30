@@ -1,5 +1,6 @@
 //! `sigil doctor`: read-only health report (exit 0 healthy / 1 warnings / 2 problems / 3 cannot check)
 //! and the safe `--fix` (tidy an old layout + gc --apply).
+mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,10 +39,8 @@ fn doc(dir: &Path, args: &[&str]) -> (i32, String) {
     (o.status.code().unwrap(), text(&o))
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-doctor-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("doctor-{tag}"));
     d
 }
 

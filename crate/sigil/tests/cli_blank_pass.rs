@@ -1,4 +1,5 @@
 //! CLI: `--pass "   "` and a pass file whose first line is only spaces are refused.
+mod common;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -13,9 +14,7 @@ fn sigil(dir: &Path, args: &[&str]) -> std::process::Output {
 
 #[test]
 fn blank_pass_and_blank_pass_file_are_refused() {
-    let d = std::env::temp_dir().join(format!("sigil-cli-blank-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
+    let d = common::scratch("cli-blank");
     std::fs::write(d.join("a.txt"), b"hello").unwrap();
     let o = sigil(&d, &["seal", "a.txt", "-o", "a.sg1", "--pass", "   "]);
     assert!(!o.status.success());

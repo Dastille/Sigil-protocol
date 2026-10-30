@@ -1,7 +1,8 @@
 //! CLI regression: a damaged large-file pack must never unseal (or mend) to a
 //! silently truncated file. Either the whole file comes back byte-exact, or the
 //! command exits nonzero with a clear error and leaves no output behind.
-use std::path::{Path, PathBuf};
+mod common;
+use std::path::Path;
 use std::process::Command;
 
 fn sigil(dir: &Path, args: &[&str]) -> std::process::Output {
@@ -12,10 +13,8 @@ fn sigil(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("run sigil")
 }
 
-fn setup(tag: &str) -> (PathBuf, Vec<u8>) {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-fc-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn setup(tag: &str) -> (common::Scratch, Vec<u8>) {
+    let dir = common::scratch(&format!("cli-fc-{tag}"));
     let mut x = 0x2545f4914f6cdd1du64;
     // 6 MB: two 4 MiB chunk stars, the shape from the original bug report.
     let data: Vec<u8> = (0..6_000_000)

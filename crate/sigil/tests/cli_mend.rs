@@ -1,4 +1,5 @@
 //! CLI: `sigil mend` heals a whole large-file work pack in one command.
+mod common;
 use std::process::Command;
 
 fn sigil(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
@@ -31,9 +32,7 @@ fn spans(p: &[u8]) -> Vec<(usize, usize)> {
 
 #[test]
 fn mend_work_pack_cli() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-mend-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::scratch("cli-mend");
     let mut x = 0x2545f4914f6cdd1du64;
     let data: Vec<u8> = (0..400_000)
         .map(|_| {
@@ -74,9 +73,7 @@ fn mend_work_pack_cli() {
 /// `mend --soft` repairs them column by column and the unseal is exact.
 #[test]
 fn mend_soft_cli_repairs_scattered_bit_flips() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-mend-flips-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = common::scratch("cli-mend-flips");
     let mut x = 0x9e3779b97f4a7c15u64;
     let mut next = move || {
         x ^= x << 13;

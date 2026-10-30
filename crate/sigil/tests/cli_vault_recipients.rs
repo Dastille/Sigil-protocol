@@ -1,6 +1,7 @@
 //! CLI: vaults remember encrypt-to recipients (`to=` CHART lines) across commits.
+mod common;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 fn sigil(dir: &Path, args: &[&str]) -> Output {
@@ -30,10 +31,8 @@ fn fails(o: Output) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-vrecip-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let dir = common::scratch(&format!("cli-vrecip-{tag}"));
     dir
 }
 

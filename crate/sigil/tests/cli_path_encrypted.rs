@@ -1,5 +1,6 @@
 //! `sigil path` into an encrypted (sealed v2) folder pack: walks with the key,
 //! fails closed without it or with a wrong one, and never prints member names then.
+mod common;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -23,8 +24,7 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 #[test]
 fn path_walks_encrypted_folder_pack_with_key_only() {
-    let d = std::env::temp_dir().join(format!("sigil-encpath-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    let d = common::scratch("encpath");
     std::fs::create_dir_all(d.join("album/secretdir")).expect("mkdir");
     std::fs::write(d.join("album/secretdir/hidden-name.txt"), b"hello").expect("w");
     std::fs::write(d.join("album/inner.txt"), b"inner bytes").expect("w");

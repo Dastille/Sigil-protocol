@@ -2,6 +2,7 @@
 //! (`sigil log shred`): the opt-in / `log=3` rule, key ring round trip, shred (read fails clearly,
 //! verify + anchors stay valid), compaction and gc / doctor / mend after a shred, signed logs,
 //! interrupted shreds, and that plain logs are untouched.
+mod common;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,10 +59,8 @@ fn run(dir: &Path, args: &[&str]) -> (i32, String) {
     (o.status.code().unwrap_or(-1), text(&o))
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-seglog3-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("seglog3-{tag}"));
     d
 }
 

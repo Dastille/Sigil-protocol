@@ -1,4 +1,5 @@
 //! CLI: encrypt-to constellations (`--to` / `--identity`) incl. atlas bags.
+mod common;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -31,8 +32,7 @@ fn fails(o: Output) -> String {
 
 #[test]
 fn encrypt_to_constellation_cli() {
-    let dir = std::env::temp_dir().join(format!("sigil-cli-sky-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = common::scratch("cli-sky");
     std::fs::create_dir_all(dir.join("docs/sub")).unwrap();
     std::fs::write(dir.join("docs/a.txt"), b"alpha").unwrap();
     let mut x = 0x9e3779b97f4a7c15u64;

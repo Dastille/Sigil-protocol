@@ -1,6 +1,7 @@
 //! `sigil log rotate-signer`: hand a signed segment log over to a new signing key.
+mod common;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 fn sigil_cmd(dir: &Path, args: &[&str]) -> Output {
@@ -36,10 +37,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-log-rotate-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("log-rotate-{tag}"));
     d
 }
 

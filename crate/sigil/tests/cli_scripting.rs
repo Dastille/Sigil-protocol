@@ -1,5 +1,6 @@
 //! CLI scripting surface: `sigil seal -` (stdin), `unseal -o -` (stdout), `--json`
 //! result lines with documented exit codes, and `verify --read-data[-subset]`.
+mod common;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
@@ -24,10 +25,8 @@ fn run(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Output {
     ch.wait_with_output().expect("wait sigil")
 }
 
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-scripting-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("mkdir");
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("scripting-{tag}"));
     d
 }
 

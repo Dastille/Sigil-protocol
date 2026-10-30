@@ -1,7 +1,8 @@
 //! scry/verify say "NOT recoverable" and exit nonzero when live < need; an empty
 //! passphrase is refused everywhere; `--version`; `--pass -` never reads a
 //! passphrase from anywhere but a terminal.
-use std::path::{Path, PathBuf};
+mod common;
+use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
 fn sigil(dir: &Path, args: &[&str]) -> Output {
@@ -27,9 +28,8 @@ fn ok(dir: &Path, args: &[&str]) -> String {
     out(&o)
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-cli-easy-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("cli-easy-{tag}"));
     std::fs::create_dir_all(d.join("album/sub")).unwrap();
     std::fs::write(d.join("album/a.txt"), b"alpha").unwrap();
     std::fs::write(d.join("album/sub/b.txt"), b"beta").unwrap();

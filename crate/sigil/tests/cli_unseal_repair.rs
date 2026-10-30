@@ -1,5 +1,6 @@
 //! CLI: opt-in `sigil unseal --repair` opens a bit-flipped mark exactly when
 //! `mend --soft` + `unseal` would, writes no mended file, and fails closed otherwise.
+mod common;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -21,11 +22,8 @@ fn rng(seed: u64) -> impl FnMut() -> u64 {
     }
 }
 
-fn setup(tag: &str, extra: &[&str]) -> (std::path::PathBuf, Vec<u8>, Vec<u8>) {
-    let dir =
-        std::env::temp_dir().join(format!("sigil-unseal-repair-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn setup(tag: &str, extra: &[&str]) -> (common::Scratch, Vec<u8>, Vec<u8>) {
+    let dir = common::scratch(&format!("unseal-repair-{tag}"));
     let mut next = rng(0x9e37_79b9_7f4a_7c15);
     let data: Vec<u8> = (0..200_000).map(|_| next() as u8).collect();
     std::fs::write(dir.join("in.bin"), &data).unwrap();

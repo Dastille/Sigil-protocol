@@ -1,5 +1,6 @@
 //! `sigil show`: HTTP Range serving that players (Plex/Jellyfin .strm, VLC/mpv by URL)
 //! rely on — 200/206/416, suffix ranges, HEAD, MIME, parallel connections, refusals.
+mod common;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -14,10 +15,8 @@ impl Drop for Show {
     }
 }
 
-fn tmp(tag: &str) -> std::path::PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-show-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("mkdir");
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("show-{tag}"));
     d
 }
 

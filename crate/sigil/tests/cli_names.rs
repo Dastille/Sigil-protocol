@@ -1,5 +1,6 @@
 //! Human-readable names: `sigil ls` and `sigil mount` show list names / `name@vN` for
 //! container members instead of fingerprint paths; nothing on disk changes.
+mod common;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,10 +41,8 @@ fn fails(dir: &Path, args: &[&str]) -> String {
     text(&o)
 }
 
-fn tmp(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-names-{tag}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&d);
-    fs::create_dir_all(&d).unwrap();
+fn tmp(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("names-{tag}"));
     d
 }
 

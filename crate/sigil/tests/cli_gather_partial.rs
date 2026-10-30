@@ -1,5 +1,6 @@
 //! `gather --partial`: a short fountain folder still fails closed (exit 2, no mark), but
 //! leaves a JSON progress receipt; damaged and foreign packets never count as progress.
+mod common;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -12,10 +13,8 @@ fn sigil(dir: &Path, args: &[&str]) -> Output {
         .expect("run sigil")
 }
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("sigil-gp-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).expect("mkdir");
+fn scratch(tag: &str) -> common::Scratch {
+    let d = common::scratch(&format!("gp-{tag}"));
     d
 }
 

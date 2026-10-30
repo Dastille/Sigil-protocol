@@ -1,4 +1,5 @@
 //! `sigil path --pretty`: framed inspect card; plain output unchanged without the flag.
+mod common;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -17,8 +18,7 @@ fn sigil(dir: &Path, args: &[&str]) -> String {
 
 #[test]
 fn path_pretty_folder_and_mark() {
-    let d = std::env::temp_dir().join(format!("sigil-pretty-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    let d = common::scratch("pretty");
     std::fs::create_dir_all(d.join("album/notes")).expect("mkdir");
     std::fs::write(d.join("album/notes/todo.txt"), b"hello").expect("w");
     std::fs::write(d.join("album/readme.txt"), b"readme").expect("w");
