@@ -71,3 +71,61 @@ pub fn rotate_signer(path: &Path, identity: &Identity, new: [u8; 32]) -> Result<
         notes,
     })
 }
+
+#[derive(Clone, Debug)]
+pub struct AddSignerReport {
+    /// The newly pinned Ed25519 signer.
+    pub signer: [u8; 32],
+    /// Entries already in the log when the signer was added (written unsigned); the new signed
+    /// HEAD covers exactly these.
+    pub covered: u64,
+    /// Root of the new HEAD (signed by the new key).
+    pub root: [u8; 32],
+    pub notes: Vec<String>,
+}
+
+/// Pin a first Ed25519 signer on a log that was created unsigned (`sigil log add-signer`).
+///
+/// The new key signs the HEAD covering every entry already in the log (its attestation of the
+/// state at that point), then the manifest pins it (`signer=`, plus `signer-added=<n>` recording
+/// how many entries predate it). From then on the log behaves exactly like one signed at `init`.
+/// No INDEX line and no new crypto: HEAD signing is the existing `make_head` / Ed25519 path.
+///
+/// Crash order: signed HEAD first (harmless in an unsigned log), then the manifest (the commit
+/// point). A crash before the manifest leaves the log unsigned; run it again.
+pub fn add_signer(path: &Path, identity: &Identity) -> Result<AddSignerReport> {
+    let mut log = Log::open(path)?;
+    if log.signer.is_some() {
+        return Err(err(
+            "this log is already signed: to move it to another key use `sigil log rotate-signer --identity CURRENT.sgk --new NEW.pub`",
+        ));
+    }
+    let _guard = lock(&log)?;
+    // Re-read the manifest under the lock: another writer may have pinned a signer meanwhile.
+    let mut m = container::read_manifest(&log.dir)?;
+    if m.extra.contains_key("signer") {
+        return Err(err(
+            "this log is already signed: to move it to another key use `sigil log rotate-signer`",
+        ));
+    }
+    let (idx, notes) = prepare_write(&log)?;
+    if idx.entries.iter().any(|e| e.is_handover()) {
+        return Err(err(
+            "INDEX holds a signer handover but the log is unsigned; refusing (run `sigil log verify`)",
+        ));
+    }
+    let sk = SigningKey::from_bytes(&identity.ed25519_seed);
+    let pk = sk.verifying_key().to_bytes();
+    let head = commit_head(&log, &idx.entries, Some(identity))?;
+    m.extra.insert("signer".into(), hex32(&pk));
+    m.extra
+        .insert("signer-added".into(), idx.entries.len().to_string());
+    container::write_manifest(&log.dir, &m)?;
+    log.signer = Some(pk);
+    Ok(AddSignerReport {
+        signer: pk,
+        covered: idx.entries.len() as u64,
+        root: head.root,
+        notes,
+    })
+}

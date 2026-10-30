@@ -1305,6 +1305,16 @@ enum LogCmd {
         #[arg(long)]
         anchor: Option<String>,
     },
+    /// Pin a first signing key on a log created unsigned. The key signs the HEAD covering every
+    /// entry already in the log (it vouches for that state), and the manifest pins it; from then on
+    /// every write needs --identity, like a log signed at init. Refused on a log that is already
+    /// signed (use rotate-signer).
+    AddSigner {
+        path: PathBuf,
+        /// The new signer's identity (.sgk)
+        #[arg(long)]
+        identity: PathBuf,
+    },
     /// Hand a signed log over to a new signing key. The current signer (--identity) appends a
     /// handover entry naming the new key, signed with its own key; from the next write on, HEAD must
     /// be signed by the new key. Earlier HEADs, anchors and proofs stay valid; `verify --signer` and
@@ -4351,6 +4361,25 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             if !r.skipped.is_empty() {
                 std::process::exit(1);
             }
+        }
+        LogCmd::AddSigner { path, identity } => {
+            let id = Identity::load(&identity)?;
+            let r = seglog::add_signer(&path, &id)?;
+            for n in &r.notes {
+                eprintln!("note: {n}");
+            }
+            println!(
+                "signer added: {}…  head {}:{}  (signed by the new key; {} earlier entr{} written unsigned)",
+                &hex::encode(r.signer)[..16],
+                r.covered,
+                hex::encode(r.root),
+                r.covered,
+                if r.covered == 1 { "y" } else { "ies" }
+            );
+            println!(
+                "  from now on every write needs --identity; verify with --signer {}",
+                hex::encode(r.signer)
+            );
         }
         LogCmd::RotateSigner {
             path,

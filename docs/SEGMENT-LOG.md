@@ -21,7 +21,8 @@ Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
 `kind=log` container), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
 shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log), and **signer
-rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key), and **folder
+rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key), and **adding a
+signer later shipped** (`log add-signer`: pin a first key on a log created unsigned), and **folder
 backup shipped** (`log add LOG DIR`: seal only the files that are new or changed since the last add), and the
 **private INDEX shipped** (`log init --private-index`, `log=5`: sizes, SHA-256s and file names sealed in the
 INDEX). Approved 2026-10-06 as a general-purpose mode (not tied to any one
@@ -144,8 +145,8 @@ sigil log append events batch.json --identity me.sgk
   identities unlock as usual.
 * Signing is chosen at `init` and pinned. A signed log refuses an append without the key (or with
   another key); an unsigned log refuses a signing key. The key can later be **handed over** to a
-  new one with `sigil log rotate-signer` (see "Signer rotation"); adding a signer to an unsigned log
-  is still deferred.
+  new one with `sigil log rotate-signer` (see "Signer rotation"). A log created unsigned can get
+  its first signer later with `sigil log add-signer` (see "Adding a signer later").
 * The signature binds the log-id, so it cannot be replayed on another log.
 
 ## Operations
@@ -161,6 +162,7 @@ sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.
 sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk] [--unlock KEY.sgk]   # back up a folder
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
+sigil log add-signer events --identity me.sgk                     # pin a first signer on a log created unsigned
 sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
 sigil log prove events --seq N [--at M] [-o receipt.proof] [--pass … | --identity …]   # receipt: this entry is in the log
 sigil log check-proof receipt.proof [--file BATCH] [--signer KEY] [--anchor SEQ:ROOT]   # offline, no log, no keys
@@ -885,8 +887,37 @@ sigil log verify events --signer new.pub
 * **What it does not do.** A handover is the outgoing key's own statement: if that key was **stolen**,
   the thief can hand the log over too (or sign a rival history). Rotate *before* a key is lost, and
   keep anchors / receipts elsewhere so a rival history is caught. A retired key keeps verifying what
-  it signed while it was the signer; it is not "revoked". Adding a signer to an unsigned log is not
-  supported (it would be a claim anyone with file access could make).
+  it signed while it was the signer; it is not "revoked". A log created unsigned has no outgoing key
+  to sign a handover; it gets its first key with `log add-signer` (next section) instead.
+
+## Adding a signer later (`sigil log add-signer`)
+
+A log created without `--identity` can be given its first signer at any time:
+
+```sh
+sigil log add-signer events --identity me.sgk     # any valid .sgk; the log must be unsigned
+sigil log append events day9.json --identity me.sgk
+sigil log verify events --signer me.pub
+```
+
+* **What it does.** The new key signs the HEAD that covers every entry already in the log (its
+  statement "I vouch for this state"), then `CONTAINER` pins it (`signer=`), with
+  `signer-added=<N>` recording how many entries were written before it. From then on the log is
+  exactly a signed log: every writer needs this `--identity`, HEAD must carry its signature, and it
+  can later be handed over with `rotate-signer`. No INDEX line and no new crypto (the same Ed25519
+  HEAD signature `init --identity` logs use), so the manifest format is unchanged.
+* **Verification.** `verify` notes `signer-added` (info). `verify --signer KEY`, `prove` and
+  `check-proof --signer KEY` work as for any signed log. Receipts and anchors cut before the signer
+  was added stay valid (unsigned receipts, `SEQ:ROOT` anchors).
+* **Refused:** a log that already has a signer (use `rotate-signer`), an unreadable identity, a
+  missing log, or a damaged INDEX / HEAD (the usual writer checks, under `LOG.lock`).
+* **Crash order:** signed HEAD first (harmless while the log is still unsigned), then the manifest
+  (the commit point). A crash in between leaves the log unsigned; run it again.
+* **Honest limits.** Entries written before the signer was added were never signed when written: the
+  signature only says the key holder vouched for them at add time. Anyone who can write the folder of
+  an *unsigned* log can add their own key (as they could already rewrite the whole log), so a
+  verifier must pin the key it trusts (`--signer`) or an anchor. Once signed, stripping the pin to
+  make it look unsigned again is caught by `verify --signer` just like for a log signed at `init`.
 
 ## Mount (read-only view of a log)
 
