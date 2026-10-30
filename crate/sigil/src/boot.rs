@@ -586,8 +586,11 @@ pub fn inject_initrd(root: &Path, sigil_bin: &Path) -> Result<PathBuf> {
     let initrd = find_initrd(root).ok_or_else(|| {
         crate::Error::Msg("no initrd on this stick (live/initrd.img or casper/initrd)".into())
     })?;
-    let tmp = std::env::temp_dir().join(format!("sigil-initrd-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&tmp);
+    // Private, unguessable scratch folder (0700, created exclusively): this usually runs
+    // as root, and a predictable /tmp name would let another user plant or swap files
+    // that end up inside the boot image. Removed on every exit path when `tmp` drops.
+    let scratch = crate::staging::TempDir::create("initrd")?;
+    let tmp = scratch.path();
     let unpacked = tmp.join("root");
     fs::create_dir_all(&unpacked).map_err(|e| crate::Error::Msg(e.to_string()))?;
 
@@ -628,7 +631,6 @@ pub fn inject_initrd(root: &Path, sigil_bin: &Path) -> Result<PathBuf> {
     let new_img = tmp.join("new.img");
     repack_initrd(&inner, &new_img, kind)?;
     fs::copy(&new_img, &initrd).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let _ = fs::remove_dir_all(&tmp);
     Ok(initrd)
 }
 
@@ -674,9 +676,15 @@ mod tests {
     use crate::Mode;
 
     fn boot_tmp(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("sigil-boot-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("live")).unwrap();
+        let mut r = [0u8; 8];
+        getrandom::getrandom(&mut r).unwrap();
+        let dir = std::env::temp_dir().join(format!(
+            "sigil-boot-{tag}-{}-{:016x}",
+            std::process::id(),
+            u64::from_le_bytes(r)
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::create_dir(dir.join("live")).unwrap();
         dir
     }
 
@@ -802,6 +810,43 @@ mod tests {
         let dest = copy_sigil_binary(&dir, &src).unwrap();
         assert_eq!(dest, dir.join("live/sigil"));
         assert!(dest.is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inject_initrd_uses_private_scratch_and_never_touches_old_predictable_name() {
+        // Old code used <tmp>/sigil-initrd-<pid> and ran remove_dir_all on it first, so
+        // anything planted there was deleted, then rebuilt in a folder anyone could guess.
+        let planted = std::env::temp_dir().join(format!("sigil-initrd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&planted);
+        fs::create_dir(&planted).unwrap();
+        fs::write(planted.join("marker"), b"not yours").unwrap();
+
+        let prefix = format!("sigil-initrd-{}-", std::process::id());
+        let scratch_dirs = || -> usize {
+            fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                .count()
+        };
+        let before = scratch_dirs();
+
+        // A stick whose initrd cannot be unpacked: inject must fail cleanly.
+        let dir = boot_tmp("inject");
+        fs::write(dir.join("live/initrd.img"), b"definitely not an initrd").unwrap();
+        let bin = dir.join("fake-sigil");
+        fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        assert!(inject_initrd(&dir, &bin).is_err());
+
+        assert_eq!(fs::read(planted.join("marker")).unwrap(), b"not yours");
+        assert_eq!(scratch_dirs(), before, "scratch folder left behind");
+        // The stick's initrd is untouched on failure.
+        assert_eq!(
+            fs::read(dir.join("live/initrd.img")).unwrap(),
+            b"definitely not an initrd"
+        );
+        let _ = fs::remove_dir_all(&planted);
         let _ = fs::remove_dir_all(&dir);
     }
 }

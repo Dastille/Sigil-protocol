@@ -98,6 +98,66 @@ impl Drop for TempFile {
     }
 }
 
+/// A private scratch folder in the system temp folder for work that needs a whole
+/// directory tree (for example unpacking and repacking an initrd as root). Named
+/// `sigil-<tag>-<pid>-<counter>-<random>` with 64 random bits, created with a single
+/// `mkdir` that fails if anything (folder, file or symlink) already has that name,
+/// mode 0700 on Unix so other users cannot read it, plant files in it or swap its
+/// contents. Removed with everything inside when dropped.
+pub(crate) struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    /// Create an empty private scratch folder.
+    pub(crate) fn create(tag: &str) -> Result<Self> {
+        Self::create_in(&std::env::temp_dir(), tag)
+    }
+
+    /// Create an empty private scratch folder inside `parent`.
+    pub(crate) fn create_in(parent: &Path, tag: &str) -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let mut last = None;
+        for _ in 0..16 {
+            let mut r = [0u8; 8];
+            getrandom::getrandom(&mut r)
+                .map_err(|e| crate::Error::Msg(format!("temp name: {e}")))?;
+            let path = parent.join(format!(
+                "sigil-{tag}-{}-{}-{:016x}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed),
+                u64::from_le_bytes(r)
+            ));
+            // Not `recursive`: the final mkdir must be the one that creates the name.
+            let mut b = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                b.mode(0o700);
+            }
+            match b.create(&path) {
+                Ok(()) => return Ok(TempDir { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+                Err(e) => return Err(io(e)),
+            }
+        }
+        Err(io(last.unwrap_or_else(|| {
+            std::io::Error::other("no free temp folder name")
+        })))
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Output files of one restore, held as part files until [`Staging::commit`].
 pub(crate) struct Staging {
     /// `(part file, final destination)` in the order they were written.
@@ -220,9 +280,14 @@ mod tests {
     use super::*;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sigil-staging-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let mut r = [0u8; 8];
+        getrandom::getrandom(&mut r).unwrap();
+        let d = std::env::temp_dir().join(format!(
+            "sigil-staging-{tag}-{}-{:016x}",
+            std::process::id(),
+            u64::from_le_bytes(r)
+        ));
+        fs::create_dir(&d).unwrap();
         d
     }
 
@@ -300,9 +365,8 @@ mod tests {
         drop(a);
         assert!(!p.exists());
         // create_private never writes through an existing file or symlink.
-        let d = std::env::temp_dir().join(format!("sigil-staging-excl-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
-        fs::create_dir_all(&d).unwrap();
+        let excl = TempDir::create("staging-excl").unwrap();
+        let d = excl.path().to_path_buf();
         let victim = d.join("victim");
         fs::write(&victim, b"keep").unwrap();
         #[cfg(unix)]
@@ -314,5 +378,55 @@ mod tests {
         assert!(create_private(&victim).is_err());
         assert_eq!(fs::read(&victim).unwrap(), b"keep");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn temp_dir_is_private_unique_and_removed() {
+        let a = TempDir::create("t").unwrap();
+        let b = TempDir::create("t").unwrap();
+        assert_ne!(a.path(), b.path());
+        assert!(a.path().is_dir());
+        let name = a.path().file_name().unwrap().to_string_lossy().into_owned();
+        // sigil-t-<pid>-<seq>-<16 hex>: the random part is not guessable from the pid.
+        let rand = name.rsplit('-').next().unwrap();
+        assert_eq!(rand.len(), 16, "{name}");
+        assert!(rand.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = fs::metadata(a.path()).unwrap().permissions().mode();
+            assert_eq!(m & 0o777, 0o700, "{m:o}");
+        }
+        fs::create_dir_all(a.path().join("x/y")).unwrap();
+        fs::write(a.path().join("x/y/f"), b"z").unwrap();
+        let p = a.path().to_path_buf();
+        drop(a);
+        assert!(!p.exists());
+    }
+
+    #[test]
+    fn temp_dir_never_reuses_an_existing_name() {
+        // A planted folder or symlink at the chosen name must make create fail for that
+        // name, never adopt it. Plant at every name this parent could hand out next is
+        // impossible (64 random bits), so check the primitive: mkdir on an existing path.
+        let parent = TempDir::create("parent").unwrap();
+        let planted = parent.path().join("planted");
+        fs::create_dir(&planted).unwrap();
+        let mut b = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        assert!(b.create(&planted).is_err());
+        #[cfg(unix)]
+        {
+            let link = parent.path().join("link");
+            std::os::unix::fs::symlink(&planted, &link).unwrap();
+            assert!(b.create(&link).is_err());
+        }
+        // create_in still works inside a parent that holds other entries.
+        let c = TempDir::create_in(parent.path(), "inner").unwrap();
+        assert!(c.path().starts_with(parent.path()));
     }
 }
