@@ -149,10 +149,18 @@ fn check_depth(depth: usize, max_depth: usize) -> Result<()> {
     Ok(())
 }
 
-fn view_dir_bytes(data: &[u8], trail: Vec<String>, seen: Vec<[u8; 32]>) -> Result<PathView> {
+fn view_dir_bytes(
+    data: &[u8],
+    trail: Vec<String>,
+    seen: Vec<[u8; 32]>,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<PathView> {
     // Parsed in memory: no shared temp file (two walks at the same depth used to
     // write and delete the same `sigil-nest-list-<pid>-<depth>` path).
-    let entries = crate::folder::list_v1_bytes(data)?;
+    let mut entries = crate::folder::list_v1_bytes(data)?;
+    // With a key, hidden (private-label) member sizes are opened; keyless, unchanged.
+    crate::folder::fill_sizes_v1_bytes(data, &mut entries, pass, identities)?;
     Ok(PathView {
         trail,
         kind: NestKind::DirPack,
@@ -180,7 +188,7 @@ fn view_mark_bytes(
 ) -> Result<PathView> {
     let kind = kind_of_bytes(data);
     match kind {
-        NestKind::DirPack => view_dir_bytes(data, trail, seen),
+        NestKind::DirPack => view_dir_bytes(data, trail, seen, pass, identities),
         NestKind::Work => {
             let name = if data.len() >= 4 {
                 // work head name is after magic+ver+chunk+orig — reuse payload via temp

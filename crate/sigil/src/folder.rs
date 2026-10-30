@@ -971,7 +971,8 @@ pub fn scry_dir_keys(
             return Ok(format!("folder  {n} files (names hidden)\nbody  {health}"));
         }
         let inner = open_body(n, &body, pass, companions, identities)?;
-        let entries = list_v1(&mut Cursor::new(inner))?;
+        let mut entries = list_v1(&mut Cursor::new(&inner[..]))?;
+        fill_sizes_v1_bytes(&inner, &mut entries, pass, identities)?;
         return Ok(format!("{}\nbody  {health}", render_listing(&entries)));
     }
     Ok(render_listing(&list_dir_pack(input)?))
@@ -1130,7 +1131,9 @@ pub fn list_dir_pack_keys(
 ) -> Result<Vec<DirEntry>> {
     if let Some((n, body)) = sealed_dir_body(input)? {
         let inner = open_body(n, &body, pass, companions, identities)?;
-        return list_v1(&mut Cursor::new(inner));
+        let mut entries = list_v1(&mut Cursor::new(&inner[..]))?;
+        fill_sizes_v1_bytes(&inner, &mut entries, pass, identities)?;
+        return Ok(entries);
     }
     list_dir_pack(input)
 }
@@ -1263,6 +1266,64 @@ pub(crate) fn unlock_dir_bytes(
     let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
     let body = read_sealed_body(&mut reader)?;
     open_body(n, &body, pass, &[], identities)
+}
+
+/// Size of one member star, opening its private label with the key when it is hidden.
+/// `None` when the label stays locked (no key, or a member with its own ward key).
+fn star_size_keys(star: &[u8], pass: Option<&str>, identities: &[Identity]) -> Option<u64> {
+    if star.starts_with(&crate::work::WORK_MAGIC) {
+        let tmp = crate::staging::TempFile::with_bytes("dir-size", star).ok()?;
+        return crate::work::payload_label_keys(tmp.path(), pass, &[], identities)
+            .ok()
+            .flatten()
+            .map(|(_, n)| n);
+    }
+    crate::seal_meta_keys(star, pass, identities)
+        .ok()
+        .map(|m| m.orig_len)
+}
+
+/// Fill hidden member sizes of an in-memory v1 pack when a key is given. This opens
+/// each hidden member (one decrypt per member, one member in memory at a time).
+/// Keyless: entries are left as they are (no new disclosure).
+pub(crate) fn fill_sizes_v1_bytes(
+    inner: &[u8],
+    entries: &mut [DirEntry],
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<()> {
+    if (pass.is_none_or(str::is_empty) && identities.is_empty())
+        || entries.iter().all(|e| e.orig.is_some())
+    {
+        return Ok(());
+    }
+    let mut reader = Cursor::new(inner);
+    let (ver, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    if ver == DIR_VER_SEALED {
+        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
+    }
+    for _ in 0..n {
+        let mut lb = [0u8; 2];
+        reader.read_exact(&mut lb).map_err(io)?;
+        let mut name = vec![0u8; u16::from_le_bytes(lb) as usize];
+        reader.read_exact(&mut name).map_err(io)?;
+        let rel = String::from_utf8_lossy(&name).into_owned();
+        let mut sl = [0u8; 8];
+        reader.read_exact(&mut sl).map_err(io)?;
+        let start = reader.position() as usize;
+        let end = start
+            .checked_add(u64::from_le_bytes(sl) as usize)
+            .filter(|e| *e <= inner.len())
+            .ok_or_else(|| crate::Error::Msg("truncated folder pack (star bytes)".into()))?;
+        reader.set_position(end as u64);
+        if let Some(e) = entries
+            .iter_mut()
+            .find(|e| e.path == rel && e.orig.is_none())
+        {
+            e.orig = star_size_keys(&inner[start..end], pass, identities);
+        }
+    }
+    Ok(())
 }
 
 /// Members of an in-memory v1 pack (the inner pack of a sealed directory).
