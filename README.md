@@ -502,8 +502,10 @@ audit / test checks above.
   with `--ward-names-visible`. Seal them again with `--pass` / `--to` to hide them.
 - `sigil path` / `ls` / `walk` open an encrypted folder pack only with its key
   (`--pass-file`, `--pass -`, `--identity`); without it they refuse and show no names.
-- With the key, `scry` and `path` of an encrypted folder pack list names but not
-  per-file sizes.
+- With the key, `scry` and `path` of an encrypted folder pack show names and
+  per-file sizes; this opens each member once (one decrypt per file), so a pack
+  with very many files takes longer to list than a plain one. Without the key
+  only the file count shows.
 
 ## History
 

@@ -93,5 +93,34 @@ fn path_walks_encrypted_folder_pack_with_key_only() {
         std::fs::read(d.join("out.bin")).expect("read"),
         b"inner bytes"
     );
+    // Sizes: real bytes with the key (pretty HOLDS too), never without it.
+    let scry = ok(&d, &["scry", "enc.sg1", "--pass-file", "pw.txt"]);
+    assert!(
+        scry.contains("secretdir/hidden-name.txt  5 bytes"),
+        "{scry}"
+    );
+    assert!(scry.contains("inner.txt  11 bytes"), "{scry}");
+    assert!(enc.contains("5") && enc.contains("11"), "{enc}");
+    assert!(
+        pretty.contains("16 B") && !pretty.contains(" 0 B"),
+        "{pretty}"
+    );
+    let keyless = ok(&d, &["scry", "enc.sg1"]);
+    assert!(keyless.contains("names hidden"), "{keyless}");
+    assert!(
+        !keyless.contains("bytes") && !keyless.contains("hidden-name"),
+        "{keyless}"
+    );
+    let o = run(&d, &["scry", "enc.sg1", "--pass-file", "bad.txt"]);
+    assert!(!o.status.success(), "wrong key scry must fail");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        !all.contains("hidden-name") && !all.contains("bytes"),
+        "{all}"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }
