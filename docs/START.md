@@ -241,7 +241,6 @@ Not in this Friday slice — come back later:
 
 - Nested hierarchical cards (a card of cards / roll-ups)
 - Consistency proofs between anchors without the full INDEX
-- Adding a signer to an unsigned log after init
 - Key-ring rewrap / rotating encrypt-to recipients on an existing segment-key log
 - Monthly doctor + compact dry-run routine
 - INDEX roll-up of very old history

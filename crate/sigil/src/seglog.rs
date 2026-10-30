@@ -2601,6 +2601,18 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             None,
         ));
     }
+    if let Some(n) = container::read_manifest(&log.dir)
+        .ok()
+        .and_then(|m| m.extra.get("signer-added").cloned())
+    {
+        rep.findings.push(fnd(
+            Severity::Info,
+            "signer-added",
+            "CONTAINER",
+            format!("signer added after init (`log add-signer`): the first {n} entr(ies) were written unsigned; the signer vouched for them when it signed the HEAD covering them"),
+            None,
+        ));
+    }
     if st.shred_count() > 0 {
         rep.findings.push(fnd(
             Severity::Info,
