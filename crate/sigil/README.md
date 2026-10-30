@@ -42,7 +42,7 @@ Firmware cannot boot a `.sg1`. The stick stays a normal live USB (GRUB + kernel 
 sudo ./sigil boot install
 ```
 
-`--only-mark` deletes the original squashfs after wrapping (saves space; stick must be writable, or initrd De-scribes into RAM). Ward: `--pass` / `--talisman` / `SIGIL_WARD`. Attest `.sg1.sig` that fails refuses boot. Stub swap is Secure Boot, not Sigil.
+`--only-mark` deletes the original squashfs after wrapping (saves space; stick must be writable, or initrd De-scribes into RAM). Ward: `--pass` / `--talisman` / `SIGIL_WARD`. Attest `.sg1.sig` that fails refuses boot. Stub swap is Secure Boot, not Sigil. Injecting the initrd hook unpacks and repacks it in a private scratch folder (random name, owner-only `0700`, created fresh, deleted afterwards, including on failure), so another user on the machine cannot plant or swap files that would end up in the boot image.
 
 **Tape / rsync / Gather (one real path)**
 
