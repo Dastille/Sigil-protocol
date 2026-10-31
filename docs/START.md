@@ -235,6 +235,8 @@ Frozen layout: [`docs/sigil-v1.txt`](sigil-v1.txt). CLI dump: `sigil --help`.
 
 Consistency proofs between anchors now ship without the full INDEX: `sigil log prove-consistency LOG OLD:ROOT -o p` then `sigil log check-consistency p --old OLD:ROOT --signer me.pub` (see SEGMENT-LOG.md, "Consistency proofs").
 
+Re-wrapping a segment-key log's keys to new recipients now ships: `sigil log rewrap LOG --identity me.sgk --add-to bob.pub` (or `--remove-to`, `--replace`, `--new-pass-file`); see SEGMENT-LOG.md, "rewrap".
+
 ---
 
 ## Still deferred (later)
@@ -242,7 +244,6 @@ Consistency proofs between anchors now ship without the full INDEX: `sigil log p
 Not in this Friday slice — come back later:
 
 - Nested hierarchical cards (a card of cards / roll-ups)
-- Key-ring rewrap / rotating encrypt-to recipients on an existing segment-key log
 - Monthly doctor + compact dry-run routine
 - INDEX roll-up of very old history
 

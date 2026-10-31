@@ -518,6 +518,107 @@ pub fn build_sgto(
     Ok(out)
 }
 
+/// How [`sgto_rewrap`] changes an SGTO block's recipients.
+#[derive(Default)]
+pub struct SgtoEdit<'a> {
+    /// Drop every existing record first (rotate to exactly `add` + `new_pass`).
+    pub replace: bool,
+    /// Drop the X25519 records of these recipients (matched by their 8-byte hint).
+    pub remove: &'a [PublicIdentity],
+    /// Drop the passphrase record(s).
+    pub drop_pass: bool,
+    /// Wrap the CEK for these recipients too (skipped when already a recipient).
+    pub add: &'a [PublicIdentity],
+    /// Wrap the CEK under this passphrase (replaces any existing passphrase record).
+    pub new_pass: Option<&'a str>,
+}
+
+/// One record of an SGTO block, kind byte included.
+fn sgto_records(block: &[u8]) -> Result<Vec<&[u8]>> {
+    let whole = read_sgto_at(block, 0)
+        .filter(|b| b.len() == block.len())
+        .ok_or_else(|| Error::Msg("damaged SGTO block".into()))?;
+    let count = whole[5] as usize;
+    let mut out = Vec::with_capacity(count);
+    let mut i = SGTO_HEADER;
+    for _ in 0..count {
+        let len = match whole[i] {
+            KIND_X25519 => RECIPIENT_REC,
+            KIND_PASS => 12 + 16 + 32,
+            KIND_PASS_ARGON2ID => PASS_ARGON2_REC,
+            _ => return Err(Error::Msg("damaged SGTO block".into())),
+        };
+        out.push(&whole[i..i + 1 + len]);
+        i += 1 + len;
+    }
+    Ok(out)
+}
+
+/// Re-wrap: a new SGTO block for the same `cek` with the recipients changed by `edit`. Records that
+/// stay are kept byte for byte (no re-encryption); new ones use the same encodings as
+/// [`build_sgto`]. The caller must have unwrapped `cek` from `block` (that is what authorises the
+/// change). Returns the block and how many records `edit.remove` matched. Refuses a result with
+/// no record at all (nobody could open the key any more) and more than 255 records.
+pub fn sgto_rewrap(block: &[u8], cek: &[u8; 32], edit: &SgtoEdit<'_>) -> Result<(Vec<u8>, usize)> {
+    let old = sgto_records(block)?;
+    let drop_hints: Vec<[u8; 8]> = edit.remove.iter().map(|r| r.hint()).collect();
+    let mut removed = 0usize;
+    let mut kept: Vec<Vec<u8>> = Vec::new();
+    if !edit.replace {
+        for r in old {
+            match r[0] {
+                KIND_X25519 => {
+                    if drop_hints.iter().any(|h| r[1..9] == h[..]) {
+                        removed += 1;
+                        continue;
+                    }
+                }
+                _ if edit.drop_pass || edit.new_pass.is_some() => continue,
+                _ => {}
+            }
+            kept.push(r.to_vec());
+        }
+    }
+    for r in edit.add {
+        let h = r.hint();
+        if kept.iter().any(|k| k[0] == KIND_X25519 && k[1..9] == h[..]) {
+            continue;
+        }
+        kept.push(encode_recipient_x25519(r, cek)?);
+    }
+    if let Some(p) = edit.new_pass {
+        if p.is_empty() {
+            return Err(Error::Msg("an empty new passphrase is refused".into()));
+        }
+        kept.push(encode_recipient_pass(p, cek)?);
+    }
+    if kept.is_empty() {
+        return Err(Error::Msg(
+            "re-wrapping would leave the key with no recipient and no passphrase (nobody could open it)".into(),
+        ));
+    }
+    let count = u8::try_from(kept.len())
+        .map_err(|_| Error::Msg("more than 255 recipients in one key wrap".into()))?;
+    let has_pass = kept.iter().any(|k| k[0] != KIND_X25519);
+    let argon = kept.iter().any(|k| k[0] == KIND_PASS_ARGON2ID);
+    let mut out = Vec::new();
+    out.extend_from_slice(&SGTO_MAGIC);
+    out.push(if argon {
+        SGTO_VERSION_ARGON2
+    } else {
+        SGTO_VERSION
+    });
+    out.push(count);
+    out.push(if has_pass { FLAG_HAS_PASS_WRAP } else { 0 });
+    out.push(0);
+    for k in &kept {
+        out.extend_from_slice(k);
+    }
+    let crc = crc32fast::hash(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    Ok((out, removed))
+}
+
 /// True when an SGTO block wraps the CEK for at least one X25519 recipient (records beyond
 /// the single optional passphrase wrap). A passphrase-only seal also carries SGTO now.
 pub fn sgto_has_recipients(block: &[u8]) -> bool {
@@ -765,5 +866,80 @@ mod tests {
         assert_eq!(got2, cek);
         assert!(unwrap_cek(&sgto, &[bob], None, &salt).is_err());
         assert!(unwrap_cek(&sgto, &[], Some("wrong"), &salt).is_err());
+    }
+
+    #[test]
+    fn sgto_rewrap_add_remove_replace() {
+        let a = Identity::generate().unwrap();
+        let b = Identity::generate().unwrap();
+        let c = Identity::generate().unwrap();
+        let cek = [7u8; 32];
+        let salt = [1u8; 16];
+        let blk = build_sgto(&cek, &[a.public(), b.public()], None, &salt).unwrap();
+        // add c: everyone opens, a's record is kept byte for byte
+        let (add, _) = sgto_rewrap(
+            &blk,
+            &cek,
+            &SgtoEdit {
+                add: &[c.public()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(add
+            .windows(blk.len() - 12)
+            .any(|w| w == &blk[8..blk.len() - 4]));
+        for id in [&a, &b, &c] {
+            assert_eq!(unwrap_cek(&add, &[id.clone()], None, &salt).unwrap(), cek);
+        }
+        // remove b: b locked out, a and c still open
+        let (rm, n) = sgto_rewrap(
+            &add,
+            &cek,
+            &SgtoEdit {
+                remove: &[b.public()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert!(unwrap_cek(&rm, &[b.clone()], None, &salt).is_err());
+        assert_eq!(unwrap_cek(&rm, &[c.clone()], None, &salt).unwrap(), cek);
+        // replace with c only
+        let (rp, _) = sgto_rewrap(
+            &rm,
+            &cek,
+            &SgtoEdit {
+                replace: true,
+                add: &[c.public()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(unwrap_cek(&rp, &[a.clone()], None, &salt).is_err());
+        assert_eq!(unwrap_cek(&rp, &[c.clone()], None, &salt).unwrap(), cek);
+        // nobody left: refused
+        assert!(sgto_rewrap(
+            &rp,
+            &cek,
+            &SgtoEdit {
+                remove: &[c.public()],
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert!(sgto_rewrap(
+            &rp,
+            &cek,
+            &SgtoEdit {
+                replace: true,
+                ..Default::default()
+            }
+        )
+        .is_err());
+        // corrupt block refused
+        let mut bad = rp.clone();
+        bad[10] ^= 1;
+        assert!(sgto_rewrap(&bad, &cek, &SgtoEdit::default()).is_err());
     }
 }

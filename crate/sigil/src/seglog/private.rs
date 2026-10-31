@@ -330,10 +330,16 @@ pub(super) fn create_key(
     let mut salt = [0u8; 16];
     getrandom::getrandom(&mut salt).map_err(|e| err(e.to_string()))?;
     let wrap = keys::build_sgto(&k, recipients, pass, &salt)?;
+    store_ixkey(dir, &salt, &wrap)?;
+    Ok(IndexKey(k))
+}
+
+/// Write `IXKEY.sg1` (a Seal-mode ECC star, not encrypted: its record is already wrapped).
+pub(super) fn store_ixkey(dir: &Path, salt: &[u8; 16], wrap: &[u8]) -> Result<()> {
     let text = format!(
         "{IXKEY_MAGIC}\nsalt={} wrap={}\n",
         hex::encode(salt),
-        hex::encode(&wrap)
+        hex::encode(wrap)
     );
     let sealed = crate::seal_kn_to(
         text.as_bytes(),
@@ -347,8 +353,7 @@ pub(super) fn create_key(
         crate::DEFAULT_PIECE,
         &[],
     )?;
-    write_atomic(&dir.join(IXKEY_FILE), &sealed)?;
-    Ok(IndexKey(k))
+    write_atomic(&dir.join(IXKEY_FILE), &sealed)
 }
 
 /// Unwrap the index key of the log in `dir` with a passphrase and/or identities.
@@ -357,6 +362,15 @@ pub(super) fn unlock_key(dir: &Path, pass: Option<&str>, ids: &[Identity]) -> Re
     if pass.is_none() && ids.is_empty() {
         return Err(err(LOCKED_MSG));
     }
+    let (salt, wrap) = read_ixkey(dir)?;
+    let k = keys::unwrap_cek(&wrap, ids, pass, &salt).map_err(|_| {
+        err("the given --pass / --identity does not open this log's index key (it was wrapped at init to other keys)")
+    })?;
+    Ok(IndexKey(Zeroizing::new(k)))
+}
+
+/// The wrapped index key record of `IXKEY.sg1`: `(salt, SGTO block)`.
+pub(super) fn read_ixkey(dir: &Path) -> Result<([u8; 16], Vec<u8>)> {
     let file = fs::read(dir.join(IXKEY_FILE)).map_err(|e| {
         err(format!(
             "{IXKEY_FILE} unreadable ({e}): the private INDEX cannot be opened; restore {IXKEY_FILE} from a copy of the log (the segments themselves still open with their own keys)"
@@ -393,10 +407,7 @@ pub(super) fn unlock_key(dir: &Path, pass: Option<&str>, ids: &[Identity]) -> Re
     let (Some(salt), Some(wrap)) = (salt, wrap) else {
         return Err(err(format!("{IXKEY_FILE} has a bad record")));
     };
-    let k = keys::unwrap_cek(&wrap, ids, pass, &salt).map_err(|_| {
-        err("the given --pass / --identity does not open this log's index key (it was wrapped at init to other keys)")
-    })?;
-    Ok(IndexKey(Zeroizing::new(k)))
+    Ok((salt, wrap))
 }
 
 /// After parsing: enforce the private-INDEX rules and, with the key, open every box. The first
