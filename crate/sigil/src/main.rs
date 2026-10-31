@@ -1417,7 +1417,12 @@ enum LogCmd {
     },
     /// Pad new segments of a private log to a Padmé size (at least 4 KiB) from now on, so on-disk
     /// sizes show only a size bucket. Existing segments are not changed. The log becomes `log=7`.
-    Pad { path: PathBuf },
+    Pad {
+        path: PathBuf,
+        /// Signing identity (.sgk); required when the log is signed (writer role)
+        #[arg(long)]
+        identity: Option<PathBuf>,
+    },
     /// Receipt for one child of a card (its line + Merkle path + the card's signed root), so the
     /// rest of the card need not be shown. CHILD: a number, a log id or a card name.
     CardProve {
@@ -4577,7 +4582,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             print!("{}", r.render());
             if pad {
-                seglog::enable_pad(&dest)?;
+                seglog::enable_pad(&dest, sign.as_slice())?;
                 println!("padding on in DEST: new segments are padded (log=7); copied segments keep their sizes until `log compact --apply`");
             }
         }
@@ -4595,8 +4600,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 None => println!("segment keys are already on"),
             }
         }
-        LogCmd::Pad { path } => {
-            if seglog::enable_pad(&path)? {
+        LogCmd::Pad { path, identity } => {
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            if seglog::enable_pad(&path, id.as_slice())? {
                 println!("padding on: new segments are padded (log=7); existing segments keep their sizes (`log compact --apply` re-seals them padded)");
             } else {
                 println!("padding is already on");
