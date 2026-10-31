@@ -1062,6 +1062,20 @@ health. A private INDEX gives `null` sizes, hashes, paths and reasons unless ope
 `--pass-file` / `--identity` (then the same as the text listing; treat the JSON as as sensitive
 as the listing).
 
+**More `--json` (same escaping, one object on stdout, additive formats):**
+
+* `log compact --json` (`sigil-log-compact=1`): `applied`, `rule`, `live_segments`, `merges`
+  (`sources`, `members`, `dropped`, `plain_bytes`, `new_seq`), `erase` and `merged_sources` (files:
+  `seq`, `path` relative to the log, `bytes`, `why`), `bytes_before` / `bytes_after`, `removed`,
+  `keys_destroyed`, `root` (`null` on a dry run), `notes`. A dry run still writes nothing.
+* `log check-proof --json` (`sigil-log-check-proof=1`): `ok`, `log_id`, `name`, `seq`, `t`, `op`,
+  `sealed`, `size` / `sha256` / `path` (`null` when the receipt does not disclose them, as for a
+  private entry), `tree_size`, `root`, `anchor`, `signed_by`, `signer_chain`, `file_matched`.
+* `log check-consistency --json` (`sigil-log-check-consistency=1`): `ok`, `log_id`, `old` / `new`
+  (`SEQ:ROOT`), sizes and roots, `signed_by`, `signer_chain`.
+* A failed check prints `{"format":…,"ok":false,"error":"…"}` and exits 2, as the text form does.
+  `log verify --json` already reports health (the `doctor` JSON).
+
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 
 A read-only routine to schedule once a month: it runs `sigil log verify` (the log's doctor:

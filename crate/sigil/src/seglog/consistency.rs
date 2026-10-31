@@ -261,6 +261,23 @@ pub struct ConsistencyCheck {
 }
 
 impl ConsistencyCheck {
+    /// As JSON (`sigil log check-consistency --json`, `sigil-log-check-consistency=1`).
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        format!(
+            "{{\"format\":\"sigil-log-check-consistency=1\",\"ok\":true,\"log_id\":{},\"old\":{},\"new\":{},\"old_size\":{},\"old_root\":{},\"new_size\":{},\"new_root\":{},\"signed_by\":{},\"signer_chain\":[{}]}}\n",
+            q(&self.log_id),
+            q(&format!("{}:{}", self.old_size, hex32(&self.old_root))),
+            q(&format!("{}:{}", self.new_size, hex32(&self.new_root))),
+            self.old_size,
+            q(&hex32(&self.old_root)),
+            self.new_size,
+            q(&hex32(&self.new_root)),
+            self.signed_by.map(|k| q(&hex32(&k))).unwrap_or_else(|| "null".into()),
+            self.signer_chain.iter().map(|k| q(&hex32(k))).collect::<Vec<_>>().join(",")
+        )
+    }
+
     pub fn render(&self) -> String {
         let mut s = format!(
             "consistency proof OK: {}:{} is a prefix of {}:{}\n  log {}\n",

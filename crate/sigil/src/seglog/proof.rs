@@ -367,6 +367,47 @@ pub struct ProofCheck {
 }
 
 impl ProofCheck {
+    /// The verified receipt as JSON (`sigil log check-proof --json`, `sigil-log-check-proof=1`).
+    /// A private entry's size and SHA-256 are `null` unless the receipt disclosed them.
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let e = &self.entry;
+        let locked = e.is_locked();
+        let (op, extra) = match &e.op {
+            Op::Seg => ("segment", String::new()),
+            Op::Compact { of } => ("compaction", format!(",\"of\":{}", q(&fmt_ranges(of)))),
+            Op::Tomb { del, shred, .. } => (
+                if *shred { "shred" } else { "tombstone" },
+                format!(",\"deletes\":{}", q(&fmt_ranges(del))),
+            ),
+            Op::Signer { .. } => ("signer", String::new()),
+        };
+        let data = matches!(e.op, Op::Seg | Op::Compact { .. });
+        let path = match e.path() {
+            Some(p) => q(&String::from_utf8_lossy(&p)),
+            None => "null".into(),
+        };
+        format!(
+            "{{\"format\":\"sigil-log-check-proof=1\",\"ok\":true,\"log_id\":{},\"name\":{},\"seq\":{},\"t\":{},\"op\":{},\"sealed\":{},\"size\":{},\"sha256\":{},\"path\":{}{},\"tree_size\":{},\"root\":{},\"anchor\":{},\"signed_by\":{},\"signer_chain\":[{}],\"file_matched\":{}}}\n",
+            q(&self.log_id),
+            q(&self.name),
+            e.seq,
+            e.time,
+            q(op),
+            locked,
+            if data && !locked { e.size.to_string() } else { "null".into() },
+            if data && !locked { q(&hex32(&e.sha)) } else { "null".into() },
+            path,
+            extra,
+            self.size,
+            q(&hex32(&self.root)),
+            q(&format!("{}:{}", self.size, hex32(&self.root))),
+            self.signed_by.map(|k| q(&hex32(&k))).unwrap_or_else(|| "null".into()),
+            self.signer_chain.iter().map(|k| q(&hex32(k))).collect::<Vec<_>>().join(","),
+            self.file_matched
+        )
+    }
+
     pub fn render(&self) -> String {
         let e = &self.entry;
         let what = match &e.op {

@@ -1543,6 +1543,9 @@ enum LogCmd {
         /// Require the entry to be the file `log add` recorded at this path
         #[arg(long = "path", value_name = "PATH")]
         file_path: Option<String>,
+        /// Machine-readable output on stdout
+        #[arg(long)]
+        json: bool,
     },
     /// Write a receipt that the log state OLD (an anchor `SEQ:ROOT` you pinned, or just `SEQ`) is a
     /// prefix of a later state NEW (default: the current HEAD): one Merkle path from which both
@@ -1573,6 +1576,9 @@ enum LogCmd {
         /// 64-hex Ed25519 public key, or a .pub / .sgk file
         #[arg(long)]
         signer: Option<String>,
+        /// Machine-readable output on stdout
+        #[arg(long)]
+        json: bool,
     },
     /// Pin a first signing key on a log created unsigned. The key signs the HEAD covering every
     /// entry already in the log (it vouches for that state), and the manifest pins it; from then on
@@ -1744,6 +1750,9 @@ enum LogCmd {
         /// Allow merging encrypted batches into an unencrypted segment
         #[arg(long = "allow-decrypt")]
         allow_decrypt: bool,
+        /// Machine-readable output on stdout
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -4971,6 +4980,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             seal_pass_file,
             to,
             allow_decrypt,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let seal_pass = seal_pass.or(seal_pass_file);
@@ -5007,7 +5017,14 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let dir = seglog::Log::open(&path)
                 .map(|l| l.dir)
                 .unwrap_or(path.clone());
-            print!("{}", rep.render(&dir));
+            print!(
+                "{}",
+                if json {
+                    rep.to_json(&dir)
+                } else {
+                    rep.render(&dir)
+                }
+            );
         }
         LogCmd::Adopt {
             path,
@@ -5132,6 +5149,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             signer,
             anchor,
             file_path,
+            json,
         } => {
             let text =
                 fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
@@ -5148,8 +5166,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
             match seglog::Proof::parse(&text).and_then(|p| seglog::check_proof(&p, &opts)) {
+                Ok(c) if json => print!("{}", c.to_json()),
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
+                    if json {
+                        println!(
+                            "{{\"format\":\"sigil-log-check-proof=1\",\"ok\":false,\"error\":{}}}",
+                            sigil::doctor::json_str(&e.to_string())
+                        );
+                    }
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 }
@@ -5217,6 +5242,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             old,
             new,
             signer,
+            json,
         } => {
             let text =
                 fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
@@ -5228,8 +5254,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             match seglog::Consistency::parse(&text)
                 .and_then(|c| seglog::check_consistency(&c, &opts))
             {
+                Ok(c) if json => print!("{}", c.to_json()),
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
+                    if json {
+                        println!(
+                            "{{\"format\":\"sigil-log-check-consistency=1\",\"ok\":false,\"error\":{}}}",
+                            sigil::doctor::json_str(&e.to_string())
+                        );
+                    }
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 }
