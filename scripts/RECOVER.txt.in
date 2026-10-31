@@ -1,0 +1,51 @@
+HOW TO GET YOUR FILES BACK (Sigil recovery kit)
+================================================
+
+This folder was made on @DATE@ with @VERSION@.
+It sits next to (or travels with) these archives:
+
+@ARCHIVES@
+
+Nothing in this kit is secret. Passphrases and identity keys (.sgk) are NOT here:
+you need the passphrase (or key) the archive was sealed with, if it was locked.
+
+1. Check the kit is untouched
+   In this folder:   sha256sum -c SHA256SUMS      (macOS: shasum -a 256 -c SHA256SUMS)
+   Every line must say OK. If a program fails, get a fresh copy from
+   https://github.com/Dastille/Sigil-protocol/releases (source code is there too, AGPL-3.0).
+
+2. Pick the program for this computer from bin/
+@BINARIES@
+   Linux/macOS: make it runnable first:   chmod +x bin/NAME
+   macOS may warn about an unsigned program: right-click > Open, or build from source.
+
+3. Look at the archive (safe, writes nothing, no passphrase)
+   bin/NAME scry ARCHIVE.sg1
+
+4a. Healthy? Open it
+   bin/NAME unseal ARCHIVE.sg1 -o restored
+   Locked archive: put the passphrase alone on the first line of a file only you can read
+   (chmod 600 pw.txt) and add  --pass-file pw.txt   (or --identity your.sgk).
+   Never type the passphrase on the command line.
+
+4b. Damaged? Repair a copy first (no passphrase needed), then open the copy
+   bin/NAME mend ARCHIVE.sg1 -o fixed.sg1
+   bin/NAME mend --soft ARCHIVE.sg1 -o fixed.sg1     (scattered bit flips)
+   bin/NAME unseal fixed.sg1 -o restored [--pass-file pw.txt]
+   Or in one step without writing a repaired file: bin/NAME unseal --repair ...
+
+4c. A segment log (a folder named NAME.sigil with INDEX and segments/)
+   bin/NAME log verify NAME.sigil            (health; --pass-file for a private log)
+   bin/NAME log mend NAME.sigil              (heal damaged segments in place)
+   bin/NAME log restore NAME.sigil . -o restored [--pass-file pw.txt]
+
+4d. Pieces spread over several sticks or folders (scatter / deluge / cold kit)
+   Put all the pieces you have in one folder, then
+   bin/NAME gather FOLDER -o ARCHIVE.sg1     (any k of n pieces are enough)
+   Cold USB kits:  bin/NAME kit mend --help
+
+5. No program works on this computer?
+   spec/sigil-v1.txt describes the format exactly; any programmer can write a reader.
+   The Sigil web lab (a browser page) can also open .sg1 files.
+
+Run any command with --help for details.
