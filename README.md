@@ -468,7 +468,8 @@ Works for one file (plain `.sg1` or a large-file pack, also with `--star` / `--f
 `--to-mb`). Not for folder wraps or constellations. A large pack streams part by part;
 if a later part fails, the exit code is not 0 — treat that output as incomplete.
 
-**`--json`** on `seal`, `unseal`, `verify` (and `doctor`, which already had it) prints
+**`--json`** on `seal`, `unseal`, `verify`, `scry`, `mend`, `scatter`, `gather`, `kit place`,
+`kit mend` (and `doctor`, which already had it) prints
 exactly one JSON line on stdout; the friendly lines move to stderr.
 
 ```json
@@ -477,6 +478,12 @@ exactly one JSON line on stdout; the friendly lines move to stderr.
 ```
 
 `verify --json` adds `"report"` (the normal text) and, with a deep read, `"read_data"`.
+`scry --json` adds the same `"report"`. `mend --json` adds `"kind"` (`mark`, `folder-pack`,
+`sealed-folder-pack`, `work-pack`) and, for one mark, `"live"`, `"n"`, `"need"`, `"merkle"`,
+`"soft_salvage"` (counted on the mended copy); a work pack adds `"stars"`, `"facets_checked"`.
+`scatter --json` adds `"pieces"`; `kit place --json` adds `"drives"`, `"pieces"`, `"per_drive"`,
+`"star"`; `kit mend --json` has `"output"` / `"output_bytes"`. A copy too damaged to mend is
+`"ok":false` with the error, exit 1, and no output file.
 
 **Exit codes** (seal / unseal / verify):
 
