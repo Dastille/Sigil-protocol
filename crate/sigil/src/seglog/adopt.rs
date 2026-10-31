@@ -21,6 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::*;
+use zeroize::Zeroizing;
 
 pub struct AdoptOpts<'a> {
     /// Signing key (required exactly when the log pinned a signer).
@@ -29,6 +30,12 @@ pub struct AdoptOpts<'a> {
     pub keep: bool,
     /// Show the plan and change nothing.
     pub dry_run: bool,
+    /// Private INDEX: opens the index key and the stars, and seals re-sealed stars.
+    pub pass: Option<&'a str>,
+    /// Private INDEX: recipients re-sealed stars are encrypted to.
+    pub to: &'a [PublicIdentity],
+    /// Private INDEX: identities that open the index key and the stars.
+    pub unlock: &'a [Identity],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,7 +238,7 @@ fn kind_of(h: &crate::header::Header) -> String {
 
 /// Adopt loose `.sg1` stars into the log at `path` as new segments, in order.
 pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<AdoptReport> {
-    let log = Log::open(path)?;
+    let mut log = Log::open(path)?;
     if log.segkeys {
         return Err(err(
             "this log has per-segment keys (--segment-keys): every segment must be sealed under its own key, \
@@ -239,10 +246,8 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         ));
     }
     if log.privindex {
-        return Err(err(
-            "this log keeps its INDEX private: adopting copies stars without opening them, so their sizes and hashes \
-             could not be sealed; unseal them and `sigil log append` the bytes instead",
-        ));
+        // the index key first: without it nothing is read, planned or printed
+        unlock_for_write(&mut log, opts.pass, opts.identity, opts.unlock)?;
     }
     signer_gate(&log, opts.identity)?;
     if sources.is_empty() {
@@ -289,6 +294,19 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         }
     }
 
+    // private: already-sealed segments by keyed fingerprint (kept stars) and plain SHA-256 (re-sealed)
+    let mut known_star: BTreeMap<[u8; 32], u64> = BTreeMap::new();
+    let mut known_sha: BTreeMap<[u8; 32], u64> = BTreeMap::new();
+    if log.privindex {
+        for e in idx.entries.iter().filter(|e| e.op == Op::Seg) {
+            if let Some(s) = e.star {
+                known_star.entry(s).or_insert(e.seq);
+            }
+            if e.opened {
+                known_sha.entry(e.sha).or_insert(e.seq);
+            }
+        }
+    }
     let st = State::build(&idx.entries);
     let mut next = idx.entries.len() as u64 + 1;
     let mut bodies: Vec<String> = Vec::new();
@@ -332,6 +350,80 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         }
         let src = sha256(&bytes);
         let kind = kind_of(&h);
+        if log.privindex {
+            match private_item(&h, &bytes, opts) {
+                Err(why) => rep.skipped.push((f, why)),
+                Ok((plain, kept)) => {
+                    let (size, sha) = (plain.len() as u64, sha256(&plain));
+                    let seen = if kept {
+                        known_star.get(&h.digest)
+                    } else {
+                        known_sha.get(&sha)
+                    };
+                    if let Some(&seq) = seen {
+                        if let Some(t) = st.deleted_by(seq) {
+                            rep.skipped.push((f, format!("this star was segment {seq}, deleted by entry {t}; not adopted again")));
+                            continue;
+                        }
+                        rep.items.push(AdoptItem {
+                            src: f,
+                            size,
+                            sha,
+                            action: AdoptAction::Already { seq },
+                            kind,
+                        });
+                        continue;
+                    }
+                    let seq = next;
+                    let sealed = if kept {
+                        bytes
+                    } else {
+                        if opts.dry_run
+                            && opts.pass.filter(|p| !p.is_empty()).is_none()
+                            && opts.to.is_empty()
+                        {
+                            rep.skipped
+                                .push((f, "would be re-sealed: give --pass-file / --to".into()));
+                            continue;
+                        }
+                        seal_segment(&log, seq, &plain, h.mode(), opts.pass, opts.to)?.0
+                    };
+                    let body = private::sealed_body(
+                        &log,
+                        seq,
+                        now(),
+                        "",
+                        &sealed,
+                        &Hidden {
+                            size,
+                            sha,
+                            path: None,
+                            reason: None,
+                        },
+                    )?;
+                    next += 1;
+                    if kept {
+                        known_star.insert(h.digest, seq);
+                    } else {
+                        known_sha.insert(sha, seq);
+                    }
+                    bodies.push(body);
+                    staged.push((log.segment_path(seq), sealed));
+                    rep.items.push(AdoptItem {
+                        src: f,
+                        size,
+                        sha,
+                        action: AdoptAction::Adopt { seq },
+                        kind: if kept {
+                            kind
+                        } else {
+                            format!("{kind} → re-sealed")
+                        },
+                    });
+                }
+            }
+            continue;
+        }
         if let Some(&seq) = known.get(&src) {
             if let Some(t) = st.deleted_by(seq) {
                 rep.skipped.push((f, format!("these exact bytes were segment {seq}, deleted by entry {t}; not adopted again")));
@@ -403,6 +495,28 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
         }
     }
     Ok(rep)
+}
+
+/// Private INDEX: open star `bytes` with the given keys (plain bytes checked against the header by
+/// the unsealer) and say whether it can be kept byte-for-byte: only an encrypted v3 (private label)
+/// star that these keys open shows nothing the INDEX hides; any other star is re-sealed.
+fn private_item(
+    h: &crate::header::Header,
+    bytes: &[u8],
+    opts: &AdoptOpts<'_>,
+) -> std::result::Result<(Zeroizing<Vec<u8>>, bool), String> {
+    let mut ids: Vec<Identity> = opts.unlock.to_vec();
+    if let Some(i) = opts.identity {
+        ids.push(i.clone());
+    }
+    let plain = if h.encrypted() {
+        crate::unseal_ex_keys(bytes, opts.pass, &[], &ids)
+    } else {
+        crate::unseal_ex_keys(bytes, None, &[], &[])
+    };
+    let plain =
+        plain.map_err(|e| format!("does not open with the given keys ({e}); not adopted"))?;
+    Ok((Zeroizing::new(plain), h.private_label() && h.encrypted()))
 }
 
 #[cfg(test)]

@@ -163,7 +163,7 @@ sigil log ls events [--pass-file F | --identity …]  # also: sigil ls events (a
 sigil log read events [--seq N | --from A --to B] [-o out] [--pass-file F | --identity key.sgk]…
 sigil log verify events [--quick] [--pass-file F | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
-sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
+sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk] [--pass-file F | --unlock K.sgk] [--to R]   # tidy loose stars in
 sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass-file F|--talisman F] [--to RECIPIENT]… [--identity me.sgk] [--unlock KEY.sgk]   # back up a folder
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk] [--pass-file F | --unlock K.sgk]   # private log: reason sealed
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
@@ -549,6 +549,24 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
   adopted star it merges (locked stars from different passphrases: give a key for each, or leave
   them out of the compaction range).
 
+* **Into a private INDEX (`log=5`).** Give the key that opens the index key:
+  `sigil log adopt photos pile/ --pass-file pw.txt` (or `--unlock me.sgk`, or the signing
+  `--identity`). Without it (or with a wrong one) adopt is refused before any star is read, planned or
+  printed. Each star is **opened** with the same keys (its bytes checked by the unsealer), and its
+  plain size and SHA-256 go into the line's sealed box like any private append; the line has no
+  `src=` and no size or hash in the clear.
+  * An **encrypted v3 (private label) star** these keys open is still copied byte-for-byte (its
+    header shows only a keyed fingerprint).
+  * **Any other star** (unencrypted, or an older encrypted format whose header shows the plain size
+    and SHA-256) is **re-sealed**: its plain bytes are sealed again in the star's ECC mode under
+    `--pass-file` / `--to`, as an append would (the plan says `→ re-sealed`). The original file is
+    not what ends up in the log.
+  * A star that does not open with the given keys is left in place (exit 1).
+  * Re-runs: a kept star is "already" when its keyed fingerprint is already a segment; a re-sealed
+    one when an opened segment has the same plain SHA-256.
+  * Stars adopted into a private log keep no file names (as with append); the source files are
+    removed after the commit unless `--keep`.
+
 ## Backing up a folder (`sigil log add`)
 
 `sigil log add LOG DIR` makes a folder backup one command. Run it as often as you like: each run
@@ -838,7 +856,7 @@ reason's length to within 64 bytes.
 **Refused in a private log (fail closed).** An unencrypted segment (no `--pass` / `--to`, or
 `--pass ""`): its header would show the plain size and SHA-256 the INDEX hides; refused before
 anything is written. `--reason` on `tombstone` / `shred` **without** the index key (it would have to
-be stored in the clear): refused, nothing written. `log adopt` (it copies stars without opening them, so their metadata could not be sealed).
+be stored in the clear): refused, nothing written. `log adopt` **without** the index key (see "Adopting a pile of stars").
 `sigil mount` / `--export-dir` **without** the key (or with a wrong one): refused before any listing,
 so no sizes or paths are shown; with `--pass` / `--pass-file` / `--identity` it mounts like any log
 (one file per live segment, named by seq; see "Mount"). In the INDEX: a plaintext
@@ -1291,12 +1309,12 @@ Reed–Solomon code.
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Done: sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
+(above). Done: sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
 (`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=7` (see "Size notes").
-* Private INDEX follow-ups: adopting stars into one (with a key), and padding segment files so on-disk sizes leak less.
+* Private INDEX follow-ups: padding segment files so on-disk sizes leak less.
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
