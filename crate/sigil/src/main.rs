@@ -1569,12 +1569,22 @@ enum LogCmd {
         /// Last segment of a range (needs --from)
         #[arg(long, requires = "from")]
         to: Option<u64>,
-        /// Why (free text, kept in the INDEX; do not put secrets here)
+        /// Why (free text). Public INDEX: kept in the clear (no secrets). Private INDEX: sealed
+        /// under the index key (needs --pass-file, --unlock or the signing --identity)
         #[arg(long)]
         reason: Option<String>,
         /// Signing identity (.sgk); required exactly when the log was created with --identity
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Private INDEX: passphrase only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(false), long)]
+        pass: Option<String>,
+        /// Private INDEX: read the passphrase that opens the index key from a file only you can read
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        /// Private INDEX: an identity (.sgk) the index key was wrapped to (repeatable)
+        #[arg(long = "unlock")]
+        unlock: Vec<PathBuf>,
     },
     /// Crypto-shred segments of a `--segment-keys` log: record it in the INDEX, destroy the segment's
     /// key and unlink its ciphertext. Needs no key. Anchors and verify keep working; the data cannot
@@ -1590,12 +1600,22 @@ enum LogCmd {
         /// Last segment of a range (needs --from)
         #[arg(long, requires = "from")]
         to: Option<u64>,
-        /// Why (free text, kept in the INDEX; do not put secrets here)
+        /// Why (free text). Public INDEX: kept in the clear (no secrets). Private INDEX: sealed
+        /// under the index key (needs --pass-file, --unlock or the signing --identity)
         #[arg(long)]
         reason: Option<String>,
         /// Signing identity (.sgk); required exactly when the log was created with --identity
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Private INDEX: passphrase only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(false), long)]
+        pass: Option<String>,
+        /// Private INDEX: read the passphrase that opens the index key from a file only you can read
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        /// Private INDEX: an identity (.sgk) the index key was wrapped to (repeatable)
+        #[arg(long = "unlock")]
+        unlock: Vec<PathBuf>,
     },
     /// Merge live segments into fewer, larger ones and erase the files of deleted / merged-away
     /// segments. Dry run unless --apply. The INDEX keeps every old entry, so pinned anchors still verify.
@@ -4674,14 +4694,23 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             reason,
             identity,
+            pass,
+            pass_file,
+            unlock,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
+            let rpass = resolve_pass(pass.or(pass_file), None)?;
+            let runlock = load_identities(&unlock)?;
+            let rkeys = seglog::ReasonKeys {
+                pass: rpass.as_deref(),
+                unlock: &runlock,
+            };
             let target = match (seq, from, to) {
                 (Some(s), _, _) => seglog::TombTarget::Seq(s),
                 (None, Some(a), Some(b)) => seglog::TombTarget::Range(a, b),
                 _ => return Err("give --seq N, or --from A --to B".into()),
             };
-            let r = seglog::tombstone(&path, target, reason.as_deref(), id.as_ref())?;
+            let r = seglog::tombstone_with(&path, target, reason.as_deref(), id.as_ref(), &rkeys)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
             }
@@ -4707,14 +4736,23 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             reason,
             identity,
+            pass,
+            pass_file,
+            unlock,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
+            let rpass = resolve_pass(pass.or(pass_file), None)?;
+            let runlock = load_identities(&unlock)?;
+            let rkeys = seglog::ReasonKeys {
+                pass: rpass.as_deref(),
+                unlock: &runlock,
+            };
             let target = match (seq, from, to) {
                 (Some(s), _, _) => seglog::TombTarget::Seq(s),
                 (None, Some(a), Some(b)) => seglog::TombTarget::Range(a, b),
                 _ => return Err("give --seq N, or --from A --to B".into()),
             };
-            let r = seglog::shred(&path, target, reason.as_deref(), id.as_ref())?;
+            let r = seglog::shred_with(&path, target, reason.as_deref(), id.as_ref(), &rkeys)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
             }

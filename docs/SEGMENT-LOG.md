@@ -50,6 +50,10 @@ before (a `--segment-keys` log keeps `segkeys=1`). A log that is never rotated n
 `log=5` = a **private INDEX** (`privindex=1`, an `IXKEY.sg1` member, sealed `box=` entries); only
 `sigil log init` with `--pass` / `--to` (or `--private-index`) creates it, from its first byte, and a
 log created without a key or with `--public-index` never becomes `log=5` (see "Private INDEX" below).
+`log=6` = a private log's tombstone / shred lines may carry a **sealed reason** (`box=` on an
+`op=tomb` line); a private log is raised to `log=6` only by its first `tombstone` / `shred` with
+`--reason` (manifest first), so a sigil that knows only `log=5` refuses it instead of calling the line
+damaged. Private logs without a sealed reason stay `log=5`; public logs never become `log=6`.
 A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
@@ -88,6 +92,7 @@ seq=9 t=1760000090 size=…  sha=<64 hex> op=compact of=1,3,6-7 chain=<64 hex>  
 seq=10 t=1760000120 op=tomb del=3 shred=1 reason=gdpr chain=<64 hex>               crypto-shred (log=3)
 seq=11 t=1760000200 op=signer from=<64 hex> to=<64 hex> sig=<128 hex> chain=<64 hex>   signer handover (log=4)
 seq=12 t=1760000300 size=0 sha=<star> star=<star> box=<hex> chain=<64 hex>             private segment entry (log=5)
+seq=13 t=1760000400 op=tomb del=12 box=<hex> chain=<64 hex>                              private tombstone, sealed reason (log=6)
 ```
 
 | Field   | Meaning |
@@ -103,7 +108,7 @@ seq=12 t=1760000300 size=0 sha=<star> star=<star> box=<hex> chain=<64 hex>      
 | `of`    | compaction: the original segment seqs whose plain bytes were concatenated (ascending) into this entry's segment |
 | `src`   | `log adopt`, optional: SHA-256 of the adopted star file (makes re-runs idempotent) |
 | `path`  | `log add`, optional: the file's path relative to the folder that was added, `/`-separated, `%XX`-escaped like `reason` (any byte outside `A-Z a-z 0-9 - _ . ~ , : / @`), so any file name round-trips. In an ordinary log the INDEX is not secret: file names are visible in it. In a private log (`log=5`) the path is inside `box` |
-| `box`   | private log only (`log=5`): `size`, `sha` and `path` sealed with AES-256-GCM; the visible `size` is then `0` and `sha` repeats `star` (see "Private INDEX"). Always the last field before `chain` |
+| `box`   | private log only (`log=5`): `size`, `sha` and `path` sealed with AES-256-GCM; the visible `size` is then `0` and `sha` repeats `star` (see "Private INDEX"). On an `op=tomb` line (`log=6`) it holds only the `reason` (record `size=0`, `sha=` zeros, `reason=`), and the line then has no `reason=` / `star=` in the clear. Always the last field before `chain` |
 | `from`, `to`, `sig` | signer handover: the outgoing and the new Ed25519 key, and `from`'s signature over `"sigil-log-signer-v1\nid=<log-id>\nseq=<this seq>\nfrom=<hex>\nto=<hex>\n"` |
 | `chain` | `SHA-256("sigil-log-entry-v1\0" ‖ previous chain ‖ line text before " chain=")` |
 
@@ -160,7 +165,7 @@ sigil log verify events [--quick] [--pass-file F | --identity …] [--signer KEY
 sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
 sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass-file F|--talisman F] [--to RECIPIENT]… [--identity me.sgk] [--unlock KEY.sgk]   # back up a folder
-sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
+sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk] [--pass-file F | --unlock K.sgk]   # private log: reason sealed
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log add-signer events --identity me.sgk                     # pin a first signer on a log created unsigned
 sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
@@ -820,10 +825,20 @@ size and SHA-256. A receipt without `entry-key=` still proves inclusion, but `--
 ("sealed … ask for a receipt cut with the log's key"). Giving a receipt away discloses that entry's
 size, hash and file name to whoever holds it.
 
+**Sealed reasons (`log=6`).** In a private log, `tombstone` / `shred --reason TEXT` seal the reason in
+a box on the tombstone line, with the same keys, AAD (log id, seq, visible part of the line) and
+key commitment as a segment box; the entry key is the tombstone's own seq. They need the index key:
+`--pass-file`, `--unlock KEY.sgk` or the signing `--identity` (a tombstone without `--reason` still
+needs no key). Without the key, `log ls` shows `reason: sealed` and the INDEX holds no reason text;
+with it, `ls`, `read` errors and `verify` messages show the reason as in a public log. A box moved to
+another line fails the chain hash and the box's AAD. What stays visible, as for every tombstone: which
+seqs were deleted, when, and whether it was a shred; and the box length (padded to 64 bytes) gives the
+reason's length to within 64 bytes.
+
 **Refused in a private log (fail closed).** An unencrypted segment (no `--pass` / `--to`, or
 `--pass ""`): its header would show the plain size and SHA-256 the INDEX hides; refused before
-anything is written. `--reason` on `tombstone` / `shred` (a reason is plain text in the INDEX; leave it
-out). `log adopt` (it copies stars without opening them, so their metadata could not be sealed).
+anything is written. `--reason` on `tombstone` / `shred` **without** the index key (it would have to
+be stored in the clear): refused, nothing written. `log adopt` (it copies stars without opening them, so their metadata could not be sealed).
 `sigil mount` / `--export-dir` **without** the key (or with a wrong one): refused before any listing,
 so no sizes or paths are shown; with `--pass` / `--pass-file` / `--identity` it mounts like any log
 (one file per live segment, named by seq; see "Mount"). In the INDEX: a plaintext
@@ -914,7 +929,7 @@ compresses first). **Batch small events into larger appends** (KBs–MBs, not si
 A batch is sealed in memory in one piece; very large single batches should be split. Work-pack
 (chunked) segments are deferred: a segment is one `.sg1` star whose header digest is the INDEX
 `star=` true-name, read whole by every reader (`read`, `verify`, `mend`, `compact`, `shred`, `gc`,
-`add`), so a chunked segment needs a new segment kind and a `log=6` manifest bump that older
+`add`), so a chunked segment needs a new segment kind and a `log=7` manifest bump that older
 sigils refuse, plus streaming reads in `read` / `restore` / `mount`. INDEX is ~170 bytes per entry; `append` re-reads it
 in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
@@ -1276,13 +1291,12 @@ Reed–Solomon code.
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
+(above). Done: sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
 (`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
-* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
-* Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
-  stars into one (with a key), and padding segment files so on-disk sizes leak less.
+* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=7` (see "Size notes").
+* Private INDEX follow-ups: adopting stars into one (with a key), and padding segment files so on-disk sizes leak less.
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).

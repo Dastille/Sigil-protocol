@@ -716,6 +716,7 @@ fn seal_plan(
                         size: data.len() as u64,
                         sha: sha256(&data),
                         path: Some(p.found.rel.clone()),
+                        reason: None,
                     },
                 )?
             } else {

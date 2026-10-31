@@ -14,9 +14,6 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
-/// A tombstone / shred reason is plain text in the INDEX; a private log would leak it.
-pub(super) const PRIVATE_REASON_MSG: &str = "this log keeps its INDEX private and --reason would be stored in the clear; leave it out (sealed reasons are a later slice)";
-
 // ---------------------------------------------------------------------------
 // tombstone
 // ---------------------------------------------------------------------------
@@ -50,14 +47,23 @@ pub fn tombstone(
     reason: Option<&str>,
     identity: Option<&Identity>,
 ) -> Result<TombstoneReport> {
+    tombstone_with(path, target, reason, identity, &ReasonKeys::default())
+}
+
+/// [`tombstone`]; in a private log `keys` (or the signing identity) open the index key that seals
+/// `reason`.
+pub fn tombstone_with(
+    path: &Path,
+    target: TombTarget,
+    reason: Option<&str>,
+    identity: Option<&Identity>,
+    keys: &ReasonKeys<'_>,
+) -> Result<TombstoneReport> {
     let mut log = Log::open(path)?;
     signer_gate(&log, identity)?;
     if let Some(r) = reason {
         if r.len() > 500 {
             return Err(err("--reason is limited to 500 bytes"));
-        }
-        if log.privindex {
-            return Err(err(PRIVATE_REASON_MSG));
         }
     }
     let _guard = lock(&log)?;
@@ -113,16 +119,14 @@ pub fn tombstone(
     }
     let pending: u64 = deleted.iter().map(|s| st.size_of(*s)).sum();
     let seq = n + 1;
-    let mut body = format!(
+    let visible = format!(
         "seq={seq} t={} op=tomb del={}",
         now(),
         fmt_ranges(&compress(&deleted))
     );
-    if let Some(r) = reason.filter(|r| !r.is_empty()) {
-        body.push_str(&format!(" reason={}", enc_reason(r)));
-    }
     // The manifest goes first: an older sigil must refuse this log before it can see the line.
     upgrade_manifest(&mut log)?;
+    let body = tomb_body(&mut log, seq, visible, reason, identity, keys)?;
     let (_entries, head) = commit(&log, idx, &[body], identity)?;
     Ok(TombstoneReport {
         entry: seq,
@@ -624,6 +628,7 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
                         size: plain.len() as u64,
                         sha,
                         path: None,
+                        reason: None,
                     },
                 )?
             } else {

@@ -102,6 +102,8 @@ pub struct Hidden {
     pub sha: [u8; 32],
     /// `log add` file path relative to the added folder (raw bytes), if any.
     pub path: Option<Vec<u8>>,
+    /// Tombstone / shred reason (`log=6`; only in a tombstone's box).
+    pub reason: Option<String>,
 }
 
 /// Entry key of entry `seq` of log `log_id` (HKDF-SHA-256, RFC 5869).
@@ -148,6 +150,9 @@ pub fn seal_box(
     let mut text = format!("{PLAIN_MAGIC}\nsize={}\nsha={}\n", h.size, hex32(&h.sha));
     if let Some(p) = &h.path {
         text.push_str(&format!("path={}\n", enc_bytes(p)));
+    }
+    if let Some(r) = &h.reason {
+        text.push_str(&format!("reason={}\n", enc_reason(r)));
     }
     let mut pt = Zeroizing::new(text.into_bytes());
     let padded = pt.len().div_ceil(PAD_TO) * PAD_TO;
@@ -223,13 +228,17 @@ fn parse_plain(pt: &[u8]) -> std::result::Result<Hidden, String> {
     if lines.next() != Some(PLAIN_MAGIC) {
         return Err("box record has no sigil-log-box=1 header".into());
     }
-    let (mut size, mut sha, mut path) = (None, None, None);
+    let (mut size, mut sha, mut path, mut reason) = (None, None, None, None);
     for l in lines {
         match l.split_once('=') {
             Some(("size", v)) if size.is_none() => size = v.parse::<u64>().ok(),
             Some(("sha", v)) if sha.is_none() => sha = parse_hex32(v),
             Some(("path", v)) if path.is_none() => {
                 path = Some(dec_bytes(v).ok_or_else(|| "box record has a bad path=".to_string())?)
+            }
+            Some(("reason", v)) if reason.is_none() => {
+                reason =
+                    Some(dec_reason(v).ok_or_else(|| "box record has a bad reason=".to_string())?)
             }
             _ => {
                 return Err(format!(
@@ -239,7 +248,12 @@ fn parse_plain(pt: &[u8]) -> std::result::Result<Hidden, String> {
         }
     }
     match (size, sha) {
-        (Some(size), Some(sha)) => Ok(Hidden { size, sha, path }),
+        (Some(size), Some(sha)) => Ok(Hidden {
+            size,
+            sha,
+            path,
+            reason,
+        }),
         _ => Err("box record lacks size= / sha=".into()),
     }
 }
@@ -264,6 +278,14 @@ pub(super) fn open_entry(
     e.size = h.size;
     e.sha = h.sha;
     e.hidden_path = h.path;
+    if let Op::Tomb { reason, .. } = &mut e.op {
+        *reason = h.reason;
+    } else if h.reason.is_some() {
+        return Err(format!(
+            "seq {}: a reason in a box that is not a tombstone's",
+            e.seq
+        ));
+    }
     e.opened = true;
     Ok(())
 }
@@ -281,6 +303,14 @@ pub(super) fn open_with_entry_key(
     e.size = h.size;
     e.sha = h.sha;
     e.hidden_path = h.path;
+    if let Op::Tomb { reason, .. } = &mut e.op {
+        *reason = h.reason;
+    } else if h.reason.is_some() {
+        return Err(format!(
+            "seq {}: a reason in a box that is not a tombstone's",
+            e.seq
+        ));
+    }
     e.opened = true;
     Ok(())
 }
@@ -468,6 +498,7 @@ mod tests {
             size: 1234,
             sha: [7u8; 32],
             path: Some(b"2024/trip/beach \xff.jpg".to_vec()),
+            reason: None,
         }
     }
 

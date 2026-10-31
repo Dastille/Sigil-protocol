@@ -36,7 +36,18 @@ pub fn shred(
     reason: Option<&str>,
     identity: Option<&Identity>,
 ) -> Result<ShredReport> {
-    let log = Log::open(path)?;
+    shred_with(path, target, reason, identity, &ReasonKeys::default())
+}
+
+/// [`shred`]; in a private log `keys` (or the signing identity) open the index key that seals `reason`.
+pub fn shred_with(
+    path: &Path,
+    target: TombTarget,
+    reason: Option<&str>,
+    identity: Option<&Identity>,
+    keys: &ReasonKeys<'_>,
+) -> Result<ShredReport> {
+    let mut log = Log::open(path)?;
     if !log.segkeys {
         return Err(err(
             "this log has no per-segment keys, so there is no key to destroy (create one with `sigil log init --segment-keys`); `log tombstone` + `log compact --apply` is its erase path",
@@ -45,9 +56,6 @@ pub fn shred(
     signer_gate(&log, identity)?;
     if reason.map(|r| r.len() > 500).unwrap_or(false) {
         return Err(err("--reason is limited to 500 bytes"));
-    }
-    if reason.is_some() && log.privindex {
-        return Err(err(super::compact::PRIVATE_REASON_MSG));
     }
     let _guard = lock(&log)?;
     let (idx, notes) = prepare_write(&log)?;
@@ -113,14 +121,12 @@ pub fn shred(
         }
     }
     let seq = n + 1;
-    let mut body = format!(
+    let visible = format!(
         "seq={seq} t={} op=tomb del={} shred=1",
         now(),
         fmt_ranges(&compress(&targets))
     );
-    if let Some(r) = reason.filter(|r| !r.is_empty()) {
-        body.push_str(&format!(" reason={}", enc_reason(r)));
-    }
+    let body = tomb_body(&mut log, seq, visible, reason, identity, keys)?;
     // The manifest already says log=3 / segkeys=1 (set at init): no upgrade step.
     let (entries, head) = commit(&log, idx, &[body], identity)?;
     // The entry is committed and HEAD covers it: now make it true.
