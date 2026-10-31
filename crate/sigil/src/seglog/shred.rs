@@ -122,7 +122,7 @@ pub fn shred_with(
             .find(|m| !targets.contains(m))
         {
             return Err(err(format!(
-                "segment {s} sits in compaction segment {h} together with live segment {m}; they share one key. Shred them all together (--from/--to), or `log shred --seq {s} --rewrite` to rewrite only that file without it"
+                "segment {s} sits in compaction segment {h} together with live segment {m}; they share one key. Shred them all together (--from/--to), or `log shred --seq {s} --rewrite` (a tombstone + a rewrite of only that file) to erase it alone"
             )));
         }
     }
