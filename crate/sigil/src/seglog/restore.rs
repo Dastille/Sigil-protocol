@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 
+/// `(full log path, path relative to the restored folder, seq)`.
+type Picked = (Vec<u8>, Vec<u8>, u64);
+
 /// What [`restore`] wrote.
 #[derive(Debug, Default)]
 pub struct RestoreReport {
@@ -164,7 +167,7 @@ pub fn restore(
     let w = want_of(want);
     let dead = |seq: u64| st.deleted_by(seq).or_else(|| st.shredded_by(seq));
     // exact file?
-    let (folder, picked): (bool, Vec<(Vec<u8>, Vec<u8>, u64)>) = match latest.get(&w) {
+    let (folder, picked): (bool, Vec<Picked>) = match latest.get(&w) {
         Some(&seq) if !w.is_empty() => {
             if dead(seq).is_some() {
                 return Err(err(format!(
