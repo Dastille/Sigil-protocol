@@ -2820,8 +2820,8 @@ fn verify_cmd(
         }
     }
     if let Some(pct) = subset {
-        if is_constellation_input(&input) || is_dir_pack(&input) {
-            return Err("--read-data is for one .sg1 or a large-file pack (not a folder wrap or constellation yet)".into());
+        if is_constellation_input(&input) {
+            return Err("--read-data is for one .sg1, a large-file pack or a folder pack (not a constellation yet)".into());
         }
         let pass = resolve_pass(pass, talisman)?;
         let identities = load_identities(&identity)?;
@@ -2838,8 +2838,11 @@ fn verify_cmd(
         for (i, why) in &r.failed {
             say!("  part {i}: {why}");
         }
+        for (i, why) in &r.skipped {
+            say!("  part {i} skipped: {why}");
+        }
         json_extra(&format!(
-            ",\"read_data\":{{\"kind\":\"{}\",\"percent\":{},\"offset\":{},\"total_parts\":{},\"checked\":[{}],\"bytes_read\":{},\"failed\":[{}]}}",
+            ",\"read_data\":{{\"kind\":\"{}\",\"percent\":{},\"offset\":{},\"total_parts\":{},\"checked\":[{}],\"bytes_read\":{},\"failed\":[{}],\"skipped\":[{}]}}",
             r.kind,
             pct,
             offset,
@@ -2847,6 +2850,11 @@ fn verify_cmd(
             r.checked.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
             r.bytes_read,
             r.failed
+                .iter()
+                .map(|(i, w)| format!("{{\"part\":{i},\"why\":{}}}", jq(w)))
+                .collect::<Vec<_>>()
+                .join(","),
+            r.skipped
                 .iter()
                 .map(|(i, w)| format!("{{\"part\":{i},\"why\":{}}}", jq(w)))
                 .collect::<Vec<_>>()

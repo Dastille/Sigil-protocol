@@ -546,11 +546,14 @@ open every part all the way back to the original bytes (decrypt + true-name chec
 `--read-data-subset 10%` to open an evenly spaced tenth. The sample moves each day, so
 a daily 10% check covers the whole file in about ten days (like restic). Encrypted marks
 need `--pass-file` / `--identity`. Nothing is written to disk. Pin the sample with
-`--subset-offset N`. Works on one `.sg1` or a large-file pack (not folder wraps yet).
+`--subset-offset N`. Works on one `.sg1`, a large-file pack or a folder pack (not
+constellations yet). On a folder pack each sampled member is a part; an encrypted pack
+needs its key, a member locked with its own `--ward` counts as failed (verify has no ward
+input), and a nested folder pack is listed under `skipped`, never counted as opened.
 
 ```sh
 sigil verify dump.sg1 --pass-file ~/.sigil-pass --read-data-subset 10% --json
-# ... "read_data":{"kind":"work","percent":10,"offset":20752,"total_parts":40,"checked":[...],"bytes_read":...,"failed":[]}
+# ... "read_data":{"kind":"work","percent":10,"offset":20752,"total_parts":40,"checked":[...],"bytes_read":...,"failed":[],"skipped":[]}
 ```
 
 ## Web lab
