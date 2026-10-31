@@ -136,3 +136,117 @@ fn private_log_with_pass_file() {
     assert!(out.contains("health=healthy"), "{out}");
     assert_eq!(snapshot(&d.join("ev.sigil")), before);
 }
+
+#[test]
+fn apply_runs_only_when_healthy_and_with_a_rule() {
+    let d = common::scratch("retain-apply");
+    fs::write(d.join("pw"), "secret\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(d.join("pw"), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    sigil(&d, &["log", "init", "ev", "--pass-file", "pw"]);
+    for i in 1..=3 {
+        let f = format!("f{i}");
+        fs::write(d.join(&f), format!("batch {i}\n")).unwrap();
+        sigil(&d, &["log", "append", "ev", &f, "--pass-file", "pw"]);
+    }
+    sigil(&d, &["log", "tombstone", "ev", "--seq", "2"]);
+    let dir = d.join("ev.sigil");
+    let before = snapshot(&dir);
+    // refused before anything runs: no rule, seal without --apply, literal passphrases
+    for a in [
+        vec!["ev", "--pass-file", "pw", "--apply"],
+        vec!["ev", "--pass-file", "pw", "--seal-pass-file", "pw"],
+        vec!["ev", "--pass", "secret", "--apply", "--older-than", "0"],
+        vec![
+            "ev",
+            "--pass-file",
+            "pw",
+            "--apply",
+            "--older-than",
+            "0",
+            "--seal-pass",
+            "x",
+        ],
+    ] {
+        let (c, o) = retain(&d, &a);
+        assert_eq!(c, 3, "{a:?}: {o}");
+    }
+    // warnings + --strict: apply is skipped
+    let (c, o) = retain(
+        &d,
+        &[
+            "ev",
+            "--pass-file",
+            "pw",
+            "--apply",
+            "--older-than",
+            "0",
+            "--seal-pass-file",
+            "pw",
+            "--strict",
+        ],
+    );
+    assert_eq!(c, 1, "{o}");
+    assert!(o.contains("applied=SKIPPED"), "{o}");
+    // no key for the merged segment: compact refuses, exit 3
+    let (c, o) = retain(
+        &d,
+        &["ev", "--pass-file", "pw", "--apply", "--older-than", "0"],
+    );
+    assert_eq!(c, 3, "{o}");
+    assert!(o.contains("applied=FAILED"), "{o}");
+    assert!(
+        before == snapshot(&dir),
+        "a refused or skipped run changed the log"
+    );
+    // healthy enough (warnings) + rule + seal key: applied, then verified
+    let (c, o) = retain(
+        &d,
+        &[
+            "ev",
+            "--pass-file",
+            "pw",
+            "--apply",
+            "--older-than",
+            "0",
+            "--seal-pass-file",
+            "pw",
+        ],
+    );
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("applied=yes"), "{o}");
+    assert!(!dir.join("segments/0000/0000000002.sg1").exists());
+    for (s, body) in [("1", "batch 1\n"), ("3", "batch 3\n")] {
+        let out = sigil(&d, &["log", "read", "ev", "--seq", s, "--pass-file", "pw"]);
+        assert_eq!(out, body);
+    }
+    // afterwards: healthy, nothing left to drop
+    let (c, o) = retain(&d, &["ev", "--pass-file", "pw", "--strict"]);
+    assert_eq!(c, 0, "{o}");
+    assert!(o.contains("health=healthy"), "{o}");
+    // problems: apply is skipped, exit 2
+    let segs: Vec<_> = fs::read_dir(dir.join("segments/0000"))
+        .unwrap()
+        .flatten()
+        .collect();
+    fs::remove_file(segs[0].path()).unwrap();
+    let after_damage = snapshot(&dir);
+    let (c, o) = retain(
+        &d,
+        &[
+            "ev",
+            "--pass-file",
+            "pw",
+            "--apply",
+            "--older-than",
+            "0",
+            "--seal-pass-file",
+            "pw",
+        ],
+    );
+    assert_eq!(c, 2, "{o}");
+    assert!(o.contains("applied=SKIPPED"), "{o}");
+    assert!(after_damage == snapshot(&dir));
+}
