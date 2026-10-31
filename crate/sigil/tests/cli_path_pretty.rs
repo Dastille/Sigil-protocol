@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 fn sigil(dir: &Path, args: &[&str]) -> String {
     let o = Command::new(env!("CARGO_BIN_EXE_sigil"))
         .current_dir(dir)
-        .args(args)
+        .args(common::pass_via_file(args))
         .env_remove("CLICOLOR_FORCE")
         .env_remove("SIGIL_ASCII")
         .stdin(Stdio::null())

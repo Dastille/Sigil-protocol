@@ -7,7 +7,7 @@ use std::process::Command;
 fn sigil(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_sigil"))
         .current_dir(dir)
-        .args(args)
+        .args(common::pass_via_file(args))
         .output()
         .expect("run sigil")
 }

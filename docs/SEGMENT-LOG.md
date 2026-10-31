@@ -152,25 +152,25 @@ sigil log append events batch.json --identity me.sgk
 ## Operations
 
 ```sh
-sigil log init events [--identity me.sgk] [--segment-keys] [--to me.pub|--pass … (private INDEX) [--public-index]]
-sigil log append events FILE|-  [--mode glyph|reflection|seal] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk]
-sigil log ls events [--pass … | --identity …]  # also: sigil ls events (a private INDEX shows sizes/names only with a key)
-sigil log read events [--seq N | --from A --to B] [-o out] [--pass … | --identity key.sgk]…
-sigil log verify events [--quick] [--pass … | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
+sigil log init events [--identity me.sgk] [--segment-keys] [--to me.pub|--pass-file F (private INDEX) [--public-index]]
+sigil log append events FILE|-  [--mode glyph|reflection|seal] [--pass-file F|--talisman F] [--to RECIPIENT]… [--identity me.sgk]
+sigil log ls events [--pass-file F | --identity …]  # also: sigil ls events (a private INDEX shows sizes/names only with a key)
+sigil log read events [--seq N | --from A --to B] [-o out] [--pass-file F | --identity key.sgk]…
+sigil log verify events [--quick] [--pass-file F | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
 sigil log adopt events PILE/ [STAR.sg1 …] [--keep] [--dry-run] [--identity me.sgk]   # tidy loose stars in
-sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass …|--talisman F] [--to RECIPIENT]… [--identity me.sgk] [--unlock KEY.sgk]   # back up a folder
+sigil log add events DIR [--dry-run] [--exclude PATTERN]… [--no-ignore-file] [--mode …] [--pass-file F|--talisman F] [--to RECIPIENT]… [--identity me.sgk] [--unlock KEY.sgk]   # back up a folder
 sigil log tombstone events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]
 sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]    # --segment-keys logs only
 sigil log add-signer events --identity me.sgk                     # pin a first signer on a log created unsigned
 sigil log rotate-signer events --identity old.sgk --new new.pub   # hand a signed log over to a new key (log=4)
-sigil log prove events --seq N [--at M] [-o receipt.proof] [--pass … | --identity …]   # receipt: this entry is in the log
+sigil log prove events --seq N [--at M] [-o receipt.proof] [--pass-file F | --identity …]   # receipt: this entry is in the log
 sigil log check-proof receipt.proof [--file BATCH] [--signer KEY] [--anchor SEQ:ROOT]   # offline, no log, no keys
 sigil log compact events [--keep-last N] [--older-than 30d] [--range A-B] [--apply] [--target-size BYTES]
-                         [--pass …|--identity …] [--seal-pass …|--to RECIPIENT]… [--mode …] [--allow-decrypt]
+                         [--pass-file F|--identity …] [--seal-pass-file F|--to RECIPIENT]… [--mode …] [--allow-decrypt]
 sigil gc events [--apply]        # orphans of crashed appends, and files the INDEX declares dead
 sigil doctor events              # same checks as verify, plus the shared exit codes
-sigil mount events ./view [--export-dir DIR] [--pass … | --identity key.sgk]…
+sigil mount events ./view [--export-dir DIR] [--pass-file F | --identity key.sgk]…
 ```
 
 `PATH` may be `events` or `events.sigil`. `append` accepts `-` for stdin. `log read` skips
@@ -350,7 +350,7 @@ Opt-in at `init`, never retrofitted:
 
 ```sh
 sigil log init events --segment-keys [--identity me.sgk]
-sigil log append events batch.json --to alice.pub          # or --pass …, or both
+sigil log append events batch.json --to alice.pub          # or --pass-file F, or both
 sigil log read events --identity alice.sgk
 sigil log shred events --seq 2 --reason "erasure request 42"
 ```

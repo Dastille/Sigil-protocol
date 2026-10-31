@@ -170,9 +170,9 @@ What Sigil promises (each checked by `tests/cli_pass_file.rs`):
   like 644). The fix is `chmod 600 FILE`. Pipes are fine:
   `--pass-file <(pass show sigil)` or `--pass-file /dev/stdin`.
 - `--pass` and `--pass-file` together are refused. Pick one.
-- `--pass VALUE` still works so older scripts keep running, but it prints a
-  one-line WARNING suggesting `--pass-file` or `--pass -`. The warning does not
-  repeat your passphrase.
+- `--pass VALUE` (and `--seal-pass VALUE`) is **refused**: the command stops before
+  reading or writing anything and tells you to use `--pass-file` or `--pass -`. The
+  error does not repeat your passphrase. Older scripts need `--pass-file`.
 - Damaged or cut-off files still fail closed (or come back byte-exact after repair)
   when the key comes from a file.
 - `import-pgp --passphrase-file` follows the same rules (private file, first line).

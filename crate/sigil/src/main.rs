@@ -236,7 +236,7 @@ enum Cmd {
         json: bool,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -303,7 +303,7 @@ enum Cmd {
         /// Machine-readable result on stdout (one JSON line); not with `-o -`
         #[arg(long)]
         json: bool,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -357,7 +357,7 @@ enum Cmd {
         #[arg(long = "subset-offset", value_name = "N")]
         subset_offset: Option<u64>,
         /// Key for an encrypted folder pack: list its (hidden) member names
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -371,7 +371,7 @@ enum Cmd {
     Scry {
         input: PathBuf,
         /// Key for an encrypted folder pack: list its (hidden) member names
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -440,7 +440,7 @@ enum Cmd {
         report: bool,
         #[arg(long)]
         open: bool,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -493,7 +493,7 @@ enum Cmd {
         /// Other people's rain folders: user@host:rain/ or a local path
         #[arg(long = "peer")]
         peers: Vec<String>,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -520,7 +520,7 @@ enum Cmd {
         /// Write this exact .strm path
         #[arg(long)]
         strm: Option<PathBuf>,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -534,7 +534,7 @@ enum Cmd {
     /// De-scribe to temp, open in the usual app, delete when you press Enter.
     Open {
         input: PathBuf,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -628,7 +628,7 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
         /// Optional: open the card to also check no star goes missing
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -651,7 +651,7 @@ enum Cmd {
         #[arg(long = "dry-run", conflicts_with = "apply")]
         dry_run: bool,
         /// Passphrase of a warded constellation card (gc must read the list)
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -686,7 +686,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["json", "fix", "quick"])]
         scrub: bool,
         /// Passphrase of a warded constellation card
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -728,7 +728,7 @@ enum Cmd {
         #[arg(long = "into")]
         into: Vec<String>,
         /// Key for an encrypted folder pack (and locked members): walk its hidden names
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -770,7 +770,7 @@ enum Cmd {
         input: PathBuf,
         /// Empty directory mountpoint (ignored with --export-dir)
         mountpoint: PathBuf,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -863,7 +863,7 @@ enum VaultCmd {
         path: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -896,7 +896,7 @@ enum VaultCmd {
         from_export: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -934,7 +934,7 @@ enum VaultCmd {
         /// Version number (default: tip)
         #[arg(long)]
         version: Option<u32>,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1048,7 +1048,7 @@ enum BootCmd {
         root: PathBuf,
         #[arg(long, value_enum, default_value = "seal")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1066,7 +1066,7 @@ enum BootCmd {
     Mend {
         /// Mounted USB root. Omit with --scan to search disks.
         root: Option<PathBuf>,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1109,7 +1109,7 @@ enum LogCmd {
         #[arg(long = "public-index")]
         public_index: bool,
         /// Private INDEX: passphrase the index key is wrapped to
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1127,7 +1127,7 @@ enum LogCmd {
         input: String,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1162,7 +1162,7 @@ enum LogCmd {
         dir: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1195,7 +1195,7 @@ enum LogCmd {
     /// hashes and file names only with --pass / --identity.
     Ls {
         path: PathBuf,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1223,7 +1223,7 @@ enum LogCmd {
         /// In a range, fail on a deleted segment instead of skipping it
         #[arg(long)]
         strict: bool,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1244,7 +1244,7 @@ enum LogCmd {
         /// Where to create the file / folder (must not exist; default: its name, here)
         #[arg(short, long)]
         output: Option<PathBuf>,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1262,7 +1262,7 @@ enum LogCmd {
         /// Skip bit-level ECC verification (existence + header digest only)
         #[arg(long)]
         quick: bool,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1302,7 +1302,7 @@ enum LogCmd {
         output: Option<PathBuf>,
         /// Private INDEX: open the index key so the receipt carries this entry's key (and
         /// `check-proof --file` can compare the bytes)
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1461,7 +1461,7 @@ enum LogCmd {
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
         /// Passphrase that opens the source segments
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1472,7 +1472,7 @@ enum LogCmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
         /// Passphrase for the merged segments
-        #[arg(value_parser = parse_new_pass, long = "seal-pass")]
+        #[arg(value_parser = PassParser(true), long = "seal-pass")]
         seal_pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "seal-pass-file", value_name = "PATH", conflicts_with = "seal_pass", value_parser = parse_pass_file)]
@@ -1501,7 +1501,7 @@ enum SkyCmd {
         as_name: Option<String>,
         #[arg(long, value_enum, default_value = "reflection")]
         mode: ModeArg,
-        #[arg(value_parser = parse_new_pass, long)]
+        #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1534,7 +1534,7 @@ enum SkyCmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
         /// Passphrase of a warded card (the card is read to find every star)
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1553,7 +1553,7 @@ enum SkyCmd {
         /// List name(s) to remove (`docs/a.txt`, or `docs/` for everything under it)
         names: Vec<String>,
         /// Passphrase of a warded card
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1575,7 +1575,7 @@ enum SkyCmd {
     },
     Scry {
         sky: PathBuf,
-        #[arg(value_parser = parse_pass, long)]
+        #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
         #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
@@ -1628,14 +1628,32 @@ const EMPTY_PASS: &str =
     "an empty passphrase (--pass \"\", or only spaces) is refused: it would not protect anything. \
 Leave out --pass for an unencrypted file, or use --pass - to type one without it showing";
 
-/// `--pass VALUE`: refuse an empty value; `-` asks on the terminal (hidden).
-fn parse_pass(v: &str) -> Result<String, String> {
-    pass_arg(v, false)
-}
+/// `--pass` / `--seal-pass`: only `-` (ask on the terminal, hidden; `true` = ask twice, for
+/// something new) is accepted; an empty or literal value is refused. A custom parser so the error
+/// does not repeat the value (clap's default "invalid value 'X'" would echo the secret).
+#[derive(Clone, Copy)]
+struct PassParser(bool);
 
-/// `--pass` that encrypts something new: like [`parse_pass`], and `-` asks twice.
-fn parse_new_pass(v: &str) -> Result<String, String> {
-    pass_arg(v, true)
+impl clap::builder::TypedValueParser for PassParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<String, clap::Error> {
+        let v = value.to_str().unwrap_or("\u{fffd}");
+        pass_arg(v, self.0).map_err(|m| {
+            let flag = arg
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "--pass".into());
+            clap::Error::raw(
+                clap::error::ErrorKind::ValueValidation,
+                format!("{flag}: {m}\n"),
+            )
+        })
+    }
 }
 
 fn pass_arg(v: &str, confirm: bool) -> Result<String, String> {
@@ -1645,15 +1663,16 @@ fn pass_arg(v: &str, confirm: bool) -> Result<String, String> {
     if v == "-" {
         return prompt_pass("Passphrase: ", confirm).map_err(|e| e.to_string());
     }
-    eprintln!("{LITERAL_PASS_WARNING}");
-    Ok(v.to_string())
+    Err(LITERAL_PASS_REFUSED.into())
 }
 
-/// Printed (stderr) when a passphrase is typed straight onto the command line.
-const LITERAL_PASS_WARNING: &str =
-    "WARNING: a passphrase given as --pass VALUE is visible to other \
-programs on this computer (process list) and may be saved in your shell history. \
-Use --pass-file PATH (a file only you can read) or --pass - (type it, hidden) instead";
+/// Refused (before any key is derived or any file is written) when a passphrase is typed straight
+/// onto the command line: it would be visible to other programs (process list) and saved in shell
+/// history.
+const LITERAL_PASS_REFUSED: &str =
+    "a passphrase given as --pass VALUE is refused: it is visible to other programs on this \
+computer (process list) and may be saved in your shell history. Use --pass-file PATH (a file only \
+you can read, e.g. --pass-file <(pass show sigil)) or --pass - (type it, hidden)";
 
 /// Largest passphrase file accepted: a passphrase, not a document.
 const PASS_FILE_MAX: u64 = 64 * 1024;

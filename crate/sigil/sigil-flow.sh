@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [-m seal|reflection|glyph] [-p passphrase] [--rsync dest] [--rclone dest] [--wormhole] INPUT OUTPUT.sg1"
+  echo "Usage: $0 [-m seal|reflection|glyph] [-p PASSPHRASE_FILE] [--rsync dest] [--rclone dest] [--wormhole] INPUT OUTPUT.sg1"
   echo "  Default truck is rsync when you pass --rsync user@host:/path/"
   exit 1
 }
@@ -16,7 +16,7 @@ WORM=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -m|--mode) MODE="${2:-}"; shift 2 ;;
-    -p|--pass) PASS=(--pass "$2"); shift 2 ;;
+    -p|--pass-file) PASS=(--pass-file "$2"); shift 2 ;;
     --rsync) RSYNC=(--rsync "$2"); shift 2 ;;
     --rclone) RCLONE=(--rclone "$2"); shift 2 ;;
     --wormhole) WORM=(--wormhole); shift ;;

@@ -63,3 +63,64 @@ pub fn scratch(tag: &str) -> Scratch {
     }
     panic!("no free scratch folder name");
 }
+
+/// The CLI refuses a literal `--pass VALUE` / `--seal-pass VALUE` (process list, shell history).
+/// Tests keep writing `"--pass", "pw"` for readability; this turns each such pair into
+/// `--pass-file FILE` (`--seal-pass-file`), FILE an owner-only file holding the passphrase in a
+/// private scratch folder. Empty / blank values and `-` are passed through unchanged, so the
+/// CLI's own refusals and the hidden prompt are still what gets tested.
+pub fn pass_via_file<I, S>(args: I) -> Vec<std::ffi::OsString>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    use std::ffi::OsString;
+    use std::sync::OnceLock;
+    static DIR: OnceLock<Scratch> = OnceLock::new();
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let file_for = |v: &str| -> OsString {
+        let dir = DIR.get_or_init(|| scratch("passfiles"));
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = dir.join(format!("pass-{n}"));
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        use std::io::Write;
+        let mut f = o.open(&p).expect("pass file");
+        writeln!(f, "{v}").expect("write pass file");
+        p.into_os_string()
+    };
+    let literal = |v: &str| !v.trim().is_empty() && v != "-";
+    let args: Vec<OsString> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].to_string_lossy().into_owned();
+        let flag = match a.as_str() {
+            "--pass" => Some("--pass-file"),
+            "--seal-pass" => Some("--seal-pass-file"),
+            _ => None,
+        };
+        if let (Some(f), Some(v)) = (flag, args.get(i + 1).and_then(|v| v.to_str())) {
+            if literal(v) {
+                out.push(f.into());
+                out.push(file_for(v));
+                i += 2;
+                continue;
+            }
+        }
+        if let Some(v) = a.strip_prefix("--pass=").filter(|v| literal(v)) {
+            out.push("--pass-file".into());
+            out.push(file_for(v));
+            i += 1;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    out
+}

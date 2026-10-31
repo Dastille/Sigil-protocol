@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 fn run(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_sigil"));
     c.current_dir(dir)
-        .args(args)
+        .args(common::pass_via_file(args))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(if stdin.is_some() {

@@ -20,7 +20,9 @@ fn sigil(dir: &Path, envs: &[(&str, &str)], args: &[&str]) -> std::process::Outp
     for (k, v) in envs {
         c.env(k, v);
     }
-    c.args(args).output().expect("run sigil")
+    c.args(common::pass_via_file(args))
+        .output()
+        .expect("run sigil")
 }
 
 /// Passphrase files must be private (mode 600): sigil refuses ones others can read.

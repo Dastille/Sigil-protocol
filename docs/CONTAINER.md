@@ -79,7 +79,7 @@ the `.sigil` container, so the CHART text is identical in both layouts.
 ```sh
 sigil tidy notes.txt --dry-run      # show the plan, change nothing
 sigil tidy notes.txt                # or notes.txt.sgv
-sigil tidy Sky [--pass … | --identity key.sgk]
+sigil tidy Sky [--pass-file F | --identity key.sgk]
 ```
 
 1. Plan every file (above table). Refuse if the target `name.sigil` already exists.
@@ -127,7 +127,7 @@ sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the con
 sigil gc notes.txt                  # report only (the default)
 sigil gc Sky --dry-run              # same, spelled out
 sigil gc Sky.sigil --apply          # actually delete
-sigil gc Sky --pass …|--identity key.sgk   # card must be readable (see below)
+sigil gc Sky --pass-file F|--identity key.sgk   # card must be readable (see below)
 ```
 
 **Report-only unless `--apply`.** The report lists each orphan with its size, what was kept,
@@ -155,7 +155,7 @@ old temp files.
 
 ```sh
 sigil doctor notes.txt              # vault (live path, .sigil or .sgv) or constellation
-sigil doctor Sky --pass … | --identity key.sgk   # needed to open a warded / encrypt-to card
+sigil doctor Sky --pass-file F | --identity key.sgk   # needed to open a warded / encrypt-to card
 sigil doctor Sky --json             # machine-readable report on stdout
 sigil doctor Sky --quick            # skip bit-level verification (existence / structure only)
 sigil doctor notes.txt --fix        # safe fixes only (below)
@@ -206,7 +206,7 @@ sigil ls notes.txt.sigil        # versions as  notes.txt@v1  notes.txt@v2 (tip) 
 sigil ls notes.txt.sigil v2     # walk into a version (v2, @2, 2 or notes.txt@v2)
 sigil ls Sky.sigil/stars/ab/ab12….sg1   # raw path: the breadcrumb says  docs/a.txt, not the hash
 sigil mount Sky mnt             # FUSE (read-only): the tree is the list names; stars decode on read
-sigil mount Sky mnt --export-dir out  [--pass … | --identity key.sgk]
+sigil mount Sky mnt --export-dir out  [--pass-file F | --identity key.sgk]
 ```
 
 * `ls` / `mount` accept the short name (`Sky`), the container (`Sky.sigil`), an old flat folder,

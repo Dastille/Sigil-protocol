@@ -7,7 +7,7 @@ fn sigil(dir: &Path, soft: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_sigil"))
         .current_dir(dir)
         .env("SIGIL_SOFT_AUTHENTICATOR", soft)
-        .args(args)
+        .args(common::pass_via_file(args))
         .output()
         .expect("run sigil")
 }
