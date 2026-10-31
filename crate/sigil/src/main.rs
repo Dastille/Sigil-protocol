@@ -4501,20 +4501,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             new,
             output,
         } => {
-            let seq_root =
-                |spec: &str| -> Result<(u64, Option<[u8; 32]>), Box<dyn std::error::Error>> {
-                    if spec.contains(':') {
-                        let (s, r) = parse_anchor(spec)?;
-                        Ok((s, Some(r)))
-                    } else {
-                        Ok((
-                            spec.trim()
-                                .parse()
-                                .map_err(|_| "anchor must be SEQ or SEQ:ROOT")?,
-                            None,
-                        ))
-                    }
-                };
+            let seq_root = |spec: &str| -> Result<SeqRoot, Box<dyn std::error::Error>> {
+                if spec.contains(':') {
+                    let (s, r) = parse_anchor(spec)?;
+                    Ok((s, Some(r)))
+                } else {
+                    Ok((
+                        spec.trim()
+                            .parse()
+                            .map_err(|_| "anchor must be SEQ or SEQ:ROOT")?,
+                        None,
+                    ))
+                }
+            };
             let (o, oroot) = seq_root(&old)?;
             let (n, nroot) = match new.as_deref().map(seq_root).transpose()? {
                 Some((n, r)) => (Some(n), r),
@@ -4958,3 +4957,6 @@ fn mend_pack_report(
     );
     Ok(())
 }
+
+/// `SEQ` or `SEQ:ROOT` (root optional).
+type SeqRoot = (u64, Option<[u8; 32]>);
