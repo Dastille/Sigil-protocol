@@ -546,7 +546,7 @@ fn private_logs_refuse_what_would_leak() {
             "log", "append", "ev", "a.txt", "--to", "me.pub", "--unlock", "me.sgk",
         ],
     );
-    // reasons would be plaintext; adopt would copy stars without sealing their metadata; mount is later
+    // reasons would be plaintext; adopt would copy stars without sealing their metadata; mount needs the key
     assert!(fails(
         &d,
         &["log", "tombstone", "ev", "--seq", "1", "--reason", "x"]

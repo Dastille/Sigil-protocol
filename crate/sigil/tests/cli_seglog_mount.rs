@@ -221,3 +221,100 @@ fn writable_and_vault_flags_refused_for_log() {
     );
     assert!(e.contains("--vault") || e.contains("segment log"), "{e}");
 }
+
+#[test]
+fn private_index_log_mounts_only_with_its_key() {
+    let d = tmp("private");
+    fs::write(d.join("pw"), "pw\n").unwrap();
+    fs::write(d.join("bad"), "nope\n").unwrap();
+    #[cfg(unix)]
+    for f in ["pw", "bad"] {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(d.join(f), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    ok(&d, &["log", "init", "ev", "--pass-file", "pw"]);
+    fs::create_dir_all(d.join("src/deep")).unwrap();
+    fs::write(d.join("src/deep/secret-name.txt"), "first\n").unwrap();
+    fs::write(d.join("src/two.txt"), "second\n").unwrap();
+    ok(&d, &["log", "add", "ev", "src", "--pass-file", "pw"]);
+    ok(&d, &["log", "tombstone", "ev", "--seq", "2"]);
+
+    // no key / wrong key: refused, nothing exported, no names or sizes printed
+    for extra in [&[][..], &["--pass-file", "bad"][..]] {
+        let mut a = vec!["mount", "ev", "mnt", "--export-dir", "out"];
+        a.extend_from_slice(extra);
+        let e = fails(&d, &a);
+        assert!(
+            e.contains("private INDEX") || e.contains("does not open"),
+            "{e}"
+        );
+        assert!(!e.contains("secret-name") && !e.contains("first"), "{e}");
+        assert!(!d.join("out").exists());
+    }
+    // right key: same view as an ordinary log (live segments by seq, tombstoned one absent)
+    let o = ok(
+        &d,
+        &[
+            "mount",
+            "ev",
+            "mnt",
+            "--export-dir",
+            "out",
+            "--pass-file",
+            "pw",
+        ],
+    );
+    assert!(o.contains("1 live segment"), "{o}");
+    let names: Vec<_> = fs::read_dir(d.join("out"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    let body = fs::read_to_string(d.join("out").join(&names[0])).unwrap();
+    assert!(body == "first\n" || body == "second\n", "{body}");
+
+    // encrypt-to private log: the identity opens it, another one does not
+    ok(&d, &["keygen", "-o", "me.sgk", "--pub-out", "me.pub"]);
+    ok(&d, &["keygen", "-o", "eve.sgk", "--pub-out", "eve.pub"]);
+    ok(&d, &["log", "init", "ev2", "--to", "me.pub"]);
+    ok(
+        &d,
+        &[
+            "log", "add", "ev2", "src", "--to", "me.pub", "--unlock", "me.sgk",
+        ],
+    );
+    let e = fails(
+        &d,
+        &[
+            "mount",
+            "ev2",
+            "mnt",
+            "--export-dir",
+            "o2",
+            "--identity",
+            "eve.sgk",
+        ],
+    );
+    assert!(e.contains("does not open"), "{e}");
+    assert!(!d.join("o2").exists());
+    ok(
+        &d,
+        &[
+            "mount",
+            "ev2",
+            "mnt",
+            "--export-dir",
+            "o2",
+            "--identity",
+            "me.sgk",
+        ],
+    );
+    let mut got: Vec<String> = fs::read_dir(d.join("o2"))
+        .unwrap()
+        .flatten()
+        .map(|e| fs::read_to_string(e.path()).unwrap())
+        .collect();
+    got.sort();
+    assert_eq!(got, vec!["first\n".to_string(), "second\n".to_string()]);
+}

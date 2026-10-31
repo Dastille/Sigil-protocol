@@ -725,7 +725,9 @@ size, hash and file name to whoever holds it.
 `--pass ""`): its header would show the plain size and SHA-256 the INDEX hides; refused before
 anything is written. `--reason` on `tombstone` / `shred` (a reason is plain text in the INDEX; leave it
 out). `log adopt` (it copies stars without opening them, so their metadata could not be sealed).
-`sigil mount` of the log (not supported yet; use `log read --seq N`). In the INDEX: a plaintext
+`sigil mount` / `--export-dir` **without** the key (or with a wrong one): refused before any listing,
+so no sizes or paths are shown; with `--pass` / `--pass-file` / `--identity` it mounts like any log
+(one file per live segment, named by seq; see "Mount"). In the INDEX: a plaintext
 segment / compaction line in a private log (`index-private`), a `box=` line in a log without
 `privindex=1` (`log-format`), `privindex=1` under `log<5` (manifest error), and with the key, any box
 that does not open (`index-box`: altered, truncated, moved to another line, or wrong key).
@@ -1037,6 +1039,11 @@ sigil umount ./view
 * **Naming**: `{seq:010}` (e.g. `0000000007`) — human-readable, stable, and consistent with the
   `segments/NNNN/NNNNNNNNNN.sg1` layout. No extension: the cleartext is the batch bytes, not a star.
 
+* **Private INDEX (`log=5`).** Give the key that opens the index (`--pass` / `--pass-file` /
+  `--talisman` / `--identity`, as for `log ls`); files keep their seq names, so the view adds no
+  names beyond what `log ls` with the key shows. No key, or a key the index was not wrapped to:
+  refused before anything is listed or exported.
+
 See also [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) for FUSE vs `--export-dir` on vaults and packs.
 
 ## Prior work and how this log differs
@@ -1066,7 +1073,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Streaming appends / segments above memory size (work-pack chunking).
-* Private INDEX follow-ups: sealed tombstone / shred reasons, `sigil mount` of a private log, adopting
+* Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, re-wrapping the index
   key to new recipients, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).

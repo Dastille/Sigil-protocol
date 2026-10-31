@@ -133,7 +133,24 @@ impl VaultFs {
     /// Filenames are zero-padded seqs (`0000000007`), matching on-disk segment basenames without `.sg1`.
     /// Compaction members stay addressable under their original seq (same as `log read --seq`).
     pub fn open_log(input: &Path, pass: Option<&str>, identities: &[Identity]) -> Result<Self> {
-        let listing = crate::seglog::list(input)?;
+        // A private INDEX is opened with the same keys `log ls` / `log read` take; without them
+        // (or with wrong ones) `list_with` refuses, so no sizes or paths are shown.
+        let listing = if crate::seglog::Log::open(input)?.privindex {
+            if pass.is_none() && identities.is_empty() {
+                return Err(crate::Error::Msg(
+                    "this log has a private INDEX: give --pass / --pass-file / --identity to mount it".into(),
+                ));
+            }
+            crate::seglog::list_with(input, pass, identities)?
+        } else {
+            crate::seglog::list(input)?
+        };
+        if listing.entries.iter().any(|e| e.is_locked()) {
+            return Err(crate::Error::Msg(
+                "the private INDEX did not open with these keys (wrong --pass / --identity?)"
+                    .into(),
+            ));
+        }
         let log_dir = listing.log.dir.clone();
         let mut fs = VaultFs {
             seal: log_dir.clone(),
@@ -1120,11 +1137,6 @@ fn run_log_mount(
         ));
     }
     let log = crate::seglog::Log::open(input)?;
-    if log.privindex {
-        return Err(crate::Error::Msg(
-            "mounting a log with a private INDEX is not supported yet; use `sigil log read LOG --seq N` (with --pass / --identity)".into(),
-        ));
-    }
     let index_path = log.dir.join(crate::seglog::INDEX_FILE);
     let before = sha_of(&index_path)?;
     let fs = VaultFs::open_log(input, pass, identities)?;

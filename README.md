@@ -353,6 +353,9 @@ $ sigil log check-consistency since1.proof --old 1:<ROOT> --signer me.pub
 consistency proof OK: 1:… is a prefix of 4:…
 ```
 
+`sigil mount photos mnt --identity me.sgk` (or `--export-dir DIR`) shows one
+file per live segment; without the key the mount is refused.
+
 Keyless `log verify`, `mend` and `gc` still work. Entry count, times and
 on-disk segment sizes stay visible. `--private-index` is still accepted.
 `--public-index` opts out (names, sizes and hashes in the clear) and prints a
