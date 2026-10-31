@@ -1370,6 +1370,22 @@ enum LogCmd {
         #[arg(long)]
         pad: bool,
     },
+    /// Turn per-segment keys on for an existing log: segments written from now on are sealed under
+    /// their own key (key ring, `log=8`); older segments keep their bytes until `log compact --apply`.
+    EnableSegmentKeys {
+        path: PathBuf,
+        /// Passphrase: only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(true), long)]
+        pass: Option<String>,
+        /// Passphrase file (a private log's index key must open with it)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens a private log's index key (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+    },
     /// Pad new segments of a private log to a Padmé size (at least 4 KiB) from now on, so on-disk
     /// sizes show only a size bucket. Existing segments are not changed. The log becomes `log=7`.
     Pad { path: PathBuf },
@@ -4492,6 +4508,20 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             if pad {
                 seglog::enable_pad(&dest)?;
                 println!("padding on in DEST: new segments are padded (log=7); copied segments keep their sizes until `log compact --apply`");
+            }
+        }
+        LogCmd::EnableSegmentKeys {
+            path,
+            pass,
+            pass_file,
+            talisman,
+            identity,
+        } => {
+            let pass = resolve_pass(pass.or(pass_file), talisman)?;
+            let identities = load_identities(&identity)?;
+            match seglog::enable_segment_keys(&path, pass.as_deref(), &identities)? {
+                Some(n) => println!("segment keys on from seq {n} (log=8): new segments are sealed under their own key (append with --pass-file and/or --to); earlier segments keep their old bytes, readable as before, until `log compact --apply` re-seals them"),
+                None => println!("segment keys are already on"),
             }
         }
         LogCmd::Pad { path } => {

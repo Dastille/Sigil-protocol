@@ -56,6 +56,9 @@ log created without a key or with `--public-index` never becomes `log=5` (see "P
 damaged. Private logs without a sealed reason stay `log=5`; public logs never become `log=6`.
 `log=7` = **padded segments** (`pad=padme` in `CONTAINER`, private INDEX only): set by `log init
 --pad` or `sigil log pad LOG` (manifest only; existing segments keep their bytes). See "Padding".
+`log=8` = **segment keys turned on later** (`segkeys=1` plus `segkeys-from=N` in `CONTAINER`): set
+only by `sigil log enable-segment-keys LOG`; segments before seq N have no key-ring record and are
+opened as before. Logs made with `init --segment-keys` stay `log=3` (or 5/7) with no `segkeys-from`.
 A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
@@ -353,7 +356,7 @@ that `gc` (or a rerun of `compact`) reclaims. `LOG.lock` serialises `append`, `t
 
 ## Per-segment keys and crypto-shredding (slice 3, `log=3`)
 
-Opt-in at `init`, never retrofitted:
+Opt-in at `init`, or later with `sigil log enable-segment-keys` (see "Turning segment keys on later"):
 
 ```sh
 sigil log init events --segment-keys [--identity me.sgk]
@@ -1011,7 +1014,7 @@ compresses first). **Batch small events into larger appends** (KBs–MBs, not si
 A batch is sealed in memory in one piece; very large single batches should be split. Work-pack
 (chunked) segments are deferred: a segment is one `.sg1` star whose header digest is the INDEX
 `star=` true-name, read whole by every reader (`read`, `verify`, `mend`, `compact`, `shred`, `gc`,
-`add`), so a chunked segment needs a new segment kind and a `log=8` manifest bump that older
+`add`), so a chunked segment needs a new segment kind and a manifest bump (now `log=9`; `log=8` is taken by `enable-segment-keys`) that older
 sigils refuse, plus streaming reads in `read` / `restore` / `mount`. INDEX is ~170 bytes per entry; `append` re-reads it
 in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
@@ -1374,14 +1377,41 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: a monthly retention check (`scripts/monthly-log-retention.sh`); padded segments for private logs (`log=7`); sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
-(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy, optionally padded with `--pad`). Still deferred:
+(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy, optionally padded with `--pad`); turning segment keys on for an existing log (`log enable-segment-keys`, `log=8`). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
-* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=8` (see "Size notes").
+* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes").
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic **applying** of retention (the monthly check below only reports; `compact --apply` stays a deliberate step).
-* Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
+* Shredding one batch inside a compaction segment without rewriting it.
+
+## Turning segment keys on later (`sigil log enable-segment-keys`, `log=8`)
+
+```sh
+sigil log enable-segment-keys events                      # public INDEX: no key needed to switch
+sigil log enable-segment-keys photos --pass-file pw.txt   # private INDEX: its index key must open
+sigil log append events batch.json --pass-file pw.txt     # from now on --pass-file and/or --to are required
+```
+
+It writes `segkeys=1`, `segkeys-from=N` (N = the next seq) and `log=8` into `CONTAINER` and creates
+an empty `keys/` ring; nothing else changes. Running it again prints "already on". A literal
+`--pass` is refused (use `--pass-file`); a private log refuses a passphrase or identity that does not
+open its index key, before anything is written.
+
+**What it protects, honestly:**
+
+* Only segments written **after** it (append, add, compaction) get their own key and can be
+  `shred`ded. Segments 1..N-1 keep their exact bytes: clear segments stay clear, passphrase /
+  encrypt-to segments keep that protection. `shred` refuses them ("written before segment keys were
+  turned on"); erase them with `log tombstone` + `log compact --apply`.
+* `log compact --apply --seal-pass-file F` (or `--to`) re-seals merged old batches under fresh
+  segment keys, which is the way to bring old data under the key ring. Old copies, backups and any
+  ciphertext of the old segments elsewhere are untouched by any of this.
+* In a public-INDEX log, sizes, SHA-256s and file names stay in the clear INDEX; segment keys hide
+  only the contents. Use `log privatize` for the INDEX.
+* A sigil that knows only `log=7` refuses the log ("upgrade sigil") instead of looking for keys of
+  old segments that never had any.
 
 ## Private label (v3)
 

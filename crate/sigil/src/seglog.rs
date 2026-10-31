@@ -52,8 +52,9 @@ pub const KIND: &str = "log";
 /// `log=4` = the INDEX may also hold signer handover entries (`op=signer`, `log rotate-signer`);
 /// `log=5` = private INDEX (`privindex=1`, `IXKEY.sg1`, sealed `box=` entries; `init --private-index`);
 /// `log=6` = a private log's tombstone / shred lines may carry a sealed `box=` with their reason;
-/// `log=7` = padded segments (`pad=padme`): new private segments are zero-padded before sealing.
-pub const LOG_FORMAT: u32 = 7;
+/// `log=7` = padded segments (`pad=padme`): new private segments are zero-padded before sealing;
+/// `log=8` = segment keys turned on later (`segkeys-from=N`): segments before N have no ring key.
+pub const LOG_FORMAT: u32 = 8;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
@@ -98,12 +99,22 @@ pub struct Log {
     pub format: u32,
     /// `segkeys=1`: every segment is sealed under its own key, kept in the key ring (slice 3).
     pub segkeys: bool,
+    /// `segkeys-from=N` (`log=8`, `log enable-segment-keys`): the first seq with a ring key (1 when
+    /// the log was made with `--segment-keys`). Older segments are opened as before.
+    pub segkeys_from: u64,
     /// `pad=padme` (`log=7`): new segments are zero-padded to a Padmé size before sealing.
     pub pad: bool,
     /// `privindex=1`: sizes, SHA-256s and paths are sealed in the INDEX (`log=5`, `private.rs`).
     pub privindex: bool,
     /// The unlocked index key of a private log (see `Log::unlock_index`); never written anywhere.
     ixkey: Option<private::IndexKey>,
+}
+
+impl Log {
+    /// True when segment `seq` is sealed under its own key from the key ring.
+    pub fn seg_keyed(&self, seq: u64) -> bool {
+        self.segkeys && seq >= self.segkeys_from
+    }
 }
 
 /// True when `path` (or `path.sigil`) is a log container.
@@ -173,6 +184,17 @@ impl Log {
         if segkeys && fmt < 3 {
             return Err(err("segment log manifest has segkeys=1 but log<3"));
         }
+        let segkeys_from = match m.extra.get("segkeys-from").map(|v| v.trim()) {
+            None => 1,
+            Some(v) => match v.parse::<u64>() {
+                Ok(n) if n >= 1 && segkeys && fmt >= 8 => n,
+                _ => {
+                    return Err(err(format!(
+                        "bad segkeys-from={v} in manifest (needs segkeys=1 and log>=8)"
+                    )))
+                }
+            },
+        };
         let privindex = match m.extra.get("privindex").map(|v| v.trim()) {
             None => false,
             Some("1") => true,
@@ -202,6 +224,7 @@ impl Log {
             signer,
             format: fmt,
             segkeys,
+            segkeys_from,
             privindex,
             pad,
             ixkey: None,
@@ -1554,6 +1577,7 @@ pub fn init_opts(path: &Path, o: &InitOpts<'_>) -> Result<Log> {
         signer,
         format,
         segkeys: segment_keys,
+        segkeys_from: 1,
         privindex: o.private_index,
         pad: o.pad,
         ixkey,
@@ -2266,7 +2290,7 @@ fn read_holder(
     }
     let p = log.segment_path(e.seq);
     let file = fs::read(&p).map_err(|er| err(format!("segment {} unreadable: {er}", e.seq)))?;
-    let (plain, keyed) = if log.segkeys {
+    let (plain, keyed) = if log.seg_keyed(e.seq) {
         // every segment of such a log has its own key, wrapped in the key ring
         let id = ring.identity(e.seq, opts.pass, opts.identities)?;
         let plain = crate::unseal_ex_keys(&file, None, &[], &[id])
@@ -2377,6 +2401,35 @@ pub(crate) fn unpad(log: &Log, e: &Entry, plain: Vec<u8>) -> Vec<u8> {
         }
         _ => plain,
     }
+}
+
+/// Turn per-segment keys on for an existing log (`log=8`, `segkeys=1`, `segkeys-from=N`): every
+/// segment written from now on is sealed under its own key in a new key ring; older segments keep
+/// their bytes (and their protection, or lack of it) until `log compact --apply` re-seals them.
+/// A private log's index key must open with `pass` / `ids` (a wrong key is refused). Returns the
+/// first keyed seq, or `None` when segment keys were already on.
+pub fn enable_segment_keys(
+    path: &Path,
+    pass: Option<&str>,
+    ids: &[Identity],
+) -> Result<Option<u64>> {
+    let mut log = Log::open(path)?;
+    if log.segkeys {
+        return Ok(None);
+    }
+    if log.privindex {
+        unlock_for_write(&mut log, pass, None, ids)?;
+    }
+    let _guard = lock(&log)?;
+    let (idx, _) = prepare_write(&log)?;
+    let from = idx.entries.len() as u64 + 1;
+    fs::create_dir_all(log.dir.join(KEYS_DIR)).map_err(io)?;
+    raise_format(&mut log, 8)?;
+    let mut m = container::read_manifest(&log.dir)?;
+    m.extra.insert("segkeys".into(), "1".into());
+    m.extra.insert("segkeys-from".into(), from.to_string());
+    container::write_manifest(&log.dir, &m)?;
+    Ok(Some(from))
 }
 
 /// Turn padding on for an existing private log: new segments are padded from now on (`log=7`).
@@ -3043,9 +3096,13 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             }
         }
         if keyed {
-            let opened = if log.segkeys {
+            let opened = if log.seg_keyed(e.seq) {
                 ring.identity(e.seq, opts.pass, opts.identities)
                     .and_then(|id| crate::unseal_ex_keys(&bytes, None, &[], &[id]))
+            } else if log.segkeys {
+                // written before `enable-segment-keys`: a clear segment there opens keyless
+                crate::unseal_ex_keys(&bytes, None, &[], &[])
+                    .or_else(|_| crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities))
             } else {
                 crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities)
             };
@@ -3238,7 +3295,8 @@ fn check_keys(
         if !st.has_file(e.seq) {
             continue;
         }
-        let needed = e.seq as usize > trusted || st_t.slot(e.seq) == Slot::Needed;
+        let needed =
+            log.seg_keyed(e.seq) && (e.seq as usize > trusted || st_t.slot(e.seq) == Slot::Needed);
         let has = present.contains(&e.seq);
         if needed && !has && !unreadable.contains(&keyring::shard_of(e.seq)) {
             rep.findings.push(fnd(
@@ -3956,6 +4014,7 @@ mod tests {
             signer: None,
             format: 1,
             segkeys: false,
+            segkeys_from: 1,
             privindex: false,
             pad: false,
             ixkey: None,
