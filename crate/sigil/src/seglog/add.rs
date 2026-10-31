@@ -160,6 +160,84 @@ pub struct AddReport {
 }
 
 impl AddReport {
+    /// As JSON (`sigil log add --json`, `sigil-log-add=1`). Paths come from `DIR` and the log,
+    /// so treat it as sensitive as the listing of a private log. `seq` is null in a dry run.
+    pub fn to_json(&self) -> String {
+        let q = |b: &[u8]| crate::doctor::json_str(&String::from_utf8_lossy(b));
+        let qs = |s: &str| crate::doctor::json_str(s);
+        let items: Vec<String> = self
+            .items
+            .iter()
+            .map(|i| {
+                let (why, prev, reason) = match &i.why {
+                    AddWhy::New => ("new", "null".to_string(), "null".to_string()),
+                    AddWhy::Changed { prev } => ("changed", prev.to_string(), "null".to_string()),
+                    AddWhy::Reseal { prev, why } => ("reseal", prev.to_string(), qs(why)),
+                };
+                let seq = if self.dry_run {
+                    "null".to_string()
+                } else {
+                    i.seq.to_string()
+                };
+                format!(
+                    "{{\"path\":{},\"size\":{},\"why\":\"{why}\",\"prev\":{prev},\"reason\":{reason},\"seq\":{seq}}}",
+                    q(&i.rel),
+                    i.size
+                )
+            })
+            .collect();
+        let pair = |v: &[(Vec<u8>, u64)]| {
+            v.iter()
+                .map(|(p, s)| format!("{{\"path\":{},\"seq\":{s}}}", q(p)))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let what = |v: &[(Vec<u8>, String)], k: &str| {
+            v.iter()
+                .map(|(p, m)| format!("{{\"path\":{},\"{k}\":{}}}", q(p), qs(m)))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let deleted: Vec<String> = self
+            .deleted
+            .iter()
+            .map(|(p, s, t)| format!("{{\"path\":{},\"seq\":{s},\"deleted_by\":{t}}}", q(p)))
+            .collect();
+        let excluded: Vec<String> = self
+            .excluded
+            .iter()
+            .map(|(p, d, pat, from)| {
+                format!(
+                    "{{\"path\":{},\"folder\":{d},\"pattern\":{},\"from\":{}}}",
+                    q(p),
+                    qs(pat),
+                    qs(from)
+                )
+            })
+            .collect();
+        let notes: Vec<String> = self.notes.iter().map(|n| qs(n)).collect();
+        format!(
+            "{{\"format\":\"sigil-log-add=1\",\"ok\":{},\"dir\":{},\"source\":{},\"dry_run\":{},\"items\":[{}],\"unchanged\":{},\"cache_hits\":{},\"missing\":[{}],\"special\":[{}],\"unreadable\":[{}],\"deleted\":[{}],\"excluded\":[{}],\"excluded_kept\":[{}],\"commits\":{},\"root\":{},\"signed\":{},\"notes\":[{}]}}\n",
+            self.unreadable.is_empty(),
+            qs(&self.dir.display().to_string()),
+            qs(&self.source.display().to_string()),
+            self.dry_run,
+            items.join(","),
+            self.unchanged,
+            self.cache_hits,
+            pair(&self.missing),
+            what(&self.special, "what"),
+            what(&self.unreadable, "error"),
+            deleted.join(","),
+            excluded.join(","),
+            pair(&self.excluded_kept),
+            self.commits,
+            self.root.map_or("null".to_string(), |r| format!("\"{}\"", hex::encode(r))),
+            self.signed,
+            notes.join(","),
+        )
+    }
+
     fn count(&self, f: impl Fn(&AddWhy) -> bool) -> usize {
         self.items.iter().filter(|i| f(&i.why)).count()
     }

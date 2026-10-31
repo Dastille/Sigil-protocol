@@ -1,4 +1,4 @@
-//! `--json` on `log compact`, `log check-proof` and `log check-consistency`.
+//! `--json` on `log compact`, `log check-proof`, `log check-consistency`, `log restore`, `log add`, `log rewrap` and `log mend`.
 mod common;
 use std::fs;
 use std::path::Path;
@@ -261,4 +261,96 @@ fn restore_report_as_json() {
     let o = run(&d, &["log", "restore", "pv", ".", "-o", "out2", "--json"]);
     assert!(!o.status.success());
     assert!(!String::from_utf8_lossy(&o.stdout).contains("\"format\""));
+}
+
+#[test]
+fn add_rewrap_mend_as_json() {
+    let d = common::scratch("json-add-rewrap-mend");
+    pw(&d);
+    fs::write(d.join("pw2"), "other\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(d.join("pw2"), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    ok(&d, &["log", "init", "pv", "--pass-file", "pw"]);
+    fs::create_dir_all(d.join("dir")).unwrap();
+    fs::write(d.join("dir/a \"q\".txt"), "aa\n").unwrap();
+    let a = |extra: &[&str]| {
+        let mut v = vec!["log", "add", "pv", "dir", "--pass-file", "pw", "--json"];
+        v.extend_from_slice(extra);
+        ok(&d, &v)
+    };
+    let dry = a(&["--dry-run"]);
+    well_formed(&dry);
+    assert!(
+        dry.starts_with("{\"format\":\"sigil-log-add=1\",\"ok\":true"),
+        "{dry}"
+    );
+    assert!(
+        dry.contains("\"dry_run\":true") && dry.contains("\"seq\":null"),
+        "{dry}"
+    );
+    assert!(
+        dry.contains("a \\\"q\\\".txt") && dry.contains("\"root\":null"),
+        "{dry}"
+    );
+    let j = a(&[]);
+    well_formed(&j);
+    assert!(
+        j.contains("\"why\":\"new\"") && j.contains("\"seq\":1"),
+        "{j}"
+    );
+    assert!(
+        j.contains("\"commits\":1") && j.contains("\"root\":\""),
+        "{j}"
+    );
+    fs::write(d.join("dir/a \"q\".txt"), "bb\n").unwrap();
+    let j = a(&[]);
+    assert!(j.contains("\"why\":\"changed\",\"prev\":1"), "{j}");
+    let j = a(&[]);
+    assert!(
+        j.contains("\"items\":[]") && j.contains("\"unchanged\":1"),
+        "{j}"
+    );
+
+    // rewrap: counts only, never key material or the passphrase
+    let rw = |extra: &[&str]| {
+        let mut v = vec!["log", "rewrap", "pv", "--pass-file", "pw", "--json"];
+        v.extend_from_slice(extra);
+        ok(&d, &v)
+    };
+    let plan = rw(&["--new-pass-file", "pw2", "--dry-run"]);
+    well_formed(&plan);
+    assert!(
+        plan.starts_with("{\"format\":\"sigil-log-rewrap=1\""),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("\"dry_run\":true") && plan.contains("\"index_key\":true"),
+        "{plan}"
+    );
+    assert!(
+        !plan.contains("secret") && !plan.contains("other"),
+        "{plan}"
+    );
+    let done = rw(&["--new-pass-file", "pw2"]);
+    assert!(done.contains("\"dry_run\":false"), "{done}");
+    ok(&d, &["log", "ls", "pv", "--pass-file", "pw2"]);
+
+    // mend: healthy, then a missing segment (exit 2, ok:false)
+    let m = ok(&d, &["log", "mend", "pv", "--json"]);
+    well_formed(&m);
+    assert!(
+        m.starts_with("{\"format\":\"sigil-log-mend=1\",\"ok\":true"),
+        "{m}"
+    );
+    assert!(m.contains("\"ixkey_unrecoverable\":null"), "{m}");
+    fs::remove_file(d.join("pv.sigil/segments/0000/0000000001.sg1")).unwrap();
+    let (c, m) = code(&d, &["log", "mend", "pv", "--json"]);
+    assert_eq!(c, 2, "{m}");
+    assert!(
+        m.contains("\"ok\":false") && m.contains("\"missing\":[1]"),
+        "{m}"
+    );
 }

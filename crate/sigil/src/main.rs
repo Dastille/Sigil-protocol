@@ -1213,6 +1213,9 @@ enum LogCmd {
         /// subtree). Repeatable, e.g. --exclude .tools-venv/ --exclude '*.tmp'
         #[arg(long = "exclude", value_name = "PATTERN")]
         exclude: Vec<String>,
+        /// Machine-readable report on stdout (`sigil-log-add=1`); notes stay on stderr
+        #[arg(long)]
+        json: bool,
         /// Do not read DIR/.sigilignore (only --exclude patterns apply)
         #[arg(long = "no-ignore-file")]
         no_ignore_file: bool,
@@ -1342,6 +1345,9 @@ enum LogCmd {
         /// Check that every key opens and count; write nothing
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Machine-readable report on stdout (`sigil-log-rewrap=1`)
+        #[arg(long)]
+        json: bool,
     },
     /// Make a card: a small signed file committing, under its own Merkle root, to the vouched
     /// HEADs (SEQ:ROOT) of segment logs and/or to other cards (daily logs -> monthly card ->
@@ -1495,7 +1501,12 @@ enum LogCmd {
         temp_age: u64,
     },
     /// Heal repairable segments in place (ECC); INDEX and HEAD never change.
-    Mend { path: PathBuf },
+    Mend {
+        path: PathBuf,
+        /// Machine-readable report on stdout (`sigil-log-mend=1`); exit 2 still when not ok
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a receipt that one entry is in this log: its INDEX line plus a Merkle path to the
     /// anchor root (and the HEAD signature on a signed log). Anyone can check it offline with
     /// `sigil log check-proof`, without the log and without keys.
@@ -4408,6 +4419,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             no_ignore_file,
             cache,
             unlock,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -4433,7 +4445,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             for n in &r.notes {
                 eprintln!("note: {n}");
             }
-            print!("{}", r.render());
+            print!("{}", if json { r.to_json() } else { r.render() });
             if !r.unreadable.is_empty() {
                 std::process::exit(1);
             }
@@ -4496,6 +4508,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             drop_pass,
             replace,
             dry_run,
+            json,
         } => {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let identities = load_identities(&identity)?;
@@ -4515,7 +4528,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     dry_run,
                 },
             )?;
-            print!("{}", r.render());
+            print!("{}", if json { r.to_json() } else { r.render() });
         }
         LogCmd::Card {
             children,
@@ -5272,8 +5285,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        LogCmd::Mend { path } => {
+        LogCmd::Mend { path, json } => {
             let r = seglog::mend(&path)?;
+            if json {
+                print!("{}", r.to_json());
+                if !r.ok() {
+                    std::process::exit(2);
+                }
+                return Ok(());
+            }
             println!(
                 "log mend: checked {} segment(s), healed {}{}",
                 r.checked,
