@@ -11,7 +11,7 @@ use crate::{Error, Result};
 /// What a deep read looked at, and what it found.
 #[derive(Debug, Clone)]
 pub struct ReadDataReceipt {
-    /// `"sg1"` (one part) or `"work"` (large-file pack).
+    /// `"sg1"` (one part), `"work"` (large-file pack) or `"folder"` (folder pack member).
     pub kind: &'static str,
     pub percent: f64,
     pub offset: u64,
@@ -21,6 +21,9 @@ pub struct ReadDataReceipt {
     pub bytes_read: u64,
     /// Part number and why it would not open.
     pub failed: Vec<(u32, String)>,
+    /// Folder pack: picked members not deep-read here (a nested folder pack), with why.
+    /// Never counted as opened.
+    pub skipped: Vec<(u32, String)>,
 }
 
 impl ReadDataReceipt {
@@ -82,6 +85,9 @@ pub fn read_data_subset(
             "--read-data is for one .sg1 or a large-file pack, not a folder".into(),
         ));
     }
+    if crate::is_dir_pack(input) {
+        return read_dir_pack(input, pass, identities, percent, offset);
+    }
     if crate::is_work_pack(input) {
         let (head, locs) = crate::index_pack_keys(input, pass, &[], identities)
             .or_else(|_| crate::index_pack(input))?;
@@ -94,6 +100,7 @@ pub fn read_data_subset(
             checked: Vec::new(),
             bytes_read: 0,
             failed: Vec::new(),
+            skipped: Vec::new(),
         };
         for i in picks {
             r.checked.push(i);
@@ -116,10 +123,61 @@ pub fn read_data_subset(
         checked: vec![0],
         bytes_read: 0,
         failed: Vec::new(),
+        skipped: Vec::new(),
     };
     match crate::unseal_ex_keys(&data, pass, &[], identities) {
         Ok(plain) => r.bytes_read = plain.len() as u64,
         Err(e) => r.failed.push((0, e.to_string())),
+    }
+    Ok(r)
+}
+
+/// Deep-read sampled members of a folder pack (plain or sealed). Each picked member is
+/// opened to its original bytes; a member locked with its own ward key, a wrong key or
+/// damage counts as failed (fail closed). Nested folder packs are listed as skipped.
+fn read_dir_pack(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+    percent: f64,
+    offset: u64,
+) -> Result<ReadDataReceipt> {
+    let n = crate::folder::dir_member_count(input)?;
+    let picks = pick_parts(n, percent, offset);
+    let stars = crate::folder::dir_pick_stars(input, pass, identities, &picks)?;
+    let mut r = ReadDataReceipt {
+        kind: "folder",
+        percent,
+        offset,
+        total_parts: n,
+        checked: Vec::new(),
+        bytes_read: 0,
+        failed: Vec::new(),
+        skipped: Vec::new(),
+    };
+    for i in &picks {
+        let Some(s) = stars.iter().find(|s| s.index == *i) else {
+            r.failed.push((*i, "member missing".into()));
+            continue;
+        };
+        if s.star.starts_with(&crate::folder::DIR_MAGIC) {
+            r.skipped.push((
+                *i,
+                format!("{}: nested folder pack (verify it on its own)", s.path),
+            ));
+            continue;
+        }
+        r.checked.push(*i);
+        let opened = if s.star.starts_with(&crate::work::WORK_MAGIC) {
+            let mut v = Vec::new();
+            crate::work::unseal_bytes_into(&s.star, &mut v, pass, &[], identities).map(|_| v)
+        } else {
+            crate::unseal_ex_keys(&s.star, pass, &[], identities)
+        };
+        match opened {
+            Ok(plain) => r.bytes_read += plain.len() as u64,
+            Err(e) => r.failed.push((*i, format!("{}: {e}", s.path))),
+        }
     }
     Ok(r)
 }

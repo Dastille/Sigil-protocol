@@ -1978,3 +1978,80 @@ mod seal_names_tests {
         .is_err());
     }
 }
+
+/// One member's star bytes picked out of a folder pack for a deep read.
+pub struct PickedStar {
+    pub index: u32,
+    pub path: String,
+    pub star: Vec<u8>,
+}
+
+/// Member count of any folder pack (plain or sealed), without a key.
+pub fn dir_member_count(input: &Path) -> Result<u32> {
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    Ok(n)
+}
+
+/// Star bytes of the members at `picks` (0-based, in pack order). A sealed (v2) pack is
+/// opened with the keys first and fails closed without one, on a wrong key or tamper.
+/// Only the picked stars are kept in memory.
+pub fn dir_pick_stars(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+    picks: &[u32],
+) -> Result<Vec<PickedStar>> {
+    fn walk<R: Read>(reader: &mut R, picks: &[u32]) -> Result<Vec<PickedStar>> {
+        let (ver, n) = read_head(reader, "not a folder pack (SGDR)")?;
+        if ver == DIR_VER_SEALED {
+            return Err(crate::Error::Msg(HIDDEN_HINT.into()));
+        }
+        let mut out = Vec::new();
+        for i in 0..n {
+            let mut lb = [0u8; 2];
+            reader.read_exact(&mut lb).map_err(io)?;
+            let mut name = vec![0u8; u16::from_le_bytes(lb) as usize];
+            reader.read_exact(&mut name).map_err(io)?;
+            let mut sl = [0u8; 8];
+            reader.read_exact(&mut sl).map_err(io)?;
+            let slen = u64::from_le_bytes(sl);
+            if picks.contains(&i) {
+                let mut star = Vec::new();
+                reader
+                    .by_ref()
+                    .take(slen)
+                    .read_to_end(&mut star)
+                    .map_err(io)?;
+                if star.len() as u64 != slen {
+                    return Err(crate::Error::Msg(
+                        "truncated folder pack (star bytes)".into(),
+                    ));
+                }
+                out.push(PickedStar {
+                    index: i,
+                    path: String::from_utf8_lossy(&name).into_owned(),
+                    star,
+                });
+            } else {
+                let got = std::io::copy(&mut reader.by_ref().take(slen), &mut std::io::sink())
+                    .map_err(io)?;
+                if got != slen {
+                    return Err(crate::Error::Msg(
+                        "truncated folder pack (star bytes)".into(),
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+    if let Some((n, body)) = sealed_dir_body(input)? {
+        if pass.is_none() && identities.is_empty() {
+            return Err(crate::Error::Msg(HIDDEN_HINT.into()));
+        }
+        let inner = open_body(n, &body, pass, &[], identities)?;
+        return walk(&mut Cursor::new(&inner[..]), picks);
+    }
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    walk(&mut reader, picks)
+}
