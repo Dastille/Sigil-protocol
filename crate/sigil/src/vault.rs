@@ -74,6 +74,55 @@ pub enum Drift {
     MissingVault,
 }
 
+impl StatusReport {
+    /// As JSON for `sigil vault status --json`.
+    pub fn to_json(&self) -> String {
+        let q = |p: &Path| crate::doctor::json_str(&p.display().to_string());
+        let h = |d: Option<[u8; 32]>| {
+            d.map_or("null".to_string(), |d| format!("\"{}\"", hex::encode(d)))
+        };
+        format!(
+            "{{\"live\":{},\"vault_dir\":{},\"tip\":{},\"drift\":\"{}\",\"live_sha256\":{},\"tip_sha256\":{},\"tip_size\":{}}}",
+            q(&self.live),
+            q(&self.vault_dir),
+            self.tip,
+            self.drift.label(),
+            h(self.live_digest),
+            h(self.tip_digest),
+            self.tip_size.map_or("null".to_string(), |n| n.to_string())
+        )
+    }
+}
+
+impl Chart {
+    /// As JSON for `sigil vault versions --json`: public recipient keys are counted, not listed.
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let v: Vec<String> = self
+            .versions
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"n\":{},\"seal\":{},\"sha256\":\"{}\",\"size\":{},\"time\":{}}}",
+                    e.n,
+                    q(&e.seal),
+                    hex::encode(e.digest),
+                    e.size,
+                    e.time
+                )
+            })
+            .collect();
+        format!(
+            "{{\"live\":{},\"vault_dir\":{},\"tip\":{},\"versions\":[{}],\"recipients\":{}}}",
+            q(&self.live.display().to_string()),
+            q(&self.vault_dir.display().to_string()),
+            self.tip,
+            v.join(","),
+            self.recipients.len()
+        )
+    }
+}
+
 impl Drift {
     pub fn label(self) -> &'static str {
         match self {

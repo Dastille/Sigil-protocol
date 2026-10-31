@@ -249,6 +249,30 @@ pub struct TidyReport {
 }
 
 impl TidyReport {
+    /// As JSON for `sigil tidy --json`.
+    pub fn to_json(&self) -> String {
+        let q = |p: &std::path::Path| crate::doctor::json_str(&p.display().to_string());
+        let moved: Vec<String> = self
+            .moved
+            .iter()
+            .map(|(a, b)| format!("{{\"from\":{},\"to\":{}}}", q(a), q(b)))
+            .collect();
+        let left: Vec<String> = self.left.iter().map(|p| q(p)).collect();
+        format!(
+            "{{\"kind\":{},\"from\":{},\"to\":{},\"dry_run\":{},\"already\":{},\"list_checked\":{},\"moved\":[{}],\"left\":[{}]}}",
+            crate::doctor::json_str(&self.kind),
+            q(&self.from),
+            q(&self.to),
+            self.dry_run,
+            self.already,
+            self.list_checked,
+            moved.join(","),
+            left.join(",")
+        )
+    }
+}
+
+impl TidyReport {
     pub fn render(&self) -> String {
         let mut s = String::new();
         if self.already {

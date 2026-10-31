@@ -96,6 +96,45 @@ pub struct GcReport {
 }
 
 impl GcReport {
+    /// As JSON for `sigil gc --json`.
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let items: Vec<String> = self
+            .items
+            .iter()
+            .map(|i| {
+                format!(
+                    "{{\"kind\":{},\"path\":{},\"bytes\":{},\"removed\":{}}}",
+                    q(i.kind.label().trim_end_matches('.')),
+                    q(&i.path.display().to_string()),
+                    i.bytes,
+                    i.removed
+                )
+            })
+            .collect();
+        let left: Vec<String> = self
+            .left
+            .iter()
+            .map(|p| q(&p.display().to_string()))
+            .collect();
+        let notes: Vec<String> = self.notes.iter().map(|n| q(n)).collect();
+        format!(
+            "{{\"kind\":{},\"root\":{},\"layout\":{},\"apply\":{},\"items\":[{}],\"reclaimable_bytes\":{},\"removed\":{},\"kept\":{},\"left\":[{}],\"notes\":[{}]}}",
+            q(&self.kind),
+            q(&self.root.display().to_string()),
+            q(&self.layout),
+            self.apply,
+            items.join(","),
+            self.reclaimable_bytes(),
+            self.removed_count(),
+            self.kept,
+            left.join(","),
+            notes.join(",")
+        )
+    }
+}
+
+impl GcReport {
     pub fn reclaimable_bytes(&self) -> u64 {
         self.items.iter().map(|i| i.bytes).sum()
     }
