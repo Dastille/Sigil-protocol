@@ -96,6 +96,12 @@ pub fn shred_with(
             targets.push(s);
         }
     }
+    if let Some(s) = targets.iter().find(|&&s| !log.seg_keyed(s)) {
+        return Err(err(format!(
+            "segment {s} was written before segment keys were turned on (from seq {}), so it has no key to destroy; `log tombstone` + `log compact --apply` erases it",
+            log.segkeys_from
+        )));
+    }
     if targets.is_empty() {
         return Err(err(match target {
             TombTarget::Seq(s) => format!(

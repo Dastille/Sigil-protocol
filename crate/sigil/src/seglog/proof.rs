@@ -451,6 +451,7 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         signer: None,
         format: LOG_FORMAT,
         segkeys: false,
+        segkeys_from: 1,
         privindex: false,
         pad: false,
         ixkey: None,
