@@ -190,6 +190,16 @@ fn unseal_to_stdout(
 fn jstr(s: &str) -> String {
     sigil::doctor::json_str(s)
 }
+fn jsigner(pk: Option<&[u8; 32]>) -> String {
+    pk.map_or("null".to_string(), |k| format!("\"{}\"", hex::encode(k)))
+}
+/// `--json` on a command that writes a proof / card: the file goes to `-o`, never into the JSON.
+fn needs_output(json: bool, output: &Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    if json && output.is_none() {
+        return Err("--json needs -o FILE: the proof / card is written there and the JSON only describes it".into());
+    }
+    Ok(())
+}
 fn jnums(v: &[u64]) -> String {
     v.iter()
         .map(|n| n.to_string())
@@ -205,6 +215,16 @@ fn log_json_fail_format(cmd: &Cmd) -> Option<&'static str> {
             LogCmd::Append { json: true, .. } => Some("sigil-log-append=1"),
             LogCmd::Tombstone { json: true, .. } => Some("sigil-log-tombstone=1"),
             LogCmd::Shred { json: true, .. } => Some("sigil-log-shred=1"),
+            LogCmd::Prove { json: true, .. } => Some("sigil-log-prove=1"),
+            LogCmd::Card { json: true, .. } => Some("sigil-log-card=1"),
+            LogCmd::CardProve { json: true, .. } => Some("sigil-log-card-prove=1"),
+            LogCmd::ProveConsistency { json: true, .. } => Some("sigil-log-prove-consistency=1"),
+            LogCmd::Privatize { json: true, .. } => Some("sigil-log-privatize=1"),
+            LogCmd::Pad { json: true, .. } => Some("sigil-log-pad=1"),
+            LogCmd::EnableSegmentKeys { json: true, .. } => Some("sigil-log-enable-segment-keys=1"),
+            LogCmd::AddSigner { json: true, .. } => Some("sigil-log-add-signer=1"),
+            LogCmd::RotateSigner { json: true, .. } => Some("sigil-log-rotate-signer=1"),
+            LogCmd::Adopt { json: true, .. } => Some("sigil-log-adopt=1"),
             _ => None,
         },
         _ => None,
@@ -1392,6 +1412,10 @@ enum LogCmd {
     /// HEADs (SEQ:ROOT) of segment logs and/or to other cards (daily logs -> monthly card ->
     /// yearly card). Check it with `log check-card`.
     Card {
+        /// Machine-readable summary on stdout (`sigil-log-card=1`); needs -o (the file itself is never put in the JSON); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         /// Child segment logs and/or card files, in order
         #[arg(required = true)]
         children: Vec<PathBuf>,
@@ -1422,6 +1446,10 @@ enum LogCmd {
     /// Copy a log with a public INDEX into a NEW log with a private INDEX (names, sizes and hashes
     /// sealed). SRC is only read; DEST gets a new log id and chain (old receipts stay valid for SRC).
     Privatize {
+        /// Machine-readable summary on stdout (`sigil-log-privatize=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         src: PathBuf,
         dest: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
@@ -1450,6 +1478,10 @@ enum LogCmd {
     /// Turn per-segment keys on for an existing log: segments written from now on are sealed under
     /// their own key (key ring, `log=8`); older segments keep their bytes until `log compact --apply`.
     EnableSegmentKeys {
+        /// Machine-readable summary on stdout (`sigil-log-enable-segment-keys=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// Passphrase: only `-` (hidden prompt); scripts use --pass-file
         #[arg(value_parser = PassParser(true), long)]
@@ -1466,6 +1498,10 @@ enum LogCmd {
     /// Pad new segments of a private log to a Padmé size (at least 4 KiB) from now on, so on-disk
     /// sizes show only a size bucket. Existing segments are not changed. The log becomes `log=7`.
     Pad {
+        /// Machine-readable summary on stdout (`sigil-log-pad=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// Signing identity (.sgk); required when the log is signed (writer role)
         #[arg(long)]
@@ -1474,6 +1510,10 @@ enum LogCmd {
     /// Receipt for one child of a card (its line + Merkle path + the card's signed root), so the
     /// rest of the card need not be shown. CHILD: a number, a log id or a card name.
     CardProve {
+        /// Machine-readable summary on stdout (`sigil-log-card-prove=1`); needs -o (the file itself is never put in the JSON); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         card: PathBuf,
         child: String,
         /// Write the receipt here (default: stdout)
@@ -1550,6 +1590,10 @@ enum LogCmd {
     /// anchor root (and the HEAD signature on a signed log). Anyone can check it offline with
     /// `sigil log check-proof`, without the log and without keys.
     Prove {
+        /// Machine-readable summary on stdout (`sigil-log-prove=1`); needs -o (the file itself is never put in the JSON); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// The entry to prove (any INDEX entry: segment, compaction or tombstone)
         #[arg(
@@ -1605,6 +1649,10 @@ enum LogCmd {
     /// roots rebuild. Anyone can check it offline with `sigil log check-consistency`, without the
     /// INDEX and without keys. Refuses when the log's root at OLD is not the pinned ROOT.
     ProveConsistency {
+        /// Machine-readable summary on stdout (`sigil-log-prove-consistency=1`); needs -o (the file itself is never put in the JSON); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// Old anchor: `SEQ:ROOT` (as printed by `log ls`; checked here) or `SEQ`
         old: String,
@@ -1638,6 +1686,10 @@ enum LogCmd {
     /// every write needs --identity, like a log signed at init. Refused on a log that is already
     /// signed (use rotate-signer).
     AddSigner {
+        /// Machine-readable summary on stdout (`sigil-log-add-signer=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// The new signer's identity (.sgk)
         #[arg(long)]
@@ -1648,6 +1700,10 @@ enum LogCmd {
     /// be signed by the new key. Earlier HEADs, anchors and proofs stay valid; `verify --signer` and
     /// `check-proof --signer` accept any key of the chain. The log becomes `log=4`.
     RotateSigner {
+        /// Machine-readable summary on stdout (`sigil-log-rotate-signer=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// The current signer's identity (.sgk)
         #[arg(long)]
@@ -1661,6 +1717,10 @@ enum LogCmd {
     /// its own ECC and protection. Originals are removed once committed (unless --keep). Re-running
     /// is safe: stars already adopted are recognised and not appended twice.
     Adopt {
+        /// Machine-readable summary on stdout (`sigil-log-adopt=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// Stars and/or folders of `*.sg1` (a folder is not searched recursively)
         #[arg(required = true)]
@@ -4612,10 +4672,26 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             name,
             identity,
             output,
+            json,
         } => {
+            needs_output(json, &output)?;
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let c = seglog::make_card(&name, &children, id.as_ref())?;
             let text = c.render();
+            if json {
+                if let Some(o) = &output {
+                    fs::write(o, &text)?;
+                    println!(
+                        "{{\"format\":\"sigil-log-card=1\",\"ok\":true,\"output\":{},\"kind\":\"card\",\"name\":{},\"children\":{},\"root\":\"{}\",\"signer\":{}}}",
+                        jstr(&o.display().to_string()),
+                        jstr(&c.name),
+                        c.children.len(),
+                        hex::encode(c.root),
+                        jsigner(c.signer.as_ref().map(|s| &s.0))
+                    );
+                }
+                return Ok(());
+            }
             match output {
                 Some(o) => {
                     fs::write(&o, &text)?;
@@ -4667,6 +4743,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             sign,
             pad,
+            json,
         } => {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let recipients = load_recipients(&to)?;
@@ -4683,6 +4760,24 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     mode: mode.into(),
                 },
             )?;
+            if json {
+                if pad {
+                    seglog::enable_pad(&dest, sign.as_slice())?;
+                }
+                println!(
+                    "{{\"format\":\"sigil-log-privatize=1\",\"ok\":true,\"src_id\":{},\"src_size\":{},\"src_root\":\"{}\",\"dest\":{},\"dest_id\":{},\"dest_root\":\"{}\",\"copied\":{},\"skipped\":[{}],\"signed\":{},\"pad\":{pad}}}",
+                    jstr(&r.src_id),
+                    r.src_size,
+                    hex::encode(r.src_root),
+                    jstr(&r.dest.display().to_string()),
+                    jstr(&r.dest_id),
+                    hex::encode(r.dest_root),
+                    r.copied.len(),
+                    jnums(&r.skipped),
+                    r.signed
+                );
+                return Ok(());
+            }
             print!("{}", r.render());
             if pad {
                 seglog::enable_pad(&dest, sign.as_slice())?;
@@ -4695,17 +4790,36 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let identities = load_identities(&identity)?;
-            match seglog::enable_segment_keys(&path, pass.as_deref(), &identities)? {
+            let from = seglog::enable_segment_keys(&path, pass.as_deref(), &identities)?;
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-enable-segment-keys=1\",\"ok\":true,\"changed\":{},\"from_seq\":{}}}",
+                    from.is_some(),
+                    from.map_or("null".to_string(), |n| n.to_string())
+                );
+                return Ok(());
+            }
+            match from {
                 Some(n) => println!("segment keys on from seq {n} (log=8): new segments are sealed under their own key (append with --pass-file and/or --to); earlier segments keep their old bytes, readable as before, until `log compact --apply` re-seals them"),
                 None => println!("segment keys are already on"),
             }
         }
-        LogCmd::Pad { path, identity } => {
+        LogCmd::Pad {
+            path,
+            identity,
+            json,
+        } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
-            if seglog::enable_pad(&path, id.as_slice())? {
+            let changed = seglog::enable_pad(&path, id.as_slice())?;
+            if json {
+                println!("{{\"format\":\"sigil-log-pad=1\",\"ok\":true,\"changed\":{changed}}}");
+                return Ok(());
+            }
+            if changed {
                 println!("padding on: new segments are padded (log=7); existing segments keep their sizes (`log compact --apply` re-seals them padded)");
             } else {
                 println!("padding is already on");
@@ -4715,10 +4829,28 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             card,
             child,
             output,
+            json,
         } => {
+            needs_output(json, &output)?;
             let text =
                 fs::read_to_string(&card).map_err(|e| format!("read {}: {e}", card.display()))?;
             let p = seglog::prove_card_child(&seglog::Card::parse(&text)?, &child)?;
+            if json {
+                if let Some(o) = &output {
+                    fs::write(o, p.render())?;
+                    println!(
+                        "{{\"format\":\"sigil-log-card-prove=1\",\"ok\":true,\"output\":{},\"kind\":\"card-child-receipt\",\"card\":{},\"child_index\":{},\"children\":{},\"child\":{},\"root\":\"{}\",\"signer\":{}}}",
+                        jstr(&o.display().to_string()),
+                        jstr(&p.name),
+                        p.index,
+                        p.n,
+                        jstr(&p.child.describe()),
+                        hex::encode(p.root),
+                        jsigner(p.signer.as_ref().map(|s| &s.0))
+                    );
+                }
+                return Ok(());
+            }
             match output {
                 Some(o) => {
                     fs::write(&o, p.render())?;
@@ -5171,6 +5303,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             to,
             unlock,
+            json,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let pass = resolve_pass(pass.or(pass_file), None)?;
@@ -5191,16 +5324,56 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             for n in &r.notes {
                 eprintln!("note: {n}");
             }
-            print!("{}", r.render());
+            if json {
+                let skipped: Vec<String> = r
+                    .skipped
+                    .iter()
+                    .map(|(p, m)| {
+                        format!(
+                            "{{\"path\":{},\"why\":{}}}",
+                            jstr(&p.display().to_string()),
+                            jstr(m)
+                        )
+                    })
+                    .collect();
+                println!(
+                    "{{\"format\":\"sigil-log-adopt=1\",\"ok\":{},\"dir\":{},\"dry_run\":{},\"adopted\":{},\"skipped\":[{}],\"ignored\":{},\"removed\":{},\"root\":{},\"signed\":{}}}",
+                    r.skipped.is_empty(),
+                    jstr(&r.dir.display().to_string()),
+                    r.dry_run,
+                    r.adopted(),
+                    skipped.join(","),
+                    r.ignored,
+                    r.removed,
+                    r.root
+                        .map_or("null".to_string(), |x| format!("\"{}\"", hex::encode(x))),
+                    r.signed
+                );
+            } else {
+                print!("{}", r.render());
+            }
             if !r.skipped.is_empty() {
                 std::process::exit(1);
             }
         }
-        LogCmd::AddSigner { path, identity } => {
+        LogCmd::AddSigner {
+            path,
+            identity,
+            json,
+        } => {
             let id = Identity::load(&identity)?;
             let r = seglog::add_signer(&path, &id)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
+            }
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-add-signer=1\",\"ok\":true,\"signer\":\"{}\",\"covered\":{},\"root\":\"{}\"}}",
+                    hex::encode(r.signer),
+                    r.covered,
+                    hex::encode(r.root)
+                );
+                return Ok(());
             }
             println!(
                 "signer added: {}…  head {}:{}  (signed by the new key; {} earlier entr{} written unsigned)",
@@ -5219,12 +5392,24 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             path,
             identity,
             new,
+            json,
         } => {
             let id = Identity::load(&identity)?;
             let new = parse_signer(&new).map_err(|e| e.to_string().replace("--signer", "--new"))?;
             let r = seglog::rotate_signer(&path, &id, new)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
+            }
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-rotate-signer=1\",\"ok\":true,\"entry\":{},\"from\":\"{}\",\"to\":\"{}\",\"root\":\"{}\",\"handovers\":{}}}",
+                    r.entry,
+                    hex::encode(r.from),
+                    hex::encode(r.to),
+                    hex::encode(r.root),
+                    r.handovers
+                );
+                return Ok(());
             }
             println!(
                 "signer handover {}: {}… → {}…  head {}:{}  (signed by the outgoing key)",
@@ -5249,7 +5434,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
+            needs_output(json, &output)?;
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
@@ -5260,6 +5447,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             };
             let p = seglog::prove_with(&path, seq, at, pass.as_deref(), &identities)?;
             let text = p.render();
+            if json {
+                if let Some(o) = &output {
+                    fs::write(o, &text)?;
+                    println!(
+                        "{{\"format\":\"sigil-log-prove=1\",\"ok\":true,\"output\":{},\"kind\":\"inclusion-proof\",\"seq\":{seq},\"size\":{},\"root\":\"{}\",\"signed\":{}}}",
+                        jstr(&o.display().to_string()),
+                        p.size,
+                        hex::encode(p.root),
+                        p.head.is_some()
+                    );
+                }
+                return Ok(());
+            }
             match output {
                 Some(o) => {
                     fs::write(&o, &text)?;
@@ -5320,7 +5520,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             old,
             new,
             output,
+            json,
         } => {
+            needs_output(json, &output)?;
             let seq_root = |spec: &str| -> Result<SeqRoot, Box<dyn std::error::Error>> {
                 if spec.contains(':') {
                     let (s, r) = parse_anchor(spec)?;
@@ -5352,6 +5554,21 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let text = c.render();
+            if json {
+                if let Some(f) = &output {
+                    fs::write(f, &text)?;
+                    println!(
+                        "{{\"format\":\"sigil-log-prove-consistency=1\",\"ok\":true,\"output\":{},\"kind\":\"consistency-proof\",\"old_size\":{},\"old_root\":\"{}\",\"new_size\":{},\"new_root\":\"{}\",\"signed\":{}}}",
+                        jstr(&f.display().to_string()),
+                        c.old_size,
+                        hex::encode(c.old_root),
+                        c.new_size,
+                        hex::encode(c.new_root),
+                        c.head.is_some()
+                    );
+                }
+                return Ok(());
+            }
             match output {
                 Some(f) => {
                     fs::write(&f, &text)?;
