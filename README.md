@@ -479,7 +479,17 @@ exactly one JSON line on stdout; the friendly lines move to stderr.
 ```
 
 `verify --json` adds `"report"` (the normal text) and, with a deep read, `"read_data"`.
-`scry --json` adds the same `"report"`. `mend --json` adds `"kind"` (`mark`, `folder-pack`,
+`scry --json` adds the same `"report"`. Both (and `constellation scry --json`) also add a structured
+`"status"` object (`"schema":1`, additive — `report` stays) built from library data, not
+the text: `kind` (`mark`, `work-pack`, `folder-pack`, `constellation`), `health`
+(`healthy`, `needs-repair`, `not-recoverable`), `reason` (why not recoverable, else null),
+`repair` (what needs `sigil mend`, else null). A mark adds `version`, `shards` (`live`,
+`total`, `need`, `len`), `merkle_closed`, `header_recovered`, `encrypted`, `compressed`,
+`private_label`, `orig_len` (null when private); a large-file pack adds `parts` (`total`,
+`present`), `chunk_size`, `overture`, `orig_len`; a folder pack adds `members` and
+`encrypted`; a constellation adds `stars` (`members`, `packed`, `present`, `missing`,
+`needs_repair`, `beyond_repair`). A not-recoverable copy is `ok:false`, exit 2, and still
+carries `status`. New fields may be added within schema 1; a rename or removal bumps it. `mend --json` adds `"kind"` (`mark`, `folder-pack`,
 `sealed-folder-pack`, `work-pack`) and, for one mark, `"live"`, `"n"`, `"need"`, `"merkle"`,
 `"soft_salvage"` (counted on the mended copy); a work pack adds `"stars"`, `"facets_checked"`.
 `scatter --json` adds `"pieces"`; `kit place --json` adds `"drives"`, `"pieces"`, `"per_drive"`,

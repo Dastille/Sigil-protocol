@@ -1013,6 +1013,17 @@ pub fn scry_dir_checked(
     })
 }
 
+/// Keyless recoverability verdict of a folder pack (the one [`scry_dir_checked`] reports):
+/// `Some(reason)` when a member (v1) or the encrypted body (v2) cannot be restored.
+pub fn dir_unrecoverable(input: &Path) -> Result<Option<String>> {
+    if let Some((_, body)) = sealed_dir_body(input)? {
+        return Ok(
+            crate::work::star_bytes_unrecoverable(&body).map(|w| format!("encrypted body: {w}"))
+        );
+    }
+    Ok(v1_unrecoverable(input)?.0)
+}
+
 /// First member of a v1 pack that cannot be restored, and the members that are damaged
 /// but repairable (one member in memory at a time).
 fn v1_unrecoverable(input: &Path) -> Result<(Option<String>, Vec<String>)> {
