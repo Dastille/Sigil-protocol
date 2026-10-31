@@ -74,6 +74,37 @@ pub struct PathView {
 }
 
 impl PathView {
+    /// As JSON for `sigil path --json`: `trail`, `kind`, `name` (null when unknown or locked),
+    /// `nest_payload`, `entries` (`path`, `size` or null, `nest`, `sha256` or null).
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let trail: Vec<String> = self.trail.iter().map(|t| q(t)).collect();
+        let entries: Vec<String> = self
+            .entries
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"path\":{},\"size\":{},\"nest\":{},\"sha256\":{}}}",
+                    q(&e.path),
+                    e.orig.map_or("null".to_string(), |n| n.to_string()),
+                    e.nest,
+                    e.digest
+                        .map_or("null".to_string(), |d| format!("\"{}\"", hex::encode(d)))
+                )
+            })
+            .collect();
+        format!(
+            "{{\"trail\":[{}],\"kind\":\"{}\",\"name\":{},\"nest_payload\":{},\"entries\":[{}]}}",
+            trail.join(","),
+            self.kind.label(),
+            self.payload_name.as_deref().map_or("null".to_string(), q),
+            self.nest_payload,
+            entries.join(",")
+        )
+    }
+}
+
+impl PathView {
     pub fn breadcrumb(&self) -> String {
         if self.trail.is_empty() {
             return String::new();

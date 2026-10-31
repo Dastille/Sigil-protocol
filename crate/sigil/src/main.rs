@@ -255,6 +255,18 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
             json: true, output, ..
         } => Some(("gather", output.clone())),
         Cmd::Scry { json: true, .. } => Some(("scry", None)),
+        Cmd::Path {
+            json: true, output, ..
+        } => Some(("path", output.clone())),
+        Cmd::Sign { json: true, .. } => Some(("sign", None)),
+        Cmd::Tidy { json: true, .. } => Some(("tidy", None)),
+        Cmd::Gc { json: true, .. } => Some(("gc", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Status { json: true, .. },
+        } => Some(("vault status", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Versions { json: true, .. },
+        } => Some(("vault versions", None)),
         Cmd::Mend {
             json: true, output, ..
         } => Some(("mend", Some(output.clone()))),
@@ -725,6 +737,9 @@ enum Cmd {
         input: PathBuf,
         #[arg(long)]
         key: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
     },
     /// Live USB: wrap squashfs so initrd can Scry and mend before it mounts. Alias: keystone.
     #[command(visible_alias = "keystone")]
@@ -737,6 +752,9 @@ enum Cmd {
     Tidy {
         /// Vault live path / `.sgv` chart dir, or constellation folder
         path: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Show what would move; change nothing
         #[arg(long)]
         dry_run: bool,
@@ -757,6 +775,9 @@ enum Cmd {
     Gc {
         /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
         path: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Delete for real (default: report only)
         #[arg(long)]
         apply: bool,
@@ -835,6 +856,10 @@ enum Cmd {
     Path {
         /// Outer .sg1 (folder pack or single-file mark)
         input: PathBuf,
+        /// Machine-readable view on stdout (one JSON line: trail, kind, name, entries); not with
+        /// --pretty. For a log / constellation / vault folder use their own listing commands
+        #[arg(long, conflicts_with = "pretty")]
+        json: bool,
         /// Breadcrumb segments (positional). Same as repeating --into.
         segments: Vec<String>,
         /// Descend into this entry / nest layer (repeatable). Use `.` to unwrap a single-file nest.
@@ -998,6 +1023,9 @@ enum VaultCmd {
     Status {
         /// Live file or its `.sgv` chart dir
         path: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
     },
     /// Re-seal live (or a dirty --from-export tree) into the next version; tip moves.
     /// Skips when already matching unless --force.
@@ -1040,7 +1068,12 @@ enum VaultCmd {
         force_drop: bool,
     },
     /// List version stack (v1…tip) from the chart.
-    Versions { path: PathBuf },
+    Versions {
+        path: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
+    },
     /// Restore tip (or --version N) over the live path. Mends a torn seal if needed.
     Restore {
         path: PathBuf,
@@ -3732,9 +3765,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 pub_path.display()
             );
         }
-        Cmd::Sign { input, key } => {
+        Cmd::Sign { input, key, .. } => {
             let dest = attest(&input, &key)?;
-            println!("attestation → {}", dest.display());
+            json_extra(&format!(",\"attestation\":{}", jq(&dest.to_string_lossy())));
+            say!("attestation → {}", dest.display());
         }
         Cmd::Boot { cmd } => run_boot(cmd)?,
         Cmd::Constellation { cmd } => run_sky(cmd)?,
@@ -3746,6 +3780,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            ..
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -3759,7 +3794,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     fault: None,
                 },
             )?;
-            print!("{}", report.render());
+            json_extra(&format!(",\"report\":{}", report.to_json()));
+            if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+                eprint!("{}", report.render());
+            } else {
+                print!("{}", report.render());
+            }
         }
         Cmd::Doctor {
             path,
@@ -3821,6 +3861,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             temp_age,
+            ..
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -3834,7 +3875,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     temp_age_secs: temp_age,
                 },
             )?;
-            print!("{}", r.render());
+            json_extra(&format!(",\"report\":{}", r.to_json()));
+            if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+                eprint!("{}", r.render());
+            } else {
+                print!("{}", r.render());
+            }
         }
         Cmd::Kit { cmd } => run_kit(cmd)?,
         Cmd::Path {
@@ -3850,6 +3896,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             depth,
             output,
             pretty,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -3859,6 +3906,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             steps.extend(segments);
             // Containers: list / address members by their own names (`Sky.sigil`, `notes.txt.sigil`).
             let mut input = input;
+            if json && !input.is_file() {
+                return Err(format!(
+                    "path --json takes a .sg1 file; for {} use `sigil log ls --json`, `sigil doctor --json` or `sigil vault versions --json`",
+                    input.display()
+                )
+                .into());
+            }
             if !input.is_file() && sigil::seglog::is_log(&input) {
                 print!("{}", sigil::seglog::list(&input)?.render());
                 return Ok(());
@@ -3936,6 +3990,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 println!("{}", sigil::pretty::render_path_view(&view, &extra, &style));
+            } else if json {
+                json_extra(&format!(",\"view\":{}", view.to_json()));
             } else {
                 println!("{}", view.format());
             }
@@ -3949,7 +4005,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     depth,
                     &identities,
                 )?;
-                println!(
+                say!(
                     "extracted {} → {} (outer .sg1 unchanged)",
                     trail.join(" → "),
                     written.display()
@@ -4156,8 +4212,13 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("{}", vault_format_status(&vault_status(&path)?));
         }
-        VaultCmd::Status { path } => {
-            println!("{}", vault_format_status(&vault_status(&path)?));
+        VaultCmd::Status { path, json } => {
+            let st = vault_status(&path)?;
+            if json {
+                json_extra(&format!(",\"status\":{}", st.to_json()));
+            } else {
+                println!("{}", vault_format_status(&st));
+            }
         }
         VaultCmd::Commit {
             path,
@@ -4262,8 +4323,13 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("{}", vault_format_status(&vault_status(&status_path)?));
         }
-        VaultCmd::Versions { path } => {
-            print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+        VaultCmd::Versions { path, json } => {
+            let c = vault_list_versions(&path)?;
+            if json {
+                json_extra(&format!(",\"chart\":{}", c.to_json()));
+            } else {
+                print!("{}", vault_format_versions(&c));
+            }
         }
         VaultCmd::Restore {
             path,

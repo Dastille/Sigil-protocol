@@ -469,7 +469,7 @@ Works for one file (plain `.sg1` or a large-file pack, also with `--star` / `--f
 if a later part fails, the exit code is not 0 — treat that output as incomplete.
 
 **`--json`** on `seal`, `unseal`, `verify`, `scry`, `mend`, `scatter`, `gather`, `kit place`,
-`kit mend` (and `doctor`, which already had it) prints
+`kit mend`, `path`, `vault status` / `versions`, `gc`, `tidy`, `sign` (and `doctor`, which already had it) prints
 exactly one JSON line on stdout; the friendly lines move to stderr.
 
 ```json
@@ -484,6 +484,16 @@ exactly one JSON line on stdout; the friendly lines move to stderr.
 `scatter --json` adds `"pieces"`; `kit place --json` adds `"drives"`, `"pieces"`, `"per_drive"`,
 `"star"`; `kit mend --json` has `"output"` / `"output_bytes"`. A copy too damaged to mend is
 `"ok":false` with the error, exit 1, and no output file.
+
+More `--json` (same one-line shape): `path --json` adds `"view"` (`trail`, `kind`, `name`,
+`nest_payload`, `entries` with `path` / `size` / `nest` / `sha256`; an encrypted pack lists names
+only with its key, otherwise `ok:false`; `-o` adds `"output"`; not with `--pretty`; a log,
+constellation or vault folder is refused with a pointer to `log ls --json` / `doctor --json` /
+`vault versions --json`). `vault status --json` adds `"status"` (`drift`, `tip`, live and tip
+SHA-256, `tip_size`); `vault versions --json` adds `"chart"` (`versions` with `n`, `seal`,
+`sha256`, `size`, `time`; `recipients` is a count). `gc --json` and `tidy --json` add
+`"report"` (items / moved files, bytes, `apply` / `dry_run`); `sign --json` adds
+`"attestation"` (the `.sig` path).
 
 **Exit codes** (seal / unseal / verify):
 
