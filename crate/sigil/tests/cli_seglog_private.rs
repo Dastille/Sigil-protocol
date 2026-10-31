@@ -546,12 +546,12 @@ fn private_logs_refuse_what_would_leak() {
             "log", "append", "ev", "a.txt", "--to", "me.pub", "--unlock", "me.sgk",
         ],
     );
-    // reasons would be plaintext; adopt would copy stars without sealing their metadata; mount needs the key
+    // a reason is sealed, so it needs the index key; adopt would copy stars without sealing their metadata; mount needs the key
     assert!(fails(
         &d,
         &["log", "tombstone", "ev", "--seq", "1", "--reason", "x"]
     )
-    .contains("in the clear"));
+    .contains("seals --reason"));
     ok(&d, &["seal", "a.txt", "-o", "loose.sg1"]);
     assert!(fails(&d, &["log", "adopt", "ev", "loose.sg1", "--keep"]).contains("private"));
     assert!(fails(&d, &["mount", "ev", "view", "--export-dir", "out"]).contains("private INDEX"));

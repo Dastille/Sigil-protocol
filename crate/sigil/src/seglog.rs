@@ -50,8 +50,9 @@ pub const KIND: &str = "log";
 /// `log=2` = the INDEX may also hold tombstone / compaction entries (slice 2);
 /// `log=3` = per-segment keys (`segkeys=1`, a `keys/` key ring, shred entries) (slice 3);
 /// `log=4` = the INDEX may also hold signer handover entries (`op=signer`, `log rotate-signer`);
-/// `log=5` = private INDEX (`privindex=1`, `IXKEY.sg1`, sealed `box=` entries; `init --private-index`).
-pub const LOG_FORMAT: u32 = 5;
+/// `log=5` = private INDEX (`privindex=1`, `IXKEY.sg1`, sealed `box=` entries; `init --private-index`);
+/// `log=6` = a private log's tombstone / shred lines may carry a sealed `box=` with their reason.
+pub const LOG_FORMAT: u32 = 6;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
@@ -961,10 +962,18 @@ fn parse_line(
     let star = kv.get("star").and_then(|v| parse_hex32(v));
     if kv.contains_key("box") {
         // a private entry has exactly the key-less shape, plus the box as its last field
-        if !matches!(op, Op::Seg | Op::Compact { .. }) {
-            return Err(bad("box= (only segment and compaction entries are sealed)"));
-        }
-        if star.is_none() || size != 0 || Some(sha) != star {
+        if let Op::Tomb { reason, .. } = &op {
+            // a sealed reason (log=6): nothing else about a tombstone is hidden
+            if reason.is_some() || star.is_some() {
+                return Err(bad(
+                    "tombstone box= (reason= / star= must not be in the clear)",
+                ));
+            }
+        } else if !matches!(op, Op::Seg | Op::Compact { .. }) {
+            return Err(bad(
+                "box= (only segment, compaction and tombstone entries are sealed)",
+            ));
+        } else if star.is_none() || size != 0 || Some(sha) != star {
             return Err(bad("size=0 sha=<star> star= of a private entry"));
         }
         if kv.contains_key("path") || kv.contains_key("src") {
@@ -1572,6 +1581,53 @@ impl Default for AppendOpts<'_> {
     }
 }
 
+/// Keys that open a private log's index key so a tombstone / shred `--reason` can be sealed.
+#[derive(Default, Clone, Copy)]
+pub struct ReasonKeys<'a> {
+    pub pass: Option<&'a str>,
+    pub unlock: &'a [Identity],
+}
+
+/// The body of a tombstone / shred line: `visible` plus `reason=` in the clear, or, in a private
+/// log, a sealed `box=` holding the reason (raises the manifest to `log=6` first). Needs the index
+/// key only when there is a reason to seal.
+fn tomb_body(
+    log: &mut Log,
+    seq: u64,
+    visible: String,
+    reason: Option<&str>,
+    identity: Option<&Identity>,
+    keys: &ReasonKeys<'_>,
+) -> Result<String> {
+    let Some(r) = reason.filter(|r| !r.is_empty()) else {
+        return Ok(visible);
+    };
+    if !log.privindex {
+        return Ok(format!("{visible} reason={}", enc_reason(r)));
+    }
+    unlock_for_write(log, keys.pass, identity, keys.unlock).map_err(|e| {
+        err(format!(
+            "{e} (a private log seals --reason under its index key; leave --reason out to tombstone without the key)"
+        ))
+    })?;
+    let key = log.ixkey.clone().ok_or_else(|| err(private::LOCKED_MSG))?;
+    raise_format(log, 6)?;
+    let ek = private::entry_key(&key, &log.id, seq)?;
+    let b = private::seal_box(
+        &ek,
+        &log.id,
+        seq,
+        &visible,
+        &Hidden {
+            size: 0,
+            sha: [0; 32],
+            path: None,
+            reason: Some(r.to_string()),
+        },
+    )?;
+    Ok(format!("{visible} box={b}"))
+}
+
 /// Unlock a private log for a writer: `--pass`, then the signing identity, then `--unlock` keys.
 pub(crate) fn unlock_for_write(
     log: &mut Log,
@@ -1851,6 +1907,7 @@ pub fn append(path: &Path, data: &[u8], opts: &AppendOpts<'_>) -> Result<AppendR
                 size: data.len() as u64,
                 sha,
                 path: None,
+                reason: None,
             },
         )?
     } else {
@@ -2100,7 +2157,11 @@ impl Listing {
                     "{}: deletes {}{}",
                     if *shred { "crypto-shred" } else { "tombstone" },
                     fmt_ranges(del),
-                    reason.as_ref().map(|r| format!("  reason: {r:?}")).unwrap_or_default()
+                    match reason {
+                        Some(r) => format!("  reason: {r:?}"),
+                        None if e.is_locked() => "  reason: sealed".to_string(),
+                        None => String::new(),
+                    }
                 ),
                 Op::Compact { of } => match st.slot(e.seq) {
                     Slot::Needed => format!("{file}  (compaction of {})", fmt_ranges(of)),

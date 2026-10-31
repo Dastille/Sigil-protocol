@@ -215,6 +215,7 @@ fn build(
                 size: data.len() as u64,
                 sha: sha256(&data),
                 path: e.path(),
+                reason: None,
             },
         )?;
         write_atomic(&dlog.segment_path(next), &sealed)?;
