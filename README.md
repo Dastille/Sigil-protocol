@@ -336,6 +336,14 @@ $ sigil log check-proof beach.proof --file Photos/2024/beach.jpg --signer me.pub
   file matches the entry's bytes (SHA-256 and size)
 ```
 
+Get a file or a whole folder back by its path (checked, never overwrites):
+
+```
+$ sigil log restore photos 2024 -o Photos-2024 --identity me.sgk
+  + beach.jpg  3 bytes  (segment 1)
+log restore: 1 file(s), 3 byte(s) → Photos-2024
+```
+
 Later, prove that an anchor you pinned (`SEQ:ROOT` from `log ls`) is a prefix of
 today's log, checkable without the INDEX:
 

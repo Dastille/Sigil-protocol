@@ -1234,6 +1234,27 @@ enum LogCmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
+    /// Get a file or a whole folder back by the path `log add` recorded (latest version of each).
+    /// Every file is checked against the INDEX before anything is written; never overwrites;
+    /// refuses a deleted (tombstoned / shredded) file. `PATH` `.` = everything (needs -o).
+    Restore {
+        log: PathBuf,
+        /// A file or folder path as `log ls` shows it (relative to the folder given to `log add`)
+        path: String,
+        /// Where to create the file / folder (must not exist; default: its name, here)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[arg(value_parser = parse_pass, long)]
+        pass: Option<String>,
+        /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Identity (.sgk) that opens encrypt-to segments or a private INDEX (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+    },
     /// Check INDEX chain, HEAD (+signature), every segment's ECC and true-name. Needs no keys;
     /// with --pass / --identity it also unseals each segment. Exit 0 ok, 1 warnings, 2 problems.
     Verify {
@@ -4102,6 +4123,29 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 "{}",
                 seglog::list_with(&path, pass.as_deref(), &identities)?.render()
             )
+        }
+        LogCmd::Restore {
+            log,
+            path,
+            output,
+            pass,
+            pass_file,
+            talisman,
+            identity,
+        } => {
+            let pass = pass.or(pass_file);
+            let pass = resolve_pass(pass, talisman)?;
+            let identities = load_identities(&identity)?;
+            let r = seglog::restore(
+                &log,
+                &path,
+                output.as_deref(),
+                &seglog::ReadOpts {
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                },
+            )?;
+            print!("{}", r.render());
         }
         LogCmd::Read {
             path,
