@@ -196,9 +196,18 @@ fn jsigner(pk: Option<&[u8; 32]>) -> String {
 /// `--json` on a command that writes a proof / card: the file goes to `-o`, never into the JSON.
 fn needs_output(json: bool, output: &Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     if json && output.is_none() {
-        return Err("--json needs -o FILE: the proof / card is written there and the JSON only describes it".into());
+        return Err("--json needs -o FILE: the data / proof / card is written there and the JSON only describes it".into());
     }
     Ok(())
+}
+/// A failed check with `--json`: one `ok:false` line (the caller still exits 2).
+fn check_fail_json(json: bool, format: &str, e: &str) {
+    if json {
+        println!(
+            "{{\"format\":\"{format}\",\"ok\":false,\"error\":{}}}",
+            jstr(e)
+        );
+    }
 }
 fn jnums(v: &[u64]) -> String {
     v.iter()
@@ -225,6 +234,7 @@ fn log_json_fail_format(cmd: &Cmd) -> Option<&'static str> {
             LogCmd::AddSigner { json: true, .. } => Some("sigil-log-add-signer=1"),
             LogCmd::RotateSigner { json: true, .. } => Some("sigil-log-rotate-signer=1"),
             LogCmd::Adopt { json: true, .. } => Some("sigil-log-adopt=1"),
+            LogCmd::Read { json: true, .. } => Some("sigil-log-read=1"),
             _ => None,
         },
         _ => None,
@@ -1308,6 +1318,10 @@ enum LogCmd {
     },
     /// Write segment bytes (checked against the INDEX) to stdout or -o. Default: all, in order.
     Read {
+        /// Metadata only on stdout (`sigil-log-read=1`: seq, size, sha256, path, time, segment
+        /// file); needs -o, where the bytes go (they are never put in the JSON)
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// One segment
         #[arg(long, conflicts_with_all = ["from", "to"])]
@@ -1432,6 +1446,10 @@ enum LogCmd {
     /// Check a card offline (root, signatures); with --child, also check those logs / cards
     /// against it. Exit 0 ok, 2 does not verify.
     CheckCard {
+        /// Machine-readable result on stdout (`sigil-log-check-card=1`); a failed check prints
+        /// `"ok":false` with the error (exit 2)
+        #[arg(long)]
+        json: bool,
         card: PathBuf,
         /// A child log or card file to check against the card (repeatable)
         #[arg(long)]
@@ -1522,6 +1540,10 @@ enum LogCmd {
     },
     /// Check a card child receipt offline. Exit 0 ok, 2 does not verify.
     CheckCardChild {
+        /// Machine-readable result on stdout (`sigil-log-check-card-child=1`); a failed check prints
+        /// `"ok":false` with the error (exit 2)
+        #[arg(long)]
+        json: bool,
         receipt: PathBuf,
         /// Require the card signed by this key (64-hex, .pub or .sgk)
         #[arg(long)]
@@ -1536,6 +1558,10 @@ enum LogCmd {
     /// Check that NEW card carries every child of OLD card at the same or a proved later state
     /// (same name and signer; added children allowed). Exit 0 ok, 2 not consistent.
     CheckCardConsistency {
+        /// Machine-readable result on stdout (`sigil-log-check-card-consistency=1`); a failed check prints
+        /// `"ok":false` with the error (exit 2)
+        #[arg(long)]
+        json: bool,
         old: PathBuf,
         new: PathBuf,
         /// Require both cards signed by this key
@@ -4716,6 +4742,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             child,
             all,
             signer,
+            json,
         } => {
             let text =
                 fs::read_to_string(&card).map_err(|e| format!("read {}: {e}", card.display()))?;
@@ -4725,8 +4752,30 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 all,
             };
             match seglog::Card::parse(&text).and_then(|c| seglog::check_card(&c, &opts)) {
+                Ok(c) if json => {
+                    let checked: Vec<String> = c
+                        .checked
+                        .iter()
+                        .map(|(i, what, how)| {
+                            format!(
+                                "{{\"child\":{i},\"what\":{},\"how\":{}}}",
+                                jstr(what),
+                                jstr(how)
+                            )
+                        })
+                        .collect();
+                    println!(
+                        "{{\"format\":\"sigil-log-check-card=1\",\"ok\":true,\"name\":{},\"children\":{},\"root\":\"{}\",\"signed_by\":{},\"checked\":[{}]}}",
+                        jstr(&c.name),
+                        c.n,
+                        hex::encode(c.root),
+                        jsigner(c.signed_by.as_ref()),
+                        checked.join(",")
+                    );
+                }
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
+                    check_fail_json(json, "sigil-log-check-card=1", &e.to_string());
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 }
@@ -4870,6 +4919,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             signer,
             expect,
             child,
+            json,
         } => {
             let text = fs::read_to_string(&receipt)
                 .map_err(|e| format!("read {}: {e}", receipt.display()))?;
@@ -4881,8 +4931,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             match seglog::CardChildProof::parse(&text)
                 .and_then(|p| seglog::check_card_child(&p, &opts))
             {
+                Ok(c) if json => println!(
+                    "{{\"format\":\"sigil-log-check-card-child=1\",\"ok\":true,\"card\":{},\"children\":{},\"child_index\":{},\"child\":{},\"root\":\"{}\",\"signed_by\":{},\"matched\":{}}}",
+                    jstr(&c.name),
+                    c.n,
+                    c.index,
+                    jstr(&c.what),
+                    hex::encode(c.root),
+                    jsigner(c.signed_by.as_ref()),
+                    c.matched.as_deref().map_or("null".to_string(), jstr)
+                ),
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
+                    check_fail_json(json, "sigil-log-check-card-child=1", &e.to_string());
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 }
@@ -4895,6 +4956,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             child,
             proof,
             pair,
+            json,
         } => {
             let read = |p: &PathBuf| {
                 fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))
@@ -4917,8 +4979,21 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 seglog::Card::parse(&nt).and_then(|n| seglog::check_card_consistency(&o, &n, &opts))
             });
             match r {
+                Ok(c) if json => {
+                    let list =
+                        |v: &[String]| v.iter().map(|x| jstr(x)).collect::<Vec<_>>().join(",");
+                    println!(
+                        "{{\"format\":\"sigil-log-check-card-consistency=1\",\"ok\":true,\"name\":{},\"old_children\":{},\"new_children\":{},\"kept\":[{}],\"added\":[{}]}}",
+                        jstr(&c.name),
+                        c.old_n,
+                        c.new_n,
+                        list(&c.kept),
+                        list(&c.added)
+                    );
+                }
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
+                    check_fail_json(json, "sigil-log-check-card-consistency=1", &e.to_string());
                     eprintln!("error: {e}");
                     std::process::exit(2);
                 }
@@ -4935,7 +5010,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
+            needs_output(json, &output)?;
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
@@ -4974,6 +5051,37 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     got.skipped_deleted.len(),
                     seglog::fmt_ranges(&seglog::compress(&got.skipped_deleted))
                 );
+            }
+            if json {
+                if let Some(o) = &output {
+                    let l = seglog::list_with(&path, pass.as_deref(), &identities)?;
+                    use std::io::Write as _;
+                    let mut f = fs::File::create(o)?;
+                    let mut total = 0u64;
+                    let mut segs = Vec::new();
+                    for (seq, bytes) in &got.parts {
+                        f.write_all(bytes)?;
+                        total += bytes.len() as u64;
+                        let e = l.entries.iter().find(|e| e.seq == *seq);
+                        segs.push(format!(
+                            "{{\"seq\":{seq},\"size\":{},\"sha256\":\"{}\",\"path\":{},\"time\":{},\"segment\":{}}}",
+                            bytes.len(),
+                            hex::encode(sigil::sha256(bytes)),
+                            e.and_then(|e| e.path())
+                                .map_or("null".to_string(), |p| jstr(&String::from_utf8_lossy(&p))),
+                            e.map_or("null".to_string(), |e| e.time.to_string()),
+                            jstr(&seglog::segment_path(&l.log.dir, *seq).display().to_string())
+                        ));
+                    }
+                    f.flush()?;
+                    println!(
+                        "{{\"format\":\"sigil-log-read=1\",\"ok\":true,\"output\":{},\"bytes\":{total},\"segments\":[{}],\"skipped_deleted\":[{}]}}",
+                        jstr(&o.display().to_string()),
+                        segs.join(","),
+                        jnums(&got.skipped_deleted)
+                    );
+                }
+                return Ok(());
             }
             let parts = got.parts;
             let mut out: Box<dyn std::io::Write> = match &output {
