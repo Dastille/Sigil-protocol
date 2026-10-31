@@ -469,7 +469,8 @@ Works for one file (plain `.sg1` or a large-file pack, also with `--star` / `--f
 if a later part fails, the exit code is not 0 — treat that output as incomplete.
 
 **`--json`** on `seal`, `unseal`, `verify`, `scry`, `mend`, `scatter`, `gather`, `kit place`,
-`kit mend`, `path`, `vault status` / `versions`, `gc`, `tidy`, `sign` (and `doctor`, which already had it) prints
+`kit mend`, `path`, `vault` (all subcommands), `constellation`, `gc`, `tidy`, `sign`, `deluge`,
+`keygen`, `seal-folder-names` (and `doctor`, which already had it) prints
 exactly one JSON line on stdout; the friendly lines move to stderr.
 
 ```json
@@ -494,6 +495,17 @@ SHA-256, `tip_size`); `vault versions --json` adds `"chart"` (`versions` with `n
 `sha256`, `size`, `time`; `recipients` is a count). `gc --json` and `tidy --json` add
 `"report"` (items / moved files, bytes, `apply` / `dry_run`); `sign --json` adds
 `"attestation"` (the `.sig` path).
+
+Also with `--json`: `constellation add` (`added`, `linked`, `skipped`, `replaced`,
+`new_bytes`), `constellation scry` (`report`; not recoverable is `ok:false`, exit 2),
+`constellation atlas` (`files`, `output`), `constellation remove` (`dry_run`, `removed` names,
+`stars_freed`, `remaining`); `vault track` / `commit` / `restore` (`version`, `size`, `sha256`;
+commit adds `skipped`, restore adds `mended`), `vault prune` (`kept`, `tip`, `removed`),
+`vault remove` (`removed`, `tip`, `remaining`, `dry_run`), `vault recipients` / `retention`
+(`ok` only; their text goes to stderr); `deluge` (`output`; not with `--watch`); `keygen`
+(`output`, `output_bytes`; never key material); `seal-folder-names` (`output`, `files`,
+`out_bytes`). Output of helper programs started with `--rsync` / `--rclone` / `--wormhole` is
+not captured and may reach stdout.
 
 **Exit codes** (seal / unseal / verify):
 
