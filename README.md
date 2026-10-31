@@ -307,6 +307,7 @@ $ sigil log add backup proj --exclude build/
 log add backup.sigil from proj: added 2, changed 0, unchanged 0, missing 0, skipped-special 0, excluded 2 ...
 $ sigil log add backup proj --exclude build/
 log add backup.sigil from proj: added 0, ... unchanged 2, ... (nothing to do: log unchanged)
+$ sigil log add backup proj --exclude build/ --cache   # opt-in: skip re-hashing files whose size+times are unchanged
 $ sigil log verify backup
 result: healthy
 ```
