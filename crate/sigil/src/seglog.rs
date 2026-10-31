@@ -1922,6 +1922,82 @@ pub fn list_with(path: &Path, pass: Option<&str>, ids: &[Identity]) -> Result<Li
     })
 }
 
+/// Parse a UTC time for `--at`: unix seconds, `YYYY-MM-DD` (the **end** of that UTC day), or
+/// `YYYY-MM-DDTHH:MM[:SS][Z]` (`T` or a space; always UTC, the form `log ls` prints).
+pub fn parse_utc(s: &str) -> Result<u64> {
+    let bad = || {
+        err(format!(
+            "bad time {s:?}: use unix seconds, YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ (UTC)"
+        ))
+    };
+    let t = s.trim();
+    if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) {
+        return t.parse::<u64>().map_err(|_| bad());
+    }
+    let t = t.strip_suffix('Z').unwrap_or(t);
+    let (date, clock) = match t.find(['T', ' ']) {
+        Some(i) => (&t[..i], Some(&t[i + 1..])),
+        None => (t, None),
+    };
+    let num = |x: &str, lo: i64, hi: i64| -> Result<i64> {
+        if x.is_empty() || !x.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(bad());
+        }
+        let v: i64 = x.parse().map_err(|_| bad())?;
+        if v < lo || v > hi {
+            return Err(bad());
+        }
+        Ok(v)
+    };
+    let dp: Vec<&str> = date.split('-').collect();
+    if dp.len() != 3 || dp[0].len() != 4 {
+        return Err(bad());
+    }
+    let (y, m, d) = (
+        num(dp[0], 1970, 9999)?,
+        num(dp[1], 1, 12)?,
+        num(dp[2], 1, 31)?,
+    );
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let mdays = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    if d > mdays[(m - 1) as usize] {
+        return Err(bad());
+    }
+    let secs = match clock {
+        None => 86399,
+        Some(c) => {
+            let cp: Vec<&str> = c.split(':').collect();
+            if cp.len() < 2 || cp.len() > 3 {
+                return Err(bad());
+            }
+            let sec = if cp.len() == 3 { num(cp[2], 0, 59)? } else { 0 };
+            num(cp[0], 0, 23)? * 3600 + num(cp[1], 0, 59)? * 60 + sec
+        }
+    };
+    // days from civil (inverse of iso_utc)
+    let yy = if m <= 2 { y - 1 } else { y };
+    let era = yy.div_euclid(400);
+    let yoe = yy - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    u64::try_from(days * 86400 + secs).map_err(|_| bad())
+}
+
 /// ISO-8601 UTC from unix seconds (no external time crate).
 pub fn iso_utc(t: u64) -> String {
     let days = (t / 86400) as i64;
@@ -3369,6 +3445,27 @@ pub fn mend(path: &Path) -> Result<MendReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_utc_roundtrip() {
+        for t in [0u64, 951782400, 1729602870, 4102444799] {
+            assert_eq!(parse_utc(&iso_utc(t)).ok(), Some(t));
+        }
+        assert_eq!(parse_utc("2024-02-29").ok(), Some(1709251199));
+        assert_eq!(parse_utc("2024-10-22 13:14").ok(), Some(1729602840));
+        assert_eq!(parse_utc("1729602870").ok(), Some(1729602870));
+        for b in [
+            "",
+            "2023-02-29",
+            "2024-13-01",
+            "24-01-01",
+            "2024-01-01T25:00",
+            "yesterday",
+            "2024-01-01T10:00+02",
+        ] {
+            assert!(parse_utc(b).is_err(), "{b}");
+        }
+    }
 
     #[test]
     fn iso_utc_known_dates() {

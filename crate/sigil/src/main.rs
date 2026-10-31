@@ -1234,7 +1234,8 @@ enum LogCmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
-    /// Get a file or a whole folder back by the path `log add` recorded (latest version of each).
+    /// Get a file or a whole folder back by the path `log add` recorded (latest version of each,
+    /// or an older one with --at TIME / --seq N).
     /// Every file is checked against the INDEX before anything is written; never overwrites;
     /// refuses a deleted (tombstoned / shredded) file. `PATH` `.` = everything (needs -o).
     Restore {
@@ -1244,6 +1245,13 @@ enum LogCmd {
         /// Where to create the file / folder (must not exist; default: its name, here)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Older version: as it was at this UTC time (unix seconds, YYYY-MM-DD = end of that day,
+        /// or YYYY-MM-DDTHH:MM:SSZ as `log ls` prints); file or folder
+        #[arg(long, value_name = "TIME", conflicts_with = "seq")]
+        at: Option<String>,
+        /// Older version: exactly this entry (a seq `log ls` shows for that file); file only
+        #[arg(long)]
+        seq: Option<u64>,
         #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
         /// Read the passphrase from the first line of a file only you can read (for scripts; see --pass)
@@ -4228,6 +4236,8 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             log,
             path,
             output,
+            at,
+            seq,
             pass,
             pass_file,
             talisman,
@@ -4236,7 +4246,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            let r = seglog::restore(
+            let ver = seglog::Version {
+                at: at.as_deref().map(seglog::parse_utc).transpose()?,
+                seq,
+            };
+            let r = seglog::restore_version(
                 &log,
                 &path,
                 output.as_deref(),
@@ -4244,6 +4258,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     pass: pass.as_deref(),
                     identities: &identities,
                 },
+                &ver,
             )?;
             print!("{}", r.render());
         }

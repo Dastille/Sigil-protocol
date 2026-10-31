@@ -129,6 +129,27 @@ pub fn restore(
     out: Option<&Path>,
     opts: &ReadOpts<'_>,
 ) -> Result<RestoreReport> {
+    restore_version(path, want, out, opts, &Version::default())
+}
+
+/// Which version [`restore_version`] takes. Default: the latest of each path.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Version {
+    /// The newest version appended at or before these unix seconds (file or folder).
+    pub at: Option<u64>,
+    /// Exactly this entry, which must be a version of the file `want` (file only).
+    pub seq: Option<u64>,
+}
+
+/// [`restore`] an older version: as it was at `ver.at`, or the entry `ver.seq`. A version picked
+/// that way that is deleted now is refused (file) or left out (folder), never swapped for an older one.
+pub fn restore_version(
+    path: &Path,
+    want: &str,
+    out: Option<&Path>,
+    opts: &ReadOpts<'_>,
+    ver: &Version,
+) -> Result<RestoreReport> {
     let mut log = Log::open(path)?;
     if log.privindex {
         log.unlock_index(opts.pass, opts.identities)?;
@@ -149,12 +170,16 @@ pub fn restore(
     let trusted = trusted_len(&log, &loaded.index).min(entries.len());
     // latest vouched version of every path
     let mut latest: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    let mut any = false;
     for e in &entries[..trusted] {
         if let (Op::Seg, Some(p)) = (&e.op, e.path()) {
-            latest.insert(p, e.seq);
+            any = true;
+            if ver.at.is_none_or(|t| e.time <= t) {
+                latest.insert(p, e.seq);
+            }
         }
     }
-    if latest.is_empty() {
+    if !any {
         return Err(err(
             if log.privindex && entries.iter().any(|e| e.is_locked()) {
                 "no entry with a path is readable (private INDEX: give --pass / --identity)"
@@ -165,14 +190,52 @@ pub fn restore(
         ));
     }
     let w = want_of(want);
+    if let Some(seq) = ver.seq {
+        let e = entries[..trusted]
+            .iter()
+            .find(|e| e.seq == seq)
+            .ok_or_else(|| {
+                err(format!(
+                    "seq {seq} is not among the {trusted} entries this log vouches for"
+                ))
+            })?;
+        if !matches!(e.op, Op::Seg) || e.path().as_deref() != Some(w.as_slice()) || w.is_empty() {
+            return Err(err(format!(
+                "segment {seq} is not a version of the file {} (see `sigil log ls`)",
+                show_path(&w)
+            )));
+        }
+        latest.clear();
+        latest.insert(w.clone(), seq);
+    } else if let Some(t) = ver.at {
+        let pre = if w.is_empty() {
+            Vec::new()
+        } else {
+            [w.as_slice(), b"/"].concat()
+        };
+        if !latest.keys().any(|p| *p == w || p.starts_with(&pre)) {
+            return Err(err(format!(
+                "no version of {:?} at or before {} (see `sigil log ls`)",
+                show_path(&w),
+                iso_utc(t)
+            )));
+        }
+    }
     let dead = |seq: u64| st.deleted_by(seq).or_else(|| st.shredded_by(seq));
     // exact file?
     let (folder, picked): (bool, Vec<Picked>) = match latest.get(&w) {
         Some(&seq) if !w.is_empty() => {
             if dead(seq).is_some() {
                 return Err(err(format!(
-                    "{}: the latest version (segment {seq}) is deleted: {}",
+                    "{}: the {} version (segment {seq}) is deleted: {}",
                     show_path(&w),
+                    if ver.seq.is_some() {
+                        "chosen".to_string()
+                    } else if let Some(t) = ver.at {
+                        iso_utc(t)
+                    } else {
+                        "latest".to_string()
+                    },
                     deleted_msg(entries, st, seq)
                 )));
             }

@@ -653,15 +653,27 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
 sigil log restore photos 2024/trip/beach.jpg -o beach.jpg    # one file: its latest version
 sigil log restore photos 2024 -o Photos-2024 --identity me.sgk  # a folder: every path under 2024/
 sigil log restore photos . -o Photos-all                      # everything (needs -o)
+sigil log restore photos 2024 --at 2026-03-01 -o Photos-March   # the folder as it was then
+sigil log restore photos notes.txt --at 2026-03-01T09:30:00Z -o notes-old.txt
+sigil log restore photos notes.txt --seq 12 -o notes-v12.txt    # one exact version (see log ls)
 ```
 
+* **Older versions.** `--at TIME` takes, for every path, the newest vouched version appended at or
+  before TIME (UTC: unix seconds, `YYYY-MM-DD` = the end of that day, or `YYYY-MM-DDTHH:MM[:SS]Z`
+  as `log ls` prints). Paths first added later are not there; a file or folder with no version by
+  then is refused. `--seq N` takes exactly entry N, which must be a version of that file (files
+  only). Times are the writer's clock at append (in the chained INDEX line, so signed and
+  tamper-evident, but not a trusted timestamp: a wrong clock picks the wrong version).
+  Deleted-means-deleted below applies to the version picked: if it was tombstoned or shredded since,
+  it is refused (file) or left out (folder), never swapped for an even older one.
+
 * **What it picks.** For every path, the latest version among entries the HEAD vouches for (the
-  rule `add` and `gc` use). `PATH` equal to a recorded path restores that file; otherwise `PATH` is a
+  rule `add` and `gc` use; or as of `--at`). `PATH` equal to a recorded path restores that file; otherwise `PATH` is a
   folder (matched at a `/` boundary: `20` does not match `2024/…`) and every path under it is
   written relative to it. No match: refused.
 * **Deleted means deleted.** A file whose latest version was tombstoned or shredded is refused on
   its own; inside a folder it is left out and listed (`- path deleted …`). An older version is never
-  substituted; use `log read --seq` for that on purpose.
+  substituted; ask for one on purpose with `--at` / `--seq`.
 * **Byte-exact, all or nothing.** Every file goes through the reader `log read` uses (segment
   header true-name, plain size and SHA-256 against the INDEX, compaction members cut out and
   re-hashed). All files are read and checked **before anything is written**; the result is then
@@ -1173,14 +1185,14 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); restore by path (`log restore`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * Card follow-ups: an inclusion receipt for one child of a card (today the whole card is the receipt), consistency between two cards, and cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
-* `log add` follow-ups: restoring an older version by path and date, and an optional size+mtime cache to skip re-hashing unchanged files.
+* `log add` follow-ups: an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
