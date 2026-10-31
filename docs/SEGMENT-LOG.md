@@ -1100,6 +1100,22 @@ as the listing).
   Notes and warnings stay on stderr. When one of these fails it prints
   `{"format":…,"ok":false,"exit":N,"error":"…"}` and exits with N (the same code as without
   `--json`); passphrases and keys are never printed.
+* Proofs and cards: `log prove`, `log prove-consistency`, `log card` and `log card-prove` write
+  their file as before; with `--json` they need `-o FILE` (refused otherwise, so the proof or
+  card never mixes with JSON on stdout) and print a summary of what was written:
+  `sigil-log-prove=1` (`output`, `kind` = `inclusion-proof`, `seq`, `size`, `root`, `signed`),
+  `sigil-log-prove-consistency=1` (`kind` = `consistency-proof`, `old_size`, `old_root`,
+  `new_size`, `new_root`, `signed`), `sigil-log-card=1` (`kind` = `card`, `name`, `children`,
+  `root`, `signer` or null), `sigil-log-card-prove=1` (`kind` = `card-child-receipt`, `card`,
+  `child_index`, `children`, `child`, `root`, `signer`). The file is byte-for-byte what the
+  command writes without `--json`.
+* Admin: `log privatize --json` (`sigil-log-privatize=1`: `src_id`, `src_size`, `src_root`,
+  `dest`, `dest_id`, `dest_root`, `copied` count, `skipped` seqs, `signed`, `pad`);
+  `log pad --json` / `log enable-segment-keys --json` (`changed`; the latter also `from_seq`,
+  null when already on); `log add-signer --json` (`signer`, `covered`, `root`);
+  `log rotate-signer --json` (`entry`, `from`, `to`, `root`, `handovers`); `log adopt --json`
+  (`ok` false and exit 1 when a source was skipped; `dry_run`, `adopted`, `skipped` with
+  `path` / `why`, `ignored`, `removed`, `root` or null). Failures print the same `ok:false` line.
 
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 
