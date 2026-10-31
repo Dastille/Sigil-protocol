@@ -1338,6 +1338,46 @@ enum LogCmd {
         #[arg(long)]
         signer: Option<String>,
     },
+    /// Receipt for one child of a card (its line + Merkle path + the card's signed root), so the
+    /// rest of the card need not be shown. CHILD: a number, a log id or a card name.
+    CardProve {
+        card: PathBuf,
+        child: String,
+        /// Write the receipt here (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Check a card child receipt offline. Exit 0 ok, 2 does not verify.
+    CheckCardChild {
+        receipt: PathBuf,
+        /// Require the card signed by this key (64-hex, .pub or .sgk)
+        #[arg(long)]
+        signer: Option<String>,
+        /// Require the proved child to be this log id or card name
+        #[arg(long)]
+        expect: Option<String>,
+        /// Also check this log / card file against the proved child
+        #[arg(long)]
+        child: Option<PathBuf>,
+    },
+    /// Check that NEW card carries every child of OLD card at the same or a proved later state
+    /// (same name and signer; added children allowed). Exit 0 ok, 2 not consistent.
+    CheckCardConsistency {
+        old: PathBuf,
+        new: PathBuf,
+        /// Require both cards signed by this key
+        #[arg(long)]
+        signer: Option<String>,
+        /// A child log whose INDEX proves its growth (repeatable)
+        #[arg(long)]
+        child: Vec<PathBuf>,
+        /// A `log prove-consistency` file proving a child log's growth (repeatable)
+        #[arg(long)]
+        proof: Vec<PathBuf>,
+        /// Old and new versions of a nested card that changed (repeatable: --pair OLD NEW)
+        #[arg(long, num_args = 2, value_names = ["OLD", "NEW"])]
+        pair: Vec<PathBuf>,
+    },
     /// Check INDEX chain, HEAD (+signature), every segment's ECC and true-name. Needs no keys;
     /// with --pass / --identity it also unseals each segment. Exit 0 ok, 1 warnings, 2 problems.
     Verify {
@@ -4345,6 +4385,87 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 all,
             };
             match seglog::Card::parse(&text).and_then(|c| seglog::check_card(&c, &opts)) {
+                Ok(c) => print!("{}", c.render()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        LogCmd::CardProve {
+            card,
+            child,
+            output,
+        } => {
+            let text =
+                fs::read_to_string(&card).map_err(|e| format!("read {}: {e}", card.display()))?;
+            let p = seglog::prove_card_child(&seglog::Card::parse(&text)?, &child)?;
+            match output {
+                Some(o) => {
+                    fs::write(&o, p.render())?;
+                    eprintln!(
+                        "receipt for child-{} of {} ({}) written to {}",
+                        p.index,
+                        p.name,
+                        p.child.describe(),
+                        o.display()
+                    );
+                }
+                None => print!("{}", p.render()),
+            }
+        }
+        LogCmd::CheckCardChild {
+            receipt,
+            signer,
+            expect,
+            child,
+        } => {
+            let text = fs::read_to_string(&receipt)
+                .map_err(|e| format!("read {}: {e}", receipt.display()))?;
+            let opts = seglog::CardChildCheckOpts {
+                signer: signer.as_deref().map(parse_signer).transpose()?,
+                expect: expect.as_deref(),
+                child: child.as_deref(),
+            };
+            match seglog::CardChildProof::parse(&text)
+                .and_then(|p| seglog::check_card_child(&p, &opts))
+            {
+                Ok(c) => print!("{}", c.render()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        LogCmd::CheckCardConsistency {
+            old,
+            new,
+            signer,
+            child,
+            proof,
+            pair,
+        } => {
+            let read = |p: &PathBuf| {
+                fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))
+            };
+            let (ot, nt) = (read(&old)?, read(&new)?);
+            let pairs: Vec<(PathBuf, PathBuf)> = pair
+                .chunks(2)
+                .filter_map(|c| match c {
+                    [a, b] => Some((a.clone(), b.clone())),
+                    _ => None,
+                })
+                .collect();
+            let opts = seglog::CardConsistencyOpts {
+                signer: signer.as_deref().map(parse_signer).transpose()?,
+                logs: &child,
+                proofs: &proof,
+                pairs: &pairs,
+            };
+            let r = seglog::Card::parse(&ot).and_then(|o| {
+                seglog::Card::parse(&nt).and_then(|n| seglog::check_card_consistency(&o, &n, &opts))
+            });
+            match r {
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
                     eprintln!("error: {e}");

@@ -45,7 +45,7 @@ pub enum CardChild {
 }
 
 impl CardChild {
-    fn line(&self) -> String {
+    pub(super) fn line(&self) -> String {
         let sig = |s: &Option<([u8; 32], [u8; 64])>| match s {
             Some((pk, sig)) => format!(" signer={} sig={}", hex32(pk), hex::encode(sig)),
             None => String::new(),
@@ -77,7 +77,7 @@ impl CardChild {
         }
     }
 
-    fn parse(l: &str) -> Option<CardChild> {
+    pub(super) fn parse(l: &str) -> Option<CardChild> {
         let kv: std::collections::BTreeMap<&str, &str> = l
             .split_whitespace()
             .filter_map(|t| t.split_once('='))
@@ -169,7 +169,7 @@ fn duplicate(children: &[CardChild]) -> Option<String> {
     children.iter().map(key).find(|k| !seen.insert(k.clone()))
 }
 
-fn leaf(i: usize, line: &str) -> [u8; 32] {
+pub(super) fn leaf(i: usize, line: &str) -> [u8; 32] {
     let mut b = format!("sigil-card-child-v1\0{i}\0").into_bytes();
     b.extend_from_slice(line.as_bytes());
     sha256(&b)
@@ -184,11 +184,11 @@ fn card_root(children: &[CardChild]) -> [u8; 32] {
     crate::merkle::merkle_root(&leaves)
 }
 
-fn card_message(name: &str, n: usize, root: &[u8; 32]) -> Vec<u8> {
+pub(super) fn card_message(name: &str, n: usize, root: &[u8; 32]) -> Vec<u8> {
     format!("sigil-card-v1\nname={name}\nn={n}\nroot={}\n", hex32(root)).into_bytes()
 }
 
-fn sig_ok(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
+pub(super) fn sig_ok(pk: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
     VerifyingKey::from_bytes(pk)
         .map(|vk| vk.verify(msg, &Signature::from_bytes(sig)).is_ok())
         .unwrap_or(false)
@@ -468,67 +468,7 @@ pub fn check_card(card: &Card, opts: &CardCheckOpts<'_>) -> Result<CardCheck> {
     }
     let mut checked: Vec<(usize, String, String)> = Vec::new();
     for p in opts.children {
-        let (i, how) = if p.is_file() {
-            let text = fs::read_to_string(p).map_err(|e| err(format!("{}: {e}", p.display())))?;
-            let sub = Card::parse(&text).map_err(|e| bad(format!("{}: {e}", p.display())))?;
-            let i = card
-                .children
-                .iter()
-                .position(|c| matches!(c, CardChild::Card { name, .. } if *name == sub.name))
-                .ok_or_else(|| {
-                    bad(format!(
-                        "{}: card {} is not a child of this card",
-                        p.display(),
-                        sub.name
-                    ))
-                })?;
-            if let CardChild::Card { size, root, .. } = &card.children[i] {
-                if *root != sub.root || *size != sub.children.len() as u64 {
-                    return Err(bad(format!(
-                        "{}: card {} does not match child-{} (different root: altered or another card)",
-                        p.display(),
-                        sub.name,
-                        i + 1
-                    )));
-                }
-            }
-            (i, "card file matches (root, children)".to_string())
-        } else {
-            let log =
-                Log::open(p).map_err(|e| bad(format!("missing child {}: {e}", p.display())))?;
-            let i = card
-                .children
-                .iter()
-                .position(|c| matches!(c, CardChild::Log { log_id, .. } if *log_id == log.id))
-                .ok_or_else(|| {
-                    bad(format!(
-                        "{}: log {} is not a child of this card",
-                        p.display(),
-                        log.id
-                    ))
-                })?;
-            let CardChild::Log { size, root, .. } = &card.children[i] else {
-                return Err(bad("internal: child kind".into()));
-            };
-            let idx = read_index(&log)?;
-            let have = idx.entries.len() as u64;
-            if have < *size {
-                return Err(bad(format!(
-                    "{}: the log has {have} valid entries but the card pins {size} (rolled back or damaged)",
-                    p.display()
-                )));
-            }
-            if root_of(&idx.entries[..*size as usize]) != *root {
-                return Err(bad(format!(
-                    "{}: root at {size} differs from the card (history rewritten, or another log)",
-                    p.display()
-                )));
-            }
-            (
-                i,
-                format!("log matches at {size} (now {have} entries; the card's state is a prefix)"),
-            )
-        };
+        let (i, how) = match_child(&card.children, p, "a child of this card")?;
         if checked.iter().any(|(j, _, _)| *j == i + 1) {
             return Err(bad(format!("child-{} is given twice", i + 1)));
         }
@@ -552,4 +492,74 @@ pub fn check_card(card: &Card, opts: &CardCheckOpts<'_>) -> Result<CardCheck> {
         signed_by: card.signer.map(|s| s.0),
         checked,
     })
+}
+
+/// Which child of `children` the log / card file `p` is, and check it matches that entry:
+/// a card file must have the same root and size; a log must hold the pinned state as a prefix.
+pub(super) fn match_child(
+    children: &[CardChild],
+    p: &Path,
+    whose: &str,
+) -> Result<(usize, String)> {
+    let bad = |m: String| err(format!("card does not verify: {m}"));
+    if p.is_file() {
+        let text = fs::read_to_string(p).map_err(|e| err(format!("{}: {e}", p.display())))?;
+        let sub = Card::parse(&text).map_err(|e| bad(format!("{}: {e}", p.display())))?;
+        let i = children
+            .iter()
+            .position(|c| matches!(c, CardChild::Card { name, .. } if *name == sub.name))
+            .ok_or_else(|| {
+                bad(format!(
+                    "{}: card {} is not {}",
+                    p.display(),
+                    sub.name,
+                    whose
+                ))
+            })?;
+        if let CardChild::Card { size, root, .. } = &children[i] {
+            if *root != sub.root || *size != sub.children.len() as u64 {
+                return Err(bad(format!(
+                    "{}: card {} does not match the card's entry for it (different root: altered or another card)",
+                    p.display(),
+                    sub.name
+                )));
+            }
+        }
+        return Ok((i, "card file matches (root, children)".to_string()));
+    }
+    let log = Log::open(p).map_err(|e| bad(format!("missing child {}: {e}", p.display())))?;
+    let i = children
+        .iter()
+        .position(|c| matches!(c, CardChild::Log { log_id, .. } if *log_id == log.id))
+        .ok_or_else(|| bad(format!("{}: log {} is not {}", p.display(), log.id, whose)))?;
+    let CardChild::Log { size, root, .. } = &children[i] else {
+        return Err(bad("internal: child kind".into()));
+    };
+    let have =
+        log_prefix_ok(&log, *size, root).map_err(|m| bad(format!("{}: {m}", p.display())))?;
+    Ok((
+        i,
+        format!("log matches at {size} (now {have} entries; the card's state is a prefix)"),
+    ))
+}
+
+/// `Ok(entries now)` when the log's first `size` entries have Merkle root `root`.
+pub(super) fn log_prefix_ok(
+    log: &Log,
+    size: u64,
+    root: &[u8; 32],
+) -> std::result::Result<u64, String> {
+    let idx = read_index(log).map_err(|e| e.to_string())?;
+    let have = idx.entries.len() as u64;
+    if have < size {
+        return Err(format!(
+            "the log has {have} valid entries but the card pins {size} (rolled back or damaged)"
+        ));
+    }
+    if root_of(&idx.entries[..size as usize]) != *root {
+        return Err(format!(
+            "root at {size} differs from the card (history rewritten, or another log)"
+        ));
+    }
+    Ok(have)
 }
