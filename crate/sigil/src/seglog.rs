@@ -1755,6 +1755,37 @@ fn signer_gate(log: &Log, identity: Option<&Identity>) -> Result<()> {
     signer_gate_at(log, &[], identity)
 }
 
+/// Writer role check for operations that change a log's keys or settings but take a list of
+/// identities (some only to open keys): in a signed log, one of `ids` must be the current signer.
+/// Recipients of the keys (readers) can open and read the log but not change it. Unsigned logs
+/// have no writer role (anyone who can write the folder can change them).
+pub(crate) fn writer_gate(log: &Log, ids: &[Identity], what: &str) -> Result<()> {
+    let entries = match read_index(log) {
+        Ok(idx) if idx.error.is_none() => idx.entries,
+        Ok(_) => {
+            return Err(err(
+                "INDEX is damaged; run `sigil log verify` — refusing to write",
+            ))
+        }
+        Err(e) => return Err(e),
+    };
+    let Some(pk) = signer_for(log, &entries, entries.len() + 1) else {
+        return Ok(());
+    };
+    if ids.iter().any(|id| {
+        SigningKey::from_bytes(&id.ed25519_seed)
+            .verifying_key()
+            .to_bytes()
+            == pk
+    }) {
+        return Ok(());
+    }
+    Err(err(format!(
+        "this log is signed: {what} needs the signing key {}… (--identity KEY.sgk); a reader's key can open the log but not change it",
+        &hex32(&pk)[..16]
+    )))
+}
+
 /// `signer_gate` against these INDEX entries: the key must be the signer of the next write.
 fn signer_gate_at(log: &Log, entries: &[Entry], identity: Option<&Identity>) -> Result<()> {
     let current = signer_for(log, entries, entries.len() + 1);
@@ -2579,6 +2610,7 @@ pub fn enable_segment_keys(
     if log.segkeys {
         return Ok(None);
     }
+    writer_gate(&log, ids, "turning segment keys on")?;
     if log.privindex {
         unlock_for_write(&mut log, pass, None, ids)?;
     }
@@ -2595,8 +2627,12 @@ pub fn enable_segment_keys(
 }
 
 /// Turn padding on for an existing private log: new segments are padded from now on (`log=7`).
-pub fn enable_pad(path: &Path) -> Result<bool> {
+pub fn enable_pad(path: &Path, ids: &[Identity]) -> Result<bool> {
     let mut log = Log::open(path)?;
+    if log.pad {
+        return Ok(false);
+    }
+    writer_gate(&log, ids, "turning padding on")?;
     if !log.privindex {
         return Err(err("padding needs a private INDEX (a public INDEX shows every size anyway); see `sigil log privatize`"));
     }

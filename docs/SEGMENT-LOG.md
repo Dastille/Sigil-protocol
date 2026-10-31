@@ -1009,6 +1009,44 @@ misreading it.
 Unauthorised concurrent writers are not a security feature: `LOG.lock` is advisory and local. One
 writer at a time; do not put the container on a filesystem without atomic `rename` / `create_new`.
 
+## Reader and writer roles (signed logs)
+
+A log has two kinds of key, already separate in the format; this section names them as roles.
+
+* **Writer = the signing key** (`init --identity`, `add-signer`, handed on with `rotate-signer`).
+  Every operation that changes the log needs it as `--identity`: `append`, `add`, `adopt`,
+  `tombstone`, `shred` (also `--rewrite`), `compact --apply`, `rotate-signer`, and (since this
+  slice) `rewrap` (granting / revoking access), `pad` and `enable-segment-keys`. The check runs
+  before anything is written; a wrong key is refused.
+* **Reader = a key the data is wrapped to** (`--pass-file`, or a recipient added with
+  `log rewrap --add-to reader.pub`). It opens a private INDEX and the segments: `ls` (also
+  `--json`), `read`, `verify`, `restore`, `mount`, `prove`. It cannot do any of the writes above.
+
+```sh
+# owner grants a reader (segment-keys + private INDEX: the ring re-wrap covers every past segment)
+sigil log rewrap events --pass-file pw --identity owner.sgk --add-to reader.pub
+sigil log read events --seq 7 --identity reader.sgk -o day7.json     # reader: ok
+sigil log append events x.json --identity reader.sgk --to reader.pub  # reader: refused
+```
+
+**What this is, honestly.** Roles are enforced by the tool and, for the INDEX, by signatures: a
+reader who edits files by hand can still damage or truncate a log it can write to on disk, but
+cannot produce a HEAD the pinned signer would have signed, so `log verify --signer` / `check-proof
+--signer` catch it. Manifest settings (`pad=`, `segkeys=`) are not signed; a hand-edited manifest
+is caught only as far as `verify` checks it. Filesystem permissions remain the first line.
+
+* **Unsigned logs have no writer role:** any holder of the data key (or anyone who can write the
+  folder) can change them. Sign the log (`log add-signer`) to get roles.
+* **A reader keeps what it was given.** `rewrap --remove-to` stops *new* wraps; a reader that
+  copied the key ring, old segments or its decrypted output keeps them. Revoke by rotating keys
+  for new data (`compact --apply` re-seals under fresh segment keys) and treat old data as read.
+* **New segments reach a reader only when wrapped to it:** append with `--to reader.pub`, or
+  re-run `rewrap --add-to` (segment-keys logs) after writes.
+* **Old writer keys:** after `rotate-signer` the old key can no longer sign the next write, but a
+  stolen old key still verifies its own old HEADs; pin anchors.
+* A reader-only `.sgk` is an ordinary identity: nothing in the file marks it as a reader. The role
+  is "not the signer of this log", checked per log.
+
 ## Listing as JSON (`sigil log ls --json`)
 
 One JSON object on stdout, format `"format":"sigil-log-ls=1"` (additive: new keys may appear, existing

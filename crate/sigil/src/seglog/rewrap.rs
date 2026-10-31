@@ -114,6 +114,10 @@ pub fn rewrap(path: &Path, o: &RewrapOpts<'_>) -> Result<RewrapReport> {
         add: o.add,
         new_pass: o.new_pass,
     };
+    if !o.dry_run {
+        // granting / revoking access is the writer's job: a reader can open the keys too
+        writer_gate(&log, o.identities, "re-wrapping keys")?;
+    }
     let _guard = if o.dry_run { None } else { Some(lock(&log)?) };
     let mut rep = RewrapReport {
         dir: log.dir.clone(),
