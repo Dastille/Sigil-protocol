@@ -969,6 +969,35 @@ misreading it.
 Unauthorised concurrent writers are not a security feature: `LOG.lock` is advisory and local. One
 writer at a time; do not put the container on a filesystem without atomic `rename` / `create_new`.
 
+## Monthly retention check (`scripts/monthly-log-retention.sh`)
+
+A read-only routine to schedule once a month: it runs `sigil log verify` (the log's doctor:
+INDEX chain, HEAD and signature, every segment's ECC and true-name, strays) and then
+`sigil log compact` **without** `--apply`, which prints what would be merged and which deleted
+files would be erased. It never changes the log (the tests compare every file before and after).
+
+```sh
+SIGIL=/usr/local/bin/sigil scripts/monthly-log-retention.sh ~/logs/photos \
+    --pass-file ~/.sigil/pw --older-than 30d --keep-last 50      # private log: key from a file
+scripts/monthly-log-retention.sh ~/logs/events --signer owner.pub --strict
+# crontab: 1st of the month, 06:00, output mailed by cron
+0 6 1 * *  /opt/sigil/scripts/monthly-log-retention.sh /srv/logs/events --older-than 30d
+```
+
+Options: `--pass-file` / `--identity` (given to both steps; a private log's INDEX and encrypted
+segments need them for a full check and plan), `--signer` / `--quick` (verify only),
+`--keep-last` / `--older-than` / `--range` (the compaction rule), `--strict`. Literal passphrases
+are not accepted. The last line is a one-line summary for mail subjects:
+`== summary: health=healthy|warnings|PROBLEMS  compaction-plan=ok|FAILED`.
+
+Exit codes: `0` healthy (warnings allowed, e.g. a tombstoned file still waiting for `compact
+--apply`), `1` warnings with `--strict`, `2` problems found by verify (damage, missing segment,
+bad signature: act on it), `3` could not run (bad arguments, `sigil` not found, the plan failed).
+After reading the plan, apply it by hand: `sigil log compact LOG --apply …` (same rule options,
+plus `--seal-pass-file` / `--to` for encrypted logs). Bot or calendar schedulers can run the same
+script; it needs no network and prints nothing secret (a private log's names stay sealed unless
+`--pass-file` is given, and then only the plan's seqs and sizes are shown).
+
 ## Size notes (measured, slice 1; compaction removes the per-segment overhead for merged batches)
 
 Each segment carries a fixed overhead of about **3.2 KB** (header, keystone, Merkle) plus the
@@ -1339,14 +1368,14 @@ Reed–Solomon code.
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Done: padded segments for private logs (`log=7`); sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
+(above). Done: a monthly retention check (`scripts/monthly-log-retention.sh`); padded segments for private logs (`log=7`); sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
 (`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=8` (see "Size notes").
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
-* Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
+* Automatic **applying** of retention (the monthly check below only reports; `compact --apply` stays a deliberate step).
 * Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
 
 ## Private label (v3)

@@ -247,7 +247,6 @@ Roll-up cards (a card of logs, a card of cards) ship as an MVP: `sigil log card 
 
 Not in this Friday slice — come back later:
 
-- Monthly doctor + compact dry-run routine
 - INDEX roll-up of very old history
 
-Day-to-day use does not need those.
+Day-to-day use does not need those. A monthly read-only health + compaction-plan check ships as `scripts/monthly-log-retention.sh` (see SEGMENT-LOG.md, "Monthly retention check").
