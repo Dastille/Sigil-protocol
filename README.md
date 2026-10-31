@@ -358,6 +358,15 @@ $ sigil log rewrap photos --identity me.sgk --add-to partner.pub
 log rewrap photos.sigil: the index key
 ```
 
+Roll daily logs up into a signed monthly card (and cards into a yearly card),
+then check any level against its children:
+
+```
+$ sigil log card day-01 day-02 --name 2026-10 --identity me.sgk -o 2026-10.card
+$ sigil log check-card 2026-10.card --child day-01 --child day-02 --all --signer me.pub
+card OK: 2026-10 (2 children) root …, signed by …
+```
+
 Later, prove that an anchor you pinned (`SEQ:ROOT` from `log ls`) is a prefix of
 today's log, checkable without the INDEX:
 

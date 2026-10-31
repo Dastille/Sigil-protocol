@@ -1294,6 +1294,37 @@ enum LogCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+    /// Make a card: a small signed file committing, under its own Merkle root, to the vouched
+    /// HEADs (SEQ:ROOT) of segment logs and/or to other cards (daily logs -> monthly card ->
+    /// yearly card). Check it with `log check-card`.
+    Card {
+        /// Child segment logs and/or card files, in order
+        #[arg(required = true)]
+        children: Vec<PathBuf>,
+        /// Card name (1-128 of A-Z a-z 0-9 . _ - :), e.g. 2026-10
+        #[arg(long)]
+        name: String,
+        /// Sign the card with this identity (.sgk)
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// Write the card here (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Check a card offline (root, signatures); with --child, also check those logs / cards
+    /// against it. Exit 0 ok, 2 does not verify.
+    CheckCard {
+        card: PathBuf,
+        /// A child log or card file to check against the card (repeatable)
+        #[arg(long)]
+        child: Vec<PathBuf>,
+        /// Require every child of the card to be given with --child
+        #[arg(long)]
+        all: bool,
+        /// Require the card signed by this key (64-hex, .pub or .sgk)
+        #[arg(long)]
+        signer: Option<String>,
+    },
     /// Check INDEX chain, HEAD (+signature), every segment's ECC and true-name. Needs no keys;
     /// with --pass / --identity it also unseals each segment. Exit 0 ok, 1 warnings, 2 problems.
     Verify {
@@ -4239,6 +4270,55 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
             print!("{}", r.render());
+        }
+        LogCmd::Card {
+            children,
+            name,
+            identity,
+            output,
+        } => {
+            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let c = seglog::make_card(&name, &children, id.as_ref())?;
+            let text = c.render();
+            match output {
+                Some(o) => {
+                    fs::write(&o, &text)?;
+                    eprintln!(
+                        "card {} ({} children, {}) root {} written to {}",
+                        c.name,
+                        c.children.len(),
+                        if c.signer.is_some() {
+                            "signed"
+                        } else {
+                            "unsigned"
+                        },
+                        hex::encode(c.root),
+                        o.display()
+                    );
+                }
+                None => print!("{text}"),
+            }
+        }
+        LogCmd::CheckCard {
+            card,
+            child,
+            all,
+            signer,
+        } => {
+            let text =
+                fs::read_to_string(&card).map_err(|e| format!("read {}: {e}", card.display()))?;
+            let opts = seglog::CardCheckOpts {
+                signer: signer.as_deref().map(parse_signer).transpose()?,
+                children: &child,
+                all,
+            };
+            match seglog::Card::parse(&text).and_then(|c| seglog::check_card(&c, &opts)) {
+                Ok(c) => print!("{}", c.render()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            }
         }
         LogCmd::Read {
             path,

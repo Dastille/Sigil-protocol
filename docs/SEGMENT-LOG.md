@@ -26,8 +26,8 @@ signer later shipped** (`log add-signer`: pin a first key on a log created unsig
 backup shipped** (`log add LOG DIR`: seal only the files that are new or changed since the last add), and the
 **private INDEX shipped** (`log init --private-index`, `log=5`: sizes, SHA-256s and file names sealed in the
 INDEX). Approved 2026-10-06 as a general-purpose mode (not tied to any one
-application); built after the tidy-container track. Nested hierarchical cards remain **deferred**
-(see the end).
+application); built after the tidy-container track. Roll-up **cards** shipped as an MVP (`log card` / `log check-card`,
+see "Cards"); INDEX roll-up / pruning stays **deferred** (see the end).
 
 A segment log is an **append-only, tamper-evident sequence of sealed batches**. Each
 `sigil log append` seals one blob of bytes — a day of events, a chunk of a journal, a
@@ -973,6 +973,60 @@ the HEAD signature over `log`, `new-size`, `head-chain`, `new-root`, `head-t` an
   wire-compatible with RFC 6962.
 * **Additive.** Nothing is written to the log; no format change.
 
+## Cards (`sigil log card` / `sigil log check-card`): roll-ups of logs and cards
+
+A **card** is a small text file that commits, under its own Merkle root, to a list of children:
+the vouched HEAD of a segment log (`SEQ:ROOT`, with that HEAD's Ed25519 signature when the log is
+signed), and/or other cards. Cards of cards make roll-ups: daily logs → a monthly card → a yearly
+card. Logs are not changed; a card is a separate file (format `sigil-log-card=1`).
+
+```sh
+sigil log card day-01 day-02 day-03 --name 2026-10 --identity me.sgk -o 2026-10.card
+sigil log card 2026-10.card 2026-11.card --name 2026 --identity me.sgk -o 2026.card
+sigil log check-card 2026.card --signer me.pub --child 2026-10.card --child 2026-11.card --all
+sigil log check-card 2026-10.card --child day-01 --child day-02 --child day-03 --all
+```
+
+```text
+sigil-log-card=1
+name=2026-10
+n=2
+child-1=kind=log log=<id> size=31 root=<hex> chain=<hex> t=<unix> [signer=<hex> sig=<hex>]
+child-2=kind=card name=2026-10-b size=4 root=<hex> [signer=<hex> sig=<hex>]
+root=<hex>
+signer=<hex>      (optional: --identity)
+sig=<hex>
+```
+
+* **Root.** Leaf *i* = `SHA-256("sigil-card-child-v1\0" ‖ i ‖ "\0" ‖ child line)` (the line must be
+  in canonical form); root = the same `merkle_root` as logs use. The position is in every leaf, so
+  the odd-last-node padding cannot add a phantom child; `n=` must match the lines. The card
+  signature covers `"sigil-card-v1\n" name, n, root`.
+* **`card`** takes each log's HEAD **only if the log vouches for it** (the `gc` / `prove` rule: on a
+  signed log a HEAD signed by the current key; a damaged INDEX refuses). A card file given as a child
+  is fully checked first. One entry per log id / card name.
+* **`check-card`** always checks the card on its own: canonical lines, `n`, the root, the card
+  signature, and every child's embedded signature (the log's HEAD signature over its id, size,
+  chain, root and time; a child card's signature). `--signer KEY`: the card must be signed by KEY.
+  `--child LOG` (repeatable): the log must be a child (by log id) and the Merkle root of its first
+  `size` entries must equal the card's root, so the log may have **grown** since (the card's state
+  is a prefix), but not been rewritten or rolled back. `--child CARD`: the card file must be a child
+  (by name) with exactly that root and child count. `--all`: every child must be given. Exit 0 = ok,
+  2 = does not verify.
+* **What it guarantees.** With `--signer` on a key you trust: "the holder of KEY committed, at card
+  time, to exactly these log states / cards". With `--child`: "this log (or card) is the one the card
+  committed to, and has only been appended to since". Checking a yearly card against its monthly
+  cards and each monthly card against its logs checks the whole tree, level by level, with no
+  operator's word involved. An **unsigned** card is a checksum: only as strong as the copy you
+  compare it with (like an unsigned HEAD).
+* **What this MVP does not do (yet).** No receipt for *one* child (today you hand over the card,
+  which lists all children: a few hundred bytes each); no consistency proof between two versions of
+  a card; a card does not **replace** INDEX history: logs keep every line, nothing is pruned, and
+  retention stays explicit (`compact` / `shred`). `check-card --child LOG` reads that log's INDEX
+  (chain hashes only; a private INDEX needs no key), so checking a log child needs the log; a card
+  child needs only the card file. Child signers are reported, not pinned: pin them with `log verify
+  --signer` on the log, or sign the card. Time (`t=`) is the writer's clock, not a timestamp authority.
+
 ## Signer rotation (`sigil log rotate-signer`, `log=4`)
 
 A signed log is pinned to one Ed25519 key at `init`. To retire that key (a new machine, a new
@@ -1110,16 +1164,16 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); restore by path (`log restore`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); restore by path (`log restore`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
-* **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
+* Card follow-ups: an inclusion receipt for one child of a card (today the whole card is the receipt), consistency between two cards, and cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * `log add` follow-ups: per-file receipts by path, restoring an older version by path and date, and
   an optional size+mtime cache to skip re-hashing unchanged files.
-* INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
+* INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
 

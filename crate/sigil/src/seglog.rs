@@ -1363,6 +1363,7 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
 
 mod add;
 mod adopt;
+mod card;
 mod compact;
 mod consistency;
 mod exclude;
@@ -1375,6 +1376,7 @@ mod rotate;
 mod shred;
 pub use add::*;
 pub use adopt::*;
+pub use card::*;
 pub use compact::*;
 pub use consistency::*;
 pub use exclude::{parse_ignore_file, ExcludePattern, Excluder, IGNORE_FILE};
