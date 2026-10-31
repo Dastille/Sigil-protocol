@@ -1364,6 +1364,7 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
 mod add;
 mod adopt;
 mod compact;
+mod consistency;
 mod exclude;
 mod keyring;
 mod private;
@@ -1373,6 +1374,7 @@ mod shred;
 pub use add::*;
 pub use adopt::*;
 pub use compact::*;
+pub use consistency::*;
 pub use exclude::{parse_ignore_file, ExcludePattern, Excluder, IGNORE_FILE};
 use keyring::RingCache;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};

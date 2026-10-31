@@ -80,6 +80,58 @@ pub fn root_from_path(
     (used == path.len()).then_some(cur)
 }
 
+/// Consistency path from a tree of `old` leaves to the tree over all `leaves` (`old` must be a
+/// prefix length, `1..=leaves.len()`): the inclusion path of leaf `old - 1` in the **new** tree.
+/// Under [`merkle_root`]'s shape, leaf `old - 1` is the last node of every old layer, so the
+/// old tree's root depends only on that leaf and the *left* siblings of its path, and those left
+/// siblings are complete aligned subtrees over leaves `< old - 1`, identical in both trees. The
+/// path's *right* siblings are the new tree's growth. See [`roots_from_consistency`].
+pub fn consistency_path(leaves: &[[u8; 32]], old: usize) -> Option<Vec<[u8; 32]>> {
+    if old == 0 {
+        return None;
+    }
+    merkle_path(leaves, old - 1)
+}
+
+/// `(old_root, new_root)` implied by a consistency path (from [`consistency_path`]) and `leaf`
+/// (leaf `old - 1`, which the path starts from). `None` when `old == 0`, `old > new`, or the path
+/// has the wrong length for the two sizes. Because both roots are rebuilt from the *same* hashes,
+/// matching both against pinned roots shows (under SHA-256 collision resistance and fixed tree
+/// shapes for the two sizes) that the first `old` leaves of the new tree are the old tree's leaves.
+pub fn roots_from_consistency(
+    leaf: &[u8; 32],
+    old: usize,
+    new: usize,
+    path: &[[u8; 32]],
+) -> Option<([u8; 32], [u8; 32])> {
+    if old == 0 || old > new {
+        return None;
+    }
+    let new_root = root_from_path(leaf, old - 1, new, path)?;
+    // Old tree: the node on the path is always the last one of its layer, so a level either takes
+    // a left sibling (index odd) or pairs the node with itself (index even, layer size > 1).
+    let (mut cur, mut i, mut n, mut used) = (*leaf, old - 1, old, 0usize);
+    let mut m = new;
+    while m > 1 {
+        let left = i % 2 == 1;
+        let right = !left && i + 1 < m;
+        if n > 1 {
+            cur = if left {
+                pair(path.get(used)?, &cur)
+            } else {
+                pair(&cur, &cur)
+            };
+        }
+        if left || right {
+            used += 1;
+        }
+        i /= 2;
+        n = n.div_ceil(2);
+        m = m.div_ceil(2);
+    }
+    (used == path.len()).then_some((cur, new_root))
+}
+
 fn pair(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     let mut cat = [0u8; 64];
     cat[..32].copy_from_slice(a);
@@ -122,6 +174,77 @@ mod path_tests {
                 }
             }
             assert!(merkle_path(&leaves, n).is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod consistency_tests {
+    use super::*;
+
+    fn leaves(n: usize, salt: u8) -> Vec<[u8; 32]> {
+        (0..n)
+            .map(|i| {
+                let mut b = (i as u32).to_le_bytes().to_vec();
+                b.push(salt);
+                Sha256::digest(&b).into()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_prefix_of_every_size_is_consistent() {
+        for m in 1..=40usize {
+            let l = leaves(m, 0);
+            let new_root = merkle_root(&l);
+            for n in 1..=m {
+                let p = consistency_path(&l, n).unwrap();
+                assert_eq!(
+                    roots_from_consistency(&l[n - 1], n, m, &p),
+                    Some((merkle_root(&l[..n]), new_root)),
+                    "n={n} m={m}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fails_closed() {
+        for m in 2..=24usize {
+            let l = leaves(m, 0);
+            for n in 1..m {
+                let old_root = merkle_root(&l[..n]);
+                let p = consistency_path(&l, n).unwrap();
+                // size regression / zero
+                assert_eq!(roots_from_consistency(&l[n - 1], m, n, &p), None);
+                assert_eq!(roots_from_consistency(&l[n - 1], 0, m, &p), None);
+                // not a prefix: the new tree differs at some leaf < n
+                for k in 0..n {
+                    let mut forked = l.clone();
+                    forked[k][0] ^= 1;
+                    let fp = consistency_path(&forked, n).unwrap();
+                    let r = roots_from_consistency(&forked[n - 1], n, m, &fp).unwrap();
+                    assert_eq!(r.1, merkle_root(&forked));
+                    assert_ne!(r.0, old_root, "fork at {k} n={n} m={m} looks consistent");
+                }
+                // tampered hash, wrong leaf, truncated or padded path
+                for j in 0..p.len() {
+                    let mut bad = p.clone();
+                    bad[j][31] ^= 0x80;
+                    let r = roots_from_consistency(&l[n - 1], n, m, &bad).unwrap();
+                    assert!(r.0 != old_root || r.1 != merkle_root(&l));
+                }
+                let mut leaf = l[n - 1];
+                leaf[0] ^= 1;
+                let r = roots_from_consistency(&leaf, n, m, &p).unwrap();
+                assert_ne!(r.0, old_root);
+                if !p.is_empty() {
+                    assert_eq!(roots_from_consistency(&l[n - 1], n, m, &p[1..]), None);
+                }
+                let mut long = p.clone();
+                long.push([7u8; 32]);
+                assert_eq!(roots_from_consistency(&l[n - 1], n, m, &long), None);
+            }
         }
     }
 }

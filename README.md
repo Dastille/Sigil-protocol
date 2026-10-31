@@ -336,6 +336,15 @@ $ sigil log check-proof beach.proof --file Photos/2024/beach.jpg --signer me.pub
   file matches the entry's bytes (SHA-256 and size)
 ```
 
+Later, prove that an anchor you pinned (`SEQ:ROOT` from `log ls`) is a prefix of
+today's log, checkable without the INDEX:
+
+```
+$ sigil log prove-consistency photos 1:<ROOT> -o since1.proof
+$ sigil log check-consistency since1.proof --old 1:<ROOT> --signer me.pub
+consistency proof OK: 1:… is a prefix of 4:…
+```
+
 Keyless `log verify`, `mend` and `gc` still work. Entry count, times and
 on-disk segment sizes stay visible. `--private-index` is still accepted.
 `--public-index` opts out (names, sizes and hashes in the clear) and prints a

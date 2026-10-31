@@ -12,8 +12,8 @@ append-only sequence, a signed tree head, short offline inclusion proofs, and sm
 anchors pinned outside the log. To that it adds what CT does not need for a single-owner store:
 erasure-coded segments that `mend` heals in place, tombstones and compaction that never rewrite
 the index, opt-in crypto-shredding of per-segment keys, and signer rotation. CT and similar
-systems provide consistency proofs and public monitoring. This log does not provide them yet
-(consistency proofs are deferred), so rollback and fork detection depend on anchors the reader
+systems provide consistency proofs and public monitoring. This log provides consistency proofs
+(`log prove-consistency`, see below) but no gossip or monitors, so rollback and fork detection depend on anchors the reader
 keeps (see "Prior work" and "Threat model").
 
 Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
@@ -831,7 +831,7 @@ message says which check failed).
   receipt is a point-in-time statement; deletions are later entries, provable with their own
   receipt). Nor that the root is "the" log: an **unsigned** proof is only as strong as the root you
   compare it with, so check it with `--anchor` against an anchor you pinned, or use a signed log and
-  `--signer`. Inclusion of one log state in a later one (consistency proofs) is deferred.
+  `--signer`. That one log state is a prefix of a later one: see "Consistency proofs" below.
 * **Any entry type.** Segments, compaction entries and tombstones (a deletion receipt) all prove.
   Tombstones and compaction never rewrite the INDEX, so a receipt cut before them keeps verifying
   against its anchor, and `prove --at M` regenerates it at any later time.
@@ -840,6 +840,66 @@ message says which check failed).
   regardless of HEAD; it is signed only when `M` is the HEAD's seq. A damaged INDEX refuses (`log
   verify` first).
 * **Additive.** Nothing is written to the log; no format change, no manifest bump.
+
+## Consistency proofs (`sigil log prove-consistency` / `sigil log check-consistency`)
+
+A receipt that the log state you pinned earlier (`OLD:ROOT`, printed by `log ls`) is a **prefix** of
+a later state (`NEW:ROOT`): nothing before `OLD` was rewritten, removed or reordered, only entries
+were appended. It is checked offline from the two roots alone: no INDEX, no segments, no keys.
+
+```sh
+sigil log prove-consistency events 3:<ROOT3> -o since3.proof     # OLD -> current HEAD (signed if the log is)
+sigil log prove-consistency events 3:<ROOT3> 9 -o 3to9.proof     # OLD -> the first 9 entries
+sigil log check-consistency since3.proof --old 3:<ROOT3> --signer owner.pub
+sigil log check-consistency 3to9.proof --old 3:<ROOT3> --new 9:<ROOT9>
+```
+
+`prove-consistency` refuses when the log's root at `OLD` is not the pinned `ROOT` (the log is not an
+extension of your anchor), when `OLD` is 0 or `OLD > NEW`, and on a damaged INDEX. `OLD` may be a
+bare `SEQ` (then nothing is checked at cut time; the verifier's `--old` pin is what matters).
+
+The proof (`sigil-log-consistency=1`, about 0.4 KB unsigned plus 65 bytes per tree level):
+
+| Field | Meaning |
+|-------|---------|
+| `log`, `name` | log-id (bound by the HEAD signature), informational name |
+| `old-size`, `old-root` | the earlier anchor |
+| `new-size`, `new-root` | the later state |
+| `leaf` | chain hash of entry `old-size` |
+| `path` | that leaf's inclusion path in the tree over the first `new-size` entries |
+| `head-chain`, `head-t`, `signer`, `sig`, `handover-N` | as in inclusion proofs, when `new-size` is the HEAD of a signed log |
+
+**Why one path is enough (Sigil's tree, not RFC 6962).** `merkle.rs` builds layers left to right and
+pairs an odd last node with itself. For a tree of `n` leaves, leaf `n-1` sits at index
+`(n-1) >> k` on layer `k`, which is always the *last* node of that layer. So the old root is a
+function of leaf `n-1` and the **left** siblings on its path only (a level without a left sibling
+pairs the node with itself). Each left sibling is a complete, aligned subtree over leaves `< n-1`,
+which is the same node in every larger tree. In the new tree of `m ≥ n` leaves the same leaf has the
+same left siblings plus some **right** siblings (the appended growth). `check-consistency` therefore
+rebuilds the old root from `leaf` + left siblings + self-pairing for size `n`, and the new root from
+`leaf` + the whole path for size `m` (`merkle::roots_from_consistency`), and requires both to equal
+`old-root` and `new-root`. Tree shapes are fixed by the two sizes, so with SHA-256 collision
+resistance, matching both roots means the first `n` leaves under `new-root` are exactly the leaves
+under `old-root`. RFC 6962 §2.1.2 instead splits at the largest power of two below `n` and uses
+`0x00`/`0x01` domain prefixes; its `PROOF(m, D[n])` format does not apply to Sigil roots and RFC
+6962 tooling cannot check these proofs (nor the reverse). Leaves are chain hashes, which already
+commit to every earlier entry; the Merkle check is what makes the proof short.
+
+What `check-consistency` verifies: `0 < old-size ≤ new-size` (a smaller new size is a size
+regression: rollback); the path length matches both sizes; both rebuilt roots match; if signed,
+the HEAD signature over `log`, `new-size`, `head-chain`, `new-root`, `head-t` and the handover chain
+(as `check-proof`). Options: `--old SEQ:ROOT` / `--new SEQ:ROOT` (must be exactly those pins),
+`--signer KEY` (new root signed by KEY or a key it handed over to). Exit 0 = verifies, 2 = it does not.
+
+* **What it proves.** "The log whose first `new-size` entries have `new-root` starts with the log
+  whose first `old-size` entries have `old-root`." With `--old` on your pinned anchor and either
+  `--signer` or `--new` on a root you trust, a fork or a rewritten past is caught without the INDEX.
+* **What it does not prove.** That `new-root` is "the" current log: an unsigned proof is only as
+  strong as the `--new` root you compare it with (a forger can extend *their own* fork consistently).
+  Nothing about the old side's signature (the old anchor is whatever you pinned). No gossip: two
+  readers given different but each self-consistent heads only notice when they compare. Not
+  wire-compatible with RFC 6962.
+* **Additive.** Nothing is written to the log; no format change.
 
 ## Signer rotation (`sigil log rotate-signer`, `log=4`)
 
@@ -957,9 +1017,9 @@ say.
 
 | Work | What it is | Same here | Different here |
 |------|------------|-----------|----------------|
-| **RFC 6962**, *Certificate Transparency* (Laurie, Langley, Kasper, June 2013), <https://www.rfc-editor.org/rfc/rfc6962> | Public append-only logs of TLS certificates: a Merkle Tree Hash over the entries, Signed Tree Heads, audit (inclusion) paths, consistency proofs between two tree heads, and monitors/auditors watching the logs | Merkle root over an append-only sequence (`HEAD` ≈ STH); offline inclusion proofs (`log prove` ≈ audit path); signed head binding size + root | **Tree shape and hashing.** RFC 6962 §2.1 hashes leaves as `SHA-256(0x00 ‖ d)` and nodes as `SHA-256(0x01 ‖ l ‖ r)`, and splits at the largest power of two below *n*. It notes that "this domain separation is required to give second preimage resistance". Sigil's `merkle.rs` hashes `SHA-256(l ‖ r)` with no prefix and pairs an odd last node with itself. Two things keep that sound here. Leaves are chain hashes, which are outputs of `SHA-256("sigil-log-entry-v1\0" ‖ …)`, and `check-proof` only accepts a leaf it recomputed from a full INDEX line. Every line also names its own `seq` (see "Inclusion proofs"). Sigil roots are therefore **not** RFC 6962 roots, and RFC 6962 tooling cannot verify them. **No consistency proofs** (deferred) and no gossip/monitors: rollback or a split view are caught only by a pinned `--anchor` or a newer signed HEAD. **Single writer, private store** instead of a public multi-party log. Entries are sealed, erasure-coded batches, not certificates |
+| **RFC 6962**, *Certificate Transparency* (Laurie, Langley, Kasper, June 2013), <https://www.rfc-editor.org/rfc/rfc6962> | Public append-only logs of TLS certificates: a Merkle Tree Hash over the entries, Signed Tree Heads, audit (inclusion) paths, consistency proofs between two tree heads, and monitors/auditors watching the logs | Merkle root over an append-only sequence (`HEAD` ≈ STH); offline inclusion proofs (`log prove` ≈ audit path); signed head binding size + root | **Tree shape and hashing.** RFC 6962 §2.1 hashes leaves as `SHA-256(0x00 ‖ d)` and nodes as `SHA-256(0x01 ‖ l ‖ r)`, and splits at the largest power of two below *n*. It notes that "this domain separation is required to give second preimage resistance". Sigil's `merkle.rs` hashes `SHA-256(l ‖ r)` with no prefix and pairs an odd last node with itself. Two things keep that sound here. Leaves are chain hashes, which are outputs of `SHA-256("sigil-log-entry-v1\0" ‖ …)`, and `check-proof` only accepts a leaf it recomputed from a full INDEX line. Every line also names its own `seq` (see "Inclusion proofs"). Sigil roots are therefore **not** RFC 6962 roots, and RFC 6962 tooling cannot verify them. **Consistency proofs** exist (`log prove-consistency`) but use Sigil's tree, not RFC 6962 §2.1.2 `PROOF(m, D[n])`, so they are not wire-compatible; no gossip/monitors: rollback or a split view are caught only by a pinned `--anchor` or a newer signed HEAD. **Single writer, private store** instead of a public multi-party log. Entries are sealed, erasure-coded batches, not certificates |
 | **RFC 9162**, *Certificate Transparency Version 2.0* (Laurie, Messeri, Stradling, December 2021), <https://www.rfc-editor.org/rfc/rfc9162> | Obsoletes RFC 6962. Same Merkle-tree foundation, revised data structures and API | as above | as above. Sigil follows neither version's wire format |
-| **Crosby & Wallach**, *Efficient Data Structures for Tamper-Evident Logging*, USENIX Security 2009, <https://www.usenix.org/conference/usenixsecurity09/technical-sessions/presentation/efficient-data-structures-tamper-evident> | The "history tree": a Merkle tree over a growing log with logarithmic membership and incremental (consistency) proofs between versions, for an untrusted logger and auditors. RFC 6962 says its tree is "essentially the same as the history tree [CrosbyWallach] proposal, except our definition handles non-full trees differently" | Append-only Merkle commitment; membership proofs | Sigil keeps a linear hash chain (each INDEX line commits to all earlier ones) **and** a Merkle root over the chain hashes (short inclusion proofs). Incremental proofs are not implemented yet |
+| **Crosby & Wallach**, *Efficient Data Structures for Tamper-Evident Logging*, USENIX Security 2009, <https://www.usenix.org/conference/usenixsecurity09/technical-sessions/presentation/efficient-data-structures-tamper-evident> | The "history tree": a Merkle tree over a growing log with logarithmic membership and incremental (consistency) proofs between versions, for an untrusted logger and auditors. RFC 6962 says its tree is "essentially the same as the history tree [CrosbyWallach] proposal, except our definition handles non-full trees differently" | Append-only Merkle commitment; membership proofs | Sigil keeps a linear hash chain (each INDEX line commits to all earlier ones) **and** a Merkle root over the chain hashes (short inclusion proofs). Incremental (consistency) proofs: `log prove-consistency`, one Merkle path for Sigil's tree shape (see "Consistency proofs") |
 | **Schneier & Kelsey**, *Secure Audit Logs to Support Computer Forensics*, ACM TISSEC 2(2), May 1999, <https://doi.org/10.1145/317087.317089> | Audit log on an untrusted machine, with hash chains and per-record encryption, making "all log entries generated prior to the logging machine's compromise impossible for the attacker to read, and also impossible to modify or destroy undetectably" (abstract) | Hash chain over every entry; per-entry encryption; keys can be destroyed to make entries unreadable (cf. `shred`) | No protection of past entries after a key compromise: whoever steals the signing key can re-sign the whole log (see "Threat model"). Sigil's `shred` is a deliberate, recorded erasure of one segment's key, not forward secrecy |
 
 What is new here, as a combination rather than a primitive: every segment is an erasure-coded
@@ -973,10 +1033,9 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
-* Adding a signer to an unsigned log after `init`; *consistency proofs* (this anchor is a prefix of that one) without the full INDEX.
 * Streaming appends / segments above memory size (work-pack chunking).
 * Private INDEX follow-ups: sealed tombstone / shred reasons, `sigil mount` of a private log, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, re-wrapping the index
