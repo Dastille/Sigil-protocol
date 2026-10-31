@@ -48,6 +48,27 @@ working), in Glyph mode because the body already carries the Reed-Solomon parity
   in the clear, with a warning); add `--pass` / `--to` to get v2. Every v1 pack,
   including encrypted and ward-only ones written earlier, opens and lists as before.
 
+### Sealing the names of an old pack (`sigil seal-folder-names`)
+
+```sh
+sigil seal-folder-names old.sg1 -o new.sg1 --pass-file pw.txt          # or --to me.pub [--identity me.sgk]
+sigil seal-folder-names wards.sg1 -o new.sg1 --pass-file pw.txt --allow-new-key   # ward-only pack
+```
+
+Turns a v1 pack (names in the clear) into a v2 sealed directory without re-inscribing the
+folder: the v1 pack becomes the encrypted body, as `inscribe` builds it. Encrypted members are
+copied byte-for-byte (not decrypted; wards keep working); clear members are sealed under the new
+key (Glyph mode). INPUT is never changed and an existing OUTPUT is refused.
+
+- Fails closed: when the pack has encrypted members, the given `--pass-file` / `--identity` must
+  open at least one of them (a typo would otherwise seal the names under a key that opens none of
+  the files). A ward-only pack's members open only with their wards: `--allow-new-key` accepts that.
+  No key, a literal `--pass`, or an already-sealed pack is refused; nothing is written.
+- **Honest limits:** the old file and every copy or backup of it still show the names; delete them
+  yourself. Members encrypted with a passphrase different from the new key still need that old
+  passphrase (only one is checked). Large unencrypted members (work packs) are refused: re-inscribe
+  that folder with `--pass-file` / `--to`.
+
 ## Keyless operations
 
 `mend`, `scry`, `verify`, `doctor`, `log verify`/`mend` use shard CRCs and the
@@ -65,6 +86,6 @@ nonzero outer entropy slot, and any label edit.
 
 Ciphertext length (padding is a follow-up, opt-in only), the file count of an
 encrypted folder pack (names are sealed: see above), member names of folder packs
-written before sealed directories, ward-only packs (made before wards needed a folder key, or with `--ward-names-visible`), vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
+written before sealed directories (until converted with `sigil seal-folder-names`; old copies still show them), ward-only packs (made before wards needed a folder key, or with `--ward-names-visible`), vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
 with no key or with `--public-index` (a private INDEX, the default for a keyed log, seals them: docs/SEGMENT-LOG.md "Private INDEX").
 See the threat model.

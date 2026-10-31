@@ -381,6 +381,32 @@ enum Cmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
+    /// Seal the member names of an old folder pack (SGDR v1, names in the clear) into a new
+    /// sealed-directory pack (v2). Members are copied as they are; INPUT is never changed.
+    SealFolderNames {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Passphrase: only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(true), long)]
+        pass: Option<String>,
+        /// Passphrase file: seals the names, and must open at least one encrypted member
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Recipient the names are sealed to (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Identity (.sgk) that opens the old members (the key check when only --to is given)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        /// Seal the names under a key that opens none of the members (ward-only packs)
+        #[arg(long = "allow-new-key")]
+        allow_new_key: bool,
+    },
     Scatter {
         input: PathBuf,
         #[arg(short, long)]
@@ -2897,6 +2923,38 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             identity,
         } => {
             verify_cmd(input, pass.or(pass_file), talisman, identity, None, None)?;
+        }
+        Cmd::SealFolderNames {
+            input,
+            output,
+            pass,
+            pass_file,
+            talisman,
+            to,
+            identity,
+            mode,
+            allow_new_key,
+        } => {
+            let pass = resolve_pass(pass.or(pass_file), talisman)?;
+            let recipients = load_recipients(&to)?;
+            let identities = load_identities(&identity)?;
+            let r = sigil::seal_dir_names(
+                &input,
+                &output,
+                mode.into(),
+                pass.as_deref(),
+                &recipients,
+                pass.as_deref(),
+                &identities,
+                allow_new_key,
+            )?;
+            println!(
+                "sealed folder pack written to {} ({} files, {} bytes): member names, sizes and the tree are now encrypted; {} is unchanged, delete it (and its copies) yourself",
+                output.display(),
+                r.files,
+                r.out_bytes,
+                input.display()
+            );
         }
         Cmd::Scatter { input, output } => {
             let data = fs::read(input)?;
