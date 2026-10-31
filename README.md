@@ -621,8 +621,8 @@ audit / test checks above.
   not work; split them or keep huge files as separate `sigil seal` packs. Options:
   [docs/STREAMING-DESIGN.md](docs/STREAMING-DESIGN.md) (decision pending).
 - In `scry --json` / `verify --json`, `health` combines Scry's recoverability check with
-  `doctor`'s repair check; `needs-repair` errs on the cautious side, and the `report` text can
-  still read `ok` for a copy whose `status.health` is `needs-repair`.
+  `doctor`'s repair check; `needs-repair` errs on the cautious side. When it is `needs-repair`,
+  the `scry` / `verify` text (and the JSON `report`) ends with a `needs repair: …` line pointing to `sigil mend`.
 
 ## History
 

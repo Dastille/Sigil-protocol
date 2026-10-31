@@ -195,3 +195,49 @@ fn constellation_status() {
     assert_eq!(health(&j), "not-recoverable", "{j}");
     assert!(j.contains("\"missing\":1"), "{j}");
 }
+
+fn plain(d: &Path, args: &[&str]) -> String {
+    let o = sigil(d, args);
+    assert!(o.status.success(), "{args:?}");
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+
+/// The human report must not read fine while `status.health` says needs-repair.
+#[test]
+fn report_text_agrees_with_health() {
+    let d = common::scratch("status-agree");
+    fs::write(d.join("photo.jpg"), noise(300_000, 11)).unwrap();
+    ok(&d, &["seal", "-o", "photo.sg1", "photo.jpg"]);
+    for cmd in ["scry", "verify"] {
+        assert!(!plain(&d, &[cmd, "photo.sg1"]).contains("needs repair:"));
+    }
+    fs::copy(d.join("photo.sg1"), d.join("torn.sg1")).unwrap();
+    wreck(&d.join("torn.sg1"), 0.50, 0.55);
+    for cmd in ["scry", "verify"] {
+        let t = plain(&d, &[cmd, "torn.sg1"]);
+        assert!(
+            t.contains("needs repair:") && t.contains("sigil mend"),
+            "{t}"
+        );
+        let j = json(&d, &[cmd, "torn.sg1"], 0);
+        assert_eq!(health(&j), "needs-repair", "{j}");
+        assert!(j.contains("needs repair:"), "report agrees: {j}");
+    }
+    ok(&d, &["mend", "torn.sg1", "-o", "fixed.sg1"]);
+    assert!(!plain(&d, &["scry", "fixed.sg1"]).contains("needs repair:"));
+
+    fs::create_dir_all(d.join("docs")).unwrap();
+    let big = noise(200_000, 5);
+    fs::write(d.join("docs/big.bin"), &big).unwrap();
+    ok(&d, &["constellation", "add", "Sky", "docs"]);
+    assert!(!plain(&d, &["constellation", "scry", "Sky"]).contains("needs repair:"));
+    let star = sigil::container::star_path(&d.join("Sky.sigil"), &sigil::sha256(&big));
+    let mut b = fs::read(&star).unwrap();
+    let mid = b.len() / 2;
+    b[mid] ^= 0x40;
+    fs::write(&star, &b).unwrap();
+    for args in [&["scry", "Sky"][..], &["constellation", "scry", "Sky"][..]] {
+        let t = plain(&d, args);
+        assert!(t.contains("needs repair:") && t.contains("big.bin"), "{t}");
+    }
+}
