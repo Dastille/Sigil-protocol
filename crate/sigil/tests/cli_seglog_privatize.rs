@@ -283,3 +283,73 @@ fn encrypted_segments_need_their_key() {
     let full = ok(&d, &["log", "ls", "pv", "--pass-file", "pw"]);
     assert!(full.contains("a.txt"), "{full}");
 }
+
+fn seg_len(d: &Path, log: &str, seq: u64) -> u64 {
+    fs::metadata(d.join(format!("{log}.sigil/segments/0000/{seq:010}.sg1")))
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn privatize_with_pad_pads_new_segments() {
+    let d = common::scratch("privatize-pad");
+    pw(&d, "pw", "secret");
+    ok(&d, &["log", "init", "ev"]);
+    fs::write(d.join("a.txt"), "a\n").unwrap();
+    ok(&d, &["log", "append", "ev", "a.txt"]);
+    // refused: literal passphrase; and a public DEST cannot be padded (no key at all)
+    fails(
+        &d,
+        &["log", "privatize", "ev", "bad", "--pass", "x", "--pad"],
+    );
+    let out = ok(
+        &d,
+        &["log", "privatize", "ev", "pv", "--pass-file", "pw", "--pad"],
+    );
+    assert!(out.contains("padding on"), "{out}");
+    let m = fs::read_to_string(d.join("pv.sigil/CONTAINER")).unwrap();
+    assert!(m.contains("log=7") && m.contains("pad=padme"), "{m}");
+    // new appends: small, compressible and incompressible bodies share the 4 KiB floor
+    let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+    let noise: Vec<u8> = (0..3000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect();
+    let bodies = [b"b".to_vec(), vec![7u8; 1500], vec![9u8; 3900], noise];
+    for (i, b) in bodies.iter().enumerate() {
+        let f = format!("n{i}");
+        fs::write(d.join(&f), b).unwrap();
+        ok(&d, &["log", "append", "pv", &f, "--pass-file", "pw"]);
+    }
+    let sizes: Vec<u64> = (2..=5).map(|s| seg_len(&d, "pv", s)).collect();
+    assert!(sizes.iter().all(|&s| s == sizes[0]), "{sizes:?}");
+    for (i, b) in bodies.iter().enumerate() {
+        let o = format!("o{i}");
+        let seq = (i + 2).to_string();
+        ok(
+            &d,
+            &[
+                "log",
+                "read",
+                "pv",
+                "--seq",
+                &seq,
+                "-o",
+                &o,
+                "--pass-file",
+                "pw",
+            ],
+        );
+        assert_eq!(&fs::read(d.join(&o)).unwrap(), b);
+    }
+    assert!(!ok(&d, &["log", "verify", "pv", "--pass-file", "pw"]).is_empty());
+    // without --pad: no pad flag, unchanged from before
+    ok(&d, &["log", "privatize", "ev", "pn", "--pass-file", "pw"]);
+    let m = fs::read_to_string(d.join("pn.sigil/CONTAINER")).unwrap();
+    assert!(!m.contains("pad=") && !m.contains("log=7"), "{m}");
+    no_tmp(&d);
+}
