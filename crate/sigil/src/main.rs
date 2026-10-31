@@ -1305,6 +1305,36 @@ enum LogCmd {
         #[arg(long)]
         anchor: Option<String>,
     },
+    /// Write a receipt that the log state OLD (an anchor `SEQ:ROOT` you pinned, or just `SEQ`) is a
+    /// prefix of a later state NEW (default: the current HEAD): one Merkle path from which both
+    /// roots rebuild. Anyone can check it offline with `sigil log check-consistency`, without the
+    /// INDEX and without keys. Refuses when the log's root at OLD is not the pinned ROOT.
+    ProveConsistency {
+        path: PathBuf,
+        /// Old anchor: `SEQ:ROOT` (as printed by `log ls`; checked here) or `SEQ`
+        old: String,
+        /// New state: `SEQ` or `SEQ:ROOT` (default: the HEAD the log vouches for; signed when it is
+        /// a signed HEAD)
+        new: Option<String>,
+        /// Write the proof here (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Check a proof from `log prove-consistency` offline: OLD is a prefix of NEW. Exit 0 when it
+    /// verifies, 2 when it does not.
+    CheckConsistency {
+        proof: PathBuf,
+        /// Require the old side to be this pinned `SEQ:ROOT`
+        #[arg(long)]
+        old: Option<String>,
+        /// Require the new side to be this `SEQ:ROOT`
+        #[arg(long)]
+        new: Option<String>,
+        /// Require the new root signed by this key, or by a key it handed the log over to:
+        /// 64-hex Ed25519 public key, or a .pub / .sgk file
+        #[arg(long)]
+        signer: Option<String>,
+    },
     /// Pin a first signing key on a log created unsigned. The key signs the HEAD covering every
     /// entry already in the log (it vouches for that state), and the manifest pins it; from then on
     /// every write needs --identity, like a log signed at init. Refused on a log that is already
@@ -4458,6 +4488,87 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
             };
             match seglog::Proof::parse(&text).and_then(|p| seglog::check_proof(&p, &opts)) {
+                Ok(c) => print!("{}", c.render()),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        LogCmd::ProveConsistency {
+            path,
+            old,
+            new,
+            output,
+        } => {
+            let seq_root =
+                |spec: &str| -> Result<(u64, Option<[u8; 32]>), Box<dyn std::error::Error>> {
+                    if spec.contains(':') {
+                        let (s, r) = parse_anchor(spec)?;
+                        Ok((s, Some(r)))
+                    } else {
+                        Ok((
+                            spec.trim()
+                                .parse()
+                                .map_err(|_| "anchor must be SEQ or SEQ:ROOT")?,
+                            None,
+                        ))
+                    }
+                };
+            let (o, oroot) = seq_root(&old)?;
+            let (n, nroot) = match new.as_deref().map(seq_root).transpose()? {
+                Some((n, r)) => (Some(n), r),
+                None => (None, None),
+            };
+            let c = seglog::prove_consistency(&path, o, oroot, n)?;
+            if let Some(r) = nroot {
+                if r != c.new_root {
+                    return Err(format!(
+                        "this log's root at {} is {}, not {}",
+                        c.new_size,
+                        hex::encode(c.new_root),
+                        hex::encode(r)
+                    )
+                    .into());
+                }
+            }
+            let text = c.render();
+            match output {
+                Some(f) => {
+                    fs::write(&f, &text)?;
+                    eprintln!(
+                        "consistency proof {}:{} -> {}:{} ({}) written to {}",
+                        c.old_size,
+                        hex::encode(c.old_root),
+                        c.new_size,
+                        hex::encode(c.new_root),
+                        if c.head.is_some() {
+                            "signed"
+                        } else {
+                            "unsigned"
+                        },
+                        f.display()
+                    );
+                }
+                None => print!("{text}"),
+            }
+        }
+        LogCmd::CheckConsistency {
+            proof,
+            old,
+            new,
+            signer,
+        } => {
+            let text =
+                fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
+            let opts = seglog::ConsistencyCheckOpts {
+                old: old.as_deref().map(parse_anchor).transpose()?,
+                new: new.as_deref().map(parse_anchor).transpose()?,
+                signer: signer.as_deref().map(parse_signer).transpose()?,
+            };
+            match seglog::Consistency::parse(&text)
+                .and_then(|c| seglog::check_consistency(&c, &opts))
+            {
                 Ok(c) => print!("{}", c.render()),
                 Err(e) => {
                     eprintln!("error: {e}");

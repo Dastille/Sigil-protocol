@@ -233,6 +233,8 @@ Frozen layout: [`docs/sigil-v1.txt`](sigil-v1.txt). CLI dump: `sigil --help`.
 | [CDC-FastCDC.md](CDC-FastCDC.md) | Opt-in FastCDC chunking profiles |
 | [BREAKTHROUGHS.md](BREAKTHROUGHS.md) | Internal research log |
 
+Consistency proofs between anchors now ship without the full INDEX: `sigil log prove-consistency LOG OLD:ROOT -o p` then `sigil log check-consistency p --old OLD:ROOT --signer me.pub` (see SEGMENT-LOG.md, "Consistency proofs").
+
 ---
 
 ## Still deferred (later)
@@ -240,7 +242,6 @@ Frozen layout: [`docs/sigil-v1.txt`](sigil-v1.txt). CLI dump: `sigil --help`.
 Not in this Friday slice — come back later:
 
 - Nested hierarchical cards (a card of cards / roll-ups)
-- Consistency proofs between anchors without the full INDEX
 - Key-ring rewrap / rotating encrypt-to recipients on an existing segment-key log
 - Monthly doctor + compact dry-run routine
 - INDEX roll-up of very old history

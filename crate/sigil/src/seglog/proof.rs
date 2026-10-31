@@ -66,6 +66,53 @@ fn parse_handover(line: &str) -> Option<HandoverFields> {
     ))
 }
 
+/// Handovers: each valid under its outgoing key, in order, before `size`, ending at `pk` (the key
+/// that signed the HEAD at `size`). Returns the signer chain, oldest first.
+pub(super) fn handover_chain(
+    log_id: &str,
+    size: u64,
+    handovers: &[String],
+    pk: [u8; 32],
+) -> std::result::Result<Vec<[u8; 32]>, String> {
+    let mut signer_chain: Vec<[u8; 32]> = Vec::new();
+    let mut last_seq = 0u64;
+    for (i, l) in handovers.iter().enumerate() {
+        let (hseq, from, to, sig) = parse_handover(l)
+            .ok_or_else(|| format!("handover-{} is not a signer handover line", i + 1))?;
+        if hseq <= last_seq || hseq >= size {
+            return Err(format!(
+                "handover-{} (seq {hseq}) is out of order or not before entry {size}",
+                i + 1
+            ));
+        }
+        if signer_chain.last().is_some_and(|c| *c != from) {
+            return Err(format!(
+                "handover-{} is not from the key the previous one handed over to",
+                i + 1
+            ));
+        }
+        if !handover_sig_ok(log_id, hseq, &from, &to, &sig) {
+            return Err(format!(
+                "handover-{} signature does not verify (forged, or from another log / position)",
+                i + 1
+            ));
+        }
+        if signer_chain.is_empty() {
+            signer_chain.push(from);
+        }
+        signer_chain.push(to);
+        last_seq = hseq;
+    }
+    match signer_chain.last() {
+        None => signer_chain.push(pk),
+        Some(last) if *last != pk => {
+            return Err("the handovers do not end at the key that signed HEAD".into())
+        }
+        Some(_) => {}
+    }
+    Ok(signer_chain)
+}
+
 impl Proof {
     pub fn render(&self) -> String {
         let mut s = format!("{PROOF_MAGIC}\nlog={}\n", self.log_id);
@@ -461,47 +508,13 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
             Some(h.signer)
         }
     };
-    // Handovers: each valid under its outgoing key, in order, before `size`, ending at HEAD's signer.
-    let mut signer_chain: Vec<[u8; 32]> = Vec::new();
-    if let Some(pk) = signed_by {
-        let mut last_seq = 0u64;
-        for (i, l) in p.handovers.iter().enumerate() {
-            let (hseq, from, to, sig) = parse_handover(l)
-                .ok_or_else(|| bad(format!("handover-{} is not a signer handover line", i + 1)))?;
-            if hseq <= last_seq || hseq >= p.size {
-                return Err(bad(format!(
-                    "handover-{} (seq {hseq}) is out of order or not before entry {}",
-                    i + 1,
-                    p.size
-                )));
-            }
-            if signer_chain.last().is_some_and(|c| *c != from) {
-                return Err(bad(format!(
-                    "handover-{} is not from the key the previous one handed over to",
-                    i + 1
-                )));
-            }
-            if !handover_sig_ok(&p.log_id, hseq, &from, &to, &sig) {
-                return Err(bad(format!("handover-{} signature does not verify (forged, or from another log / position)", i + 1)));
-            }
-            if signer_chain.is_empty() {
-                signer_chain.push(from);
-            }
-            signer_chain.push(to);
-            last_seq = hseq;
+    let signer_chain = match signed_by {
+        Some(pk) => handover_chain(&p.log_id, p.size, &p.handovers, pk).map_err(bad)?,
+        None if !p.handovers.is_empty() => {
+            return Err(bad("handover-N= lines in an unsigned proof".into()))
         }
-        match signer_chain.last() {
-            None => signer_chain.push(pk),
-            Some(last) if *last != pk => {
-                return Err(bad(
-                    "the handovers do not end at the key that signed HEAD".into()
-                ))
-            }
-            Some(_) => {}
-        }
-    } else if !p.handovers.is_empty() {
-        return Err(bad("handover-N= lines in an unsigned proof".into()));
-    }
+        None => Vec::new(),
+    };
     if let Some(want) = opts.signer {
         match signed_by {
             Some(_) if signer_chain.contains(&want) => {}
