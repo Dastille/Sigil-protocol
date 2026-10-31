@@ -239,7 +239,7 @@ Consistency proofs between anchors now ship without the full INDEX: `sigil log p
 
 Re-wrapping a segment-key log's keys to new recipients now ships: `sigil log rewrap LOG --identity me.sgk --add-to bob.pub` (or `--remove-to`, `--replace`, `--new-pass-file`); see SEGMENT-LOG.md, "rewrap".
 
-Roll-up cards (a card of logs, a card of cards) ship as an MVP: `sigil log card day-01 day-02 --name 2026-10 --identity me.sgk -o 2026-10.card`, `sigil log check-card 2026-10.card --child day-01 --child day-02 --all --signer me.pub` (see SEGMENT-LOG.md, "Cards"). Pruning old INDEX history into a card is still later.
+Roll-up cards (a card of logs, a card of cards) ship as an MVP: `sigil log card day-01 day-02 --name 2026-10 --identity me.sgk -o 2026-10.card`, `sigil log check-card 2026-10.card --child day-01 --child day-02 --all --signer me.pub` One child can be proved alone (`sigil log card-prove` / `check-card-child`), and a newer card checked against an older one (`sigil log check-card-consistency`) (see SEGMENT-LOG.md, "Cards"). Pruning old INDEX history into a card is still later.
 
 ---
 

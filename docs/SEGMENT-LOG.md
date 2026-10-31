@@ -1055,13 +1055,56 @@ sig=<hex>
   cards and each monthly card against its logs checks the whole tree, level by level, with no
   operator's word involved. An **unsigned** card is a checksum: only as strong as the copy you
   compare it with (like an unsigned HEAD).
-* **What this MVP does not do (yet).** No receipt for *one* child (today you hand over the card,
-  which lists all children: a few hundred bytes each); no consistency proof between two versions of
-  a card; a card does not **replace** INDEX history: logs keep every line, nothing is pruned, and
-  retention stays explicit (`compact` / `shred`). `check-card --child LOG` reads that log's INDEX
-  (chain hashes only; a private INDEX needs no key), so checking a log child needs the log; a card
-  child needs only the card file. Child signers are reported, not pinned: pin them with `log verify
-  --signer` on the log, or sign the card. Time (`t=`) is the writer's clock, not a timestamp authority.
+* **What cards do not do (yet).** A card does not **replace** INDEX history: logs keep every line,
+  nothing is pruned, and retention stays explicit (`compact` / `shred`). `check-card --child LOG`
+  reads that log's INDEX (chain hashes only; a private INDEX needs no key), so checking a log child
+  needs the log; a card child needs only the card file. Child signers are reported, not pinned: pin
+  them with `log verify --signer` on the log, or sign the card. Time (`t=`) is the writer's clock,
+  not a timestamp authority.
+
+### One-child receipts (`sigil log card-prove` / `sigil log check-card-child`)
+
+```sh
+sigil log card-prove 2026-10.card 2 -o day02.cardproof          # by number, log id or card name
+sigil log check-card-child day02.cardproof --signer me.pub --expect <LOG-ID> --child day-02
+```
+
+A receipt (`sigil-card-proof=1`) holds the card's `name`, `n`, `root` and signature, the one child
+line, its position `index` and the Merkle path (32 bytes per level). The other children are not in
+it. `check-card-child` recomputes the leaf (position-bound, as in the card), walks the path to
+`root`, checks the card signature over `name`, `n`, `root` and the child's own embedded signature.
+Options: `--signer KEY` (the card must be signed by KEY), `--expect ID|NAME` (the proved child must
+be that log / card), `--child LOG|CARD` (also check that log or card file against the child, exactly
+as `check-card --child`). Altered child line, position, `n`, path or name, another signer, or a
+different child given: exit 2. It proves "this card lists this child"; it does not prove anything
+about the children it hides (not even how many are logs or cards; `n` is shown).
+
+### Card consistency (`sigil log check-card-consistency OLD NEW`)
+
+```sh
+sigil log check-card-consistency 2026-10.v1.card 2026-10.v2.card --signer me.pub \
+    --child day-01 --proof day02-since.proof --pair week1.v1.card week1.v2.card
+```
+
+Cards have no history tree of their own (a card is a flat signed list, not an append-only log), so
+"consistent" is defined as **carries forward**, and every step must be proved:
+
+1. Both cards verify on their own, have the same `name`, and NEW is signed by OLD's signer (both by
+   `--signer KEY` when given). An unsigned OLD imposes no signer; a signed OLD refuses an unsigned or
+   re-keyed NEW.
+2. **Every** child of OLD is in NEW (by log id / card name; order does not matter). A dropped
+   child fails. NEW may add children (listed as `+ … (new)`).
+3. Each kept child is identical, or at a later state **proved** to extend the old one:
+   * a log child: same size with a different root, or a smaller size, fails (fork / rollback).
+     A larger size needs proof: the log itself (`--child LOG`: both pinned roots are prefixes of
+     its INDEX), or a `log prove-consistency` file (`--proof FILE`, checked as `check-consistency`
+     with both pins). Same size and root with a new HEAD time / signature counts as the same state;
+   * a nested card that changed: both versions given with `--pair OLD NEW` (matched by name, root and
+     size) and checked by these same rules, recursively (up to 16 levels).
+   Anything not proved fails; nothing is taken on trust from NEW.
+
+It does **not** show that NEW was made after OLD (times are writer clocks) or that no other card
+with the same name exists (no gossip); it shows NEW is a faithful extension of OLD.
 
 ## Signer rotation (`sigil log rotate-signer`, `log=4`)
 
@@ -1200,9 +1243,9 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
-* Card follow-ups: an inclusion receipt for one child of a card (today the whole card is the receipt), consistency between two cards, and cards that **replace** old INDEX history (pruning).
+* Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).

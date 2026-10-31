@@ -369,6 +369,9 @@ then check any level against its children:
 $ sigil log card day-01 day-02 --name 2026-10 --identity me.sgk -o 2026-10.card
 $ sigil log check-card 2026-10.card --child day-01 --child day-02 --all --signer me.pub
 card OK: 2026-10 (2 children) root …, signed by …
+$ sigil log card-prove 2026-10.card 2 -o day02.cardproof     # receipt for one child only
+$ sigil log check-card-child day02.cardproof --signer me.pub --child day-02
+$ sigil log check-card-consistency 2026-10.v1.card 2026-10.card --child day-01   # v2 extends v1
 ```
 
 Later, prove that an anchor you pinned (`SEQ:ROOT` from `log ls`) is a prefix of
