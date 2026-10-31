@@ -765,6 +765,11 @@ sigil log ls photos-private                       # names, sizes, hashes: sealed
 sigil log ls photos-private --pass-file pw.txt    # the full listing
 ```
 
+Add `--pad` to turn on segment padding (`log=7`, `pad=padme`) in DEST in the same step, exactly
+as `sigil log pad DEST` would afterwards: every segment written to DEST from then on is padded.
+The segments copied by privatize keep their sizes (a `log compact --apply` on DEST re-seals them
+padded). Without `--pad` DEST is a plain private log, as before.
+
 A public INDEX line's chain hash covers its `size=`, `sha=` and `path=` text, so they cannot be sealed
 in place without changing every chain hash, the HEAD and every root, which would silently invalidate
 receipts, anchors and cards. `privatize` therefore makes a **new** log instead:
@@ -855,7 +860,7 @@ another line fails the chain hash and the box's AAD. What stays visible, as for 
 seqs were deleted, when, and whether it was a shred; and the box length (padded to 64 bytes) gives the
 reason's length to within 64 bytes.
 
-**Padding (`log init --pad`, `sigil log pad LOG`, `log=7`).** A private INDEX hides sizes, but each
+**Padding (`log init --pad`, `sigil log pad LOG`, `log privatize … --pad`, `log=7`).** A private INDEX hides sizes, but each
 segment file's length still shows roughly how big the batch is. With padding on, every **new**
 segment (append, add, compaction, and the re-sealed stars of `log adopt`) is sealed from a padded frame:
 
@@ -1369,7 +1374,7 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: a monthly retention check (`scripts/monthly-log-retention.sh`); padded segments for private logs (`log=7`); sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
-(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy). Still deferred:
+(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy, optionally padded with `--pad`). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=8` (see "Size notes").

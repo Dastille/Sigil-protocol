@@ -1366,6 +1366,9 @@ enum LogCmd {
         /// Sign DEST with this identity (.sgk); required (and must be SRC's signer) when SRC is signed
         #[arg(long)]
         sign: Option<PathBuf>,
+        /// Also turn on segment padding in DEST (`log=7`, `pad=padme`), like `log pad DEST`
+        #[arg(long)]
+        pad: bool,
     },
     /// Pad new segments of a private log to a Padmé size (at least 4 KiB) from now on, so on-disk
     /// sizes show only a size bucket. Existing segments are not changed. The log becomes `log=7`.
@@ -4468,6 +4471,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             identity,
             sign,
+            pad,
         } => {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let recipients = load_recipients(&to)?;
@@ -4485,6 +4489,10 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
             print!("{}", r.render());
+            if pad {
+                seglog::enable_pad(&dest)?;
+                println!("padding on in DEST: new segments are padded (log=7); copied segments keep their sizes until `log compact --apply`");
+            }
         }
         LogCmd::Pad { path } => {
             if seglog::enable_pad(&path)? {
