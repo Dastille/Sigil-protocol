@@ -1108,6 +1108,10 @@ enum LogCmd {
         /// file names are written in the clear (as in a log created with no key). Prints a warning
         #[arg(long = "public-index")]
         public_index: bool,
+        /// Private INDEX: zero-pad every new segment to a Padmé size (at least 4 KiB) before sealing,
+        /// so on-disk sizes show only a size bucket (`log=7`)
+        #[arg(long, conflicts_with = "public_index")]
+        pad: bool,
         /// Private INDEX: passphrase the index key is wrapped to
         #[arg(value_parser = PassParser(true), long)]
         pass: Option<String>,
@@ -1363,6 +1367,9 @@ enum LogCmd {
         #[arg(long)]
         sign: Option<PathBuf>,
     },
+    /// Pad new segments of a private log to a Padmé size (at least 4 KiB) from now on, so on-disk
+    /// sizes show only a size bucket. Existing segments are not changed. The log becomes `log=7`.
+    Pad { path: PathBuf },
     /// Receipt for one child of a card (its line + Merkle path + the card's signed root), so the
     /// rest of the card need not be shown. CHILD: a number, a log id or a card name.
     CardProve {
@@ -4176,6 +4183,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             segment_keys,
             private_index,
             public_index,
+            pad,
             pass,
             pass_file,
             talisman,
@@ -4211,6 +4219,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     private_index,
                     index_pass: pass.as_deref(),
                     index_to: &recipients,
+                    pad,
                 },
             )?;
             println!(
@@ -4476,6 +4485,13 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?;
             print!("{}", r.render());
+        }
+        LogCmd::Pad { path } => {
+            if seglog::enable_pad(&path)? {
+                println!("padding on: new segments are padded (log=7); existing segments keep their sizes (`log compact --apply` re-seals them padded)");
+            } else {
+                println!("padding is already on");
+            }
         }
         LogCmd::CardProve {
             card,

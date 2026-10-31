@@ -589,9 +589,10 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
             } else {
                 None
             };
+            let padded = pad_plain(&log, &plain);
             let sealed = match &own_key {
                 Some((_, id)) => crate::seal_kn_to(
-                    &plain,
+                    &padded,
                     opts.mode,
                     None,
                     &format!("compact-{}", g.new_seq),
@@ -603,7 +604,7 @@ pub fn compact(path: &Path, opts: &CompactOpts<'_>) -> Result<CompactReport> {
                     &[id.public()],
                 )?,
                 None => crate::seal_kn_to(
-                    &plain,
+                    &padded,
                     opts.mode,
                     opts.seal_pass,
                     &format!("compact-{}", g.new_seq),

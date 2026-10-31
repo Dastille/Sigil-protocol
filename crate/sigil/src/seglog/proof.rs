@@ -452,6 +452,7 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         format: LOG_FORMAT,
         segkeys: false,
         privindex: false,
+        pad: false,
         ixkey: None,
     };
     if seq == 1 && p.prev != probe.genesis() {
