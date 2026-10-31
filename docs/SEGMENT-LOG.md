@@ -1428,7 +1428,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes").
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them until converted with `sigil seal-folder-names` (see PRIVATE-LABEL.md; old copies keep the names).
-* INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
+* INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done). Options and open questions: [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) (design note, decision pending).
 * Unattended retention by default: the monthly script only applies with an explicit `--apply` and a rule (see "Monthly retention check").
 * Shredding one batch inside a compaction segment **without rewriting that segment**: impossible
   with one AEAD tag per segment (see `shred --rewrite`, which rewrites only that file).
