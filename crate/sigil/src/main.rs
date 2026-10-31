@@ -24,6 +24,17 @@ static HUMAN_TO_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 static JSON_EXTRA: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// A human status line: stdout normally, stderr when stdout carries data or JSON.
+macro_rules! say_raw {
+    ($($t:tt)*) => {
+        if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+            eprint!($($t)*);
+        } else {
+            print!($($t)*);
+        }
+    };
+}
+
+/// A human status line: stdout normally, stderr when stdout carries data or JSON.
 macro_rules! say {
     ($($t:tt)*) => {
         if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
@@ -255,6 +266,48 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
             json: true, output, ..
         } => Some(("gather", output.clone())),
         Cmd::Scry { json: true, .. } => Some(("scry", None)),
+        Cmd::Constellation {
+            cmd: SkyCmd::Add { json: true, .. },
+        } => Some(("constellation add", None)),
+        Cmd::Constellation {
+            cmd: SkyCmd::Atlas { json: true, .. },
+        } => Some(("constellation atlas", None)),
+        Cmd::Constellation {
+            cmd: SkyCmd::Remove { json: true, .. },
+        } => Some(("constellation remove", None)),
+        Cmd::Constellation {
+            cmd: SkyCmd::Scry { json: true, .. },
+        } => Some(("constellation scry", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Track { json: true, .. },
+        } => Some(("vault track", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Commit { json: true, .. },
+        } => Some(("vault commit", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Restore { json: true, .. },
+        } => Some(("vault restore", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Prune { json: true, .. },
+        } => Some(("vault prune", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Remove { json: true, .. },
+        } => Some(("vault remove", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Recipients { json: true, .. },
+        } => Some(("vault recipients", None)),
+        Cmd::Vault {
+            cmd: VaultCmd::Retention { json: true, .. },
+        } => Some(("vault retention", None)),
+        Cmd::Deluge {
+            json: true, output, ..
+        } => Some(("deluge", Some(output.clone()))),
+        Cmd::SealFolderNames {
+            json: true, output, ..
+        } => Some(("seal-folder-names", Some(output.clone()))),
+        Cmd::Keygen {
+            json: true, output, ..
+        } => Some(("keygen", Some(output.clone()))),
         Cmd::Path {
             json: true, output, ..
         } => Some(("path", output.clone())),
@@ -474,6 +527,9 @@ enum Cmd {
     /// Seal the member names of an old folder pack (SGDR v1, names in the clear) into a new
     /// sealed-directory pack (v2). Members are copied as they are; INPUT is never changed.
     SealFolderNames {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
@@ -510,6 +566,9 @@ enum Cmd {
     /// Extra pieces: keep raining until the far side has any k. Alias: rain.
     #[command(visible_alias = "rain")]
     Deluge {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr. Not with --watch
+        #[arg(long, conflicts_with = "watch")]
+        json: bool,
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
@@ -683,6 +742,9 @@ enum Cmd {
     /// Write an identity key. Default: modern .sgk (X25519 encrypt-to + Ed25519 attest).
     /// Use --legacy / --attest-only for the old raw 32-byte Ed25519/Talisman seed.
     Keygen {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         #[arg(short, long)]
         output: PathBuf,
         /// Also write public half here (default: <output>.pub)
@@ -997,6 +1059,9 @@ enum VaultCmd {
     /// A folder becomes a folder vault (each version is an SGDR pack).
     #[command(visible_alias = "init")]
     Track {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Live file or folder to protect
         path: PathBuf,
         #[arg(long, value_enum, default_value = "reflection")]
@@ -1030,6 +1095,9 @@ enum VaultCmd {
     /// Re-seal live (or a dirty --from-export tree) into the next version; tip moves.
     /// Skips when already matching unless --force.
     Commit {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Live file or `.sgv` (optional when --from-export supplies the target via sidecar)
         path: Option<PathBuf>,
         /// Dirty export dir from `mount … --export-dir DIR --writable`
@@ -1076,6 +1144,9 @@ enum VaultCmd {
     },
     /// Restore tip (or --version N) over the live path. Mends a torn seal if needed.
     Restore {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// Version number (default: tip)
         #[arg(long)]
@@ -1103,6 +1174,9 @@ enum VaultCmd {
     },
     /// Drop old version seals; keep the newest N (always keeps tip).
     Prune {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         path: PathBuf,
         /// How many newest versions to keep (≥ 1)
         #[arg(long)]
@@ -1120,6 +1194,9 @@ enum VaultCmd {
     /// Remove one named old version (never the tip). Light retention needs --cold/--cold-here or --force-drop.
     #[command(visible_alias = "rm")]
     Remove {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Live file / folder or its `.sigil` / `.sgv` chart dir
         path: PathBuf,
         /// Version number to remove (see `vault versions`)
@@ -1141,6 +1218,9 @@ enum VaultCmd {
     /// Show or set remembered encrypt-to recipients (public keys in CHART).
     /// `vault commit` reuses them when no --to is given; --to on commit replaces them.
     Recipients {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Live file / folder or its `.sgv` chart dir
         path: PathBuf,
         /// Replace the remembered set (.pub / .sgk / OpenPGP / hex pk); repeatable
@@ -1152,6 +1232,9 @@ enum VaultCmd {
     },
     /// Show or set chart retention (full = keep all; light = keep newest N hot).
     Retention {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Live file or its `.sgv` chart dir
         path: PathBuf,
         /// Keep every version seal in the chart (Bitcoin full-node style)
@@ -1972,6 +2055,9 @@ enum LogCmd {
 enum SkyCmd {
     /// Wrap a file (or a folder of files) as a star and put it on the list. Skips bytes you already have.
     Add {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Folder that holds the card and the stars
         sky: PathBuf,
         /// File or folder to add
@@ -2012,6 +2098,9 @@ enum SkyCmd {
     },
     /// Pack the card and every star into one atlas (.sga) so they cannot scatter.
     Atlas {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         sky: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
@@ -2031,6 +2120,9 @@ enum SkyCmd {
     /// The card is rewritten first (atomically); an encrypt-to card needs the same --to as `add`.
     #[command(visible_alias = "rm")]
     Remove {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         sky: PathBuf,
         /// List name(s) to remove (`docs/a.txt`, or `docs/` for everything under it)
         names: Vec<String>,
@@ -2056,6 +2148,9 @@ enum SkyCmd {
         dry_run: bool,
     },
     Scry {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         sky: PathBuf,
         #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
@@ -3170,6 +3265,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             mode,
             allow_new_key,
+            json,
         } => {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let recipients = load_recipients(&to)?;
@@ -3184,7 +3280,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &identities,
                 allow_new_key,
             )?;
-            println!(
+            if json {
+                json_extra(&format!(
+                    ",\"files\":{},\"out_bytes\":{}",
+                    r.files, r.out_bytes
+                ));
+            }
+            say!(
                 "sealed folder pack written to {} ({} files, {} bytes): member names, sizes and the tree are now encrypted; {} is unchanged, delete it (and its copies) yourself",
                 output.display(),
                 r.files,
@@ -3212,11 +3314,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             sequential,
             loss,
             answer,
+            json: _,
         } => {
             let data = fs::read(&input)?;
             if let Some(line) = answer {
                 let n = sigil::deluge_answer_report(&data, &output, &line)?;
-                println!(
+                say!(
                     "answered report: wrote {n} missing packets → {}",
                     output.display()
                 );
@@ -3231,7 +3334,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             p,
                             sigil::fountain_loss::LOSS_TARGET_FAILURE,
                         )?;
-                        println!(
+                        say!(
                             "--loss {:.4}%: {} extra packets per block ({} block(s), {} packets); chance of needing a resend at most {:.1e} if losses are independent",
                             p * 100.0,
                             plan.extra,
@@ -3240,7 +3343,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             plan.failure_bound
                         );
                         if sequential {
-                            println!("note: with --sequential that chance is measured, not guaranteed (RFC 6330 5.8 assumes random symbol IDs)");
+                            say!("note: with --sequential that chance is measured, not guaranteed (RFC 6330 5.8 assumes random symbol IDs)");
                         }
                         (
                             plan.extra,
@@ -3256,7 +3359,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 for p in &rep.stray {
                     eprintln!("not counted {}: belongs to another file", p.display());
                 }
-                println!(
+                say!(
                     "fountain {} packets (.rq, {} symbol IDs) → {}",
                     rep.total(),
                     if sequential { "sequential" } else { "random" },
@@ -3264,32 +3367,32 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
                 if rep.kept > 0 {
                     if rep.written == 0 {
-                        println!(
+                        say!(
                             "already {} packets of this file there (target {} = source symbols + {what}): nothing written",
                             rep.kept, rep.target
                         );
                     } else {
-                        println!(
+                        say!(
                             "topped up to {} (source symbols + {what}): kept {} already there, wrote {} new",
                             rep.target, rep.kept, rep.written
                         );
                     }
                 }
-                println!("far side: sigil gather -o rebuilt.sg1 <folder>");
+                say!("far side: sigil gather -o rebuilt.sg1 <folder>");
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {
                 let from = from.or_else(|| watch.then(sigil::rain_lane));
                 if let Some(f) = from {
-                    println!("this lane starts at part {f} (other people should pick a different --from so rain does not overlap)");
+                    say!("this lane starts at part {f} (other people should pick a different --from so rain does not overlap)");
                 }
                 if watch {
                     fs::create_dir_all(&output)?;
-                    println!("sending parts one at a time. Stops when the far side writes VESSEL.");
+                    say!("sending parts one at a time. Stops when the far side writes VESSEL.");
                     for round in 1..=extra {
                         if vessel_present(&output)
                             || rsync.as_deref().map(vessel_at).unwrap_or(false)
                         {
-                            println!("Vessel is full. Stopping.");
+                            say!("Vessel is full. Stopping.");
                             break;
                         }
                         let before: std::collections::HashSet<_> = fs::read_dir(&output)
@@ -3312,18 +3415,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             })
                             .collect();
                         for f in &new_files {
-                            println!("new part {}", f.display());
+                            say!("new part {}", f.display());
                             if let Some(d) = &rsync {
                                 rsync_file(f, d)?;
                             }
                         }
                         if rsync.is_none() {
-                            println!("copy the new part to them, or use --rsync user@host:rain/");
+                            say!("copy the new part to them, or use --rsync user@host:rain/");
                         }
                         if rsync.as_deref().map(vessel_at).unwrap_or(false)
                             || vessel_present(&output)
                         {
-                            println!("Vessel is full. Stopping.");
+                            say!("Vessel is full. Stopping.");
                             break;
                         }
                     }
@@ -3336,11 +3439,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     let n = deluge_pieces(&data, extra, &output, only_rain, from)?;
                     if only_rain {
-                        println!("rained {n} new pieces → {}", output.display());
+                        say!("rained {n} new pieces → {}", output.display());
                     } else {
-                        println!("deluge {n} pieces → {}", output.display());
+                        say!("deluge {n} pieces → {}", output.display());
                     }
-                    println!("far side can: sigil gather --watch -o rebuilt.sg1 <folder>");
+                    say!("far side can: sigil gather --watch -o rebuilt.sg1 <folder>");
                     dispatch(&output, &rsync, &rclone, wormhole, false)?;
                 }
             }
@@ -3638,6 +3741,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             passkey,
             rp_id,
             no_uv,
+            json: _,
         } => {
             if passkey {
                 let id = Identity::generate()?;
@@ -3650,7 +3754,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     PathBuf::from(p)
                 });
                 w.public.write(&pub_path)?;
-                println!(
+                say!(
                     "identity → {}  (passkey-protected, {})  x25519 {}",
                     output.display(),
                     if w.slots[0].uv {
@@ -3660,23 +3764,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     },
                     hex32(&w.public.x25519_pk)
                 );
-                println!(
+                say!(
                     "public → {}  (encrypt-to: --to {})",
                     pub_path.display(),
                     pub_path.display()
                 );
-                println!(
+                say!(
                     "add a backup key now: sigil identity add-passkey {}",
                     output.display()
                 );
             } else if legacy {
                 let pk = keygen_legacy(&output)?;
-                println!(
+                say!(
                     "legacy attest key → {}  public {}",
                     output.display(),
                     hex32(&pk)
                 );
-                println!("same file is a Talisman: --talisman {}", output.display());
+                say!("same file is a Talisman: --talisman {}", output.display());
             } else {
                 let pk = keygen_ecc(&output, pub_out.as_deref())?;
                 let pub_path = pub_out.unwrap_or_else(|| {
@@ -3684,17 +3788,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     p.push(".pub");
                     PathBuf::from(p)
                 });
-                println!(
+                say!(
                     "identity → {}  x25519 {}",
                     output.display(),
                     hex32(&pk.x25519_pk)
                 );
-                println!(
+                say!(
                     "public → {}  (encrypt-to: --to {})",
                     pub_path.display(),
                     pub_path.display()
                 );
-                println!(
+                say!(
                     "attest seed is inside .sgk; sign with --key {}",
                     output.display()
                 );
@@ -4190,13 +4294,22 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             ward,
             ward_file,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             let wards = parse_wards(&ward, &ward_file, true)?;
             let report = vault_track_ex(&path, mode.into(), pass.as_deref(), &recipients, &wards)?;
-            println!(
+            if json {
+                json_extra(&format!(
+                    ",\"version\":{},\"size\":{},\"sha256\":\"{}\"",
+                    report.version,
+                    report.size,
+                    hex32(&report.digest)
+                ));
+            }
+            say!(
                 "vault track → {}  v{}  {} bytes  digest={}",
                 report.vault_dir.display(),
                 report.version,
@@ -4204,20 +4317,20 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 &hex32(&report.digest)[..12]
             );
             if !recipients.is_empty() {
-                println!(
+                say!(
                     "encrypt-to {} recipient{}",
                     recipients.len(),
                     if recipients.len() == 1 { "" } else { "s" }
                 );
             }
-            println!("{}", vault_format_status(&vault_status(&path)?));
+            say!("{}", vault_format_status(&vault_status(&path)?));
         }
         VaultCmd::Status { path, json } => {
             let st = vault_status(&path)?;
             if json {
                 json_extra(&format!(",\"status\":{}", st.to_json()));
             } else {
-                println!("{}", vault_format_status(&st));
+                say!("{}", vault_format_status(&st));
             }
         }
         VaultCmd::Commit {
@@ -4234,6 +4347,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             keep,
             cold,
             force_drop,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -4265,14 +4379,23 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 )?;
                 (report, path)
             };
+            if json {
+                json_extra(&format!(
+                    ",\"version\":{},\"size\":{},\"sha256\":\"{}\",\"skipped\":{}",
+                    report.version,
+                    report.size,
+                    hex32(&report.digest),
+                    report.skipped
+                ));
+            }
             if report.skipped {
-                println!(
+                say!(
                     "vault commit skipped (matches tip v{})  digest={}",
                     report.version,
                     &hex32(&report.digest)[..12]
                 );
             } else {
-                println!(
+                say!(
                     "vault commit → v{}  {} bytes  digest={}",
                     report.version,
                     report.size,
@@ -4280,12 +4403,12 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             if let Some(note) = &report.note {
-                println!("note: {note}");
+                say!("note: {note}");
             }
             if !report.skipped {
                 let effective = vault_get_recipients(&status_path)?;
                 if !effective.is_empty() {
-                    println!(
+                    say!(
                         "encrypt-to {} recipient{}{}",
                         effective.len(),
                         if effective.len() == 1 { "" } else { "s" },
@@ -4308,7 +4431,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                             .as_ref()
                             .map(|d| format!("  cold={}", d.display()))
                             .unwrap_or_default();
-                        println!(
+                        say!(
                             "pruned v{{{}}}  kept={}{}",
                             p.removed
                                 .iter()
@@ -4321,14 +4444,14 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            println!("{}", vault_format_status(&vault_status(&status_path)?));
+            say!("{}", vault_format_status(&vault_status(&status_path)?));
         }
         VaultCmd::Versions { path, json } => {
             let c = vault_list_versions(&path)?;
             if json {
                 json_extra(&format!(",\"chart\":{}", c.to_json()));
             } else {
-                print!("{}", vault_format_versions(&c));
+                say_raw!("{}", vault_format_versions(&c));
             }
         }
         VaultCmd::Restore {
@@ -4341,6 +4464,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             ward,
             ward_file,
             force,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -4348,7 +4472,16 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             let wards = parse_wards(&ward, &ward_file, false)?;
             let report =
                 vault_restore_ex(&path, version, pass.as_deref(), &identities, &wards, force)?;
-            println!(
+            if json {
+                json_extra(&format!(
+                    ",\"version\":{},\"size\":{},\"sha256\":\"{}\",\"mended\":{}",
+                    report.version,
+                    report.size,
+                    hex32(&report.digest),
+                    report.mended
+                ));
+            }
+            say!(
                 "vault restore → {}  v{}  {} bytes  digest={}{}",
                 report.path.display(),
                 report.version,
@@ -4356,7 +4489,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 &hex32(&report.digest)[..12],
                 if report.mended { "  (mended seal)" } else { "" }
             );
-            println!("{}", vault_format_status(&vault_status(&path)?));
+            say!("{}", vault_format_status(&vault_status(&path)?));
         }
         VaultCmd::Prune {
             path,
@@ -4364,6 +4497,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             cold,
             force_drop,
             cold_here,
+            json,
         } => {
             let cold = if cold_here {
                 Some(sigil::vault_cold_here(&path)?)
@@ -4385,11 +4519,26 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                 .as_ref()
                 .map(|d| format!("  cold={}", d.display()))
                 .unwrap_or_default();
-            println!(
+            if json {
+                json_extra(&format!(
+                    ",\"kept\":{},\"tip\":{},\"removed\":[{}]",
+                    p.kept,
+                    p.tip,
+                    p.removed
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ));
+            }
+            say!(
                 "vault prune kept={} tip=v{} removed={}{}",
-                p.kept, p.tip, removed, where_cold
+                p.kept,
+                p.tip,
+                removed,
+                where_cold
             );
-            print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+            say_raw!("{}", vault_format_versions(&vault_list_versions(&path)?));
         }
         VaultCmd::Remove {
             path,
@@ -4398,6 +4547,7 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             cold_here,
             force_drop,
             dry_run,
+            json,
         } => {
             let cold = if cold_here {
                 Some(sigil::vault_cold_here(&path)?)
@@ -4406,7 +4556,13 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
             };
             let r =
                 sigil::vault_remove_version(&path, version, cold.as_deref(), force_drop, dry_run)?;
-            println!(
+            if json {
+                json_extra(&format!(
+                    ",\"removed\":{},\"tip\":{},\"remaining\":{},\"dry_run\":{}",
+                    r.removed, r.tip, r.remaining, r.dry_run
+                ));
+            }
+            say!(
                 "{}vault remove v{} tip=v{} remaining={}{}",
                 if r.dry_run { "dry run: would " } else { "" },
                 r.removed,
@@ -4418,42 +4574,48 @@ fn run_vault(cmd: VaultCmd) -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default()
             );
             if !r.dry_run {
-                print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+                say_raw!("{}", vault_format_versions(&vault_list_versions(&path)?));
             }
         }
-        VaultCmd::Recipients { path, to, clear } => {
+        VaultCmd::Recipients {
+            path,
+            to,
+            clear,
+            json: _,
+        } => {
             if clear {
                 vault_set_recipients(&path, &[])?;
-                println!("vault recipients cleared — future versions are not encrypt-to (existing seals unchanged)");
+                say!("vault recipients cleared — future versions are not encrypt-to (existing seals unchanged)");
             } else if !to.is_empty() {
                 let rs = load_recipients(&to)?;
                 vault_set_recipients(&path, &rs)?;
             }
-            print!("{}", vault_format_recipients(&vault_get_recipients(&path)?));
+            say_raw!("{}", vault_format_recipients(&vault_get_recipients(&path)?));
         }
         VaultCmd::Retention {
             path,
             full,
             light,
             keep,
+            json: _,
         } => {
             if full {
                 let p = vault_set_retention(&path, VaultRetention::Full)?;
-                println!("vault retention → {}", vault_format_retention(p));
+                say!("vault retention → {}", vault_format_retention(p));
             } else if light {
                 let k = keep.ok_or("light retention needs --keep N (≥ 1)")?;
                 if k == 0 {
                     return Err("light --keep must be ≥ 1".into());
                 }
                 let p = vault_set_retention(&path, VaultRetention::Light { keep: k })?;
-                println!("vault retention → {}", vault_format_retention(p));
+                say!("vault retention → {}", vault_format_retention(p));
             } else if keep.is_some() {
                 return Err("pass --light with --keep N, or --full".into());
             } else {
                 let p = vault_get_retention(&path)?;
-                println!("vault {}  {}", path.display(), vault_format_retention(p));
+                say!("vault {}  {}", path.display(), vault_format_retention(p));
             }
-            print!("{}", vault_format_versions(&vault_list_versions(&path)?));
+            say_raw!("{}", vault_format_versions(&vault_list_versions(&path)?));
         }
     }
     Ok(())
@@ -5931,6 +6093,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             wormhole,
             to,
             identity,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let geas = binds(&bind)?;
@@ -5954,7 +6117,13 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                     identities: &identities,
                 },
             )?;
-            println!(
+            if json {
+                json_extra(&format!(
+                    ",\"added\":{},\"linked\":{},\"skipped\":{},\"replaced\":{},\"new_bytes\":{}",
+                    report.added, report.linked, report.skipped, report.replaced, report.bytes_new
+                ));
+            }
+            say!(
                 "constellation {}  added={} linked={} skipped={} replaced={} new_bytes={}",
                 sky.display(),
                 report.added,
@@ -5964,14 +6133,14 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                 report.bytes_new
             );
             if !recipients.is_empty() {
-                println!(
+                say!(
                     "encrypt-to {} recipient{} (new stars + card)",
                     recipients.len(),
                     if recipients.len() == 1 { "" } else { "s" }
                 );
             }
             if let Some(chart) = report.chart.as_ref() {
-                println!("{}", sigil::scry_chart(&sky, chart));
+                say!("{}", sigil::scry_chart(&sky, chart));
             }
             if rsync.is_some() || rclone.is_some() {
                 let src = sky.to_str().ok_or("path")?;
@@ -5979,7 +6148,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                     rsync_dir(src, &dest)?;
                 }
                 if let Some(dest) = rclone {
-                    println!("rclone {src} → {dest}");
+                    say!("rclone {src} → {dest}");
                     run_cmd("rclone", &["copy", src, &dest])?;
                 }
             }
@@ -6006,6 +6175,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -6020,7 +6190,13 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                 sky.join(format!("{stem}.sga"))
             });
             let n = sigil::pack_atlas_keys(&sky, &dest, pass.as_deref(), &identities)?;
-            println!("atlas {n} files → {}", dest.display());
+            if json {
+                json_extra(&format!(
+                    ",\"files\":{n},\"output\":{}",
+                    jq(&dest.to_string_lossy())
+                ));
+            }
+            say!("atlas {n} files → {}", dest.display());
         }
         SkyCmd::Remove {
             sky,
@@ -6032,6 +6208,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             keep_stars,
             dry_run,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -6048,18 +6225,31 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                     dry_run,
                 },
             )?;
+            if json {
+                json_extra(&format!(
+                    ",\"dry_run\":{},\"removed\":[{}],\"stars_freed\":{},\"remaining\":{}",
+                    r.dry_run,
+                    r.removed
+                        .iter()
+                        .map(|n| jq(n))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    r.stars_freed.len(),
+                    r.remaining
+                ));
+            }
             let verb = if r.dry_run { "would remove" } else { "removed" };
             for n in &r.removed {
-                println!("  {verb} {n}");
+                say!("  {verb} {n}");
             }
             for p in &r.stars_freed {
-                println!(
+                say!(
                     "  {} star {}",
                     if r.dry_run { "would delete" } else { "deleted" },
                     p.display()
                 );
             }
-            println!(
+            say!(
                 "{}constellation {}: {} name(s) off the list, {} star file(s) freed, {} name(s) remain",
                 if r.dry_run { "dry run: " } else { "" },
                 sky.display(),
@@ -6074,13 +6264,17 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let (text, bad) =
                 sigil::scry_constellation_checked(&sky, pass.as_deref(), &identities)?;
-            println!("{text}");
+            if json {
+                json_extra(&format!(",\"report\":{}", jq(&text)));
+            }
+            say!("{text}");
             if let Some(why) = bad {
                 return Err(not_recoverable(&why).into());
             }
