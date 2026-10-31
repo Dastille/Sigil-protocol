@@ -350,6 +350,7 @@ Get a file or a whole folder back by its path (checked, never overwrites):
 $ sigil log restore photos 2024 -o Photos-2024 --identity me.sgk
   + beach.jpg  3 bytes  (segment 1)
 log restore: 1 file(s), 3 byte(s) → Photos-2024
+$ sigil log restore photos 2024 --at 2026-10-01 -o Photos-Oct1 --identity me.sgk   # as it was then
 ```
 
 Change who can open a key-wrapped log (segment keys or private INDEX) without
