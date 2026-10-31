@@ -1338,6 +1338,31 @@ enum LogCmd {
         #[arg(long)]
         signer: Option<String>,
     },
+    /// Copy a log with a public INDEX into a NEW log with a private INDEX (names, sizes and hashes
+    /// sealed). SRC is only read; DEST gets a new log id and chain (old receipts stay valid for SRC).
+    Privatize {
+        src: PathBuf,
+        dest: PathBuf,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        /// Passphrase: only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(true), long)]
+        pass: Option<String>,
+        /// Passphrase file: opens SRC's encrypted segments and wraps DEST's index key and segments
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Recipient DEST's index key and segments are wrapped to (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Identity (.sgk) that opens SRC's encrypted segments (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Sign DEST with this identity (.sgk); required (and must be SRC's signer) when SRC is signed
+        #[arg(long)]
+        sign: Option<PathBuf>,
+    },
     /// Receipt for one child of a card (its line + Merkle path + the card's signed root), so the
     /// rest of the card need not be shown. CHILD: a number, a log id or a card name.
     CardProve {
@@ -4391,6 +4416,34 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(2);
                 }
             }
+        }
+        LogCmd::Privatize {
+            src,
+            dest,
+            mode,
+            pass,
+            pass_file,
+            talisman,
+            to,
+            identity,
+            sign,
+        } => {
+            let pass = resolve_pass(pass.or(pass_file), talisman)?;
+            let recipients = load_recipients(&to)?;
+            let identities = load_identities(&identity)?;
+            let sign = sign.as_deref().map(Identity::load).transpose()?;
+            let r = seglog::privatize(
+                &src,
+                &dest,
+                &seglog::PrivatizeOpts {
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                    to: &recipients,
+                    sign: sign.as_ref(),
+                    mode: mode.into(),
+                },
+            )?;
+            print!("{}", r.render());
         }
         LogCmd::CardProve {
             card,

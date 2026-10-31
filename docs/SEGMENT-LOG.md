@@ -709,8 +709,9 @@ sigil log restore photos notes.txt --seq 12 -o notes-v12.txt    # one exact vers
 (`--private-index` is still accepted and means the same). `--public-index` opts out: the log is
 created with a public INDEX, `--pass` / `--to` are not used at init (give them to each append to
 encrypt the segments), and a warning is printed. `log init` with no key creates a public INDEX (there
-is nothing to wrap an index key to) and prints a note saying so. Existing logs never change: a log
-keeps the INDEX kind it was created with (`privindex=1` in `CONTAINER`).
+is nothing to wrap an index key to) and prints a note saying so. A log keeps the INDEX kind it was
+created with (`privindex=1` in `CONTAINER`); to make an existing public log private, copy it with
+`sigil log privatize` (below).
 
 A public INDEX shows, for every entry, the batch's plain size, its plain SHA-256 and
 (for `log add`) the file's path. Anyone who can read the log folder learns the names and sizes of
@@ -730,6 +731,39 @@ sigil log check-proof beach.proof --file beach.jpg --signer me.pub      # still 
 finds the backup drive sees only how many entries there are and when they were added, not file
 names, sizes or fingerprints. With the key, everything (backing up only new files, receipts, clean-up)
 works exactly as before.
+
+### Making an existing log private (`sigil log privatize SRC DEST`)
+
+```sh
+sigil log privatize photos photos-private --pass-file pw.txt --sign me.sgk   # and/or --to me.pub
+sigil log ls photos-private                       # names, sizes, hashes: sealed
+sigil log ls photos-private --pass-file pw.txt    # the full listing
+```
+
+A public INDEX line's chain hash covers its `size=`, `sha=` and `path=` text, so they cannot be sealed
+in place without changing every chain hash, the HEAD and every root, which would silently invalidate
+receipts, anchors and cards. `privatize` therefore makes a **new** log instead:
+
+* every live segment entry the source HEAD vouches for is read with the checked reader (as `log
+  read` / `restore`), sealed again encrypted (`--pass-file` / `--to`, like any private log) into
+  DEST with its original time and `log add` path, and its size, SHA-256 and path go into the box.
+  Tombstoned / shredded entries and non-data lines are not copied (counted as skipped);
+* `--pass-file` (and `--identity`) also open the source's encrypted segments; a segment that does not
+  open, a damaged source (`verify` errors) or a HEAD the log does not vouch for refuses the whole run;
+* a signed source needs `--sign` with **its** signer (the copy keeps the signer); an already-private
+  source is refused (use `log rewrap`); DEST must not exist;
+* DEST is built in a hidden temporary sibling (`.DEST.sigil.privatize-PID.sigil`) and renamed into
+  place only when complete; an error removes it; a crash can leave it behind (delete it; SRC was only
+  read). DEST never exists half-made under its final name;
+* DEST has a **new log id, chain and roots**. Old receipts, anchors and cards keep verifying against
+  SRC; new ones come from DEST. The report prints SRC's id and `SEQ:ROOT` so the link can be pinned
+  (e.g. keep SRC's card, or note the line).
+
+**What it does not do.** It does not erase SRC: the old public INDEX (names, sizes, hashes) stays
+where it is, and in every backup, sync copy or snapshot already made of it. After checking DEST,
+delete SRC yourself (and know that old backups still show what it held). Segments of SRC that were
+stored unencrypted also showed their content to anyone with the folder; they are only re-sealed in
+DEST. Entry numbers change (DEST counts from 1, without the skipped ones).
 
 **Format.** A private segment or compaction line is
 
@@ -1243,12 +1277,12 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
-  stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
+  stars into one (with a key), and padding segment files so on-disk sizes leak less.
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).

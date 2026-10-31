@@ -389,7 +389,7 @@ file per live segment; without the key the mount is refused.
 Keyless `log verify`, `mend` and `gc` still work. Entry count, times and
 on-disk segment sizes stay visible. `--private-index` is still accepted.
 `--public-index` opts out (names, sizes and hashes in the clear) and prints a
-warning. Logs created before this change keep the INDEX they were made with. Details: "Private INDEX" in
+warning. Logs created before this change keep the INDEX they were made with; `sigil log privatize OLD NEW --pass-file pw.txt` copies one into a new private log (the old folder and its backups still show the names until you delete them). Details: "Private INDEX" in
 [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
 
 ### Other commands
