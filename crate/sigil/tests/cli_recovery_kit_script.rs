@@ -276,4 +276,10 @@ fn check_archives_and_recover_steps_end_to_end() {
         &["unseal", "back.sg1", "-o", "r4d", "--pass-file", "pw"],
     );
     assert_eq!(fs::read(d.join("r4d")).unwrap(), b"keep me\n");
+
+    // 4d, cold USB kit: one stick lost, `kit mend` with the kit's binary
+    run(&bin, &d, &["kit", "place", "note.sg1", "-o", "usb"]);
+    fs::remove_dir_all(d.join("usb/usb-1")).unwrap();
+    run(&bin, &d, &["kit", "mend", "usb", "-o", "cold.sg1"]);
+    assert_eq!(fs::read(d.join("cold.sg1")).unwrap(), full);
 }

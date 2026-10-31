@@ -254,6 +254,23 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
         Cmd::Gather {
             json: true, output, ..
         } => Some(("gather", output.clone())),
+        Cmd::Scry { json: true, .. } => Some(("scry", None)),
+        Cmd::Mend {
+            json: true, output, ..
+        } => Some(("mend", Some(output.clone()))),
+        Cmd::Scatter {
+            json: true, output, ..
+        } => Some(("scatter", Some(output.clone()))),
+        Cmd::Kit {
+            cmd: KitCmd::Place {
+                json: true, output, ..
+            },
+        } => Some(("kit place", Some(output.clone()))),
+        Cmd::Kit {
+            cmd: KitCmd::Mend {
+                json: true, output, ..
+            },
+        } => Some(("kit mend", Some(output.clone()))),
         _ => None,
     }
 }
@@ -428,6 +445,9 @@ enum Cmd {
     #[command(visible_alias = "gaze")]
     Scry {
         input: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Key for an encrypted folder pack: list its (hidden) member names
         #[arg(value_parser = PassParser(false), long)]
         pass: Option<String>,
@@ -471,6 +491,9 @@ enum Cmd {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
     },
     /// Extra pieces: keep raining until the far side has any k. Alias: rain.
     #[command(visible_alias = "rain")]
@@ -550,6 +573,9 @@ enum Cmd {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Salvage CRC-failed (bit-rotten) shard bodies: per-column Reed-Solomon error
         /// correction (scattered bit flips), then soft-RS / GMD-lite. Output is kept only if
         /// the Merkle binding and true name match
@@ -1117,6 +1143,9 @@ enum KitCmd {
         /// How many USB directories (default 4 → 4 shards each for Seal 16).
         #[arg(long, default_value_t = 4)]
         drives: usize,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
     },
     /// Rebuild a healthy .sg1 from the remaining usb-* folders after a drive loss.
     Mend {
@@ -1124,6 +1153,9 @@ enum KitCmd {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -3087,6 +3119,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Scry {
             input,
+            json: _,
             pass,
             pass_file,
             talisman,
@@ -3126,10 +3159,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 input.display()
             );
         }
-        Cmd::Scatter { input, output } => {
+        Cmd::Scatter { input, output, .. } => {
             let data = fs::read(input)?;
             let n = scatter_pieces(&data, &output)?;
-            println!("scattered {n} pieces into {}", output.display());
+            json_extra(&format!(",\"pieces\":{n}"));
+            say!("scattered {n} pieces into {}", output.display());
         }
         Cmd::Deluge {
             input,
@@ -3379,20 +3413,25 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             soft: _,
+            ..
         } if sigil::is_sealed_dir_pack(&input) => {
-            println!("{}", sigil::mend_sealed_dir(&input, &output)?);
+            json_extra(",\"kind\":\"sealed-folder-pack\"");
+            say!("{}", sigil::mend_sealed_dir(&input, &output)?);
         }
         Cmd::Mend {
             input,
             output,
             soft,
+            ..
         } if sigil::is_plain_dir_pack(&input) => {
-            println!("{}", sigil::mend_plain_dir(&input, &output, soft)?);
+            json_extra(",\"kind\":\"folder-pack\"");
+            say!("{}", sigil::mend_plain_dir(&input, &output, soft)?);
         }
         Cmd::Mend {
             input,
             output,
             soft,
+            ..
         } if sigil::is_work_pack(&input) => {
             mend_pack_report(&input, &output, soft)?;
         }
@@ -3400,6 +3439,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             soft,
+            ..
         } => {
             let data = fs::read(&input)?;
             let (healed, used_soft) = match mend_bytes_ex(&data, soft) {
@@ -3421,7 +3461,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             fs::write(&tmp, &healed)?;
             fs::rename(&tmp, &output)?;
             let (h, merkle_ok, live, k, _) = sigil::verify(&healed)?;
-            println!(
+            json_extra(&format!(
+                ",\"kind\":\"mark\",\"live\":{live},\"n\":{},\"need\":{k},\"merkle\":{merkle_ok},\"soft_salvage\":{used_soft}",
+                h.n
+            ));
+            say!(
                 "mended {} → {} (live {live}/{n}, need {k}, merkle {ok}{soft_note})",
                 input.display(),
                 output.display(),
@@ -4360,10 +4404,23 @@ fn run_kit(cmd: KitCmd) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             drives,
+            ..
         } => {
             let data = fs::read(&input)?;
             let report = place_kit(&data, &output, drives)?;
-            println!(
+            json_extra(&format!(
+                ",\"drives\":{},\"pieces\":{},\"per_drive\":[{}],\"star\":{}",
+                report.drives,
+                report.pieces,
+                report
+                    .per_drive
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                jq(&report.star_id)
+            ));
+            say!(
                 "cold-USB kit Option A → {}  drives={} pieces={} ({} each) star={}",
                 output.display(),
                 report.drives,
@@ -4376,13 +4433,13 @@ fn run_kit(cmd: KitCmd) -> Result<(), Box<dyn std::error::Error>> {
                     .join("/"),
                 &report.star_id[..8.min(report.star_id.len())],
             );
-            println!("copy each usb-* folder to its own stick. Lose one stick → sigil kit mend");
+            say!("copy each usb-* folder to its own stick. Lose one stick → sigil kit mend");
         }
-        KitCmd::Mend { input, output } => {
+        KitCmd::Mend { input, output, .. } => {
             let healed = mend_kit(&input)?;
             let n = healed.len();
             fs::write(&output, &healed)?;
-            println!("kit mend {n} bytes → {}", output.display());
+            say!("kit mend {n} bytes → {}", output.display());
         }
     }
     Ok(())
@@ -6103,7 +6160,11 @@ fn mend_pack_report(
     } else {
         healed
     };
-    println!(
+    json_extra(&format!(
+        ",\"kind\":\"work-pack\",\"stars\":{},\"facets_checked\":{}",
+        rep.stars, rep.facets_checked
+    ));
+    say!(
         "mended work pack {} → {} ({healed}; {} stars verified{}{})",
         input.display(),
         output.display(),
