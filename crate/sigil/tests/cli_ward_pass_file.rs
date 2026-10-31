@@ -56,6 +56,7 @@ fn scratch(tag: &str) -> common::Scratch {
 
 const MEMBER: &str = "private-sub/tax-return-2025.pdf";
 const WARD_WARNING: &str = "WARNING: a ward password given as --ward PATH=PASSWORD";
+const WARD_REFUSED: &str = "a ward password given as --ward PATH=PASSWORD is refused";
 
 #[cfg(unix)]
 #[test]
@@ -97,8 +98,8 @@ fn ward_file_round_trips_without_a_warning_and_matches_the_literal_form() {
         std::fs::read(d.join("a/private-sub/tax-return-2025.pdf")).unwrap(),
         b"pretend pdf bytes 0123456789"
     );
-    // The file form and the literal form are the same password (old commands still work),
-    // and the literal form warns.
+    // The same password from another file (the test helper turns `--ward P=room-key` into
+    // `--ward-file P=FILE`; the CLI itself refuses the literal, see below).
     let lit = format!("{MEMBER}=room-key");
     let o = sigil(
         &d,
@@ -114,7 +115,26 @@ fn ward_file_round_trips_without_a_warning_and_matches_the_literal_form() {
         ],
     );
     ok(&o);
-    assert!(err(&o).contains(WARD_WARNING), "{}", err(&o));
+    // Straight to the binary, no helper: the literal form is refused, nothing written, no echo.
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_sigil"))
+        .current_dir(&*d)
+        .args([
+            "unseal",
+            "--pass-file",
+            "house.pw",
+            "--ward",
+            &lit,
+            "-o",
+            "lit",
+            "e.sg1",
+        ])
+        .output()
+        .expect("run sigil");
+    assert!(!o.status.success());
+    let e = String::from_utf8_lossy(&o.stderr);
+    assert!(e.contains(WARD_REFUSED) && e.contains("--ward-file"), "{e}");
+    assert!(!e.contains("room-key"), "must not repeat the password: {e}");
+    assert!(!d.join("lit").exists());
     assert_eq!(
         std::fs::read(d.join("b/private-sub/tax-return-2025.pdf")).unwrap(),
         b"pretend pdf bytes 0123456789"

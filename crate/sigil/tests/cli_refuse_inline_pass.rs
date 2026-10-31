@@ -98,3 +98,81 @@ fn literal_pass_refused_everywhere_nothing_written() {
     let o = raw(&d, &["seal", "--pass", "", "-o", "y.sg1", "f.txt"]);
     assert!(String::from_utf8_lossy(&o.stderr).contains("empty passphrase"));
 }
+
+#[test]
+fn literal_ward_refused_nothing_written() {
+    let d = common::scratch("inline-ward");
+    fs::create_dir(d.join("dir")).unwrap();
+    fs::write(d.join("dir/a.txt"), "a\n").unwrap();
+    pass_file(&d);
+    let cases: &[&[&str]] = &[
+        &[
+            "seal",
+            "--pass-file",
+            "pw",
+            "--ward",
+            "a.txt=room-key",
+            "-o",
+            "x.sg1",
+            "dir",
+        ],
+        &[
+            "inscribe",
+            "--pass-file",
+            "pw",
+            "--ward",
+            "a.txt=room-key",
+            "-o",
+            "x.sg1",
+            "dir",
+        ],
+    ];
+    for args in cases {
+        let before = listing(&d);
+        let o = raw(&d, args);
+        let e = String::from_utf8_lossy(&o.stderr);
+        assert!(!o.status.success(), "{args:?} succeeded");
+        assert!(
+            e.contains("refused") && e.contains("--ward-file") && !e.contains("room-key"),
+            "{args:?}: {e}"
+        );
+        assert_eq!(listing(&d), before, "{args:?} wrote something");
+    }
+    // the file form works
+    fs::write(d.join("ward"), "room-key\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(d.join("ward"), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let o = raw(
+        &d,
+        &[
+            "seal",
+            "--pass-file",
+            "pw",
+            "--ward-file",
+            "a.txt=ward",
+            "-o",
+            "x.sg1",
+            "dir",
+        ],
+    );
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // `PATH=-` needs a terminal: refused here without writing
+    let o = raw(
+        &d,
+        &[
+            "seal",
+            "--pass-file",
+            "pw",
+            "--ward",
+            "a.txt=-",
+            "-o",
+            "y.sg1",
+            "dir",
+        ],
+    );
+    assert!(!o.status.success());
+    assert!(!d.join("y.sg1").exists());
+}

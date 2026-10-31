@@ -87,7 +87,7 @@ mkdir -p /tmp/sigil-dirty
 # → v2.sg1 (new SGDR pack); tip moves; v1 untouched
 ./sigil vault versions ./photos         # … kind=folder
 ./sigil vault restore ./photos --version 1
-# options as single-file: --mode seal  --pass-file house.txt  --ward photos/cat.jpg=room  --to alice.pub
+# options as single-file: --mode seal  --pass-file house.txt  --ward-file photos/cat.jpg=room.txt  --to alice.pub
 #                         --keep N  --cold DIR  --force-drop  (restore: --identity, --force)
 ```
 
@@ -131,7 +131,7 @@ An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A sta
 
 # Encrypt-to / Ward
 ./sigil path secret.sg1 --identity alice.sgk --into .
-./sigil path tree.sg1 --pass-file house.txt --ward photos/secret.jpg=room --into photos
+./sigil path tree.sg1 --pass-file house.txt --ward-file photos/secret.jpg=room.txt --into photos
 ```
 
 Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. An encrypted folder pack (sealed directory) cannot be path-walked; unseal or mount it with the key. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
