@@ -1116,6 +1116,18 @@ as the listing).
   `log rotate-signer --json` (`entry`, `from`, `to`, `root`, `handovers`); `log adopt --json`
   (`ok` false and exit 1 when a source was skipped; `dry_run`, `adopted`, `skipped` with
   `path` / `why`, `ignored`, `removed`, `root` or null). Failures print the same `ok:false` line.
+* Card checks: `log check-card --json` (`sigil-log-check-card=1`: `name`, `children`, `root`,
+  `signed_by` or null, `checked` with `child` / `what` / `how`), `log check-card-child --json`
+  (`sigil-log-check-card-child=1`: `card`, `children`, `child_index`, `child`, `root`,
+  `signed_by`, `matched` or null), `log check-card-consistency --json`
+  (`sigil-log-check-card-consistency=1`: `name`, `old_children`, `new_children`, `kept`,
+  `added`). A failed check prints `{"format":…,"ok":false,"error":…}` and exits 2, like
+  `check-proof`.
+* `log read --json` (`sigil-log-read=1`) is metadata only: it needs `-o FILE` (the bytes go
+  there, never into the JSON) and prints `output`, `bytes`, `segments` (`seq`, `size`, `sha256`
+  of the bytes written, `path` (null for an `append` entry), `time`, `segment` file) and
+  `skipped_deleted`. A private log needs its key as always (fails closed, nothing written); the
+  `path` then comes from the opened INDEX.
 
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 
