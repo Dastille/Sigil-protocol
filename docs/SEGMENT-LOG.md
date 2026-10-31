@@ -850,8 +850,11 @@ writer at a time; do not put the container on a filesystem without atomic `renam
 Each segment carries a fixed overhead of about **3.2 KB** (header, keystone, Merkle) plus the
 mode's redundancy: Reflection ≈ 1.34×, Seal ≈ 2×, Glyph ≈ 1.003× on incompressible data (text
 compresses first). **Batch small events into larger appends** (KBs–MBs, not single lines).
-A batch is sealed in memory in one piece in this slice; very large single batches should be split
-(work-pack chunking for segments is deferred). INDEX is ~170 bytes per entry; `append` re-reads it
+A batch is sealed in memory in one piece; very large single batches should be split. Work-pack
+(chunked) segments are deferred: a segment is one `.sg1` star whose header digest is the INDEX
+`star=` true-name, read whole by every reader (`read`, `verify`, `mend`, `compact`, `shred`, `gc`,
+`add`), so a chunked segment needs a new segment kind and a `log=6` manifest bump that older
+sigils refuse, plus streaming reads in `read` / `restore` / `mount`. INDEX is ~170 bytes per entry; `append` re-reads it
 in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
 ## Inclusion proofs (`sigil log prove` / `sigil log check-proof`)
@@ -1110,7 +1113,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 (`log prove` / `log check-proof`); restore by path (`log restore`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
-* Streaming appends / segments above memory size (work-pack chunking).
+* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).

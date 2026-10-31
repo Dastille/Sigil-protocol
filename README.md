@@ -253,16 +253,17 @@ $ sigil unseal --pass-file pw.txt --only sub/b.txt -o just-b secret-album.sg1
 de-scribed 1 files → just-b
 ```
 
-Per-file passwords (`--ward PATH=PASSWORD`) lock single files inside the pack, on
+Per-file passwords (`--ward-file PATH=PWFILE`) lock single files inside the pack, on
 top of the folder key. A ward needs `--pass` or `--to` as well, so the names stay
 hidden; to open, give both:
 
 ```
-$ sigil seal --pass-file pw.txt --ward sub/b.txt=room-key -o secret-album.sg1 album
+$ printf '%s\n' room-key > room.txt && chmod 600 room.txt
+$ sigil seal --pass-file pw.txt --ward-file sub/b.txt=room.txt -o secret-album.sg1 album
 folder 2 files, 4 bytes → secret-album.sg1
-$ sigil unseal --pass-file pw.txt --ward sub/b.txt=room-key -o album-out secret-album.sg1
+$ sigil unseal --pass-file pw.txt --ward-file sub/b.txt=room.txt -o album-out secret-album.sg1
 de-scribed 2 files → album-out
-$ sigil seal --ward sub/b.txt=room-key -o w.sg1 album
+$ sigil seal --ward-file sub/b.txt=room.txt -o w.sg1 album
 a folder pack locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names
 ```
 
@@ -271,8 +272,9 @@ warns, then writes a pack whose names, sizes and unwarded files anyone can read;
 only the warded files' contents are locked. `vault track` refuses ward-only folder
 vaults the same way. Ward-only packs made before this change still open.
 
-A ward password typed as `--ward PATH=PASSWORD` shows in the process list and your
-shell history, so Sigil warns. Keep it off the command line with
+A ward password typed as `--ward PATH=PASSWORD` would show in the process list and
+your shell history, so Sigil **refuses** it (nothing is read or written, and the error
+does not repeat it), like a literal `--pass VALUE`. Keep it off the command line with
 `--ward-file PATH=PWFILE` (same rules as `--pass-file`: the first line of a file only
 you can read) or `--ward PATH=-` (type it, hidden; asked twice when sealing). Both
 work everywhere `--ward` does; `--ward PATH=-` needs a terminal and never reads piped
@@ -521,7 +523,7 @@ audit / test checks above.
 
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
-  missing. (`--pass VALUE` on the command line is refused, as is `--seal-pass VALUE`.)
+  missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
 - Damage near the start of a file costs more: the header region is used to find
   everything else, so recovery there leans on the spare header copies (Keystone)
   and loses more margin than the same damage in the middle.

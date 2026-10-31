@@ -65,7 +65,7 @@ rsync -av --partial dump.sg1 tape@nas:/backup/
 ./sigil inscribe -o tree.sg1 ./myfolder
 ./sigil de-scribe -o ./restored tree.sg1
 ./sigil de-scribe --only photos/cat.jpg -o ./out tree.sg1
-./sigil inscribe --pass-file house.txt --ward photos/secret.jpg=room -o tree.sg1 ./album
+./sigil inscribe --pass-file house.txt --ward-file photos/secret.jpg=room.txt -o tree.sg1 ./album
 ./sigil open photo.sg1
 
 ```
@@ -202,7 +202,7 @@ Apps see normal paths; cleartext stays in RAM (FUSE) or an export tree (`--expor
 # FUSE (Linux/Parrot: needs /dev/fuse + fusermount3; usually in the `fuse3` package)
 mkdir -p ./view
 ./sigil mount tree.sg1 ./view
-# Warded: --pass-file house.txt --ward photos/secret.jpg=room
+# Warded: --pass-file house.txt --ward-file photos/secret.jpg=room.txt
 # Encrypt-to: --identity alice.sgk
 # Vault tip: ./sigil mount ./notes.txt ./view --vault
 ls ./view

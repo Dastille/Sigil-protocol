@@ -1844,7 +1844,8 @@ fn load_recipients(
 
 /// Ward passwords from `--ward PATH=PASSWORD` and `--ward-file PATH=PWFILE`.
 /// `--ward PATH=-` asks on the terminal (hidden; twice when `new` encrypts something).
-/// A literal password warns (process list, shell history); an empty one is refused.
+/// A literal password is refused (process list, shell history), as is an empty one; nothing is
+/// read or written before this runs.
 /// One path given twice is refused rather than silently picking one.
 fn parse_wards(
     v: &[String],
@@ -1870,8 +1871,7 @@ fn parse_wards(
         } else if pw.trim().is_empty() {
             return Err(format!("--ward {path}=: {EMPTY_PASS}").into());
         } else {
-            eprintln!("{LITERAL_WARD_WARNING}");
-            pw.to_string()
+            return Err(format!("--ward {path}=…: {LITERAL_WARD_REFUSED}").into());
         };
         out.push((path.to_string(), pw));
     }
@@ -1895,11 +1895,11 @@ fn parse_wards(
     Ok(out)
 }
 
-/// Printed (stderr) when a ward password is typed straight onto the command line.
-const LITERAL_WARD_WARNING: &str =
-    "WARNING: a ward password given as --ward PATH=PASSWORD is visible to other programs on \
+/// Refused when a ward password is typed straight onto the command line (the value is not echoed).
+const LITERAL_WARD_REFUSED: &str =
+    "a ward password given as --ward PATH=PASSWORD is refused: it is visible to other programs on \
 this computer (process list) and may be saved in your shell history. Use --ward-file PATH=PWFILE \
-(a file only you can read) or --ward PATH=- (type it, hidden) instead";
+(a file only you can read) or --ward PATH=- (type it, hidden). Nothing was done";
 
 fn companion_bytes(paths: &[PathBuf]) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     paths.iter().map(|p| Ok(fs::read(p)?)).collect()
@@ -2289,12 +2289,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             rclone,
             wormhole,
         } => {
+            // wards first: a refused literal ward password must stop before stdin is staged
+            let wards = parse_wards(&ward, &ward_file, true)?;
             let stage = StdinStage::from_input(&input, &output, stdin_name.as_deref())?;
             let input = stage.as_ref().map(|s| s.file.clone()).unwrap_or(input);
             let pass = pass.or(pass_file);
             let geas = binds(&bind)?;
             let cov = covenant.as_deref().unwrap_or("");
-            let wards = parse_wards(&ward, &ward_file, true)?;
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())

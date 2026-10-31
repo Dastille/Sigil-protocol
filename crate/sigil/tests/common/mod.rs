@@ -64,7 +64,8 @@ pub fn scratch(tag: &str) -> Scratch {
     panic!("no free scratch folder name");
 }
 
-/// The CLI refuses a literal `--pass VALUE` / `--seal-pass VALUE` (process list, shell history).
+/// The CLI refuses a literal `--pass VALUE` / `--seal-pass VALUE` / `--ward PATH=PASSWORD`
+/// (process list, shell history); `--ward` pairs become `--ward-file PATH=FILE` the same way.
 /// Tests keep writing `"--pass", "pw"` for readability; this turns each such pair into
 /// `--pass-file FILE` (`--seal-pass-file`), FILE an owner-only file holding the passphrase in a
 /// private scratch folder. Empty / blank values and `-` are passed through unchanged, so the
@@ -111,6 +112,23 @@ where
                 out.push(file_for(v));
                 i += 2;
                 continue;
+            }
+        }
+        // `--ward PATH=PASSWORD` → `--ward-file PATH=FILE` (PATH=- and PATH= pass through)
+        if a == "--ward" {
+            if let Some((path, pw)) = args
+                .get(i + 1)
+                .and_then(|v| v.to_str())
+                .and_then(|v| v.split_once('='))
+            {
+                if literal(pw) {
+                    let mut spec = OsString::from(format!("{path}="));
+                    spec.push(file_for(pw));
+                    out.push("--ward-file".into());
+                    out.push(spec);
+                    i += 2;
+                    continue;
+                }
             }
         }
         if let Some(v) = a.strip_prefix("--pass=").filter(|v| literal(v)) {
