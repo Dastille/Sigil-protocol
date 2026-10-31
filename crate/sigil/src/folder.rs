@@ -1379,6 +1379,159 @@ fn read_entry_star_from<R: Read>(reader: &mut R, want: &str) -> Result<Vec<u8>> 
     )))
 }
 
+/// What [`seal_dir_names`] did.
+#[derive(Debug)]
+pub struct SealNamesReport {
+    pub files: u32,
+    /// Members that were encrypted in the old pack, and how many of them the given keys opened.
+    pub encrypted_members: usize,
+    pub opened_members: usize,
+    pub out_bytes: u64,
+}
+
+/// Turn an old v1 folder pack (names in the clear) into a sealed-directory v2 pack: the whole v1
+/// pack becomes the encrypted body, exactly as `inscribe` builds a v2 pack. Members are copied as
+/// they are (not decrypted or re-sealed). Refuses a v2 pack, an existing `output`, and no key.
+/// Fails closed when the pack has encrypted members and `check_pass` / `check_ids` open none of
+/// them, unless `allow_new_key` (e.g. a ward-only pack, whose members open only with their wards).
+#[allow(clippy::too_many_arguments)]
+pub fn seal_dir_names(
+    input: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    recipients: &[PublicIdentity],
+    check_pass: Option<&str>,
+    check_ids: &[Identity],
+    allow_new_key: bool,
+) -> Result<SealNamesReport> {
+    crate::refuse_empty_seal_pass(pass)?;
+    if pass.is_none() && recipients.is_empty() {
+        return Err(crate::Error::Msg(
+            "give --pass-file and/or --to: the member names are sealed under that key".into(),
+        ));
+    }
+    if output.exists() {
+        return Err(crate::Error::Msg(format!(
+            "{} already exists; choose a new output (the old pack is never changed in place)",
+            output.display()
+        )));
+    }
+    let raw = fs::read(input).map_err(io)?;
+    if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && raw[4] == DIR_VER_SEALED {
+        return Err(crate::Error::Msg(
+            "this folder pack already seals its names (SGDR v2); nothing to do".into(),
+        ));
+    }
+    let mut entries = parse_sgdr_entries(&raw)?;
+    let mut encrypted = 0usize;
+    let mut opened = 0usize;
+    let mut clear = Vec::new();
+    for (i, (_, star)) in entries.iter().enumerate() {
+        let open = |p: Option<&str>, ids: &[Identity]| -> bool {
+            if star.starts_with(&crate::work::WORK_MAGIC) {
+                let mut sink = Vec::new();
+                crate::work::unseal_bytes_into(star, &mut sink, p, &[], ids).is_ok()
+            } else {
+                unseal_ex_keys(star, p, &[], ids).is_ok()
+            }
+        };
+        if open(None, &[]) {
+            clear.push(i);
+            continue;
+        }
+        encrypted += 1;
+        if opened == 0
+            && (check_pass.is_some() || !check_ids.is_empty())
+            && open(check_pass, check_ids)
+        {
+            opened += 1;
+        }
+    }
+    if encrypted > 0 && opened == 0 && !allow_new_key {
+        return Err(crate::Error::Msg(
+            "the given key opens none of this pack's encrypted members (wrong key?); nothing was written. \
+             For a ward-only pack, add --allow-new-key to seal the names under a new key"
+                .into(),
+        ));
+    }
+    let count = u32::try_from(entries.len())
+        .map_err(|_| crate::Error::Msg("folder pack has too many members".into()))?;
+    // A sealed directory's members open with its key: clear members are sealed now (Glyph mode,
+    // as `inscribe` does inside a body); encrypted members are copied as they are.
+    for &i in &clear {
+        let Some((name, star)) = entries.get_mut(i) else {
+            continue;
+        };
+        if star.starts_with(&crate::work::WORK_MAGIC) {
+            return Err(crate::Error::Msg(format!(
+                "member {name} is a large unencrypted work pack; re-inscribe the folder with --pass-file / --to instead"
+            )));
+        }
+        let plain = unseal_ex_keys(star, None, &[], &[])?;
+        *star = seal_kn_to(
+            &plain,
+            Mode::Glyph,
+            pass,
+            name,
+            false,
+            "",
+            &[],
+            None,
+            DEFAULT_PIECE,
+            recipients,
+        )?;
+    }
+    let inner_raw = encode_sgdr(&entries)?;
+    let body = if inner_raw.len() <= crate::work::DEFAULT_CHUNK as usize {
+        seal_kn_to(
+            &inner_raw,
+            mode,
+            pass,
+            "folder.sgdr",
+            false,
+            "",
+            &[],
+            None,
+            DEFAULT_PIECE,
+            recipients,
+        )?
+    } else {
+        // holds member names in the clear until sealed: owner-only, created exclusively
+        let inner = Scratch(scratch_beside(output, "sgdr-inner"));
+        {
+            let mut w = crate::staging::create_private(&inner.0)?;
+            w.write_all(&inner_raw).map_err(io)?;
+        }
+        let packed = Scratch(scratch_beside(output, "sgdr-body"));
+        crate::work::inscribe_path_to(
+            &inner.0,
+            &packed.0,
+            mode,
+            pass,
+            "",
+            &[],
+            crate::work::DEFAULT_CHUNK,
+            None,
+            DEFAULT_PIECE,
+            crate::work::DEFAULT_OVERTURE_MB,
+            None,
+            recipients,
+        )?;
+        fs::read(&packed.0).map_err(io)?
+    };
+    let out = encode_sealed(count, &body);
+    let tmp = Scratch(scratch_beside(output, "sgdr-out"));
+    fs::write(&tmp.0, &out).map_err(io)?;
+    fs::rename(&tmp.0, output).map_err(io)?;
+    Ok(SealNamesReport {
+        files: count,
+        encrypted_members: encrypted,
+        opened_members: opened,
+        out_bytes: out.len() as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1701,5 +1854,116 @@ mod tests {
         assert!(list_dir_pack(&p).is_err());
         assert!(unseal_dir(&p, &root.join("o"), None, &[]).is_err());
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod seal_names_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sigil-folder-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// An old pass-encrypted v1 pack (names in the clear, as written before sealed directories)
+    /// becomes a v2 pack: names hidden, members copied byte-for-byte, opens with the same pass.
+    #[test]
+    fn seal_names_of_a_legacy_encrypted_pack() {
+        let d = scratch("seal-names");
+        let src = d.join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::write(src.join("sub/payroll-2025.csv"), b"alice,100\n").unwrap();
+        fs::write(src.join("notes.txt"), b"hello").unwrap();
+        let mut files = Vec::new();
+        walk(&src, &mut files).unwrap();
+        let old = d.join("old.sg1");
+        {
+            let mut w = File::create(&old).unwrap();
+            write_v1(
+                &src,
+                &files,
+                &mut w,
+                &old,
+                Mode::Reflection,
+                Some("pw"),
+                "",
+                &[],
+                4 << 20,
+                &[],
+                &[],
+            )
+            .unwrap();
+        }
+        let old_bytes = fs::read(&old).unwrap();
+        assert!(old_bytes.windows(11).any(|w| w == b"payroll-202"));
+        let new = d.join("new.sg1");
+        // wrong key: refused, nothing written
+        let e = seal_dir_names(
+            &old,
+            &new,
+            Mode::Reflection,
+            Some("other"),
+            &[],
+            Some("other"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("opens none"), "{e}");
+        assert!(!new.exists());
+        let r = seal_dir_names(
+            &old,
+            &new,
+            Mode::Reflection,
+            Some("pw"),
+            &[],
+            Some("pw"),
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!((r.files, r.encrypted_members), (2, 2));
+        assert_eq!(fs::read(&old).unwrap(), old_bytes, "input untouched");
+        let nb = fs::read(&new).unwrap();
+        assert!(!nb.windows(11).any(|w| w == b"payroll-202"));
+        assert!(is_sealed_dir_pack(&new));
+        // members are the old stars, byte-for-byte, inside the body
+        let (n, body) = sealed_dir_body(&new).unwrap().unwrap();
+        assert_eq!(
+            open_body(n, &body, Some("pw"), &[], &[]).unwrap(),
+            old_bytes
+        );
+        let out = d.join("out");
+        assert_eq!(unseal_dir(&new, &out, Some("pw"), &[]).unwrap(), 2);
+        assert_eq!(
+            fs::read(out.join("sub/payroll-2025.csv")).unwrap(),
+            b"alice,100\n"
+        );
+        // already v2, existing output: refused
+        assert!(seal_dir_names(
+            &new,
+            &d.join("x.sg1"),
+            Mode::Reflection,
+            Some("pw"),
+            &[],
+            Some("pw"),
+            &[],
+            false
+        )
+        .is_err());
+        assert!(seal_dir_names(
+            &old,
+            &new,
+            Mode::Reflection,
+            Some("pw"),
+            &[],
+            Some("pw"),
+            &[],
+            false
+        )
+        .is_err());
     }
 }
