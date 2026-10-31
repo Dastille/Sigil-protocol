@@ -213,11 +213,7 @@ fn daily_logs_roll_up_into_monthly_and_yearly_cards() {
     assert!(tamper(good.replace(sig, &fsig)).contains("signature does not verify"));
     // a nested card that was altered no longer matches its parent
     let m2 = fs::read_to_string(d.join("m2.card")).unwrap();
-    fs::write(
-        d.join("m2x.card"),
-        m2.replace("name=2026-10-b", "name=2026-10-b"),
-    )
-    .unwrap();
+    fs::write(d.join("m2x.card"), &m2).unwrap(); // an identical copy matches
     ok(&d, &["log", "check-card", "y.card", "--child", "m2x.card"]);
     ok(
         &d,
