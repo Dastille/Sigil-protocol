@@ -557,6 +557,10 @@ audit / test checks above.
   with very many files takes longer to list than a plain one. Without the key
   only the file count shows.
 
+- There is no self-extracting archive: opening or repairing a `.sg1` needs the
+  `sigil` CLI (or the web lab codec). Options are in
+  [docs/SFX-DESIGN.md](docs/SFX-DESIGN.md) (decision pending).
+
 ## History
 
 Code before October 2026 is kept on branch `archive/pre-2026-10` and tag
