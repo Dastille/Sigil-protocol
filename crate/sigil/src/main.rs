@@ -294,6 +294,8 @@ enum Cmd {
         #[arg(long)]
         wormhole: bool,
     },
+    /// De-scribe a .sg1 back to the original file or folder (`--pass-file` / `--identity` when
+    /// locked; `--repair` to open a bit-rotten copy). Aliases: de-scribe, describe
     #[command(visible_aliases = ["de-scribe", "describe"])]
     Unseal {
         input: PathBuf,
@@ -342,6 +344,8 @@ enum Cmd {
         #[arg(long)]
         repair: bool,
     },
+    /// Check a .sg1 without writing anything: shards, Merkle binding, header copies (and with
+    /// --read-data, the original bytes). Exit 0 ok, non-zero when damaged or unreadable
     Verify {
         input: PathBuf,
         /// Machine-readable result on stdout (one JSON line)
@@ -407,6 +411,8 @@ enum Cmd {
         #[arg(long = "allow-new-key")]
         allow_new_key: bool,
     },
+    /// Split a .sg1 into its piece files in a folder (one per shard) to spread over drives or
+    /// links; any k pieces are enough for `sigil gather`
     Scatter {
         input: PathBuf,
         #[arg(short, long)]
@@ -455,6 +461,7 @@ enum Cmd {
         #[arg(long, value_name = "REPORT", requires = "fountain", conflicts_with_all = ["extra", "loss", "sequential", "watch"])]
         answer: Option<String>,
     },
+    /// Rebuild a .sg1 from a folder of pieces (scatter / deluge / fountain); any k of n will do
     Gather {
         input: PathBuf,
         #[arg(short, long, required_unless_present = "report")]

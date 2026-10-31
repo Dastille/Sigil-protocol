@@ -2,10 +2,13 @@
 # Build a Sigil recovery kit (SFX-DESIGN.md Option 0): everything needed to open or repair the
 # given archives later, without assuming anything is installed. Writes DEST/sigil-recovery/.
 #
-#   scripts/make-recovery-kit.sh [--dest DIR] [--bin FILE]... [--spec FILE] [--dry-run] [--force]
-#                                ARCHIVE...
+#   scripts/make-recovery-kit.sh [--dest DIR] [--bin FILE]... [--spec FILE] [--check]
+#                                [--dry-run] [--force] ARCHIVE...
 #
-# ARCHIVE  .sg1 files or segment log folders (NAME.sigil). Hashed into SHA256SUMS, never copied.
+# ARCHIVE  .sg1 files or segment log folders (NAME.sigil). Hashed into ARCHIVES.sha256 (every
+#          file of a log folder), never copied.
+# --check  first run `sigil scry` (.sg1) / `sigil log verify` (log folder) on each ARCHIVE with
+#          the kit's binary; refuse to make the kit if one is damaged or unreadable (no keys used).
 # --dest   where to create sigil-recovery/ (default: the folder of the first ARCHIVE)
 # --bin    a sigil binary to include (repeatable; e.g. release builds for other platforms).
 #          Default: the one being run ($SIGIL or `sigil` on PATH), named for this platform.
@@ -16,7 +19,7 @@
 set -u
 SIGIL="${SIGIL:-sigil}"
 here="$(cd "$(dirname "$0")" && pwd)"
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 die() { echo "make-recovery-kit: $*" >&2; exit "${2:-2}"; }
 secretish() {
   case "$(basename "$1" | tr 'A-Z' 'a-z')" in
@@ -24,13 +27,14 @@ secretish() {
   esac
   return 1
 }
-dest=""; spec="$here/../docs/sigil-v1.txt"; bins=(); archives=(); dry=0; force=0
+dest=""; spec="$here/../docs/sigil-v1.txt"; bins=(); archives=(); dry=0; force=0; check=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dest) [ $# -ge 2 ] || usage; dest="$2"; shift 2 ;;
     --bin) [ $# -ge 2 ] || usage; bins+=("$2"); shift 2 ;;
     --spec) [ $# -ge 2 ] || usage; spec="$2"; shift 2 ;;
     --dry-run) dry=1; shift ;;
+    --check) check=1; shift ;;
     --force) force=1; shift ;;
     -h|--help) usage ;;
     --pass|--pass-file|--identity|--ward|--ward-file) die "$1: a recovery kit never holds secrets" ;;
@@ -62,13 +66,26 @@ elif command -v shasum >/dev/null; then sha() { shasum -a 256 "$@"; }
 else die "need sha256sum or shasum" 3; fi
 version="$("${bins[0]}" --version 2>/dev/null | head -1)"; [ -n "$version" ] || version="sigil (version unknown)"
 
+if [ $check -eq 1 ]; then
+  for a in "${archives[@]}"; do
+    if [ -d "$a" ]; then out="$("${bins[0]}" log verify "$a" 2>&1)"; rc=$?
+    else out="$("${bins[0]}" scry "$a" 2>&1)"; rc=$?; fi
+    # log verify: 1 = warnings only (still readable); anything else non-zero is damage
+    if [ $rc -ne 0 ] && { [ ! -d "$a" ] || [ $rc -ne 1 ]; }; then
+      printf '%s\n' "$out" >&2
+      die "check failed for $a (exit $rc): repair it first (sigil mend / sigil log mend), then make the kit"
+    fi
+    echo "checked: $a"
+  done
+fi
+
 names=()
 for b in "${bins[@]}"; do
   if [ -n "${default_name:-}" ]; then names+=("$default_name"); else names+=("$(basename "$b")"); fi
 done
 if [ $dry -eq 1 ]; then
   echo "would write $kit/"
-  echo "  RECOVER.txt"; echo "  SHA256SUMS"; echo "  spec/sigil-v1.txt"
+  echo "  RECOVER.txt"; echo "  SHA256SUMS"; echo "  ARCHIVES.sha256"; echo "  spec/sigil-v1.txt"
   for n in "${names[@]}"; do echo "  bin/$n"; done
   for a in "${archives[@]}"; do echo "  (hash only) $a"; done
   exit 0
@@ -96,9 +113,16 @@ awk -v d="$(date -u +%Y-%m-%dT%H:%MZ)" -v v="$version" -v A="$alist" -v B="$blis
   /^@BINARIES@$/ { printf "%s", B; next }
   { gsub(/@DATE@/, d); gsub(/@VERSION@/, v); print }' "$here/RECOVER.txt.in" > "$tmp/RECOVER.txt" \
   || die "write RECOVER.txt failed" 3
-(cd "$tmp" && sha RECOVER.txt spec/sigil-v1.txt bin/* > SHA256SUMS) || die "checksums failed" 3
+: > "$tmp/ARCHIVES.sha256" || die "write ARCHIVES.sha256 failed" 3
+for a in "${archives[@]}"; do
+  (cd "$(dirname "$a")" && b="$(basename "$a")" &&
+    if [ -d "$b" ]; then find "$b" -type f ! -name '*.part' ! -name '*.tmp*' | LC_ALL=C sort |
+      while IFS= read -r f; do sha "$f"; done
+    else sha "$b"; fi) >> "$tmp/ARCHIVES.sha256" || die "hashing $a failed" 3
+done
+(cd "$tmp" && sha RECOVER.txt ARCHIVES.sha256 spec/sigil-v1.txt bin/* > SHA256SUMS) || die "checksums failed" 3
 
 rm -rf "$kit" && mv "$tmp" "$kit" || die "cannot move kit into $kit" 3
 trap - EXIT
-echo "recovery kit: $kit (${#names[@]} binary, spec, RECOVER.txt, SHA256SUMS)"
+echo "recovery kit: $kit (${#names[@]} binary, spec, RECOVER.txt, SHA256SUMS, ARCHIVES.sha256)"
 echo "copy it next to the archives; check with: (cd $kit && sha256sum -c SHA256SUMS)"
