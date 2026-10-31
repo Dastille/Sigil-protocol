@@ -244,7 +244,7 @@ pub(super) fn rewrap_all(
     pass: Option<&str>,
     ids: &[Identity],
     edit: &keys::SgtoEdit<'_>,
-) -> Result<(usize, usize, usize, Vec<(u64, RewrappedShard)>)> {
+) -> Result<RewrapAll> {
     let mut out = Vec::new();
     let (mut records, mut removed) = (0usize, 0usize);
     for (shard, sc) in scan(log) {
@@ -269,6 +269,9 @@ pub(super) fn rewrap_all(
     }
     Ok((out.len(), records, removed, out))
 }
+
+/// `(shards, records, removed matches, new shards)` from [`rewrap_all`].
+pub(super) type RewrapAll = (usize, usize, usize, Vec<(u64, RewrappedShard)>);
 
 /// A shard re-wrapped in memory by [`rewrap_all`], not yet stored.
 pub(super) struct RewrappedShard(Frames);

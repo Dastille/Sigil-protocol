@@ -890,7 +890,10 @@ mod tests {
             .windows(blk.len() - 12)
             .any(|w| w == &blk[8..blk.len() - 4]));
         for id in [&a, &b, &c] {
-            assert_eq!(unwrap_cek(&add, &[id.clone()], None, &salt).unwrap(), cek);
+            assert_eq!(
+                unwrap_cek(&add, std::slice::from_ref(id), None, &salt).unwrap(),
+                cek
+            );
         }
         // remove b: b locked out, a and c still open
         let (rm, n) = sgto_rewrap(
@@ -903,8 +906,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(n, 1);
-        assert!(unwrap_cek(&rm, &[b.clone()], None, &salt).is_err());
-        assert_eq!(unwrap_cek(&rm, &[c.clone()], None, &salt).unwrap(), cek);
+        assert!(unwrap_cek(&rm, std::slice::from_ref(&b), None, &salt).is_err());
+        assert_eq!(
+            unwrap_cek(&rm, std::slice::from_ref(&c), None, &salt).unwrap(),
+            cek
+        );
         // replace with c only
         let (rp, _) = sgto_rewrap(
             &rm,
@@ -916,8 +922,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(unwrap_cek(&rp, &[a.clone()], None, &salt).is_err());
-        assert_eq!(unwrap_cek(&rp, &[c.clone()], None, &salt).unwrap(), cek);
+        assert!(unwrap_cek(&rp, std::slice::from_ref(&a), None, &salt).is_err());
+        assert_eq!(
+            unwrap_cek(&rp, std::slice::from_ref(&c), None, &salt).unwrap(),
+            cek
+        );
         // nobody left: refused
         assert!(sgto_rewrap(
             &rp,
