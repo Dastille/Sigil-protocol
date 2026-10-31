@@ -614,6 +614,16 @@ audit / test checks above.
   recovery kit: `scripts/make-recovery-kit.sh ARCHIVE...` puts the program, checksums, the spec
   and a plain-English `RECOVER.txt` next to the archive (no passphrases or keys).
 
+- Releases and recovery kits are **unsigned**: `SHA256SUMS` catches accidental damage, not a
+  deliberate swap. Options: [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md)
+  (decision pending).
+- A segment-log batch is sealed and read in memory in one piece, so batches above RAM size do
+  not work; split them or keep huge files as separate `sigil seal` packs. Options:
+  [docs/STREAMING-DESIGN.md](docs/STREAMING-DESIGN.md) (decision pending).
+- In `scry --json` / `verify --json`, `health` combines Scry's recoverability check with
+  `doctor`'s repair check; `needs-repair` errs on the cautious side, and the `report` text can
+  still read `ok` for a copy whose `status.health` is `needs-repair`.
+
 ## History
 
 Code before October 2026 is kept on branch `archive/pre-2026-10` and tag

@@ -44,7 +44,7 @@ folder that holds them; a log that grew later differs, use `log verify`). `--che
 `log verify` (no keys) with the kit's binary first and refuses to make a kit for a damaged archive.
 A test runs RECOVER.txt's steps with the kit's binary: mend a torn copy, private log verify / mend /
 restore, and gather from scattered pieces with some lost.
-Not yet: signatures over the kit (releases are unsigned), fetching release binaries for other
+Not yet: signatures over the kit (releases are unsigned; options in [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md)), fetching release binaries for other
 platforms (pass them with `--bin`).
 
 
@@ -178,7 +178,7 @@ the web codec's repair coverage was not checked for this note.
 2. If single-file: HTML (D) or native Linux stub (A) first?
 3. Must the one-file form repair, or is "open if healthy, otherwise use the CLI" acceptable?
 4. Size budget per archive for an embedded extractor?
-5. Release trust: will releases be signed (and with what key) before any stub ships?
+5. Release trust: will releases be signed (and with what key) before any stub ships? (See RELEASE-SIGNING-DESIGN.md.)
 6. For D: should the SFX page be built in dove-bloom-star-island (where the lab UI already
    lives), or as a small standalone template in this repository next to the codec?
 7. AGPL: is a bundled source offer (URL + version in `RECOVER.txt` / the stub banner) the intended

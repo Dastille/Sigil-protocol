@@ -219,6 +219,8 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [SEGMENT-LOG.md](SEGMENT-LOG.md) | Append-only sealed batches, verify, prove, shred, rotate signer |
 | [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery kit (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
 | [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (decision pending, not implemented) |
+| [STREAMING-DESIGN.md](STREAMING-DESIGN.md) | Design note: segments above memory size (`log=9`, chunked segments); decision pending, not implemented |
+| [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery kits (minisign recommended); decision pending, releases unsigned |
 | [PASSKEY.md](PASSKEY.md) | Lock a `.sgk` identity to a FIDO2 security key |
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
 | [LRC-COLD-USB.md](LRC-COLD-USB.md) | Cold kit across USB sticks |
