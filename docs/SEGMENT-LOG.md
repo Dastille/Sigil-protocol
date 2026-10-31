@@ -453,6 +453,37 @@ key and destroys the old one. (This is checked by `verify` too: an INDEX that sh
 shared file is `index-shred`.) Merged segments of a `--segment-keys` log need `--seal-pass` or
 `--to` on `compact --apply`, for the same reason appends do.
 
+### Erasing one batch inside a compaction segment (`shred --rewrite`)
+
+```sh
+sigil log shred events --seq 2 --rewrite --pass-file pw.txt --seal-pass-file pw.txt [--reason TEXT]
+#   (--seal-to alice.pub for an encrypt-to file; --unlock / --identity open the old file too)
+```
+
+**In-place erasure is not possible, so it is not offered.** A segment is one sealed star: one
+AEAD key and tag over the whole (compressed, possibly padded) body, plus Reed–Solomon parity.
+Overwriting one batch's bytes would break the tag for every batch in the file, and `mend` would
+treat the change as bit-rot and put the bytes back from parity. There is no honest way to destroy
+part of one AEAD message.
+
+What `--rewrite` does instead is the smallest real rewrite: a tombstone for the batch (with its
+reason, sealed in a private log), then a compaction of **only the file(s) holding it**. The other
+batches of that file are re-sealed into one new file (in a segment-keys log under a fresh key);
+the old file is erased and, with segment keys, its key record destroyed. No other segment file is
+read or written (files already dead and waiting for `compact --apply` are erased as usual).
+It works in any log, with or without segment keys.
+
+* **Fails closed.** Before anything is written it opens every holder with the given keys and checks
+  a key for the new file was given (`--seal-pass-file` / `--seal-to`; a segment-keys or encrypted
+  file is never re-written in the clear). A wrong key or a missing one changes nothing. A literal
+  `--pass` is refused.
+* **Crash between the two steps:** the tombstone is committed and the batch is unreadable through
+  the log, but its bytes are still in the old file; `verify` reports `deleted-data` and
+  `sigil log compact --apply` finishes the job.
+* **What it does not reach:** backups and snapshots of the old file, or of the key ring, still
+  hold the batch (as for every shred / compaction). The batch's INDEX line stays (sizes and names in
+  the clear for a public INDEX; sealed for a private one), so every pinned anchor still verifies.
+
 ### What stays valid after a shred
 
 * **The INDEX is only appended to.** The shred is one more chained line; `verify`, the Merkle
@@ -1377,14 +1408,15 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: a monthly retention check (`scripts/monthly-log-retention.sh`); padded segments for private logs (`log=7`); sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
-(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy, optionally padded with `--pad`); turning segment keys on for an existing log (`log enable-segment-keys`, `log=8`). Still deferred:
+(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy, optionally padded with `--pad`); turning segment keys on for an existing log (`log enable-segment-keys`, `log=8`); erasing one batch of a compaction segment by rewriting only that file (`log shred --rewrite`). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes").
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic **applying** of retention (the monthly check below only reports; `compact --apply` stays a deliberate step).
-* Shredding one batch inside a compaction segment without rewriting it.
+* Shredding one batch inside a compaction segment **without rewriting that segment**: impossible
+  with one AEAD tag per segment (see `shred --rewrite`, which rewrites only that file).
 
 ## Turning segment keys on later (`sigil log enable-segment-keys`, `log=8`)
 

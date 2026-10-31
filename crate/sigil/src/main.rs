@@ -1654,6 +1654,17 @@ enum LogCmd {
         /// Private INDEX: an identity (.sgk) the index key was wrapped to (repeatable)
         #[arg(long = "unlock")]
         unlock: Vec<PathBuf>,
+        /// Erase batches that share a compaction segment with live ones: tombstone them, then
+        /// rewrite only that segment file (others re-sealed, old file and key destroyed). Opens it
+        /// with --pass-file / --unlock / --identity; works in any log
+        #[arg(long)]
+        rewrite: bool,
+        /// --rewrite: passphrase file for the rewritten segment
+        #[arg(long = "seal-pass-file", value_name = "PATH", requires = "rewrite", value_parser = parse_pass_file)]
+        seal_pass_file: Option<String>,
+        /// --rewrite: encrypt-to recipient for the rewritten segment (repeatable)
+        #[arg(long = "seal-to", requires = "rewrite")]
+        seal_to: Vec<String>,
     },
     /// Merge live segments into fewer, larger ones and erase the files of deleted / merged-away
     /// segments. Dry run unless --apply. The INDEX keeps every old entry, so pinned anchors still verify.
@@ -4805,6 +4816,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass,
             pass_file,
             unlock,
+            rewrite,
+            seal_pass_file,
+            seal_to,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let rpass = resolve_pass(pass.or(pass_file), None)?;
@@ -4818,6 +4832,37 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 (None, Some(a), Some(b)) => seglog::TombTarget::Range(a, b),
                 _ => return Err("give --seq N, or --from A --to B".into()),
             };
+            if rewrite {
+                let recipients = load_recipients(&seal_to)?;
+                let mut readers = runlock.clone();
+                readers.extend(id.iter().cloned());
+                let r = seglog::shred_rewrite(
+                    &path,
+                    target,
+                    reason.as_deref(),
+                    id.as_ref(),
+                    &rkeys,
+                    &seglog::CompactOpts {
+                        seal_pass: seal_pass_file.as_deref(),
+                        recipients: &recipients,
+                        read: seglog::ReadOpts {
+                            pass: rpass.as_deref(),
+                            identities: &readers,
+                        },
+                        ..Default::default()
+                    },
+                )?;
+                println!(
+                    "erased segment(s) {} (tombstone #{}) by rewriting only segment file(s) {}: {} old file(s) erased, {} key record(s) destroyed",
+                    seglog::fmt_ranges(&seglog::compress(&r.tomb.deleted)),
+                    r.tomb.entry,
+                    seglog::fmt_ranges(&seglog::compress(&r.holders)),
+                    r.compact.removed,
+                    r.compact.keys_destroyed
+                );
+                println!("  Copies of the old file or its key (backups, snapshots, an exported key ring) are not reached: see docs/SEGMENT-LOG.md");
+                return Ok(());
+            }
             let r = seglog::shred_with(&path, target, reason.as_deref(), id.as_ref(), &rkeys)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
