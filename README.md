@@ -546,8 +546,9 @@ open every part all the way back to the original bytes (decrypt + true-name chec
 `--read-data-subset 10%` to open an evenly spaced tenth. The sample moves each day, so
 a daily 10% check covers the whole file in about ten days (like restic). Encrypted marks
 need `--pass-file` / `--identity`. Nothing is written to disk. Pin the sample with
-`--subset-offset N`. Works on one `.sg1`, a large-file pack or a folder pack (not
-constellations yet). On a folder pack each sampled member is a part; an encrypted pack
+`--subset-offset N`. Works on one `.sg1`, a large-file pack, a folder pack or a
+constellation (each member's star is a part; a locked card takes the same `--pass-file` /
+`--identity`). An atlas bag (`.sga`) is not deep-read yet: verify the constellation folder. On a folder pack each sampled member is a part; an encrypted pack
 needs its key, a member locked with its own `--ward` counts as failed (verify has no ward
 input), and a nested folder pack is listed under `skipped`, never counted as opened. Each
 failure carries a `cause`: `key-needed` or `wrong-key` (exit 1, a key problem, nothing shown

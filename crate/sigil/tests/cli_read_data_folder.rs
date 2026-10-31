@@ -185,12 +185,3 @@ fn damaged_member_is_reported() {
         "{j}"
     );
 }
-
-#[test]
-fn constellation_still_refused() {
-    let d = common::scratch("rd-sky");
-    tree(&d);
-    ok(&d, &["constellation", "add", "Sky", "docs"]);
-    let e = fails(&d, &["verify", "Sky", "--read-data"]);
-    assert!(e.contains("not a constellation yet"), "{e}");
-}
