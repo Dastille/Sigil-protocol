@@ -39,6 +39,11 @@ release builds for other platforms), `spec/sigil-v1.txt`, `RECOVER.txt` (plain s
 sums, scry, unseal with `--pass-file`, mend / `mend --soft`, log verify/mend/restore, gather,
 kit mend; filled from `scripts/RECOVER.txt.in` with the archives' SHA-256) and `SHA256SUMS`.
 It refuses key files and `--pass*` / `--identity` / `--ward*` options, so nothing secret goes in.
+`ARCHIVES.sha256` records the archives as they were (every file of a log folder; checked from the
+folder that holds them; a log that grew later differs, use `log verify`). `--check` runs `scry` /
+`log verify` (no keys) with the kit's binary first and refuses to make a kit for a damaged archive.
+A test runs RECOVER.txt's steps with the kit's binary: mend a torn copy, private log verify / mend /
+restore, and gather from scattered pieces with some lost.
 Not yet: signatures over the kit (releases are unsigned), fetching release binaries for other
 platforms (pass them with `--bin`).
 

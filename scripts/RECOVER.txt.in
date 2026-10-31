@@ -13,6 +13,10 @@ you need the passphrase (or key) the archive was sealed with, if it was locked.
    In this folder:   sha256sum -c SHA256SUMS      (macOS: shasum -a 256 -c SHA256SUMS)
    Every line must say OK. If a program fails, get a fresh copy from
    https://github.com/Dastille/Sigil-protocol/releases (source code is there too, AGPL-3.0).
+   The archives as they were when this kit was made: from the folder that holds them,
+     sha256sum -c sigil-recovery/ARCHIVES.sha256
+   A FAILED .sg1 line means damage (go to 4b). A log folder grows after the kit was made, so
+   INDEX / HEAD / new segments may differ; use step 4c (log verify) for logs instead.
 
 2. Pick the program for this computer from bin/
 @BINARIES@

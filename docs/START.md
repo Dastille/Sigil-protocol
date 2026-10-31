@@ -253,6 +253,6 @@ Not in this Friday slice — come back later:
 - Self-extracting archives with repair: options and open questions in
   [SFX-DESIGN.md](SFX-DESIGN.md) (stubs pending; the recovery kit below is shipped)
 
-To leave a way back next to an archive (program, checksums, spec, plain-English `RECOVER.txt`; no secrets): `scripts/make-recovery-kit.sh photos.sg1 --bin sigil-macos --bin sigil.exe` (see SFX-DESIGN.md, Option 0).
+To leave a way back next to an archive (program, checksums, spec, plain-English `RECOVER.txt`; no secrets): `scripts/make-recovery-kit.sh --check photos.sg1 --bin sigil-macos --bin sigil.exe` (see SFX-DESIGN.md, Option 0).
 
 Day-to-day use does not need those. A monthly read-only health + compaction-plan check ships as `scripts/monthly-log-retention.sh` (see SEGMENT-LOG.md, "Monthly retention check"); add `--apply --older-than 90d --seal-pass-file F` to let it compact when the log is healthy.
