@@ -340,6 +340,8 @@ $ sigil log ls photos --identity me.sgk
 $ sigil log prove photos --seq 1 --identity me.sgk -o beach.proof
 $ sigil log check-proof beach.proof --file Photos/2024/beach.jpg --signer me.pub
   file matches the entry's bytes (SHA-256 and size)
+$ sigil log prove photos --path 2024/beach.jpg --identity me.sgk -o beach.proof   # or by path
+$ sigil log check-proof beach.proof --path 2024/beach.jpg --signer me.pub
 ```
 
 Get a file or a whole folder back by its path (checked, never overwrites):

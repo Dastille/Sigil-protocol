@@ -347,6 +347,8 @@ pub struct ProofCheckOpts {
     pub anchor: Option<(u64, [u8; 32])>,
     /// Require the entry's plain bytes to be exactly these (SHA-256, length).
     pub file: Option<([u8; 32], u64)>,
+    /// Require the entry to be the file `log add` recorded at this path (`path=`).
+    pub path: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -403,6 +405,9 @@ impl ProofCheck {
             self.size,
             hex32(&self.root)
         );
+        if let Some(p) = e.path() {
+            s.push_str(&format!("  path {}\n", show_path(&p)));
+        }
         if self.file_matched {
             s.push_str("  file matches the entry's bytes (SHA-256 and size)\n");
         }
@@ -515,6 +520,29 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         }
         None => Vec::new(),
     };
+    if let Some(want) = &opts.path {
+        if matches!(entry.op, Op::Seg) && entry.is_locked() {
+            return Err(bad(
+                "--path given, but this entry's path is sealed (private INDEX) and the proof has no entry-key=; ask for a receipt cut with the log's key".into(),
+            ));
+        }
+        match entry.path() {
+            Some(p) if p == *want => {}
+            Some(p) => {
+                return Err(bad(format!(
+                    "the entry is the file {:?}, not {:?}",
+                    show_path(&p),
+                    show_path(want)
+                )))
+            }
+            None => {
+                return Err(bad(format!(
+                    "the entry records no path (not written by `log add`), not {:?}",
+                    show_path(want)
+                )))
+            }
+        }
+    }
     if let Some(want) = opts.signer {
         match signed_by {
             Some(_) if signer_chain.contains(&want) => {}
@@ -583,4 +611,46 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         signer_chain,
         file_matched,
     })
+}
+
+/// The seq of the latest version of `rel` (a path `log add` recorded) among entries the HEAD
+/// vouches for, to cut a receipt by path. Refuses an unknown path and a path whose latest version
+/// is tombstoned or shredded (no older version is substituted). A private INDEX needs its key.
+pub fn seq_for_path(path: &Path, rel: &str, pass: Option<&str>, ids: &[Identity]) -> Result<u64> {
+    let mut log = Log::open(path)?;
+    if log.privindex {
+        log.unlock_index(pass, ids)?;
+    }
+    let idx = read_index(&log)?;
+    if let Some((line, code, msg)) = &idx.error {
+        return Err(err(format!(
+            "INDEX line {line} is damaged ({code}: {msg}); run `sigil log verify` first"
+        )));
+    }
+    let want = rel.trim_matches('/').as_bytes();
+    let trusted = trusted_len(&log, &idx).min(idx.entries.len());
+    let seq = idx.entries[..trusted]
+        .iter()
+        .rev()
+        .find(|e| matches!(e.op, Op::Seg) && e.path().as_deref() == Some(want))
+        .map(|e| e.seq)
+        .ok_or_else(|| {
+            err(format!(
+                "no file {:?} among the entries this log vouches for (see `sigil log ls`)",
+                show_path(want)
+            ))
+        })?;
+    if idx
+        .state
+        .deleted_by(seq)
+        .or_else(|| idx.state.shredded_by(seq))
+        .is_some()
+    {
+        return Err(err(format!(
+            "{:?}: its latest version (segment {seq}) is deleted: {} (prove the tombstone with --seq, or an older version by its seq)",
+            show_path(want),
+            deleted_msg(&idx.entries, &idx.state, seq)
+        )));
+    }
+    Ok(seq)
 }
