@@ -1081,28 +1081,28 @@ pub fn run_mount_keys(
             ));
         }
         if writable {
-            println!(
+            crate::human_line(&format!(
                 "exported {n} file(s) → {}  (writable dirty tree; seal intact)",
                 dest.display()
-            );
-            println!(
+            ));
+            crate::human_line(&format!(
                 "re-seal: sigil vault commit --from-export {}",
                 dest.display()
-            );
+            ));
         } else {
-            println!(
+            crate::human_line(&format!(
                 "exported {n} file(s) → {}  (seal intact, read-only view)",
                 dest.display()
-            );
+            ));
         }
-        println!("source {}", fs.seal_path().display());
+        crate::human_line(&format!("source {}", fs.seal_path().display()));
         return Ok(());
     }
-    println!(
+    crate::human_line(&format!(
         "mounting {} → {} (read-only FUSE; Ctrl-C or `sigil umount` to leave)",
         fs.seal_path().display(),
         mountpoint.display()
-    );
+    ));
     let seal = fs.seal_path().to_path_buf();
     mount_fuse(fs, mountpoint)?;
     let after = sha_of(&seal)?;
@@ -1112,7 +1112,7 @@ pub fn run_mount_keys(
             "warning: seal digest changed while mounted (unexpected)"
         );
     } else {
-        println!("unmounted; seal unchanged");
+        crate::human_line("unmounted; seal unchanged");
     }
     Ok(())
 }
@@ -1148,18 +1148,18 @@ fn run_log_mount(
                 "log INDEX changed during export — this should never happen".into(),
             ));
         }
-        println!(
+        crate::human_line(&format!(
             "exported {n} live segment(s) → {}  (log intact, read-only view)",
             dest.display()
-        );
-        println!("source {}", fs.seal_path().display());
+        ));
+        crate::human_line(&format!("source {}", fs.seal_path().display()));
         return Ok(());
     }
-    println!(
+    crate::human_line(&format!(
         "mounting log {} → {} (read-only FUSE; one file per live segment; Ctrl-C or `sigil umount` to leave)",
         fs.seal_path().display(),
         mountpoint.display()
-    );
+    ));
     let dir = fs.seal_path().to_path_buf();
     mount_fuse(fs, mountpoint)?;
     let after = sha_of(&index_path)?;
