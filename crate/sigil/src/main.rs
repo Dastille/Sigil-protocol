@@ -187,6 +187,30 @@ fn unseal_to_stdout(
     Ok(plain.len() as u64)
 }
 
+fn jstr(s: &str) -> String {
+    sigil::doctor::json_str(s)
+}
+fn jnums(v: &[u64]) -> String {
+    v.iter()
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Log commands whose `--json` failure is `{"format":F,"ok":false,"exit":N,"error":…}`.
+fn log_json_fail_format(cmd: &Cmd) -> Option<&'static str> {
+    match cmd {
+        Cmd::Log { cmd } => match cmd {
+            LogCmd::Init { json: true, .. } => Some("sigil-log-init=1"),
+            LogCmd::Append { json: true, .. } => Some("sigil-log-append=1"),
+            LogCmd::Tombstone { json: true, .. } => Some("sigil-log-tombstone=1"),
+            LogCmd::Shred { json: true, .. } => Some("sigil-log-shred=1"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `--json` result context: (command, output path) when the parsed command asked for it.
 fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
     match cmd {
@@ -1156,6 +1180,10 @@ enum LogCmd {
         /// Private INDEX: recipient the index key is wrapped to: .pub / .sgk / OpenPGP cv25519 .asc / hex (repeatable)
         #[arg(long = "to")]
         to: Vec<String>,
+        /// Machine-readable result on stdout (`sigil-log-init=1`); notes stay on stderr; a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
     },
     /// Seal FILE (or `-` for stdin) as the next immutable segment and extend the chain.
     Append {
@@ -1182,6 +1210,10 @@ enum LogCmd {
         /// the signing --identity (repeatable)
         #[arg(long = "unlock")]
         unlock: Vec<PathBuf>,
+        /// Machine-readable result on stdout (`sigil-log-append=1`); notes stay on stderr; a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
     },
     /// Back up a folder: seal every file under DIR that is new or changed since the last add as its
     /// own segment (recursive, stable order; symlinks and special files are skipped and listed).
@@ -1684,6 +1716,10 @@ enum LogCmd {
         /// Private INDEX: an identity (.sgk) the index key was wrapped to (repeatable)
         #[arg(long = "unlock")]
         unlock: Vec<PathBuf>,
+        /// Machine-readable result on stdout (`sigil-log-tombstone=1`); notes stay on stderr; a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
     },
     /// Crypto-shred segments of a `--segment-keys` log: record it in the INDEX, destroy the segment's
     /// key and unlink its ciphertext. Needs no key. Anchors and verify keep working; the data cannot
@@ -1726,6 +1762,10 @@ enum LogCmd {
         /// --rewrite: encrypt-to recipient for the rewritten segment (repeatable)
         #[arg(long = "seal-to", requires = "rewrite")]
         seal_to: Vec<String>,
+        /// Machine-readable result on stdout (`sigil-log-shred=1`); notes stay on stderr; a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
     },
     /// Merge live segments into fewer, larger ones and erase the files of deleted / merged-away
     /// segments. Dry run unless --apply. The INDEX keeps every old entry, so pinned anchors still verify.
@@ -2424,6 +2464,7 @@ fn verify_cmd(
 fn main() {
     let cli = Cli::parse();
     let jctx = json_ctx(&cli.cmd);
+    let log_fail = log_json_fail_format(&cli.cmd);
     let piped_out = matches!(&cli.cmd, Cmd::Unseal { output, .. } if output.as_os_str() == "-");
     if jctx.is_some() || piped_out {
         HUMAN_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2452,6 +2493,11 @@ fn main() {
                 println!(
                     "{{\"ok\":false,\"cmd\":\"{cmd}\",\"exit\":{code},\"error\":{}{extra}}}",
                     jq(&e.to_string())
+                );
+            } else if let Some(f) = log_fail {
+                println!(
+                    "{{\"format\":\"{f}\",\"ok\":false,\"exit\":{code},\"error\":{}}}",
+                    jstr(&e.to_string())
                 );
             }
             std::process::exit(code);
@@ -4314,6 +4360,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             to,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let id = identity.as_deref().map(Identity::load).transpose()?;
@@ -4348,6 +4395,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     pad,
                 },
             )?;
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-init=1\",\"ok\":true,\"dir\":{},\"signer\":{},\"segment_keys\":{segment_keys},\"private_index\":{private_index},\"pad\":{pad}}}",
+                    jstr(&log.dir.display().to_string()),
+                    log.signer
+                        .map_or("null".to_string(), |pk| format!("\"{}\"", hex::encode(pk)))
+                );
+                return Ok(());
+            }
             println!(
                 "log {}  created ({}{})",
                 log.dir.display(),
@@ -4373,6 +4429,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             to,
             identity,
             unlock,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -4400,6 +4457,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             )?;
             for n in &r.notes {
                 eprintln!("note: {n}");
+            }
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-append=1\",\"ok\":true,\"seq\":{},\"size\":{},\"sealed_bytes\":{},\"sha256\":\"{}\",\"segment\":{},\"root\":\"{}\",\"signed\":{}}}",
+                    r.seq,
+                    r.size,
+                    r.sealed_bytes,
+                    hex::encode(r.sha),
+                    jstr(&r.segment.display().to_string()),
+                    hex::encode(r.root),
+                    r.signed
+                );
+                return Ok(());
             }
             println!(
                 "segment {}  {} bytes → {} sealed  sha256 {}…  head {}:{}{}",
@@ -4877,6 +4947,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass,
             pass_file,
             unlock,
+            json,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let rpass = resolve_pass(pass.or(pass_file), None)?;
@@ -4893,6 +4964,18 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let r = seglog::tombstone_with(&path, target, reason.as_deref(), id.as_ref(), &rkeys)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
+            }
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-tombstone=1\",\"ok\":true,\"entry\":{},\"deleted\":[{}],\"already\":[{}],\"pending_bytes\":{},\"root\":\"{}\",\"signed\":{}}}",
+                    r.entry,
+                    jnums(&r.deleted),
+                    jnums(&r.already),
+                    r.pending_bytes,
+                    hex::encode(r.root),
+                    r.signed
+                );
+                return Ok(());
             }
             println!(
                 "tombstone {}: deleted segment(s) {}{}  head {}:{}{}",
@@ -4922,6 +5005,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             rewrite,
             seal_pass_file,
             seal_to,
+            json,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
             let rpass = resolve_pass(pass.or(pass_file), None)?;
@@ -4955,6 +5039,20 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                         ..Default::default()
                     },
                 )?;
+                if json {
+                    println!(
+                        "{{\"format\":\"sigil-log-shred=1\",\"ok\":true,\"rewrite\":true,\"entry\":{},\"erased\":[{}],\"already\":[{}],\"rewritten\":[{}],\"files_removed\":{},\"keys_destroyed\":{},\"root\":\"{}\",\"signed\":{}}}",
+                        r.tomb.entry,
+                        jnums(&r.tomb.deleted),
+                        jnums(&r.tomb.already),
+                        jnums(&r.holders),
+                        r.compact.removed,
+                        r.compact.keys_destroyed,
+                        hex::encode(r.tomb.root),
+                        r.tomb.signed
+                    );
+                    return Ok(());
+                }
                 println!(
                     "erased segment(s) {} (tombstone #{}) by rewriting only segment file(s) {}: {} old file(s) erased, {} key record(s) destroyed",
                     seglog::fmt_ranges(&seglog::compress(&r.tomb.deleted)),
@@ -4969,6 +5067,19 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let r = seglog::shred_with(&path, target, reason.as_deref(), id.as_ref(), &rkeys)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
+            }
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-shred=1\",\"ok\":true,\"rewrite\":false,\"entry\":{},\"erased\":[{}],\"already\":[{}],\"rewritten\":[],\"files_removed\":{},\"keys_destroyed\":{},\"root\":\"{}\",\"signed\":{}}}",
+                    r.entry,
+                    jnums(&r.shredded),
+                    jnums(&r.already),
+                    r.files_removed,
+                    r.keys_destroyed,
+                    hex::encode(r.root),
+                    r.signed
+                );
+                return Ok(());
             }
             println!(
                 "shred {}: crypto-shredded segment(s) {}{}  head {}:{}{}",

@@ -1089,6 +1089,17 @@ as the listing).
   (`seq`, `error`), `keys_mended`, `keys_unrecoverable`, `ixkey_mended`, `ixkey_unrecoverable`
   (null when fine). Mend needs no key and reports segment numbers only, so on a private log it
   reveals nothing a key-free `log verify` does not. Exit 2 when `ok` is false.
+* Writers: `log init --json` (`sigil-log-init=1`: `dir`, `signer` hex or null, `segment_keys`,
+  `private_index`, `pad`); `log append --json` (`sigil-log-append=1`: `seq`, `size`,
+  `sealed_bytes`, `sha256`, `segment`, `root`, `signed`; on a private log the size and hash are
+  the writer's own, sealed in the INDEX, so keep the output as private as the data);
+  `log tombstone --json` (`sigil-log-tombstone=1`: `entry`, `deleted`, `already`,
+  `pending_bytes`, `root`, `signed`; the `--reason` is never echoed); `log shred --json`
+  (`sigil-log-shred=1`: `rewrite`, `entry`, `erased`, `already`, `rewritten` (segment files
+  rewritten by `--rewrite`, else empty), `files_removed`, `keys_destroyed`, `root`, `signed`).
+  Notes and warnings stay on stderr. When one of these fails it prints
+  `{"format":…,"ok":false,"exit":N,"error":"…"}` and exits with N (the same code as without
+  `--json`); passphrases and keys are never printed.
 
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 
