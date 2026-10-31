@@ -2328,6 +2328,112 @@ impl Listing {
     }
 }
 
+impl Listing {
+    /// The same facts as [`Listing::render`] as one JSON object (`sigil log ls --json`), for
+    /// scripts. Sealed fields of a private INDEX are `null` unless the index was opened; a public
+    /// INDEX shows what its text shows. Format: `sigil-log-ls=1`.
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let opt = |v: Option<String>| v.unwrap_or_else(|| "null".into());
+        let st = &self.state;
+        let head = self.head.as_ref();
+        let mut out = String::from("{\"format\":\"sigil-log-ls=1\"");
+        out.push_str(&format!(
+            ",\"dir\":{},\"log_id\":{},\"log_format\":{},\"entries\":{}",
+            q(&self.log.dir.display().to_string()),
+            q(&self.log.id),
+            self.log.format,
+            self.entries.len()
+        ));
+        out.push_str(&format!(
+            ",\"signed\":{},\"signer\":{},\"segment_keys\":{},\"private_index\":{},\"index_opened\":{},\"padded\":{}",
+            head.and_then(|h| h.sig).is_some(),
+            opt(head.and_then(|h| h.signer).or(self.log.signer).map(|k| q(&hex32(&k)))),
+            self.log.segkeys,
+            self.log.privindex,
+            !self.log.privindex || self.log.index_readable(),
+            self.log.pad
+        ));
+        out.push_str(&format!(
+            ",\"head\":{}",
+            opt(head.map(|h| format!(
+                "{{\"seq\":{},\"root\":{},\"chain\":{},\"t\":{},\"anchor\":{}}}",
+                h.seq,
+                q(&hex32(&h.root)),
+                q(&hex32(&h.chain)),
+                h.time,
+                q(&format!("{}:{}", h.seq, hex32(&h.root)))
+            )))
+        ));
+        let mut rows = Vec::with_capacity(self.entries.len());
+        let mut pending = 0u64;
+        for (e, p) in self.entries.iter().zip(&self.present) {
+            if *p {
+                pending += st
+                    .deleted_members(e.seq)
+                    .iter()
+                    .filter(|m| !st.is_shredded(**m))
+                    .map(|m| st.size_of(*m))
+                    .sum::<u64>();
+            }
+            let locked = e.is_locked();
+            let (op, extra) = match &e.op {
+                Op::Seg => ("segment", String::new()),
+                Op::Compact { of } => ("compaction", format!(",\"of\":{}", q(&fmt_ranges(of)))),
+                Op::Tomb { del, reason, shred } => (
+                    if *shred { "shred" } else { "tombstone" },
+                    format!(
+                        ",\"deletes\":{},\"reason\":{},\"reason_sealed\":{}",
+                        q(&fmt_ranges(del)),
+                        opt(reason.as_deref().map(q)),
+                        reason.is_none() && locked
+                    ),
+                ),
+                Op::Signer { from, to, .. } => (
+                    "signer",
+                    format!(",\"from\":{},\"to\":{}", q(&hex32(from)), q(&hex32(to))),
+                ),
+            };
+            let data = matches!(e.op, Op::Seg | Op::Compact { .. });
+            let status = match &e.op {
+                Op::Seg if st.is_shredded(e.seq) => "shredded",
+                Op::Seg if st.deleted_by(e.seq).is_some() => "deleted",
+                Op::Seg if st.holder_of(e.seq) != e.seq => "merged",
+                Op::Compact { .. } if st.slot(e.seq) != Slot::Needed => "superseded",
+                _ if data && *p => "ok",
+                _ if data => "missing",
+                _ => "record",
+            };
+            let path = match e.path() {
+                Some(pb) if e.op == Op::Seg => q(&String::from_utf8_lossy(&pb)),
+                _ => "null".into(),
+            };
+            rows.push(format!(
+                "{{\"seq\":{},\"t\":{},\"time\":{},\"op\":{},\"status\":{},\"size\":{},\"sha256\":{},\"sealed\":{},\"file\":{},\"holder\":{},\"deleted_by\":{},\"shredded_by\":{},\"path\":{}{}}}",
+                e.seq,
+                e.time,
+                q(&iso_utc(e.time)),
+                q(op),
+                q(status),
+                if data && !locked { e.size.to_string() } else { "null".into() },
+                if data && !locked { q(&hex32(&e.sha)) } else { "null".into() },
+                locked,
+                data && *p,
+                if e.op == Op::Seg { st.holder_of(e.seq).to_string() } else { "null".into() },
+                opt(st.deleted_by(e.seq).map(|t| t.to_string())),
+                opt(st.shredded_by(e.seq).map(|t| t.to_string())),
+                path,
+                extra
+            ));
+        }
+        out.push_str(&format!(",\"pending_deleted_bytes\":{pending}"));
+        out.push_str(",\"items\":[");
+        out.push_str(&rows.join(","));
+        out.push_str("]}\n");
+        out
+    }
+}
+
 pub struct ReadOpts<'a> {
     pub pass: Option<&'a str>,
     pub identities: &'a [Identity],

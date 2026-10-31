@@ -165,6 +165,7 @@ sigil log append events batch.json --identity me.sgk
 sigil log init events [--identity me.sgk] [--segment-keys] [--to me.pub|--pass-file F (private INDEX) [--public-index]]
 sigil log append events FILE|-  [--mode glyph|reflection|seal] [--pass-file F|--talisman F] [--to RECIPIENT]… [--identity me.sgk]
 sigil log ls events [--pass-file F | --identity …]  # also: sigil ls events (a private INDEX shows sizes/names only with a key)
+sigil log ls events --json                          # the same listing as JSON for scripts (see "Listing as JSON")
 sigil log read events [--seq N | --from A --to B] [-o out] [--pass-file F | --identity key.sgk]…
 sigil log verify events [--quick] [--pass-file F | --identity …] [--signer KEY] [--anchor SEQ:ROOT]… [--json]
 sigil log mend events
@@ -1008,6 +1009,21 @@ misreading it.
 Unauthorised concurrent writers are not a security feature: `LOG.lock` is advisory and local. One
 writer at a time; do not put the container on a filesystem without atomic `rename` / `create_new`.
 
+## Listing as JSON (`sigil log ls --json`)
+
+One JSON object on stdout, format `"format":"sigil-log-ls=1"` (additive: new keys may appear, existing
+keys keep their meaning). Top level: `dir`, `log_id`, `log_format`, `entries`, `signed`, `signer`,
+`segment_keys`, `private_index`, `index_opened`, `padded`, `head` (`seq`, `root`, `chain`, `t`,
+`anchor` = the `SEQ:ROOT` to pin, or `null`), `pending_deleted_bytes`, and `items`, one per INDEX
+entry: `seq`, `t` (unix), `time` (UTC), `op` (`segment` / `compaction` / `tombstone` / `shred` /
+`signer`), `status` (`ok` / `missing` / `deleted` / `shredded` / `merged` / `superseded` / `record`),
+`size`, `sha256`, `sealed`, `file` (its segment file is on disk), `holder`, `deleted_by`,
+`shredded_by`, `path`, plus `of` (compaction), `deletes` / `reason` / `reason_sealed` (tombstone,
+shred) and `from` / `to` (signer). It is a listing, not a check: run `sigil log verify --json` for
+health. A private INDEX gives `null` sizes, hashes, paths and reasons unless opened with
+`--pass-file` / `--identity` (then the same as the text listing; treat the JSON as as sensitive
+as the listing).
+
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 
 A read-only routine to schedule once a month: it runs `sigil log verify` (the log's doctor:
@@ -1428,7 +1444,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 (`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy, optionally padded with `--pad`); turning segment keys on for an existing log (`log enable-segment-keys`, `log=8`); erasing one batch of a compaction segment by rewriting only that file (`log shred --rewrite`). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
-* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes").
+* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes"). Re-evaluated 2026-10-31: every reader (`read`, `verify`, `mend`, `compact`, `shred --rewrite`, `restore`, `mount`) holds a whole segment in memory and checks it against the INDEX in one piece, so a streaming *append* alone would write segments nothing can read without loading them; not shipped as an MVP.
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them until converted with `sigil seal-folder-names` (see PRIVATE-LABEL.md; old copies keep the names).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done). Options and open questions: [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) (design note, decision pending).
 * Unattended retention by default: the monthly script only applies with an explicit `--apply` and a rule (see "Monthly retention check").
