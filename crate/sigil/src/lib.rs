@@ -61,6 +61,7 @@ mod rs;
 mod rs_ref;
 pub mod scrub;
 pub mod seglog;
+pub mod status;
 
 /// Benchmark / oracle hooks for the RS codec (not a stable API).
 #[doc(hidden)]

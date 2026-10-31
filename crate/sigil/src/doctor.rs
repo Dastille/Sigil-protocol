@@ -306,7 +306,7 @@ pub(crate) fn star_unrecoverable(path: &Path) -> Option<String> {
     }
 }
 
-fn health_file(path: &Path) -> Health {
+pub(crate) fn health_file(path: &Path) -> Health {
     if crate::work::is_work_pack(path) {
         return health_work_pack(path);
     }

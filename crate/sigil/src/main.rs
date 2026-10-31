@@ -45,6 +45,13 @@ macro_rules! say {
     };
 }
 
+static JSON_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// True while a core command runs with `--json`.
+fn json_on() -> bool {
+    JSON_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn json_extra(field: &str) {
     if let Ok(mut g) = JSON_EXTRA.lock() {
         g.push_str(field);
@@ -2707,6 +2714,46 @@ fn gather_partial(
 }
 
 /// `verify` / `scry`: the cheap structural check, plus the opt-in deep read.
+/// `,"status":{...}` for `scry` / `verify --json` (schema 1; additive next to `report`).
+fn status_json(st: &sigil::status::ScryStatus) -> String {
+    let opt_s = |v: &Option<String>| v.as_deref().map(jq).unwrap_or_else(|| "null".into());
+    let opt_n = |v: Option<u64>| v.map(|n| n.to_string()).unwrap_or_else(|| "null".into());
+    let mut o = format!(
+        ",\"status\":{{\"schema\":1,\"kind\":\"{}\",\"health\":\"{}\",\"reason\":{},\"repair\":{}",
+        st.kind,
+        st.verdict.as_str(),
+        opt_s(&st.reason),
+        opt_s(&st.repair)
+    );
+    if let Some(m) = &st.mark {
+        o.push_str(&format!(
+            ",\"version\":{},\"shards\":{{\"live\":{},\"total\":{},\"need\":{},\"len\":{}}},\"merkle_closed\":{},\"header_recovered\":{},\"encrypted\":{},\"compressed\":{},\"private_label\":{},\"orig_len\":{}",
+            m.version, m.live, m.total, m.need, m.shard_len, m.merkle_closed, m.header_recovered,
+            m.encrypted, m.compressed, m.private_label, opt_n(m.orig_len)
+        ));
+    }
+    if let Some(p) = &st.pack {
+        o.push_str(&format!(
+            ",\"parts\":{{\"total\":{},\"present\":{}}},\"chunk_size\":{},\"overture\":{},\"orig_len\":{}",
+            p.parts_total, p.parts_present, p.chunk_size, p.overture, opt_n(p.orig_len)
+        ));
+    }
+    if let Some(n) = st.members {
+        o.push_str(&format!(",\"members\":{n}"));
+    }
+    if let Some(e) = st.encrypted {
+        o.push_str(&format!(",\"encrypted\":{e}"));
+    }
+    if let Some(c) = &st.stars {
+        o.push_str(&format!(
+            ",\"stars\":{{\"members\":{},\"packed\":{},\"present\":{},\"missing\":{},\"needs_repair\":{},\"beyond_repair\":{}}}",
+            c.members, c.packed, c.present, c.missing, c.needs_repair, c.beyond_repair
+        ));
+    }
+    o.push('}');
+    o
+}
+
 fn verify_cmd(
     input: PathBuf,
     pass: Option<String>,
@@ -2721,6 +2768,13 @@ fn verify_cmd(
         })?;
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
+        if json_on() {
+            json_extra(&status_json(&sigil::status::scry_status_constellation(
+                &input,
+                None,
+                &[],
+            )?));
+        }
         if let Some(why) = bad {
             return Err(not_recoverable(&why).into());
         }
@@ -2730,6 +2784,9 @@ fn verify_cmd(
         let (text, bad) = sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)?;
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
+        if json_on() {
+            json_extra(&status_json(&sigil::status::scry_status_path(&input)?));
+        }
         if let Some(why) = bad {
             return Err(not_recoverable(&why).into());
         }
@@ -2737,6 +2794,9 @@ fn verify_cmd(
         let (text, bad) = sigil::scry_path_checked(&input)?;
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
+        if json_on() {
+            json_extra(&status_json(&sigil::status::scry_status_path(&input)?));
+        }
         if let Some(why) = bad {
             return Err(not_recoverable(&why).into());
         }
@@ -2791,6 +2851,7 @@ fn main() {
     let jctx = json_ctx(&cli.cmd);
     let log_fail = log_json_fail_format(&cli.cmd);
     let piped_out = matches!(&cli.cmd, Cmd::Unseal { output, .. } if output.as_os_str() == "-");
+    JSON_MODE.store(jctx.is_some(), std::sync::atomic::Ordering::Relaxed);
     if jctx.is_some() || piped_out {
         HUMAN_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
         sigil::set_human_to_stderr(true);
@@ -6406,6 +6467,11 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
                 sigil::scry_constellation_checked(&sky, pass.as_deref(), &identities)?;
             if json {
                 json_extra(&format!(",\"report\":{}", jq(&text)));
+                json_extra(&status_json(&sigil::status::scry_status_constellation(
+                    &sky,
+                    pass.as_deref(),
+                    &identities,
+                )?));
             }
             say!("{text}");
             if let Some(why) = bad {
