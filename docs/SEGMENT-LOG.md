@@ -1032,7 +1032,22 @@ are not accepted. The last line is a one-line summary for mail subjects:
 Exit codes: `0` healthy (warnings allowed, e.g. a tombstoned file still waiting for `compact
 --apply`), `1` warnings with `--strict`, `2` problems found by verify (damage, missing segment,
 bad signature: act on it), `3` could not run (bad arguments, `sigil` not found, the plan failed).
-After reading the plan, apply it by hand: `sigil log compact LOG --apply …` (same rule options,
+**Opt-in apply (`--apply`).** With `--apply` and a rule (`--older-than` / `--keep-last` /
+`--range`; refused without one, so fresh batches are never merged), the script runs
+`sigil log compact --apply` with the same rule **only** when the health check found no problems
+(and no warnings with `--strict`) and the plan worked, then verifies again. Encrypted or
+segment-keys logs need `--seal-pass-file F` and/or `--to K.pub` for the merged segments (else the
+compaction refuses and nothing changes). The summary gains `applied=yes|SKIPPED|FAILED`; exit
+codes are as above, plus `3` when the apply failed and `2` when the verify after it found
+problems. A skipped or refused run writes nothing (tested). Compaction erases the files of
+deleted batches here; backups and snapshots are not reached.
+
+```sh
+0 6 1 * *  /opt/sigil/scripts/monthly-log-retention.sh /srv/logs/events --pass-file /etc/sigil/pw \
+               --older-than 90d --apply --seal-pass-file /etc/sigil/pw
+```
+
+Without `--apply`, apply it by hand after reading the plan: `sigil log compact LOG --apply …` (same rule options,
 plus `--seal-pass-file` / `--to` for encrypted logs). Bot or calendar schedulers can run the same
 script; it needs no network and prints nothing secret (a private log's names stay sealed unless
 `--pass-file` is given, and then only the plan's seqs and sizes are shown).
@@ -1414,7 +1429,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes").
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
-* Automatic **applying** of retention (the monthly check below only reports; `compact --apply` stays a deliberate step).
+* Unattended retention by default: the monthly script only applies with an explicit `--apply` and a rule (see "Monthly retention check").
 * Shredding one batch inside a compaction segment **without rewriting that segment**: impossible
   with one AEAD tag per segment (see `shred --rewrite`, which rewrites only that file).
 
