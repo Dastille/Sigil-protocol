@@ -58,8 +58,14 @@ fn locked_card_sizes_are_real_or_hidden_never_zero() {
         let t = ok(&d, args);
         let t = t.replace("\\n", "\n");
         assert!(line(&t, "a.txt").contains("  17 bytes  "), "{args:?}: {t}");
-        assert!(line(&t, "sub/c.bin").contains("  60000 bytes  "), "{args:?}: {t}");
-        assert!(line(&t, "empty.txt").contains("  0 bytes  "), "{args:?}: {t}");
+        assert!(
+            line(&t, "sub/c.bin").contains("  60000 bytes  "),
+            "{args:?}: {t}"
+        );
+        assert!(
+            line(&t, "empty.txt").contains("  0 bytes  "),
+            "{args:?}: {t}"
+        );
     }
 }
 
