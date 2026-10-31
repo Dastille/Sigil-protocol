@@ -869,6 +869,8 @@ sigil log prove events --seq 7 -o day7.proof              # against the current 
 sigil log check-proof day7.proof --file day7.json --signer owner.pub
 sigil log prove events --seq 3 --at 7 -o old.proof        # against an anchor 7:ROOT pinned earlier
 sigil log check-proof old.proof --anchor 7:<ROOT>
+sigil log prove photos --path 2024/beach.jpg -o beach.proof   # by the path `log add` recorded
+sigil log check-proof beach.proof --path 2024/beach.jpg --file beach.jpg --signer owner.pub
 ```
 
 A proof is a small text file (`sigil-log-proof=1`; about 0.4 KB unsigned or 0.7 KB signed, plus 65 bytes per
@@ -912,6 +914,13 @@ message says which check failed).
   regardless of HEAD; it is signed only when `M` is the HEAD's seq. A damaged INDEX refuses (`log
   verify` first).
 * **Additive.** Nothing is written to the log; no format change, no manifest bump.
+
+**By path.** `log prove --path P` resolves P to the newest vouched entry `log add` recorded at P
+(private logs need the key). It refuses an unknown path and a newest version that is deleted or
+shredded (prove the tombstone with `--seq`, or an older version by its seq). `check-proof --path P`
+refuses unless the proved entry's `path=` is P; in a private log the path is sealed, so the receipt
+must carry `entry-key=`. Limit: the receipt proves *this entry, at this path, is in the log*; that
+it is the **latest** version is the prover's word, not proved (that would need a non-membership proof).
 
 ## Consistency proofs (`sigil log prove-consistency` / `sigil log check-consistency`)
 
@@ -1164,15 +1173,14 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); restore by path (`log restore`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); restore by path (`log restore`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * Card follow-ups: an inclusion receipt for one child of a card (today the whole card is the receipt), consistency between two cards, and cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
-* `log add` follow-ups: per-file receipts by path, restoring an older version by path and date, and
-  an optional size+mtime cache to skip re-hashing unchanged files.
+* `log add` follow-ups: restoring an older version by path and date, and an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).

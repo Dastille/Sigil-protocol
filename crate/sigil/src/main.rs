@@ -1361,8 +1361,15 @@ enum LogCmd {
     Prove {
         path: PathBuf,
         /// The entry to prove (any INDEX entry: segment, compaction or tombstone)
-        #[arg(long)]
-        seq: u64,
+        #[arg(
+            long,
+            required_unless_present = "file_path",
+            conflicts_with = "file_path"
+        )]
+        seq: Option<u64>,
+        /// Prove the latest version of this file (a path `log add` recorded, as `log ls` shows it)
+        #[arg(long = "path", id = "file_path", value_name = "PATH")]
+        file_path: Option<String>,
         /// Prove against the root over the first N entries (an anchor you pinned earlier) instead
         /// of the current HEAD; signed only when N is the HEAD
         #[arg(long)]
@@ -1395,6 +1402,9 @@ enum LogCmd {
         /// Require it to be against this pinned `SEQ:ROOT`
         #[arg(long)]
         anchor: Option<String>,
+        /// Require the entry to be the file `log add` recorded at this path
+        #[arg(long = "path", value_name = "PATH")]
+        file_path: Option<String>,
     },
     /// Write a receipt that the log state OLD (an anchor `SEQ:ROOT` you pinned, or just `SEQ`) is a
     /// prefix of a later state NEW (default: the current HEAD): one Merkle path from which both
@@ -4655,6 +4665,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
         LogCmd::Prove {
             path,
             seq,
+            file_path,
             at,
             output,
             pass,
@@ -4665,6 +4676,11 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
+            let seq = match (seq, &file_path) {
+                (Some(s), _) => s,
+                (None, Some(fp)) => seglog::seq_for_path(&path, fp, pass.as_deref(), &identities)?,
+                (None, None) => return Err("give --seq N or --path FILE".into()),
+            };
             let p = seglog::prove_with(&path, seq, at, pass.as_deref(), &identities)?;
             let text = p.render();
             match output {
@@ -4690,12 +4706,14 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             file,
             signer,
             anchor,
+            file_path,
         } => {
             let text =
                 fs::read_to_string(&proof).map_err(|e| format!("read {}: {e}", proof.display()))?;
             let opts = seglog::ProofCheckOpts {
                 signer: signer.as_deref().map(parse_signer).transpose()?,
                 anchor: anchor.as_deref().map(parse_anchor).transpose()?,
+                path: file_path.map(|p| p.trim_matches('/').as_bytes().to_vec()),
                 file: match &file {
                     Some(f) => {
                         let b = fs::read(f).map_err(|e| format!("read {}: {e}", f.display()))?;

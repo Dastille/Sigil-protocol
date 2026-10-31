@@ -96,6 +96,8 @@ Guide: [CONTAINER.md](CONTAINER.md)
 ./sigil log verify events --signer me.pub
 ./sigil log prove events --seq 3 -o r.proof
 ./sigil log check-proof r.proof --file batch.json --signer me.pub
+./sigil log prove photos --path 2024/beach.jpg -o beach.proof   # by path, after `log add`
+./sigil log check-proof beach.proof --path 2024/beach.jpg --signer me.pub
 ```
 
 Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md)
