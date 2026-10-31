@@ -14,7 +14,7 @@ Think Bitcoin: **full** node vs **light/pruned** node.
 ```
 # Start tracking (creates notes.txt.sgv/ with v1; retention=full)
 ./sigil vault track ./notes.txt
-# optional: --mode seal  --pass house  --to alice.pub
+# optional: --mode seal  --pass-file house.txt  --to alice.pub
 
 ./sigil vault status ./notes.txt
 # drift: match | changed | missing-seal | missing-live | missing-vault

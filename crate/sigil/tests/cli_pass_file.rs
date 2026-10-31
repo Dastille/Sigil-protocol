@@ -6,12 +6,12 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
-const WARN: &str = "WARNING: a passphrase given as --pass VALUE is visible";
+const WARN: &str = "a passphrase given as --pass VALUE is refused";
 
 fn sigil(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_sigil"))
         .current_dir(dir)
-        .args(args)
+        .args(common::pass_via_file(args))
         .stdin(Stdio::null())
         .output()
         .expect("run sigil")
@@ -74,15 +74,15 @@ fn pass_file_round_trips_both_ways_with_pass() {
 
     let o = ok(&d, &["seal", "--pass-file", "pw", "-o", "a.sg1", "a.bin"]);
     assert!(!text(&o).contains(WARN), "{}", text(&o));
-    // Same passphrase typed as --pass opens it (so the file meant "correct horse").
-    let o = ok(
+    // The same passphrase from another file opens it (so the file meant "correct horse");
+    // `common::pass_via_file` turns the test's `--pass X` into such a file.
+    ok(
         &d,
         &["unseal", "--pass", "correct horse", "-o", "b.bin", "a.sg1"],
     );
-    assert!(text(&o).contains(WARN), "{}", text(&o));
     assert_eq!(std::fs::read(d.join("b.bin")).unwrap(), src);
 
-    // And the other way: sealed with --pass, opened with --pass-file (no trailing newline).
+    // And the other way: sealed via that helper file, opened with --pass-file (no trailing newline).
     secret(&d.join("pw2"), "correct horse");
     ok(
         &d,
@@ -133,12 +133,14 @@ fn pass_and_pass_file_together_are_rejected() {
     let d = tmp("both");
     std::fs::write(d.join("a.bin"), b"x").unwrap();
     secret(&d.join("pw"), "pw\n");
+    secret(&d.join("pw2"), "pw\n");
+    // (the helper turns `--pass pw` into a second --pass-file; the literal is refused anyway)
     let e = fails(
         &d,
         &[
             "seal",
-            "--pass",
-            "pw",
+            "--pass-file",
+            "pw2",
             "--pass-file",
             "pw",
             "-o",
@@ -146,26 +148,49 @@ fn pass_and_pass_file_together_are_rejected() {
             "a.bin",
         ],
     );
-    assert!(e.contains("cannot be used with"), "{e}");
+    assert!(e.contains("cannot be used"), "{e}");
+    let o = Command::new(env!("CARGO_BIN_EXE_sigil"))
+        .current_dir(&*d)
+        .args([
+            "seal",
+            "--pass",
+            "-",
+            "--pass-file",
+            "pw",
+            "-o",
+            "a.sg1",
+            "a.bin",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run sigil");
+    assert!(!o.status.success());
     assert!(!d.join("a.sg1").exists());
     let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
-fn literal_pass_warns_but_still_works() {
-    let d = tmp("warn");
+fn literal_pass_is_refused_without_echo() {
+    let d = tmp("refuse");
     std::fs::write(d.join("a.bin"), b"hello").unwrap();
-    let o = ok(&d, &["seal", "--pass", "pw", "-o", "a.sg1", "a.bin"]);
+    // straight to the binary: no `pass_via_file` rewrite
+    let o = Command::new(env!("CARGO_BIN_EXE_sigil"))
+        .current_dir(&*d)
+        .args(["seal", "--pass", "pw-literal", "-o", "a.sg1", "a.bin"])
+        .output()
+        .expect("run sigil");
+    assert!(!o.status.success());
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains(WARN), "{err}");
+    assert!(err.contains(WARN) && err.contains("refused"), "{err}");
     assert!(
         err.contains("--pass-file PATH") && err.contains("--pass -"),
         "{err}"
     );
     assert!(
-        !err.contains(" pw "),
-        "the warning must not repeat the passphrase: {err}"
+        !err.contains("pw-literal"),
+        "must not repeat the passphrase: {err}"
     );
+    assert!(!d.join("a.sg1").exists());
     let _ = std::fs::remove_dir_all(&d);
 }
 

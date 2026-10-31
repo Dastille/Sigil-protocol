@@ -140,15 +140,19 @@ $ sigil unseal -o out.jpg dead.sg1
 need 12 pieces, have 5
 ```
 
-### Encryption with --pass
+### Encryption with a passphrase
+
+The passphrase never goes on the command line (`--pass VALUE` is refused): put it in
+a file only you can read, or type it with `--pass -`.
 
 ```
-$ sigil seal --pass 'correct horse' -o secret.sg1 photo.jpg
+$ printf '%s\n' 'correct horse' > pw.txt && chmod 600 pw.txt
+$ sigil seal --pass-file pw.txt -o secret.sg1 photo.jpg
 $ sigil unseal -o out.jpg secret.sg1 < /dev/null
 passphrase or --identity required
-$ sigil unseal --pass wrong -o out.jpg secret.sg1
+$ sigil unseal --pass-file wrong.txt -o out.jpg secret.sg1
 could not unwrap CEK — need matching --identity or passphrase
-$ sigil unseal --pass 'correct horse' -o out.jpg secret.sg1
+$ sigil unseal --pass-file pw.txt -o out.jpg secret.sg1
 de-scribed 3000000 bytes → out.jpg
 ```
 
@@ -193,9 +197,9 @@ Sigil uses the file's first line (a trailing newline or CRLF is dropped) and
 refuses, writing nothing, if the file is missing, empty, or readable or writable
 by other users (`chmod 600` fixes that). A pipe works too:
 `--pass-file <(pass show sigil)` or `--pass-file /dev/stdin`.
-`--pass VALUE` still works, but it now prints a WARNING: while `sigil` runs, any
-program on the computer can see the command line (`ps`), and your shell may save
-it in history. See "Passphrases in scripts" in [docs/START.md](docs/START.md). Other key options (`--to` a
+`--pass VALUE` is refused (nothing is read or written; the error does not repeat
+the value): while `sigil` runs, any program on the computer can see the command
+line (`ps`), and your shell may save it in history. See "Passphrases in scripts" in [docs/START.md](docs/START.md). Other key options (`--to` a
 public key, `--identity`, `--talisman` key file, passkeys) are described in
 `sigil seal --help` and [docs/START.md](docs/START.md); they are not shown here.
 
@@ -235,17 +239,17 @@ layout and per-file sizes. There is no flag for this; it is always on. Without t
 key, `scry` shows only how many files there are and whether the pack is healthy:
 
 ```
-$ sigil seal --pass 'correct horse' -o secret-album.sg1 album
+$ sigil seal --pass-file pw.txt -o secret-album.sg1 album
 folder 2 files, 4 bytes → secret-album.sg1
 $ sigil scry secret-album.sg1
 folder  2 files (names hidden)
 body  ok  v3  live=16/16 need=12 merkle=closed keystone=intact label=private (name, size and fingerprint inside the lock)
-$ sigil scry --pass 'correct horse' secret-album.sg1
+$ sigil scry --pass-file pw.txt secret-album.sg1
 folder  files=2 dirs=1
 dir   sub/
 file  a.txt
 file  sub/b.txt
-$ sigil unseal --pass 'correct horse' --only sub/b.txt -o just-b secret-album.sg1
+$ sigil unseal --pass-file pw.txt --only sub/b.txt -o just-b secret-album.sg1
 de-scribed 1 files → just-b
 ```
 
@@ -254,9 +258,9 @@ top of the folder key. A ward needs `--pass` or `--to` as well, so the names sta
 hidden; to open, give both:
 
 ```
-$ sigil seal --pass 'correct horse' --ward sub/b.txt=room-key -o secret-album.sg1 album
+$ sigil seal --pass-file pw.txt --ward sub/b.txt=room-key -o secret-album.sg1 album
 folder 2 files, 4 bytes → secret-album.sg1
-$ sigil unseal --pass 'correct horse' --ward sub/b.txt=room-key -o album-out secret-album.sg1
+$ sigil unseal --pass-file pw.txt --ward sub/b.txt=room-key -o album-out secret-album.sg1
 de-scribed 2 files → album-out
 $ sigil seal --ward sub/b.txt=room-key -o w.sg1 album
 a folder pack locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names
@@ -507,10 +511,9 @@ audit / test checks above.
 
 ## Known limitations
 
-- `--pass VALUE` puts the passphrase on the command line (shell history, process
-  list); it warns but is not refused yet. Use `--pass-file PATH` in scripts or
-  `--pass -` to type it. `--pass -` needs a terminal: it never reads a
-  piped stdin. Only `unseal` asks on its own when a key is missing.
+- `--pass -` needs a terminal: it never reads a piped stdin (use
+  `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
+  missing. (`--pass VALUE` on the command line is refused, as is `--seal-pass VALUE`.)
 - Damage near the start of a file costs more: the header region is used to find
   everything else, so recovery there leans on the spare header copies (Keystone)
   and loses more margin than the same damage in the middle.

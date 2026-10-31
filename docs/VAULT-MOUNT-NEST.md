@@ -46,7 +46,7 @@ Quick rule: **vault** owns versions; **mount** owns the OS view; **path** owns n
 # drift: match | changed | missing-seal | missing-live | missing-vault
 ```
 
-Optional on track/commit: `--mode seal`, `--pass …`, `--to alice.pub`. Encrypt-to and passphrase Ward are additive (see below). Light retention / prune / cold: [VAULT-RETENTION.md](VAULT-RETENTION.md).
+Optional on track/commit: `--mode seal`, `--pass-file F`, `--to alice.pub`. Encrypt-to and passphrase Ward are additive (see below). Light retention / prune / cold: [VAULT-RETENTION.md](VAULT-RETENTION.md).
 
 ## Mount: FUSE vs export-dir vs writable dirty
 
@@ -71,7 +71,7 @@ mkdir -p /tmp/sigil-dirty
 ./sigil mount ./notes.txt ./view --vault --export-dir /tmp/sigil-dirty --writable
 # edit under /tmp/sigil-dirty …
 ./sigil vault commit --from-export /tmp/sigil-dirty
-# optional: --mode seal  --pass house  --to alice.pub  --force
+# optional: --mode seal  --pass-file house.txt  --to alice.pub  --force
 # light retention: --keep N  --cold DIR  (same hooks as ordinary commit)
 ```
 
@@ -87,7 +87,7 @@ mkdir -p /tmp/sigil-dirty
 # → v2.sg1 (new SGDR pack); tip moves; v1 untouched
 ./sigil vault versions ./photos         # … kind=folder
 ./sigil vault restore ./photos --version 1
-# options as single-file: --mode seal  --pass house  --ward photos/cat.jpg=room  --to alice.pub
+# options as single-file: --mode seal  --pass-file house.txt  --ward photos/cat.jpg=room  --to alice.pub
 #                         --keep N  --cold DIR  --force-drop  (restore: --identity, --force)
 ```
 
@@ -131,7 +131,7 @@ An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A sta
 
 # Encrypt-to / Ward
 ./sigil path secret.sg1 --identity alice.sgk --into .
-./sigil path tree.sg1 --pass house --ward photos/secret.jpg=room --into photos
+./sigil path tree.sg1 --pass-file house.txt --ward photos/secret.jpg=room --into photos
 ```
 
 Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. An encrypted folder pack (sealed directory) cannot be path-walked; unseal or mount it with the key. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
@@ -145,8 +145,8 @@ What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart h
 ```
 # Track / commit with recipients (and optional passphrase)
 ./sigil vault track ./notes.txt --to alice.pub
-./sigil vault commit ./notes.txt --pass house --to alice.pub --to bob.pub
-./sigil vault commit ./notes.txt --pass house   # reuses alice + bob (remembered)
+./sigil vault commit ./notes.txt --pass-file house.txt --to alice.pub --to bob.pub
+./sigil vault commit ./notes.txt --pass-file house.txt   # reuses alice + bob (remembered)
 # either passphrase OR any matching identity unwraps the CEK
 
 # Restore / mount / path / open with identity

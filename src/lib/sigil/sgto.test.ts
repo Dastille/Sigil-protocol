@@ -41,7 +41,11 @@ function fixCrc(f: Uint8Array, off: number, len: number) {
   );
 }
 
-for (const name of ["pass-reflection.sg1", "pass-seal-vow.sg1", "pass-and-to.sg1"]) {
+for (const name of [
+  "pass-reflection.sg1",
+  "pass-seal-vow.sg1",
+  "pass-and-to.sg1",
+]) {
   test(`opens Rust Argon2id seal ${name}`, async () => {
     const f = fx(`kdf-v2/${name}`);
     const [off] = sgtoSpan(f);
@@ -52,13 +56,22 @@ for (const name of ["pass-reflection.sg1", "pass-seal-vow.sg1", "pass-and-to.sg1
   });
 
   test(`wrong passphrase fails closed: ${name}`, async () => {
-    await assert.rejects(unseal(fx(`kdf-v2/${name}`), "wrong horse"), /wrong passphrase/);
-    await assert.rejects(unseal(fx(`kdf-v2/${name}`), ""), /passphrase is required/);
+    await assert.rejects(
+      unseal(fx(`kdf-v2/${name}`), "wrong horse"),
+      /wrong passphrase/,
+    );
+    await assert.rejects(
+      unseal(fx(`kdf-v2/${name}`), ""),
+      /passphrase is required/,
+    );
   });
 }
 
 test("encrypt-to only seal is refused with a clear message", async () => {
-  await assert.rejects(unseal(fx("kdf-v2/to-only.sg1"), PASS), /recipients' keys/);
+  await assert.rejects(
+    unseal(fx("kdf-v2/to-only.sg1"), PASS),
+    /recipients' keys/,
+  );
 });
 
 test("legacy PBKDF2 Ward (no SGTO) still opens", async () => {
@@ -109,19 +122,31 @@ test("Argon2id parameters above the Rust caps are rejected before hashing", asyn
     dv.setUint32(rec + 20, t, true);
     dv.setUint32(rec + 24, p, true);
     fixCrc(f, off, len);
-    await assert.rejects(unseal(f, PASS), /parameters rejected/, `m=${m} t=${t} p=${p}`);
+    await assert.rejects(
+      unseal(f, PASS),
+      /parameters rejected/,
+      `m=${m} t=${t} p=${p}`,
+    );
   }
 });
 
 test("lab writes what Rust main writes: SGTO v2, one Argon2id record, OWASP params", async () => {
   const msg = new TextEncoder().encode("lab round trip ".repeat(64));
-  const s = await seal({ data: msg, mode: "reflection", passphrase: PASS, name: "lab.txt" });
+  const s = await seal({
+    data: msg,
+    mode: "reflection",
+    passphrase: PASS,
+    name: "lab.txt",
+  });
   const sg = readSgtoAt(s.bytes, KEYSTONE_SPAN);
   assert.ok(sg, "SGTO right after the Keystone");
   assert.equal(sg.version, SGTO_VERSION_ARGON2);
   assert.equal(sg.records.length, 1);
   assert.equal(sg.records[0].kind, KIND_PASS_ARGON2ID);
-  const dv = new DataView(sg.records[0].body.buffer, sg.records[0].body.byteOffset);
+  const dv = new DataView(
+    sg.records[0].body.buffer,
+    sg.records[0].body.byteOffset,
+  );
   assert.deepEqual(
     [dv.getUint32(16, true), dv.getUint32(20, true), dv.getUint32(24, true)],
     [ARGON2_M_KIB, ARGON2_T, ARGON2_P],
@@ -129,7 +154,12 @@ test("lab writes what Rust main writes: SGTO v2, one Argon2id record, OWASP para
   assert.deepEqual((await unseal(s.bytes, PASS)).data, msg);
   await assert.rejects(unseal(s.bytes, "wrong horse"), /wrong passphrase/);
   // Covenant (Vow) sits after SGTO and still reads back.
-  const v = await seal({ data: msg, mode: "seal", passphrase: PASS, covenant: "pact" });
+  const v = await seal({
+    data: msg,
+    mode: "seal",
+    passphrase: PASS,
+    covenant: "pact",
+  });
   const back = await unseal(v.bytes, PASS);
   assert.equal(back.header.covenant, "pact");
   assert.deepEqual(back.data, msg);
@@ -141,27 +171,42 @@ test(
   { skip: !BIN && "SIGIL_BIN not set" },
   async () => {
     const dir = mkdtempSync(join(tmpdir(), "sigil-lab-"));
-    const msg = new TextEncoder().encode("from the lab to the CLI ".repeat(100));
+    const msg = new TextEncoder().encode(
+      "from the lab to the CLI ".repeat(100),
+    );
+    // The CLI refuses a literal --pass VALUE: hand it owner-only passphrase files.
+    const passFile = join(dir, "pass");
+    const wrongFile = join(dir, "wrong");
+    writeFileSync(passFile, PASS + "\n", { mode: 0o600 });
+    writeFileSync(wrongFile, "wrong horse\n", { mode: 0o600 });
     // Lab writes, Rust reads.
     for (const mode of ["reflection", "seal", "glyph"] as const) {
-      const s = await seal({ data: msg, mode, passphrase: PASS, name: "lab.txt" });
+      const s = await seal({
+        data: msg,
+        mode,
+        passphrase: PASS,
+        name: "lab.txt",
+      });
       writeFileSync(join(dir, `lab-${mode}.sg1`), s.bytes);
       execFileSync(BIN!, [
         "unseal",
-        "--pass",
-        PASS,
+        "--pass-file",
+        passFile,
         "-o",
         join(dir, `out-${mode}`),
         join(dir, `lab-${mode}.sg1`),
       ]);
-      assert.deepEqual(new Uint8Array(readFileSync(join(dir, `out-${mode}`))), msg);
+      assert.deepEqual(
+        new Uint8Array(readFileSync(join(dir, `out-${mode}`))),
+        msg,
+      );
       assert.throws(() =>
         execFileSync(
           BIN!,
           [
             "unseal",
-            "--pass",
-            "wrong horse",
+            "--pass-file",
+            wrongFile,
             "-o",
             join(dir, "nope"),
             join(dir, `lab-${mode}.sg1`),
@@ -174,7 +219,31 @@ test(
     }
     // Rust writes (fresh, from this binary), lab reads.
     writeFileSync(join(dir, "in.txt"), msg);
-    execFileSync(BIN!, ["seal", "--pass", PASS, "-o", join(dir, "rust.sg1"), join(dir, "in.txt")]);
+    assert.throws(() =>
+      execFileSync(
+        BIN!,
+        [
+          "seal",
+          "--pass",
+          PASS,
+          "-o",
+          join(dir, "lit.sg1"),
+          join(dir, "in.txt"),
+        ],
+        {
+          stdio: "pipe",
+        },
+      ),
+    );
+    assert.throws(() => readFileSync(join(dir, "lit.sg1")));
+    execFileSync(BIN!, [
+      "seal",
+      "--pass-file",
+      passFile,
+      "-o",
+      join(dir, "rust.sg1"),
+      join(dir, "in.txt"),
+    ]);
     const f = new Uint8Array(readFileSync(join(dir, "rust.sg1")));
     assert.deepEqual((await unseal(f, PASS)).data, msg);
     await assert.rejects(unseal(f, "wrong horse"));
@@ -182,8 +251,15 @@ test(
 );
 
 test("lab encrypted seals use the private label (v3) and fail closed on label edits", async () => {
-  const msg = new TextEncoder().encode("private label from the lab ".repeat(50));
-  const s = await seal({ data: msg, mode: "reflection", passphrase: PASS, name: "secret-name.txt" });
+  const msg = new TextEncoder().encode(
+    "private label from the lab ".repeat(50),
+  );
+  const s = await seal({
+    data: msg,
+    mode: "reflection",
+    passphrase: PASS,
+    name: "secret-name.txt",
+  });
   const { header } = locateHeader(s.bytes);
   assert.equal(header.version, 3);
   assert.equal(header.origLen, 0);
@@ -191,7 +267,8 @@ test("lab encrypted seals use the private label (v3) and fail closed on label ed
   const sha = new Uint8Array(await crypto.subtle.digest("SHA-256", msg));
   const has = (n: Uint8Array) => {
     outer: for (let i = 0; i + n.length <= s.bytes.length; i++) {
-      for (let j = 0; j < n.length; j++) if (s.bytes[i + j] !== n[j]) continue outer;
+      for (let j = 0; j < n.length; j++)
+        if (s.bytes[i + j] !== n[j]) continue outer;
       return true;
     }
     return false;
@@ -208,7 +285,11 @@ test("lab encrypted seals use the private label (v3) and fail closed on label ed
     if ((m === "SGIL" && o % 160 === 0 && o < KEYSTONE_SPAN) || m === "SGEM") {
       t[o + 8] ^= 1;
       t.fill(0, o + 108, o + 112);
-      new DataView(t.buffer).setUint32(o + 108, crc32(t.subarray(o, o + 160)), true);
+      new DataView(t.buffer).setUint32(
+        o + 108,
+        crc32(t.subarray(o, o + 160)),
+        true,
+      );
     }
   }
   await assert.rejects(unseal(t, PASS));
