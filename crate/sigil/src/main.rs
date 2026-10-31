@@ -1555,6 +1555,18 @@ enum LogCmd {
         /// Show the plan, change nothing
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Private INDEX: passphrase only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(true), long)]
+        pass: Option<String>,
+        /// Private INDEX: passphrase file that opens the index key and the stars and seals re-sealed ones
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        /// Private INDEX: recipient re-sealed stars are encrypted to (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        /// Private INDEX: identity (.sgk) that opens the index key and the stars (repeatable)
+        #[arg(long = "unlock")]
+        unlock: Vec<PathBuf>,
     },
     /// Mark segments as deleted (chain-covered, permanent). Reads honour it at once; the bytes are
     /// erased by `log compact --apply` (or `gc --apply`). The log becomes `log=2`.
@@ -4834,8 +4846,15 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             keep,
             dry_run,
+            pass,
+            pass_file,
+            to,
+            unlock,
         } => {
             let id = identity.as_deref().map(Identity::load).transpose()?;
+            let pass = resolve_pass(pass.or(pass_file), None)?;
+            let to = load_recipients(&to)?;
+            let unlock = load_identities(&unlock)?;
             let r = seglog::adopt(
                 &path,
                 &sources,
@@ -4843,6 +4862,9 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     identity: id.as_ref(),
                     keep,
                     dry_run,
+                    pass: pass.as_deref(),
+                    to: &to,
+                    unlock: &unlock,
                 },
             )?;
             for n in &r.notes {
