@@ -235,6 +235,52 @@ pub(super) fn destroy(log: &Log, seqs: &[u64]) -> Result<Vec<u64>> {
     Ok(gone)
 }
 
+/// Re-wrap every record of the ring with `edit` (see `log rewrap`). Every record is unwrapped
+/// with the current `pass` / `ids` and re-wrapped **in memory first**; if any shard is unreadable
+/// or any record does not open, nothing is written. Returns `(shards, records, removed matches)`
+/// and the new shards to store (empty in a dry run). Caller holds the lock.
+pub(super) fn rewrap_all(
+    log: &Log,
+    pass: Option<&str>,
+    ids: &[Identity],
+    edit: &keys::SgtoEdit<'_>,
+) -> Result<RewrapAll> {
+    let mut out = Vec::new();
+    let (mut records, mut removed) = (0usize, 0usize);
+    for (shard, sc) in scan(log) {
+        if let Err(e) = sc {
+            return Err(err(format!("{e}; nothing was re-wrapped")));
+        }
+        let Some(frames) = load_shard(&log.dir, shard)? else {
+            continue;
+        };
+        let mut new = Frames::new();
+        for (seq, f) in frames {
+            let m = zeroize::Zeroizing::new(keys::unwrap_cek(&f.wrap, ids, pass, &f.salt).map_err(|_| {
+                err(format!("the key of segment {seq} does not open with the given --pass-file / --identity (the current keys); nothing was re-wrapped"))
+            })?);
+            let (wrap, n) = keys::sgto_rewrap(&f.wrap, &m, edit)
+                .map_err(|e| err(format!("segment {seq}: {e}; nothing was re-wrapped")))?;
+            removed += n;
+            records += 1;
+            new.insert(seq, Frame { salt: f.salt, wrap });
+        }
+        out.push((shard, RewrappedShard(new)));
+    }
+    Ok((out.len(), records, removed, out))
+}
+
+/// `(shards, records, removed matches, new shards)` from [`rewrap_all`].
+pub(super) type RewrapAll = (usize, usize, usize, Vec<(u64, RewrappedShard)>);
+
+/// A shard re-wrapped in memory by [`rewrap_all`], not yet stored.
+pub(super) struct RewrappedShard(Frames);
+
+/// Store a shard from [`rewrap_all`] (atomic replace; old bytes scrubbed best effort).
+pub(super) fn store_rewrapped(log: &Log, shard: u64, s: &RewrappedShard) -> Result<()> {
+    store_shard(&log.dir, shard, &s.0)
+}
+
 /// A fresh random segment key and the identity it stands for.
 pub(super) fn new_key() -> Result<([u8; 32], Identity)> {
     let mut m = [0u8; 32];

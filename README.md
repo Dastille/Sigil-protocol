@@ -348,6 +348,14 @@ $ sigil log restore photos 2024 -o Photos-2024 --identity me.sgk
 log restore: 1 file(s), 3 byte(s) → Photos-2024
 ```
 
+Change who can open a key-wrapped log (segment keys or private INDEX) without
+re-sealing anything:
+
+```
+$ sigil log rewrap photos --identity me.sgk --add-to partner.pub
+log rewrap photos.sigil: the index key
+```
+
 Later, prove that an anchor you pinned (`SEQ:ROOT` from `log ls`) is a prefix of
 today's log, checkable without the INDEX:
 

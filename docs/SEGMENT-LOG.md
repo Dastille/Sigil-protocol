@@ -380,6 +380,44 @@ events.sigil/
 * The INDEX does not contain keys or key ids. `segkeys=1` in `CONTAINER` is the only marker.
   Unknown to an older sigil → it refuses the log (`log=3` is newer), never misreads it.
 
+### `rewrap` (change who can open the keys)
+
+```sh
+sigil log rewrap events --identity alice.sgk --add-to bob.pub             # add a recipient
+sigil log rewrap events --identity bob.sgk --remove-to alice.pub          # remove one
+sigil log rewrap events --identity bob.sgk --replace --add-to carol.pub --new-pass-file pw   # rotate all
+sigil log rewrap events --pass-file old --new-pass-file new               # change the passphrase
+sigil log rewrap events --identity carol.sgk --drop-pass                  # keys open to --to only
+```
+
+Applies to every **wrapped key** of the log: each record of the per-segment key ring
+(`--segment-keys`) and the private-INDEX key (`IXKEY.sg1`). No segment, INDEX line, HEAD or
+manifest changes (the keys themselves stay the same, only who they are wrapped to), so the chain,
+anchors, receipts and signatures stay valid and no signing key is needed.
+
+* **How.** A wrapped key is an SGTO block: one record per `--to` recipient (X25519) plus at most
+  one passphrase record (Argon2id). Every key is unwrapped with the **current** `--pass-file` /
+  `--pass -` / `--identity` (that is the authorisation); records that stay are kept byte for byte;
+  `--add-to` and `--new-pass-file` add records with the same encodings as `seal --to` / `--pass`.
+  `--remove-to` drops the records whose recipient hint matches; `--drop-pass` drops the passphrase
+  record; `--new-pass-file` replaces it; `--replace` drops everything first (rotate to exactly the
+  given set). A recipient already present is not added twice.
+* **Fail closed, all or nothing.** Everything is computed in memory first. Refused before any write:
+  no current key given; a key that does not open with it (a mixed ring, wrapped to different people
+  per append, needs keys that open every record; give several `--identity`); a damaged ring shard or
+  `IXKEY.sg1` (`log mend` first); a result with no recipient and no passphrase (it would lock
+  everyone out; there is no opt-in for that: `log shred` is the explicit way to destroy keys);
+  `--remove-to` that matches nothing; a log without wrapped keys (each segment sealed straight to
+  its recipients: use `compact --seal-pass-file / --to`). `--dry-run` checks and counts only.
+* **Crash safety.** Each shard and `IXKEY.sg1` is replaced atomically (the ring's old bytes are
+  overwritten best effort, as for `shred`). A crash between files leaves some keys re-wrapped and
+  some not; run the same command again with keys that open both (e.g. old and new `--identity`).
+* **What it does not do.** It cannot take back what a removed recipient already has: a key they
+  unwrapped, bytes they read, or an old copy of the ring or `IXKEY.sg1` (backups, snapshots). It
+  changes who can open the keys **from now on**. To make old copies useless, `compact` re-seals
+  the live batches under **new** keys (wrapped to the new recipients) and shreds the old ones.
+  Adding a passphrase costs one Argon2id derivation per key (about 0.05 s each).
+
 ### `shred`
 
 `sigil log shred events --seq N | --from A --to B [--reason TEXT] [--identity me.sgk]`
@@ -1069,19 +1107,18 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); restore by path (`log restore`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); restore by path (`log restore`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Streaming appends / segments above memory size (work-pack chunking).
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
-  stars into one (with a key), padding segment files so on-disk sizes leak less, re-wrapping the index
-  key to new recipients, and converting an existing log (today: `--private-index` at init only).
+  stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * `log add` follow-ups: per-file receipts by path, restoring an older version by path and date, and
   an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
-* Re-wrapping the key ring to new recipients / rotating a recipient (today: `compact` re-seals live batches under new keys wrapped to the new recipients), shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
+* Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
 
 ## Private label (v3)
 

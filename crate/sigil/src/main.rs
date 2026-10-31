@@ -1255,6 +1255,45 @@ enum LogCmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
+    /// Change who can open the log's wrapped keys (per-segment key ring of a --segment-keys log,
+    /// index key of a private INDEX) without touching any segment: add or remove `--to`
+    /// recipients, set or drop the passphrase, or --replace them all. Needs the current keys.
+    /// Does not take back what a removed recipient already opened (use `log compact` for that).
+    Rewrap {
+        path: PathBuf,
+        /// Current passphrase: only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(false), long)]
+        pass: Option<String>,
+        /// Read the current passphrase from the first line of a file only you can read
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Current identity (.sgk) that opens the keys (repeatable)
+        #[arg(long = "identity")]
+        identity: Vec<PathBuf>,
+        /// Recipient to add (.pub / .sgk / 64-hex; repeatable)
+        #[arg(long = "add-to", value_name = "RECIPIENT")]
+        add_to: Vec<String>,
+        /// Recipient to remove (repeatable)
+        #[arg(long = "remove-to", value_name = "RECIPIENT")]
+        remove_to: Vec<String>,
+        /// New passphrase (replaces the current one): only `-` (asks twice)
+        #[arg(value_parser = PassParser(true), long = "new-pass")]
+        new_pass: Option<String>,
+        /// New passphrase from the first line of a file only you can read
+        #[arg(long = "new-pass-file", value_name = "PATH", conflicts_with = "new_pass", value_parser = parse_pass_file)]
+        new_pass_file: Option<String>,
+        /// Remove the passphrase (the keys stay open to the --to recipients only)
+        #[arg(long = "drop-pass")]
+        drop_pass: bool,
+        /// Drop every current recipient and passphrase; wrap to exactly --add-to / --new-pass-file
+        #[arg(long)]
+        replace: bool,
+        /// Check that every key opens and count; write nothing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
     /// Check INDEX chain, HEAD (+signature), every segment's ECC and true-name. Needs no keys;
     /// with --pass / --identity it also unseals each segment. Exit 0 ok, 1 warnings, 2 problems.
     Verify {
@@ -4162,6 +4201,40 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 &seglog::ReadOpts {
                     pass: pass.as_deref(),
                     identities: &identities,
+                },
+            )?;
+            print!("{}", r.render());
+        }
+        LogCmd::Rewrap {
+            path,
+            pass,
+            pass_file,
+            talisman,
+            identity,
+            add_to,
+            remove_to,
+            new_pass,
+            new_pass_file,
+            drop_pass,
+            replace,
+            dry_run,
+        } => {
+            let pass = resolve_pass(pass.or(pass_file), talisman)?;
+            let identities = load_identities(&identity)?;
+            let add = load_recipients(&add_to)?;
+            let remove = load_recipients(&remove_to)?;
+            let new_pass = new_pass.or(new_pass_file);
+            let r = seglog::rewrap(
+                &path,
+                &seglog::RewrapOpts {
+                    pass: pass.as_deref(),
+                    identities: &identities,
+                    add: &add,
+                    remove: &remove,
+                    new_pass: new_pass.as_deref(),
+                    drop_pass,
+                    replace,
+                    dry_run,
                 },
             )?;
             print!("{}", r.render());
