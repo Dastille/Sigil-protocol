@@ -177,6 +177,8 @@ pub struct CompactOpts<'a> {
     pub recipients: &'a [PublicIdentity],
     /// Allow merging encrypted sources into an unencrypted merged segment.
     pub allow_decrypt: bool,
+    /// Only rewrite these segment files (holders); every other file is left alone (`shred --rewrite`).
+    pub only_files: Option<&'a [u64]>,
     /// Keys that open the source segments; also supplies the signing key for a signed log.
     pub read: ReadOpts<'a>,
     #[doc(hidden)]
@@ -195,6 +197,7 @@ impl Default for CompactOpts<'_> {
             seal_pass: None,
             recipients: &[],
             allow_decrypt: false,
+            only_files: None,
             read: ReadOpts {
                 pass: None,
                 identities: &[],
@@ -329,6 +332,9 @@ fn describe_rule(o: &CompactOpts<'_>) -> String {
     if let Some((a, b)) = o.range {
         v.push(format!("seq {a}-{b}"));
     }
+    if let Some(f) = o.only_files {
+        v.push(format!("only segment file(s) {}", fmt_ranges(&compress(f))));
+    }
     if v.is_empty() {
         "every live segment".into()
     } else {
@@ -413,6 +419,10 @@ fn plan(
         };
     for h in 1..=n {
         if state.slot(h) != Slot::Needed {
+            continue;
+        }
+        if opts.only_files.is_some_and(|o| !o.contains(&h)) {
+            flush(&mut cur, &mut cur_bytes, &mut cur_dirty, &mut groups);
             continue;
         }
         let live = state.live_members(h);

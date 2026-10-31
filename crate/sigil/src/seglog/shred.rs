@@ -122,7 +122,7 @@ pub fn shred_with(
             .find(|m| !targets.contains(m))
         {
             return Err(err(format!(
-                "segment {s} sits in compaction segment {h} together with live segment {m}; they share one key. Shred them all together (--from/--to), or `log tombstone` + `log compact --apply` to rewrite the file without it"
+                "segment {s} sits in compaction segment {h} together with live segment {m}; they share one key. Shred them all together (--from/--to), or `log shred --seq {s} --rewrite` (a tombstone + a rewrite of only that file) to erase it alone"
             )));
         }
     }
@@ -174,5 +174,114 @@ pub fn shred_with(
         root: head.root,
         signed: head.sig.is_some(),
         notes,
+    })
+}
+
+/// What [`shred_rewrite`] did: the tombstone entry, then the one-holder compaction.
+#[derive(Debug)]
+pub struct ShredRewriteReport {
+    pub tomb: TombstoneReport,
+    pub compact: CompactReport,
+    /// The segment files that were rewritten (the holders of the erased batches).
+    pub holders: Vec<u64>,
+}
+
+/// Erase batches that share a compaction segment with live ones: a tombstone, then a compaction of
+/// **only** the segment file(s) holding them, so the other batches are re-sealed into a new file
+/// (in a segment-keys log under a fresh key) and the old file and its key are destroyed. Other
+/// segment files are not touched (dead files that were already waiting to be erased are erased).
+/// Fails before writing anything when `copts.read` cannot open the holders or no key is given
+/// for the new file.
+pub fn shred_rewrite(
+    path: &Path,
+    target: TombTarget,
+    reason: Option<&str>,
+    identity: Option<&Identity>,
+    keys: &ReasonKeys<'_>,
+    copts: &CompactOpts<'_>,
+) -> Result<ShredRewriteReport> {
+    let mut log = Log::open(path)?;
+    if log.privindex {
+        log.unlock_index(copts.read.pass, copts.read.identities)?;
+    }
+    let (from, to) = match target {
+        TombTarget::Seq(s) => (s, s),
+        TombTarget::Range(a, b) => (a, b),
+    };
+    let holders = {
+        let _guard = lock(&log)?;
+        let (idx, _) = prepare_write(&log)?;
+        let st = &idx.state;
+        let n = idx.entries.len() as u64;
+        if from == 0 || to < from || to > n {
+            return Err(err(format!(
+                "segments {from}..{to} are not in the log (it has {n} entries)"
+            )));
+        }
+        let targets: Vec<u64> = (from..=to)
+            .filter(|s| st.is_seg(*s) && st.deleted_by(*s).is_none())
+            .collect();
+        if targets.is_empty() {
+            return Err(err("nothing to erase: no live segment in that range"));
+        }
+        let mut holders: Vec<u64> = targets.iter().map(|s| st.holder_of(*s)).collect();
+        holders.sort_unstable();
+        holders.dedup();
+        // fail closed: every holder must open with the given keys before anything is written
+        let mut ring = keyring::RingCache::new(&log);
+        let mut keyed = false;
+        for h in &holders {
+            let e = idx
+                .entries
+                .get((*h as usize).wrapping_sub(1))
+                .ok_or_else(|| err(format!("segment {h} has no INDEX entry")))?;
+            let (_, k) = read_holder(&log, &mut ring, e, &copts.read).map_err(|er| {
+                err(format!(
+                    "cannot open segment file {h} with the given keys ({er}); nothing was changed"
+                ))
+            })?;
+            keyed |= k;
+        }
+        let sealed = copts.seal_pass.is_some_and(|p| !p.is_empty()) || !copts.recipients.is_empty();
+        if (log.segkeys || keyed) && !sealed && !copts.allow_decrypt {
+            return Err(err(
+                "give --seal-pass-file and/or --seal-to for the rewritten segment (its other batches are re-sealed); nothing was changed",
+            ));
+        }
+        holders
+    };
+    let tomb = tombstone_with(path, target, reason, identity, keys)?;
+    let only = holders.clone();
+    let compact = compact(
+        path,
+        &CompactOpts {
+            apply: true,
+            only_files: Some(&only),
+            keep_last: None,
+            older_than_secs: None,
+            range: None,
+            target_size: copts.target_size,
+            mode: copts.mode,
+            seal_pass: copts.seal_pass,
+            recipients: copts.recipients,
+            allow_decrypt: copts.allow_decrypt,
+            read: ReadOpts {
+                pass: copts.read.pass,
+                identities: copts.read.identities,
+            },
+            stop_after: copts.stop_after,
+        },
+    )
+    .map_err(|e| {
+        err(format!(
+            "batches are tombstoned (entry #{}) but rewriting segment file(s) {} failed: {e}; run `sigil log compact --apply` to finish",
+            tomb.entry,
+            fmt_ranges(&compress(&holders))
+        ))
+    })?;
+    Ok(ShredRewriteReport {
+        tomb,
+        compact,
+        holders,
     })
 }
