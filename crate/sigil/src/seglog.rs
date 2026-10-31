@@ -1369,6 +1369,7 @@ mod exclude;
 mod keyring;
 mod private;
 mod proof;
+mod restore;
 mod rotate;
 mod shred;
 pub use add::*;
@@ -1380,6 +1381,7 @@ use keyring::RingCache;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
 pub use private::{EntryKey, Hidden, IXKEY_FILE};
 pub use proof::*;
+pub use restore::*;
 pub use rotate::*;
 pub use shred::*;
 

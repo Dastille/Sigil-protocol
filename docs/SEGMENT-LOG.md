@@ -605,9 +605,38 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
 * **One folder per log.** The log remembers paths relative to `DIR`. To back up several sources
   into one log, give them one parent folder (`staging/mum/`, `staging/dad/`) and add that; adding
   two unrelated folders to one log reports each other's files as missing.
-* **Getting files back.** `sigil log ls` shows the seq of every file; `sigil log read LOG --seq N -o
-  FILE` restores one. A whole-folder restore by path is a later slice (today `sigil mount
-  --export-dir` gives one file per seq).
+* **Getting files back.** `sigil log restore LOG PATH [-o OUT]` brings back a file or a whole
+  folder by the path `add` recorded (see below); `sigil log read LOG --seq N -o FILE` restores one
+  version by seq (also older versions).
+
+### Restoring by path (`sigil log restore`)
+
+```sh
+sigil log restore photos 2024/trip/beach.jpg -o beach.jpg    # one file: its latest version
+sigil log restore photos 2024 -o Photos-2024 --identity me.sgk  # a folder: every path under 2024/
+sigil log restore photos . -o Photos-all                      # everything (needs -o)
+```
+
+* **What it picks.** For every path, the latest version among entries the HEAD vouches for (the
+  rule `add` and `gc` use). `PATH` equal to a recorded path restores that file; otherwise `PATH` is a
+  folder (matched at a `/` boundary: `20` does not match `2024/…`) and every path under it is
+  written relative to it. No match: refused.
+* **Deleted means deleted.** A file whose latest version was tombstoned or shredded is refused on
+  its own; inside a folder it is left out and listed (`- path deleted …`). An older version is never
+  substituted; use `log read --seq` for that on purpose.
+* **Byte-exact, all or nothing.** Every file goes through the reader `log read` uses (segment
+  header true-name, plain size and SHA-256 against the INDEX, compaction members cut out and
+  re-hashed). All files are read and checked **before anything is written**; the result is then
+  written under a temporary sibling name and renamed into place. A missing or corrupt segment (or a
+  wrong key) fails the whole restore and leaves nothing behind. The destination must not exist:
+  restore never overwrites. Default destination: the last component of `PATH` in the current folder.
+* **Untrusted names.** A recorded path with an empty, `.` or `..` component, a leading `/` or a NUL
+  byte is refused, so a tampered INDEX cannot write outside the destination.
+* **Keys.** The same as `log read`: `--pass` / `--identity` for encrypted segments, segment-key logs
+  and a private INDEX (whose paths are sealed: without the key nothing is found and no name is
+  printed). A damaged log (`verify` errors) is refused; run `log mend` first.
+* **Memory.** The files of one restore are held in memory until all are checked (same order of RAM
+  as the plain size restored); restore large trees folder by folder.
 
 ## Private INDEX (default for `sigil log init --pass/--to`, `log=5`)
 
@@ -1033,7 +1062,7 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); restore by path (`log restore`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * **Nested hierarchical cards**: a card of cards (daily → monthly roll-ups) with their own Merkle roots.
 * Streaming appends / segments above memory size (work-pack chunking).
@@ -1041,7 +1070,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
   stars into one (with a key), padding segment files so on-disk sizes leak less, re-wrapping the index
   key to new recipients, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
-* `log add` follow-ups: restore a whole folder (or one path) by name, per-file receipts by path, and
+* `log add` follow-ups: per-file receipts by path, restoring an older version by path and date, and
   an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (needs the hierarchical cards: it is chain-breaking by nature).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
