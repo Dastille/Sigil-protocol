@@ -2775,13 +2775,21 @@ fn verify_cmd(
     subset_offset: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if is_constellation_input(&input) {
-        let (text, bad) = sigil::scry_constellation_checked(&input, None, &[]).map_err(|e| {
-            format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
-        })?;
+        // A locked card opens with the same key the deep read uses.
+        let key = resolve_pass(pass.clone(), talisman.clone())?;
+        let ids = load_identities(&identity)?;
+        let (text, bad) = sigil::scry_constellation_checked(&input, key.as_deref(), &ids)
+            .map_err(|e| {
+                format!("{e}\n(locked card: give --pass-file / --identity, or use `sigil constellation scry <sky> --pass/--identity`)")
+            })?;
         let st = if json_on() {
-            Some(sigil::status::scry_status_constellation(&input, None, &[])?)
+            Some(sigil::status::scry_status_constellation(
+                &input,
+                key.as_deref(),
+                &ids,
+            )?)
         } else {
-            sigil::status::scry_status_constellation(&input, None, &[]).ok()
+            sigil::status::scry_status_constellation(&input, key.as_deref(), &ids).ok()
         };
         let text = agree_report(text, st.as_ref());
         say!("{text}");
@@ -2820,14 +2828,14 @@ fn verify_cmd(
         }
     }
     if let Some(pct) = subset {
-        if is_constellation_input(&input) {
-            return Err("--read-data is for one .sg1, a large-file pack or a folder pack (not a constellation yet)".into());
-        }
         let pass = resolve_pass(pass, talisman)?;
         let identities = load_identities(&identity)?;
         let offset = subset_offset.unwrap_or_else(sigil::readdata::rolling_offset);
-        let r =
-            sigil::readdata::read_data_subset(&input, pass.as_deref(), &identities, pct, offset)?;
+        let r = if is_constellation_input(&input) {
+            sigil::readdata::read_constellation(&input, pass.as_deref(), &identities, pct, offset)?
+        } else {
+            sigil::readdata::read_data_subset(&input, pass.as_deref(), &identities, pct, offset)?
+        };
         say!(
             "read-data {pct}%: tried {} of {} part(s), {} bytes read, {} failed",
             r.checked.len(),

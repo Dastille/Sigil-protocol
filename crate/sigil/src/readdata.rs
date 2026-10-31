@@ -180,6 +180,89 @@ pub fn read_data_subset(
     Ok(r)
 }
 
+/// Counts plain bytes without keeping them.
+struct Count(u64);
+impl std::io::Write for Count {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0 += b.len() as u64;
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Deep-read sampled members of a constellation (folder, card or `.sigil` container).
+/// Each member is a part: its star file (or bytes packed in the card) is opened to the
+/// original bytes and dropped. A locked card needs its key first; an atlas bag is refused.
+pub fn read_constellation(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+    percent: f64,
+    offset: u64,
+) -> Result<ReadDataReceipt> {
+    let resolved = crate::container::sky_for_read(input);
+    let input = resolved.as_path();
+    if crate::is_atlas_file(input) {
+        return Err(Error::Msg(
+            "--read-data on an atlas bag is not supported yet: verify the constellation folder it was packed from (plain `verify` still checks the bag)".into(),
+        ));
+    }
+    let (chart, dir) = crate::constellation::load_chart_keys(input, pass, identities)?;
+    let card = if input.is_dir() {
+        crate::constellation::find_card(input)
+    } else if crate::is_constellation_mark(input) {
+        Some(input.to_path_buf())
+    } else {
+        crate::constellation::find_card(&dir)
+    };
+    let by_digest = crate::constellation::index_stars(&dir, card.as_deref());
+    let n = u32::try_from(chart.members.len())
+        .map_err(|_| Error::Msg("constellation has too many members".into()))?;
+    let picks = pick_parts(n, percent, offset);
+    let mut r = ReadDataReceipt {
+        kind: "constellation",
+        percent,
+        offset,
+        total_parts: n,
+        checked: Vec::new(),
+        bytes_read: 0,
+        failed: Vec::new(),
+        skipped: Vec::new(),
+    };
+    for i in picks {
+        let Some(m) = chart.members.get(i as usize) else {
+            continue;
+        };
+        r.checked.push(i);
+        let mut sink = Count(0);
+        let opened = if !m.bytes.is_empty() {
+            if m.bytes.starts_with(&crate::work::WORK_MAGIC) {
+                crate::work::unseal_bytes_into(&m.bytes, &mut sink, pass, &[], identities)
+                    .map(|_| ())
+            } else {
+                crate::unseal_ex_keys(&m.bytes, pass, &[], identities).map(|p| {
+                    sink.0 = p.len() as u64;
+                })
+            }
+        } else {
+            match crate::constellation::find_member_star(&dir, m, &by_digest) {
+                None => Err(Error::Msg("star missing".into())),
+                Some(star) => {
+                    crate::work::unseal_path_into(&star, &mut sink, pass, &[], identities)
+                        .map(|_| ())
+                }
+            }
+        };
+        match opened {
+            Ok(()) => r.bytes_read += sink.0,
+            Err(e) => r.failed.push((i, format!("{}: {e}", m.name))),
+        }
+    }
+    Ok(r)
+}
+
 /// Deep-read sampled members of a folder pack (plain or sealed). Each picked member is
 /// opened to its original bytes; a member locked with its own ward key, a wrong key or
 /// damage counts as failed (fail closed). Nested folder packs are listed as skipped.
