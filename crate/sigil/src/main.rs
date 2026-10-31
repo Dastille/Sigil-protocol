@@ -2715,6 +2715,18 @@ fn gather_partial(
 
 /// `verify` / `scry`: the cheap structural check, plus the opt-in deep read.
 /// `,"status":{...}` for `scry` / `verify --json` (schema 1; additive next to `report`).
+/// Make the human report agree with `status.health`: when Scry's text reads fine but the
+/// doctor check found something to mend, say so (the JSON `report` gets the same line).
+fn agree_report(text: String, st: Option<&sigil::status::ScryStatus>) -> String {
+    match st {
+        Some(st) if st.verdict == sigil::status::Verdict::NeedsRepair => {
+            let why = st.repair.as_deref().unwrap_or("damage found");
+            format!("{text}\nneeds repair: {why} (run `sigil mend`)")
+        }
+        _ => text,
+    }
+}
+
 fn status_json(st: &sigil::status::ScryStatus) -> String {
     let opt_s = |v: &Option<String>| v.as_deref().map(jq).unwrap_or_else(|| "null".into());
     let opt_n = |v: Option<u64>| v.map(|n| n.to_string()).unwrap_or_else(|| "null".into());
@@ -2766,14 +2778,16 @@ fn verify_cmd(
         let (text, bad) = sigil::scry_constellation_checked(&input, None, &[]).map_err(|e| {
             format!("{e}\n(locked card: use `sigil constellation scry <sky> --pass/--identity`)")
         })?;
+        let st = if json_on() {
+            Some(sigil::status::scry_status_constellation(&input, None, &[])?)
+        } else {
+            sigil::status::scry_status_constellation(&input, None, &[]).ok()
+        };
+        let text = agree_report(text, st.as_ref());
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
-        if json_on() {
-            json_extra(&status_json(&sigil::status::scry_status_constellation(
-                &input,
-                None,
-                &[],
-            )?));
+        if let (true, Some(st)) = (json_on(), &st) {
+            json_extra(&status_json(st));
         }
         if let Some(why) = bad {
             return Err(not_recoverable(&why).into());
@@ -2782,20 +2796,24 @@ fn verify_cmd(
         let pass = resolve_pass(pass.clone(), talisman.clone())?;
         let identities = load_identities(&identity)?;
         let (text, bad) = sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)?;
+        let st = sigil::status::scry_status_path(&input)?;
+        let text = agree_report(text, Some(&st));
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
         if json_on() {
-            json_extra(&status_json(&sigil::status::scry_status_path(&input)?));
+            json_extra(&status_json(&st));
         }
         if let Some(why) = bad {
             return Err(not_recoverable(&why).into());
         }
     } else {
         let (text, bad) = sigil::scry_path_checked(&input)?;
+        let st = sigil::status::scry_status_path(&input)?;
+        let text = agree_report(text, Some(&st));
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
         if json_on() {
-            json_extra(&status_json(&sigil::status::scry_status_path(&input)?));
+            json_extra(&status_json(&st));
         }
         if let Some(why) = bad {
             return Err(not_recoverable(&why).into());
@@ -6465,13 +6483,19 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             let identities = load_identities(&identity)?;
             let (text, bad) =
                 sigil::scry_constellation_checked(&sky, pass.as_deref(), &identities)?;
-            if json {
-                json_extra(&format!(",\"report\":{}", jq(&text)));
-                json_extra(&status_json(&sigil::status::scry_status_constellation(
+            let st = if json {
+                Some(sigil::status::scry_status_constellation(
                     &sky,
                     pass.as_deref(),
                     &identities,
-                )?));
+                )?)
+            } else {
+                sigil::status::scry_status_constellation(&sky, pass.as_deref(), &identities).ok()
+            };
+            let text = agree_report(text, st.as_ref());
+            if let (true, Some(st)) = (json, &st) {
+                json_extra(&format!(",\"report\":{}", jq(&text)));
+                json_extra(&status_json(st));
             }
             say!("{text}");
             if let Some(why) = bad {
