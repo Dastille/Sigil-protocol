@@ -252,6 +252,64 @@ pub struct CompactReport {
 }
 
 impl CompactReport {
+    /// [`CompactReport::render`] as one JSON object (`sigil log compact --json`, `sigil-log-compact=1`).
+    pub fn to_json(&self, dir: &Path) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let rel = |p: &Path| q(&p.strip_prefix(dir).unwrap_or(p).display().to_string());
+        let nums = |v: &[u64]| {
+            format!(
+                "[{}]",
+                v.iter()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        let file = |f: &PurgeFile| {
+            format!(
+                "{{\"seq\":{},\"path\":{},\"bytes\":{},\"why\":{}}}",
+                f.seq,
+                rel(&f.path),
+                f.bytes,
+                q(match f.why {
+                    Slot::DeadDeleted => "deleted",
+                    Slot::DeadSuperseded => "superseded",
+                    _ => "merged",
+                })
+            )
+        };
+        let groups: Vec<String> = self
+            .groups
+            .iter()
+            .map(|g| {
+                format!(
+                    "{{\"sources\":{},\"members\":{},\"dropped\":{},\"plain_bytes\":{},\"new_seq\":{}}}",
+                    nums(&g.sources),
+                    nums(&g.members),
+                    nums(&g.dropped),
+                    g.bytes,
+                    g.new_seq
+                )
+            })
+            .collect();
+        format!(
+            "{{\"format\":\"sigil-log-compact=1\",\"dir\":{},\"applied\":{},\"rule\":{},\"live_segments\":{},\"merges\":[{}],\"erase\":[{}],\"merged_sources\":[{}],\"bytes_before\":{},\"bytes_after\":{},\"removed\":{},\"keys_destroyed\":{},\"root\":{},\"notes\":[{}]}}\n",
+            q(&dir.display().to_string()),
+            self.apply,
+            q(&self.rule),
+            self.live_segments,
+            groups.join(","),
+            self.purge.iter().map(file).collect::<Vec<_>>().join(","),
+            self.source_files.iter().map(file).collect::<Vec<_>>().join(","),
+            self.bytes_before,
+            self.bytes_after,
+            self.removed,
+            self.keys_destroyed,
+            self.root.map(|r| q(&hex32(&r))).unwrap_or_else(|| "null".into()),
+            self.notes.iter().map(|n| q(n)).collect::<Vec<_>>().join(",")
+        )
+    }
+
     pub fn render(&self, dir: &Path) -> String {
         let rel = |p: &Path| p.strip_prefix(dir).unwrap_or(p).display().to_string();
         let mut s = format!("log compact {}  rule: {}\n", dir.display(), self.rule);
