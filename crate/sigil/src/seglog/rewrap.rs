@@ -49,6 +49,20 @@ pub struct RewrapReport {
 }
 
 impl RewrapReport {
+    /// As JSON (`sigil log rewrap --json`, `sigil-log-rewrap=1`). Counts only: no keys, no
+    /// recipients, no paths.
+    pub fn to_json(&self) -> String {
+        format!(
+            "{{\"format\":\"sigil-log-rewrap=1\",\"dir\":{},\"dry_run\":{},\"shards\":{},\"records\":{},\"index_key\":{},\"removed\":{}}}\n",
+            crate::doctor::json_str(&self.dir.display().to_string()),
+            self.dry_run,
+            self.shards,
+            self.records,
+            self.index_key,
+            self.removed
+        )
+    }
+
     pub fn render(&self) -> String {
         let mut what = Vec::new();
         if self.shards > 0 {

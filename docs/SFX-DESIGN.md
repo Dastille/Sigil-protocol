@@ -89,7 +89,9 @@ One `.html` file: the TypeScript codec, a small UI, and the `.sg1` bytes (base64
   comfortably, not tens of GB; whether the TS codec implements **repair** (RS decode from a
   damaged file, Keystone header recovery) to the same extent as `mend` must be checked before
   this is promised (not verified for this note); the page's own bytes are not RS-protected;
-  depends on the lab UI, which still lives in another repository.
+  needs a page build that lives with the lab UI, which already exists in the
+  dove-bloom-star-island repository (the codec itself is in this repo, `src/lib/sigil/`); the
+  SFX page would be built and tested there, or from a small template here; nothing has to move.
 
 ### Comparison
 
@@ -161,7 +163,8 @@ the web codec's repair coverage was not checked for this note.
 3. Must the one-file form repair, or is "open if healthy, otherwise use the CLI" acceptable?
 4. Size budget per archive for an embedded extractor?
 5. Release trust: will releases be signed (and with what key) before any stub ships?
-6. For D: may the lab UI move into this repository so the page is built and tested here?
+6. For D: should the SFX page be built in dove-bloom-star-island (where the lab UI already
+   lives), or as a small standalone template in this repository next to the codec?
 7. AGPL: is a bundled source offer (URL + version in `RECOVER.txt` / the stub banner) the intended
    compliance route?
 

@@ -3830,6 +3830,46 @@ pub struct MendReport {
     pub ixkey_unrecoverable: Option<String>,
 }
 
+impl MendReport {
+    /// As JSON (`sigil log mend --json`, `sigil-log-mend=1`). Segment numbers only, no paths.
+    /// `ok` is false exactly when the command exits 2 (something is missing or beyond repair).
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let nums = |v: &[u64]| {
+            v.iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let errs = |v: &[(u64, String)]| {
+            v.iter()
+                .map(|(s, m)| format!("{{\"seq\":{s},\"error\":{}}}", q(m)))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "{{\"format\":\"sigil-log-mend=1\",\"ok\":{},\"checked\":{},\"mended\":[{}],\"missing\":[{}],\"unrecoverable\":[{}],\"keys_mended\":[{}],\"keys_unrecoverable\":[{}],\"ixkey_mended\":{},\"ixkey_unrecoverable\":{}}}\n",
+            self.ok(),
+            self.checked,
+            nums(&self.mended),
+            nums(&self.missing),
+            errs(&self.unrecoverable),
+            nums(&self.keys_mended),
+            errs(&self.keys_unrecoverable),
+            self.ixkey_mended,
+            self.ixkey_unrecoverable.as_deref().map_or("null".to_string(), q),
+        )
+    }
+
+    /// Nothing is missing or beyond repair.
+    pub fn ok(&self) -> bool {
+        self.missing.is_empty()
+            && self.unrecoverable.is_empty()
+            && self.keys_unrecoverable.is_empty()
+            && self.ixkey_unrecoverable.is_none()
+    }
+}
+
 /// Heal every repairable segment in place (atomic replace). Never changes the INDEX / HEAD:
 /// mending keeps the plain bytes and their true-name.
 pub fn mend(path: &Path) -> Result<MendReport> {

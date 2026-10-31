@@ -1078,6 +1078,17 @@ as the listing).
 * `log restore --json` (`sigil-log-restore=1`): `out`, `folder`, `files` (`path`, `seq`, `size`),
   `bytes`, `deleted_left_out` (`path`, `seq`, `deleted_by`). Paths are the log's paths: as
   sensitive as a private log's listing.
+* `log add --json` (`sigil-log-add=1`): `ok` (false when a file could not be read; exit 1),
+  `items` (`path`, `size`, `why` = `new`/`changed`/`reseal`, `prev`, `reason`, `seq`; `seq` is
+  null in a `--dry-run`), `unchanged`, `cache_hits`, `missing`, `special`, `unreadable`,
+  `deleted`, `excluded`, `excluded_kept`, `commits`, `root` (null when nothing was committed),
+  `signed`, `notes` (also printed to stderr). Paths are sensitive like a private log's listing.
+* `log rewrap --json` (`sigil-log-rewrap=1`, plan with `--dry-run` or apply): `dir`, `dry_run`,
+  `shards`, `records`, `index_key`, `removed`. Counts only: never keys, recipients or passphrases.
+* `log mend --json` (`sigil-log-mend=1`): `ok`, `checked`, `mended`, `missing`, `unrecoverable`
+  (`seq`, `error`), `keys_mended`, `keys_unrecoverable`, `ixkey_mended`, `ixkey_unrecoverable`
+  (null when fine). Mend needs no key and reports segment numbers only, so on a private log it
+  reveals nothing a key-free `log verify` does not. Exit 2 when `ok` is false.
 
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 

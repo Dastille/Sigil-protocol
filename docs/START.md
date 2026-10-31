@@ -250,5 +250,7 @@ Roll-up cards (a card of logs, a card of cards) ship as an MVP: `sigil log card 
 Not in this Friday slice — come back later:
 
 - INDEX roll-up of very old history
+- Self-extracting archives with repair: options and open questions in
+  [SFX-DESIGN.md](SFX-DESIGN.md) (decision pending, not implemented)
 
 Day-to-day use does not need those. A monthly read-only health + compaction-plan check ships as `scripts/monthly-log-retention.sh` (see SEGMENT-LOG.md, "Monthly retention check"); add `--apply --older-than 90d --seal-pass-file F` to let it compact when the log is healthy.
