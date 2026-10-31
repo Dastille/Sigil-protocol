@@ -1240,6 +1240,9 @@ enum LogCmd {
         /// Identity (.sgk) that opens a private INDEX (repeatable)
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
+        /// Machine-readable listing on stdout (format `sigil-log-ls=1`)
+        #[arg(long)]
+        json: bool,
     },
     /// Write segment bytes (checked against the INDEX) to stdout or -o. Default: all, in order.
     Read {
@@ -4424,14 +4427,13 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            print!(
-                "{}",
-                seglog::list_with(&path, pass.as_deref(), &identities)?.render()
-            )
+            let l = seglog::list_with(&path, pass.as_deref(), &identities)?;
+            print!("{}", if json { l.to_json() } else { l.render() })
         }
         LogCmd::Restore {
             log,

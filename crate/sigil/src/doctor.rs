@@ -62,6 +62,24 @@ pub struct DoctorReport {
     pub fixed: Vec<String>,
 }
 
+/// A JSON string literal (quotes, backslashes and control characters escaped).
+pub fn json_str(s: &str) -> String {
+    let mut o = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
 impl DoctorReport {
     pub fn count(&self, s: Severity) -> usize {
         self.findings.iter().filter(|f| f.severity == s).count()
@@ -130,22 +148,7 @@ impl DoctorReport {
     }
 
     pub fn to_json(&self) -> String {
-        fn q(s: &str) -> String {
-            let mut o = String::from("\"");
-            for c in s.chars() {
-                match c {
-                    '"' => o.push_str("\\\""),
-                    '\\' => o.push_str("\\\\"),
-                    '\n' => o.push_str("\\n"),
-                    '\r' => o.push_str("\\r"),
-                    '\t' => o.push_str("\\t"),
-                    c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-                    c => o.push(c),
-                }
-            }
-            o.push('"');
-            o
-        }
+        let q = json_str;
         let status = match self.exit_code() {
             0 => "healthy",
             1 => "warnings",
