@@ -223,10 +223,44 @@ fn verify_read_data_subset_and_receipt() {
         None,
     );
     assert!(o.status.success());
-    // No key: the deep read cannot open the parts → exit 2, failures listed.
+    // No key: the deep read cannot open the parts → exit 1 (a key problem, not damage).
     let o = run(&d, &["verify", "big.sg1", "--read-data", "--json"], None);
-    assert_eq!(o.status.code(), Some(2), "{}", stdout(&o));
-    assert!(stdout(&o).contains("\"ok\":false"));
+    assert_eq!(o.status.code(), Some(1), "{}", stdout(&o));
+    let j = stdout(&o);
+    assert!(
+        j.contains("\"ok\":false") && j.contains("\"cause\":\"key-needed\""),
+        "{j}"
+    );
+    assert!(
+        j.contains("key problem, not damage") && !j.contains("too damaged"),
+        "{j}"
+    );
+    // Wrong key: same class, cause wrong-key, never "too damaged".
+    std::fs::write(d.join("bad"), "not the passphrase\n").expect("bad");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d.join("bad"), std::fs::Permissions::from_mode(0o600))
+            .expect("chmod");
+    }
+    let o = run(
+        &d,
+        &[
+            "verify",
+            "big.sg1",
+            "--pass-file",
+            "bad",
+            "--read-data",
+            "--json",
+        ],
+        None,
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", stdout(&o));
+    let j = stdout(&o);
+    assert!(
+        j.contains("\"cause\":\"wrong-key\"") && !j.contains("too damaged"),
+        "{j}"
+    );
     // Bad percentages are refused by the parser.
     let o = run(&d, &["verify", "big.sg1", "--read-data-subset", "0%"], None);
     assert_eq!(o.status.code(), Some(2)); // clap usage error

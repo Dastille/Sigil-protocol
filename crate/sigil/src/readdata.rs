@@ -26,9 +26,57 @@ pub struct ReadDataReceipt {
     pub skipped: Vec<(u32, String)>,
 }
 
+/// Why a sampled part would not open. Only `Damaged` is evidence of bit-rot; the key
+/// causes mean the bytes were never checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cause {
+    /// No key was given for an encrypted part.
+    KeyNeeded,
+    /// A key was given but no key slot accepted it (wrong key, or a member with its own
+    /// ward key inside a folder pack).
+    WrongKey,
+    /// Missing, torn or failed authentication with a key that was accepted (or ambiguous).
+    Damaged,
+}
+
+impl Cause {
+    /// `key-needed`, `wrong-key` or `damaged` (the JSON `cause`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Cause::KeyNeeded => "key-needed",
+            Cause::WrongKey => "wrong-key",
+            Cause::Damaged => "damaged",
+        }
+    }
+}
+
+/// Sort an open error into a cause. Anything not clearly a key refusal is `Damaged`
+/// (fail closed: an unknown error never reads as "just a key problem").
+pub fn cause_of(why: &str) -> Cause {
+    if why.contains("passphrase or --identity required")
+        || why.contains("member names are hidden")
+        || why.contains("this pack is locked")
+    {
+        Cause::KeyNeeded
+    } else if why.contains("could not unwrap CEK") {
+        Cause::WrongKey
+    } else {
+        Cause::Damaged
+    }
+}
+
 impl ReadDataReceipt {
     pub fn ok(&self) -> bool {
         self.failed.is_empty()
+    }
+
+    /// Every failure is a key refusal (none is damage): the copy was not shown damaged.
+    pub fn key_only(&self) -> bool {
+        !self.failed.is_empty()
+            && self
+                .failed
+                .iter()
+                .all(|(_, w)| cause_of(w) != Cause::Damaged)
     }
 }
 
@@ -176,7 +224,20 @@ fn read_dir_pack(
         };
         match opened {
             Ok(plain) => r.bytes_read += plain.len() as u64,
-            Err(e) => r.failed.push((*i, format!("{}: {e}", s.path))),
+            Err(e) => {
+                let why = e.to_string();
+                let ward =
+                    (pass.is_some() || !identities.is_empty()) && cause_of(&why) == Cause::WrongKey;
+                let why = if ward {
+                    format!(
+                        "{}: {why} (this member may be locked with its own --ward key)",
+                        s.path
+                    )
+                } else {
+                    format!("{}: {why}", s.path)
+                };
+                r.failed.push((*i, why));
+            }
         }
     }
     Ok(r)
@@ -185,6 +246,24 @@ fn read_dir_pack(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn causes_fail_closed() {
+        assert_eq!(
+            cause_of("passphrase or --identity required"),
+            Cause::KeyNeeded
+        );
+        assert_eq!(
+            cause_of("a.txt: could not unwrap CEK — need matching --identity or passphrase"),
+            Cause::WrongKey
+        );
+        assert_eq!(cause_of("part missing"), Cause::Damaged);
+        assert_eq!(
+            cause_of("wrong passphrase/identity, label edited, or past repair"),
+            Cause::Damaged
+        );
+        assert_eq!(cause_of(""), Cause::Damaged);
+    }
 
     #[test]
     fn subset_parse() {
