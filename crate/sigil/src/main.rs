@@ -2829,14 +2829,17 @@ fn verify_cmd(
         let r =
             sigil::readdata::read_data_subset(&input, pass.as_deref(), &identities, pct, offset)?;
         say!(
-            "read-data {pct}%: opened {} of {} part(s), {} bytes, {} failed",
+            "read-data {pct}%: tried {} of {} part(s), {} bytes read, {} failed",
             r.checked.len(),
             r.total_parts,
             r.bytes_read,
             r.failed.len()
         );
         for (i, why) in &r.failed {
-            say!("  part {i}: {why}");
+            say!(
+                "  part {i} ({}): {why}",
+                sigil::readdata::cause_of(why).as_str()
+            );
         }
         for (i, why) in &r.skipped {
             say!("  part {i} skipped: {why}");
@@ -2851,7 +2854,13 @@ fn verify_cmd(
             r.bytes_read,
             r.failed
                 .iter()
-                .map(|(i, w)| format!("{{\"part\":{i},\"why\":{}}}", jq(w)))
+                .map(|(i, w)| {
+                    format!(
+                        "{{\"part\":{i},\"cause\":\"{}\",\"why\":{}}}",
+                        sigil::readdata::cause_of(w).as_str(),
+                        jq(w)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(","),
             r.skipped
@@ -2860,6 +2869,17 @@ fn verify_cmd(
                 .collect::<Vec<_>>()
                 .join(",")
         ));
+        if r.key_only() {
+            return Err(format!(
+                "deep read: {} of {} sampled part(s) could not be opened with the key given \
+                 (key needed, wrong key, or a member locked with its own --ward key). \
+                 This is a key problem, not damage: nothing was shown to be damaged. \
+                 Give the right --pass-file / --identity and run it again",
+                r.failed.len(),
+                r.checked.len()
+            )
+            .into());
+        }
         if !r.ok() {
             return Err(not_recoverable(&format!(
                 "deep read: {} of {} sampled part(s) would not open",

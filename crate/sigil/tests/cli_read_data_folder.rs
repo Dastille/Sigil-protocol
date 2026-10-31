@@ -102,6 +102,7 @@ fn sealed_folder_pack_needs_the_key() {
     // No key: refused, nothing reported as opened.
     let e = fails(&d, &["verify", "docs.sg1", "--read-data", "--json"]);
     assert!(!e.contains("\"bytes_read\":70022"), "{e}");
+    assert!(!e.contains("too damaged") && e.contains("--pass"), "{e}");
     // Wrong key: refused.
     let e = fails(
         &d,
@@ -152,6 +153,16 @@ fn ward_locked_member_fails_closed() {
         ],
     );
     assert!(e.contains("\"ok\":false") && e.contains("a.txt"), "{e}");
+    assert!(
+        e.contains("\"cause\":\"wrong-key\"") && e.contains("--ward"),
+        "{e}"
+    );
+    assert!(
+        e.contains("key problem, not damage") && !e.contains("too damaged"),
+        "{e}"
+    );
+    // Only the warded member failed; the rest were opened.
+    assert!(e.contains("\"failed\":[{\"part\":0,"), "{e}");
 }
 
 #[test]
@@ -165,8 +176,14 @@ fn damaged_member_is_reported() {
     fs::write(d.join("docs.sg1"), b).unwrap();
     let o = sigil(&d, &["verify", "docs.sg1", "--read-data", "--json"]);
     assert!(!o.status.success());
+    assert_eq!(o.status.code(), Some(2));
     let j = String::from_utf8_lossy(&o.stdout);
     assert!(!j.contains("\"failed\":[],"), "{j}");
+    // Real damage keeps the damage wording and never reads as a key problem.
+    assert!(
+        j.contains("NOT recoverable") && !j.contains("key problem"),
+        "{j}"
+    );
 }
 
 #[test]

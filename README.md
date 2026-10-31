@@ -549,7 +549,9 @@ need `--pass-file` / `--identity`. Nothing is written to disk. Pin the sample wi
 `--subset-offset N`. Works on one `.sg1`, a large-file pack or a folder pack (not
 constellations yet). On a folder pack each sampled member is a part; an encrypted pack
 needs its key, a member locked with its own `--ward` counts as failed (verify has no ward
-input), and a nested folder pack is listed under `skipped`, never counted as opened.
+input), and a nested folder pack is listed under `skipped`, never counted as opened. Each
+failure carries a `cause`: `key-needed` or `wrong-key` (exit 1, a key problem, nothing shown
+damaged) or `damaged` (exit 2, NOT recoverable). Unknown errors count as `damaged`.
 
 ```sh
 sigil verify dump.sg1 --pass-file ~/.sigil-pass --read-data-subset 10% --json
