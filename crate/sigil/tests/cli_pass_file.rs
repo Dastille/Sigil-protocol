@@ -76,7 +76,7 @@ fn pass_file_round_trips_both_ways_with_pass() {
     assert!(!text(&o).contains(WARN), "{}", text(&o));
     // The same passphrase from another file opens it (so the file meant "correct horse");
     // `common::pass_via_file` turns the test's `--pass X` into such a file.
-    let o = ok(
+    ok(
         &d,
         &["unseal", "--pass", "correct horse", "-o", "b.bin", "a.sg1"],
     );
