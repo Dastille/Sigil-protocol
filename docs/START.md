@@ -217,7 +217,7 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md) | Remember who a vault seals to on later commits |
 | [CONTAINER.md](CONTAINER.md) | One `name.sigil/` folder per thing; tidy / doctor / gc |
 | [SEGMENT-LOG.md](SEGMENT-LOG.md) | Append-only sealed batches, verify, prove, shred, rotate signer |
-| [SFX-DESIGN.md](SFX-DESIGN.md) | Design note: self-extracting archives with repair (decision pending, not implemented) |
+| [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery kit (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
 | [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (decision pending, not implemented) |
 | [PASSKEY.md](PASSKEY.md) | Lock a `.sgk` identity to a FIDO2 security key |
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
@@ -251,6 +251,8 @@ Not in this Friday slice — come back later:
 
 - INDEX roll-up of very old history
 - Self-extracting archives with repair: options and open questions in
-  [SFX-DESIGN.md](SFX-DESIGN.md) (decision pending, not implemented)
+  [SFX-DESIGN.md](SFX-DESIGN.md) (stubs pending; the recovery kit below is shipped)
+
+To leave a way back next to an archive (program, checksums, spec, plain-English `RECOVER.txt`; no secrets): `scripts/make-recovery-kit.sh photos.sg1 --bin sigil-macos --bin sigil.exe` (see SFX-DESIGN.md, Option 0).
 
 Day-to-day use does not need those. A monthly read-only health + compaction-plan check ships as `scripts/monthly-log-retention.sh` (see SEGMENT-LOG.md, "Monthly retention check"); add `--apply --older-than 90d --seal-pass-file F` to let it compact when the log is healthy.

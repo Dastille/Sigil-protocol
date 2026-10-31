@@ -559,7 +559,9 @@ audit / test checks above.
 
 - There is no self-extracting archive: opening or repairing a `.sg1` needs the
   `sigil` CLI (or the web lab codec). Options are in
-  [docs/SFX-DESIGN.md](docs/SFX-DESIGN.md) (decision pending).
+  [docs/SFX-DESIGN.md](docs/SFX-DESIGN.md) (stubs: decision pending). What ships instead is a
+  recovery kit: `scripts/make-recovery-kit.sh ARCHIVE...` puts the program, checksums, the spec
+  and a plain-English `RECOVER.txt` next to the archive (no passphrases or keys).
 
 ## History
 

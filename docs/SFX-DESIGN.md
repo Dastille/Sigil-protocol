@@ -1,6 +1,7 @@
 # Self-extracting archives (SFX) with repair: design options (decision pending)
 
-**Status: design note only. Nothing here is implemented; no stub binary exists. The recommended
+**Status: Option 0 (recovery kit) recipe shipped as `scripts/make-recovery-kit.sh`; options A–D
+are design only and no stub binary exists. The recommended
 default below is a proposal pending Ashlynn's decision. Sizes are from the current build
 (`target/release/sigil`, Linux x86_64, ~6.6 MB, all features of the default build), not from a
 trimmed extractor.**
@@ -30,7 +31,17 @@ it, lists five options with their costs, and asks the questions that must be ans
 
 ## 2. Options
 
-### Option 0: No SFX; ship a recovery kit convention
+### Option 0: No SFX; ship a recovery kit convention (recipe shipped)
+
+**Shipped:** `scripts/make-recovery-kit.sh [--dest DIR] [--bin FILE]... [--dry-run] [--force]
+ARCHIVE...` writes `sigil-recovery/` with `bin/` (the running `sigil`, or each `--bin`, e.g.
+release builds for other platforms), `spec/sigil-v1.txt`, `RECOVER.txt` (plain steps: check
+sums, scry, unseal with `--pass-file`, mend / `mend --soft`, log verify/mend/restore, gather,
+kit mend; filled from `scripts/RECOVER.txt.in` with the archives' SHA-256) and `SHA256SUMS`.
+It refuses key files and `--pass*` / `--identity` / `--ward*` options, so nothing secret goes in.
+Not yet: signatures over the kit (releases are unsigned), fetching release binaries for other
+platforms (pass them with `--bin`).
+
 
 Put next to every archive: the release binaries for the three platforms, their SHA-256 list (and
 a signature once releases are signed), `sigil-v1.txt`, and a one-page `RECOVER.txt` ("`sigil
