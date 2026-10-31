@@ -3412,7 +3412,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Mend {
             input,
             output,
-            soft: _,
             ..
         } if sigil::is_sealed_dir_pack(&input) => {
             json_extra(",\"kind\":\"sealed-folder-pack\"");
