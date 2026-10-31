@@ -54,6 +54,8 @@ log created without a key or with `--public-index` never becomes `log=5` (see "P
 `op=tomb` line); a private log is raised to `log=6` only by its first `tombstone` / `shred` with
 `--reason` (manifest first), so a sigil that knows only `log=5` refuses it instead of calling the line
 damaged. Private logs without a sealed reason stay `log=5`; public logs never become `log=6`.
+`log=7` = **padded segments** (`pad=padme` in `CONTAINER`, private INDEX only): set by `log init
+--pad` or `sigil log pad LOG` (manifest only; existing segments keep their bytes). See "Padding".
 A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
@@ -853,6 +855,34 @@ another line fails the chain hash and the box's AAD. What stays visible, as for 
 seqs were deleted, when, and whether it was a shred; and the box length (padded to 64 bytes) gives the
 reason's length to within 64 bytes.
 
+**Padding (`log init --pad`, `sigil log pad LOG`, `log=7`).** A private INDEX hides sizes, but each
+segment file's length still shows roughly how big the batch is. With padding on, every **new**
+segment (append, add, compaction, and the re-sealed stars of `log adopt`) is sealed from a padded frame:
+
+```text
+flag (1 byte: 0 raw, 1 deflate) ‖ body length (8 bytes, big-endian) ‖ body ‖ random fill
+```
+
+`body` is the batch deflated when that is smaller (the same deflate the star uses), and the whole
+frame is `max(4 KiB, Padmé(9 + body length))` bytes. Padmé (Nikitin et al., "Reducing Metadata
+Leakage from Encrypted Files and Communication with PURBs", PETS 2019) rounds a length so that only
+O(log log n) bits of it remain, at most ~12% overhead (often far less). Compressing *before* padding
+and filling with random bytes means the star's own deflate finds nothing to shrink, so the sealed
+length depends only on the bucket. The frame is then sealed and encrypted like any segment: nothing
+new cryptographically. The INDEX box keeps the batch's real size and SHA-256; readers (`read`,
+`restore`, `mount`, `verify --pass`, compaction) unseal, undo the frame (deflate output capped at the
+recorded size) and check that size and SHA-256 as always; a frame that does not parse or a mismatch
+fails exactly like a substituted segment. Keyless checks (`verify`, `mend`, `gc`) are unchanged.
+
+* **What it hides:** the exact size, and how compressible a batch is: every batch whose compressed
+  form is under ~4 KiB has the same file length; larger ones fall into Padmé buckets.
+* **What it does not hide:** how many segments there are and when they were added (the INDEX lists
+  them), the bucket (an order of magnitude of the compressed size), and anything about segments
+  written before padding was turned on (they keep their bytes; `log compact --apply` re-seals them
+  padded). Kept-as-is stars of `log adopt` are not re-padded. Disk usage grows by the fill.
+* Public logs refuse `--pad` / `log pad` (their INDEX shows every size anyway). A sigil that knows
+  only `log=6` refuses a `log=7` log ("upgrade sigil").
+
 **Refused in a private log (fail closed).** An unencrypted segment (no `--pass` / `--to`, or
 `--pass ""`): its header would show the plain size and SHA-256 the INDEX hides; refused before
 anything is written. `--reason` on `tombstone` / `shred` **without** the index key (it would have to
@@ -947,7 +977,7 @@ compresses first). **Batch small events into larger appends** (KBs–MBs, not si
 A batch is sealed in memory in one piece; very large single batches should be split. Work-pack
 (chunked) segments are deferred: a segment is one `.sg1` star whose header digest is the INDEX
 `star=` true-name, read whole by every reader (`read`, `verify`, `mend`, `compact`, `shred`, `gc`,
-`add`), so a chunked segment needs a new segment kind and a `log=7` manifest bump that older
+`add`), so a chunked segment needs a new segment kind and a `log=8` manifest bump that older
 sigils refuse, plus streaming reads in `read` / `restore` / `mount`. INDEX is ~170 bytes per entry; `append` re-reads it
 in full (O(n) hashing, fine into the hundreds of thousands of segments).
 
@@ -1309,12 +1339,11 @@ Reed–Solomon code.
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
-(above). Done: sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
+(above). Done: padded segments for private logs (`log=7`); sealed tombstone / shred reasons in private logs (`log=6`); `sigil mount` view of a log; `sigil log adopt` for loose piles of stars (also into a private INDEX, with its key); inclusion proofs
 (`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`), one-child card receipts (`log card-prove` / `log check-card-child`) and card consistency (`log check-card-consistency`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`); making an existing log private (`log privatize`, a copy). Still deferred:
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
-* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=7` (see "Size notes").
-* Private INDEX follow-ups: padding segment files so on-disk sizes leak less.
+* Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=8` (see "Size notes").
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).

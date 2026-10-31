@@ -181,6 +181,7 @@ fn build(
             private_index: true,
             index_pass: pass,
             index_to: opts.to,
+            pad: false,
         },
     )?;
     let ropts = ReadOpts {

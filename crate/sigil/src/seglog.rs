@@ -51,8 +51,9 @@ pub const KIND: &str = "log";
 /// `log=3` = per-segment keys (`segkeys=1`, a `keys/` key ring, shred entries) (slice 3);
 /// `log=4` = the INDEX may also hold signer handover entries (`op=signer`, `log rotate-signer`);
 /// `log=5` = private INDEX (`privindex=1`, `IXKEY.sg1`, sealed `box=` entries; `init --private-index`);
-/// `log=6` = a private log's tombstone / shred lines may carry a sealed `box=` with their reason.
-pub const LOG_FORMAT: u32 = 6;
+/// `log=6` = a private log's tombstone / shred lines may carry a sealed `box=` with their reason;
+/// `log=7` = padded segments (`pad=padme`): new private segments are zero-padded before sealing.
+pub const LOG_FORMAT: u32 = 7;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
@@ -97,6 +98,8 @@ pub struct Log {
     pub format: u32,
     /// `segkeys=1`: every segment is sealed under its own key, kept in the key ring (slice 3).
     pub segkeys: bool,
+    /// `pad=padme` (`log=7`): new segments are zero-padded to a Padmé size before sealing.
+    pub pad: bool,
     /// `privindex=1`: sizes, SHA-256s and paths are sealed in the INDEX (`log=5`, `private.rs`).
     pub privindex: bool,
     /// The unlocked index key of a private log (see `Log::unlock_index`); never written anywhere.
@@ -178,6 +181,20 @@ impl Log {
         if privindex && fmt < 5 {
             return Err(err("segment log manifest has privindex=1 but log<5"));
         }
+        let pad = match m.extra.get("pad").map(|v| v.trim()) {
+            None => false,
+            Some(PAD_SCHEME) => true,
+            Some(other) => {
+                return Err(err(format!(
+                    "pad={other} in manifest is not known to this sigil; upgrade sigil"
+                )))
+            }
+        };
+        if pad && (fmt < 7 || !privindex) {
+            return Err(err(
+                "segment log manifest has pad= but not log>=7 with a private INDEX",
+            ));
+        }
         Ok(Log {
             dir: dir.to_path_buf(),
             name: m.name,
@@ -186,6 +203,7 @@ impl Log {
             format: fmt,
             segkeys,
             privindex,
+            pad,
             ixkey: None,
         })
     }
@@ -1448,6 +1466,8 @@ pub struct InitOpts<'a> {
     pub index_pass: Option<&'a str>,
     /// Recipients the index key is wrapped to.
     pub index_to: &'a [PublicIdentity],
+    /// Pad new segments (`log=7`, `pad=padme`; needs `private_index`).
+    pub pad: bool,
 }
 
 /// Create an empty log with the given options (see `InitOpts`).
@@ -1485,7 +1505,14 @@ pub fn init_opts(path: &Path, o: &InitOpts<'_>) -> Result<Log> {
     getrandom::getrandom(&mut raw).map_err(|e| err(e.to_string()))?;
     let id = hex::encode(raw);
     fs::create_dir_all(dir.join(SEGMENTS_DIR)).map_err(io)?;
-    let format = if o.private_index {
+    if o.pad && !o.private_index {
+        return Err(err(
+            "--pad needs a private INDEX (a public INDEX shows every size anyway)",
+        ));
+    }
+    let format = if o.pad {
+        7
+    } else if o.private_index {
         5
     } else if segment_keys {
         3
@@ -1502,6 +1529,9 @@ pub fn init_opts(path: &Path, o: &InitOpts<'_>) -> Result<Log> {
     }
     if o.private_index {
         m.extra.insert("privindex".into(), "1".into());
+    }
+    if o.pad {
+        m.extra.insert("pad".into(), PAD_SCHEME.into());
     }
     m.extra.insert("log-id".into(), id.clone());
     let signer = sign.map(|i| {
@@ -1525,6 +1555,7 @@ pub fn init_opts(path: &Path, o: &InitOpts<'_>) -> Result<Log> {
         format,
         segkeys: segment_keys,
         privindex: o.private_index,
+        pad: o.pad,
         ixkey,
     };
     write_atomic(&dir.join(INDEX_FILE), format!("{INDEX_MAGIC}\n").as_bytes())?;
@@ -1844,6 +1875,7 @@ fn seal_segment(
     pass: Option<&str>,
     recipients: &[PublicIdentity],
 ) -> Result<(Vec<u8>, Option<[u8; 32]>)> {
+    let data: &[u8] = &pad_plain(log, data);
     // Per-segment keys: the segment is sealed to its own fresh key; --pass / --to only wrap that
     // key into the key ring. Without them there would be nowhere to keep it, so refuse first.
     if log.segkeys {
@@ -2251,6 +2283,7 @@ fn read_holder(
             ),
         }
     };
+    let plain = unpad(log, e, plain);
     let label_ok = crate::locate_header(&file)
         .map(|(h, _, _)| !h.private_label() || h.digest == e.star_digest())
         .unwrap_or(false);
@@ -2261,6 +2294,106 @@ fn read_holder(
         )));
     }
     Ok((plain, keyed))
+}
+
+/// The padding scheme name in the manifest (`pad=padme`).
+pub const PAD_SCHEME: &str = "padme";
+/// Padded segments are at least this many plain bytes.
+pub const PAD_MIN: usize = 4096;
+
+/// Padmé length (Nikitin, Barman, Lueks, Underwood, Bossuat, Ford, "Reducing Metadata Leakage from
+/// Encrypted Files and Communication with PURBs", PETS 2019, §4): round `len` up so that only the
+/// top ~log2(log2 len) + 1 bits are free; at most ~12% overhead, O(log log n) bits of size leak.
+pub fn padme(len: usize) -> usize {
+    if len < 2 {
+        return len;
+    }
+    let e = usize::BITS - 1 - len.leading_zeros(); // floor(log2 len)
+    let s = u32::BITS - e.leading_zeros(); // floor(log2 e) + 1
+    let last = e.saturating_sub(s);
+    let mask = (1usize << last) - 1;
+    (len + mask) & !mask
+}
+
+/// The bytes to seal for `data` in a padded log (`pad=padme`, `log=7`):
+///
+/// `flag (1: 0 raw / 1 deflate) ‖ len (8, big-endian) ‖ body ‖ random fill`, where `body` is `data`
+/// deflated when that is smaller, and the whole is `max(PAD_MIN, padme(9 + body len))` bytes. The
+/// body is compressed *before* padding and the fill is random, so the star's own deflate finds
+/// nothing to shrink and the sealed size depends only on the bucket. The INDEX box keeps the real
+/// size and SHA-256 of `data`, which [`unpad`]'s caller checks. Not a cipher: the star encrypts it.
+pub(crate) fn pad_plain<'a>(log: &Log, data: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+    use std::io::Write;
+    if !log.pad {
+        return std::borrow::Cow::Borrowed(data);
+    }
+    let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    let z = enc.write_all(data).ok().and_then(|_| enc.finish().ok());
+    let (flag, body): (u8, &[u8]) = match &z {
+        Some(z) if z.len() < data.len() => (1, z),
+        _ => (0, data),
+    };
+    let used = 9 + body.len();
+    let want = padme(used).max(PAD_MIN);
+    let mut v = Vec::with_capacity(want);
+    v.push(flag);
+    v.extend_from_slice(&(body.len() as u64).to_be_bytes());
+    v.extend_from_slice(body);
+    let mut fill = vec![0u8; want - used];
+    // random fill keeps the star's deflate from shrinking it; zeros only if the OS RNG fails
+    let _ = getrandom::getrandom(&mut fill);
+    v.extend_from_slice(&fill);
+    std::borrow::Cow::Owned(v)
+}
+
+/// Undo [`pad_plain`] for an opened entry of a padded log. Bytes that already are the entry
+/// (a segment written before padding was turned on) are returned as they are; a frame that does not
+/// parse is returned unchanged, so the caller's size / SHA-256 check fails closed.
+pub(crate) fn unpad(log: &Log, e: &Entry, plain: Vec<u8>) -> Vec<u8> {
+    use std::io::Read;
+    if !log.pad || !e.opened || e.plain_matches(&plain) || plain.len() < 9 {
+        return plain;
+    }
+    let mut n = [0u8; 8];
+    n.copy_from_slice(&plain[1..9]);
+    let Some(body) = usize::try_from(u64::from_be_bytes(n))
+        .ok()
+        .and_then(|n| plain.get(9..9usize.checked_add(n)?))
+    else {
+        return plain;
+    };
+    match plain[0] {
+        0 => body.to_vec(),
+        1 => {
+            let mut out = Vec::new();
+            let lim = e.size.saturating_add(1);
+            match flate2::read::DeflateDecoder::new(body)
+                .take(lim)
+                .read_to_end(&mut out)
+            {
+                Ok(_) => out,
+                Err(_) => plain,
+            }
+        }
+        _ => plain,
+    }
+}
+
+/// Turn padding on for an existing private log: new segments are padded from now on (`log=7`).
+pub fn enable_pad(path: &Path) -> Result<bool> {
+    let mut log = Log::open(path)?;
+    if !log.privindex {
+        return Err(err("padding needs a private INDEX (a public INDEX shows every size anyway); see `sigil log privatize`"));
+    }
+    if log.pad {
+        return Ok(false);
+    }
+    let _guard = lock(&log)?;
+    raise_format(&mut log, 7)?;
+    let mut m = container::read_manifest(&log.dir)?;
+    m.extra.insert("pad".into(), PAD_SCHEME.into());
+    container::write_manifest(&log.dir, &m)?;
+    Ok(true)
 }
 
 /// Plain bytes of one segment, checked against the INDEX (hash and size).
@@ -2916,7 +3049,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             } else {
                 crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities)
             };
-            match opened {
+            match opened.map(|p| unpad(&log, e, p)) {
                 Ok(plain) if e.plain_matches(&plain) => {
                     // a compaction segment must also cut back into exactly the original batches
                     if st.is_compact(e.seq) {
@@ -3800,6 +3933,20 @@ mod tests {
     }
 
     #[test]
+    fn padme_buckets() {
+        assert_eq!((padme(0), padme(1), padme(2), padme(3)), (0, 1, 2, 3));
+        for n in [5usize, 100, 1000, 4097, 65_537, 1 << 20, 123_456_789] {
+            let p = padme(n);
+            assert!(
+                p >= n && (p - n) as f64 <= 0.12 * n as f64 + 1.0,
+                "{n} -> {p}"
+            );
+            assert_eq!(padme(p), p, "a bucket pads to itself");
+        }
+        assert_eq!(padme(1_000_000), padme(999_999));
+    }
+
+    #[test]
     fn head_roundtrip_and_signature() {
         let id = Identity::generate().unwrap();
         let log = Log {
@@ -3810,6 +3957,7 @@ mod tests {
             format: 1,
             segkeys: false,
             privindex: false,
+            pad: false,
             ixkey: None,
         };
         let h = make_head(&log, &[], Some(&id));
