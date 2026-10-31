@@ -3099,10 +3099,12 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
             let opened = if log.seg_keyed(e.seq) {
                 ring.identity(e.seq, opts.pass, opts.identities)
                     .and_then(|id| crate::unseal_ex_keys(&bytes, None, &[], &[id]))
-            } else {
-                // a clear segment (e.g. one written before `enable-segment-keys`) opens keyless
+            } else if log.segkeys {
+                // written before `enable-segment-keys`: a clear segment there opens keyless
                 crate::unseal_ex_keys(&bytes, None, &[], &[])
                     .or_else(|_| crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities))
+            } else {
+                crate::unseal_ex_keys(&bytes, opts.pass, &[], opts.identities)
             };
             match opened.map(|p| unpad(&log, e, p)) {
                 Ok(plain) if e.plain_matches(&plain) => {
