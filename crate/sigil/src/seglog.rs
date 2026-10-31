@@ -1362,6 +1362,7 @@ fn read_head(log: &Log) -> Option<Result<Head>> {
 }
 
 mod add;
+mod addcache;
 mod adopt;
 mod card;
 mod compact;
@@ -1375,6 +1376,7 @@ mod rewrap;
 mod rotate;
 mod shred;
 pub use add::*;
+pub use addcache::{AddCache, Stamp, ADD_CACHE_FILE};
 pub use adopt::*;
 pub use card::*;
 pub use compact::*;
@@ -3164,6 +3166,7 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
             n.as_str(),
             container::CONTAINER_FILE | INDEX_FILE | HEAD_FILE
         ) || (log.privindex && n == IXKEY_FILE)
+            || (n == ADD_CACHE_FILE && p.is_file())
         {
             continue;
         }

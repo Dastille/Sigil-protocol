@@ -1186,6 +1186,11 @@ enum LogCmd {
         /// Do not read DIR/.sigilignore (only --exclude patterns apply)
         #[arg(long = "no-ignore-file")]
         no_ignore_file: bool,
+        /// Remember each file's size + mtime/ctime/inode in ADDCACHE (log folder) and skip
+        /// re-hashing files whose stamp is unchanged since they last matched (a speed-up, not a
+        /// cryptographic check; refused for a private INDEX)
+        #[arg(long)]
+        cache: bool,
         /// Private INDEX: another identity (.sgk) that opens the log's index key, when it is not
         /// the signing --identity (repeatable)
         #[arg(long = "unlock")]
@@ -4187,6 +4192,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             dry_run,
             exclude,
             no_ignore_file,
+            cache,
             unlock,
         } => {
             let pass = pass.or(pass_file);
@@ -4206,6 +4212,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                     exclude: &exclude,
                     no_ignore_file,
                     unlock: &unlock,
+                    cache,
                     ..Default::default()
                 },
             )?;

@@ -70,6 +70,9 @@ pub struct AddOpts<'a> {
     pub checkpoint_bytes: u64,
     /// Private INDEX: extra identities that may open the index key (besides `pass` / `identity`).
     pub unlock: &'a [Identity],
+    /// Use and refresh the size+mtime cache (`ADDCACHE`): skip hashing files whose stamp is
+    /// unchanged since they last matched the log. Refused for a private INDEX.
+    pub cache: bool,
 }
 
 impl Default for AddOpts<'_> {
@@ -85,6 +88,7 @@ impl Default for AddOpts<'_> {
             checkpoint_files: 0,
             checkpoint_bytes: 0,
             unlock: &[],
+            cache: false,
         }
     }
 }
@@ -125,6 +129,8 @@ pub struct AddReport {
     pub items: Vec<AddItem>,
     /// Files whose latest segment already holds exactly their bytes.
     pub unchanged: usize,
+    /// Of `unchanged`, files not hashed because the `--cache` stamp matched.
+    pub cache_hits: usize,
     /// Paths still live in the log but no longer in `DIR`: `(path, latest segment)`. Kept, never tombstoned.
     pub missing: Vec<(Vec<u8>, u64)>,
     /// Symlinks, devices, pipes, sockets and nested sigil containers: `(path, what)`. Not added.
@@ -243,6 +249,9 @@ impl AddReport {
             self.missing.len(),
             self.special.len()
         );
+        if self.cache_hits > 0 {
+            tail.push_str(&format!(" ({} not re-hashed: --cache)", self.cache_hits));
+        }
         if !self.excluded.is_empty() {
             tail.push_str(&format!(", excluded {}", self.excluded.len()));
         }
@@ -282,6 +291,7 @@ struct Found {
     rel: Vec<u8>,
     abs: PathBuf,
     size: u64,
+    stamp: Option<Stamp>,
 }
 
 /// Raw bytes of one file name (exact on Unix; must be Unicode elsewhere).
@@ -361,6 +371,7 @@ fn walk(root: &Path, ex: &Excluder, rep: &mut AddReport) -> Vec<Found> {
                     rel: r,
                     abs,
                     size: md.len(),
+                    stamp: Stamp::of(&md),
                 });
             } else {
                 rep.special
@@ -466,6 +477,11 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
         )));
     }
     let ex = Excluder::new(opts.exclude, &abs_src, !opts.no_ignore_file).map_err(err)?;
+    if opts.cache && log.privindex {
+        return Err(err(
+            "--cache is refused for a private INDEX: the cache file would show names and sizes in clear",
+        ));
+    }
     if !opts.dry_run || opts.identity.is_some() {
         signer_gate(&log, opts.identity)?;
     }
@@ -520,6 +536,19 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
         ));
     }
     let st = &idx.state;
+    let cache = if opts.cache {
+        let c = AddCache::load(&log.dir, &abs_src);
+        if let Some(why) = &c.ignored {
+            rep.notes
+                .push(format!("add cache ignored ({why}); hashing every file"));
+        }
+        c
+    } else {
+        AddCache::default()
+    };
+    // stamps (taken before reading) of files whose bytes are known to equal a version
+    let mut keep: BTreeMap<Vec<u8>, addcache::CacheHit> = BTreeMap::new();
+    let mut stamps: BTreeMap<Vec<u8>, Stamp> = BTreeMap::new();
 
     // plan
     let found = walk(&abs_src, &ex, &mut rep);
@@ -532,16 +561,24 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
     let mut plan: Vec<Planned> = Vec::new();
     for f in found {
         seen.insert(f.rel.clone());
+        if let Some(s) = f.stamp {
+            stamps.insert(f.rel.clone(), s);
+        }
         let why = match held.get(&f.rel) {
             None => AddWhy::New,
             // a different size is certainly different content (a shortcut to "changed", never to "skip")
             Some(&(seq, size, _)) if size != f.size => AddWhy::Changed { prev: seq },
             Some(&(seq, _, sha)) => {
-                let now_sha = match hash_file(&f.abs) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        rep.unreadable.push((f.rel, e.to_string()));
-                        continue;
+                let hit = cache.fresh(&f.rel, f.stamp, seq, &sha);
+                let now_sha = if hit {
+                    sha
+                } else {
+                    match hash_file(&f.abs) {
+                        Ok(h) => h,
+                        Err(e) => {
+                            rep.unreadable.push((f.rel, e.to_string()));
+                            continue;
+                        }
                     }
                 };
                 if now_sha != sha {
@@ -553,6 +590,12 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
                     match segment_holds(&log, &idx.entries, st, seq) {
                         Ok(()) => {
                             rep.unchanged += 1;
+                            if hit {
+                                rep.cache_hits += 1;
+                            }
+                            if let Some(stamp) = f.stamp {
+                                keep.insert(f.rel, addcache::CacheHit { stamp, seq, sha });
+                            }
                             continue;
                         }
                         Err(why) => AddWhy::Reseal { prev: seq, why },
@@ -597,6 +640,29 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
         return Ok(rep);
     }
     seal_plan(&log, idx, plan, opts, &mut rep)?;
+    if opts.cache && rep.unreadable.is_empty() {
+        // sealed files: the INDEX now holds the SHA-256 of the bytes actually read
+        let fresh = read_index(&log)?;
+        for it in &rep.items {
+            let e = it
+                .seq
+                .checked_sub(1)
+                .and_then(|i| fresh.entries.get(i as usize));
+            if let (Some(e), Some(&stamp)) = (e, stamps.get(&it.rel)) {
+                if e.size == stamp.size {
+                    keep.insert(
+                        it.rel.clone(),
+                        addcache::CacheHit {
+                            stamp,
+                            seq: e.seq,
+                            sha: e.sha,
+                        },
+                    );
+                }
+            }
+        }
+        AddCache::save(&log.dir, &abs_src, &keep)?;
+    }
     Ok(rep)
 }
 

@@ -640,6 +640,21 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
   reading the folder once). Each segment carries the fixed ~3.2 KB of per-star overhead (see "Size
   notes"): negligible for photos, noticeable for thousands of tiny files. The INDEX grows by about
   170 bytes plus the path per file. Identical files at two paths are stored twice.
+* **Skipping the re-hash (`--cache`, opt-in).** `sigil log add LOG DIR --cache` keeps `ADDCACHE`
+  in the log folder (owner-only; `verify` / `gc` leave it alone; delete it any time). It records,
+  per path, the size, mtime, ctime and inode a file had when its bytes last matched the latest
+  version, plus that version's seq and SHA-256. A later `add --cache` skips hashing a file only if
+  all four are equal **and** the path's latest vouched version is still that seq and SHA-256; the
+  summary says `(N not re-hashed: --cache)`. Anything else (different stamp, a newer or deleted
+  version, a cache made for another source folder, a missing, unreadable or malformed cache) means
+  a full hash, as without the flag. Stamps less than 2 s older than the cache write are not trusted
+  (a write in the same tick could go unseen). The segment file is still checked against the INDEX.
+  A file that is sealed is always read in full and the INDEX gets the SHA-256 of those bytes, so the
+  log's integrity does not depend on the cache. **It is a speed-up, not a cryptographic check:**
+  content can change with the same size and times (tools that reset mtime and ctime, file systems
+  with coarse or missing ctime, a clock moved back, a hand-edited cache). When that matters, run
+  `add` without `--cache` (always a full hash). Refused for a private INDEX (the cache would show
+  names and sizes in clear). Not written by `--dry-run` or a run with unreadable files.
 * **One folder per log.** The log remembers paths relative to `DIR`. To back up several sources
   into one log, give them one parent folder (`staging/mum/`, `staging/dad/`) and add that; adding
   two unrelated folders to one log reports each other's files as missing.
@@ -1185,14 +1200,13 @@ Reed–Solomon code.
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
 (above). Done: `sigil mount` view of a log; `sigil log adopt` for loose piles of stars; inclusion proofs
-(`log prove` / `log check-proof`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
+(`log prove` / `log check-proof`); re-hash skipping for `log add` (`--cache`); restore by path (`log restore`, older versions with `--at` / `--seq`); per-file receipts by path (`log prove --path` / `check-proof --path`); roll-up cards (`log card` / `log check-card`); re-wrapping keys to new recipients (`log rewrap`); consistency proofs (`log prove-consistency` / `log check-consistency`); adding a signer later (`log add-signer`); signer rotation (`log rotate-signer`). Still deferred:
 
 * Card follow-ups: an inclusion receipt for one child of a card (today the whole card is the receipt), consistency between two cards, and cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=6` (see "Size notes").
 * Private INDEX follow-ups: sealed tombstone / shred reasons, adopting
   stars into one (with a key), padding segment files so on-disk sizes leak less, and converting an existing log (today: `--private-index` at init only).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them (see PRIVATE-LABEL.md).
-* `log add` follow-ups: an optional size+mtime cache to skip re-hashing unchanged files.
 * INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done).
 * Automatic, scheduled retention (`compact` is explicit today; a monthly `doctor` + `compact --dry-run` routine is the intended shape).
 * Shredding one batch inside a compaction segment without rewriting it, and enabling segment keys on an existing log (init-time only, by design: no layout fork).
