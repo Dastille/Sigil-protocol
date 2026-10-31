@@ -197,3 +197,68 @@ fn private_proof_json_keeps_sealed_fields_null() {
     );
     assert!(!j.contains("salary"), "{j}");
 }
+
+#[test]
+fn restore_report_as_json() {
+    let d = common::scratch("json-restore");
+    pw(&d);
+    ok(&d, &["log", "init", "pv", "--pass-file", "pw"]);
+    fs::create_dir_all(d.join("dir/sub")).unwrap();
+    fs::write(d.join("dir/sub/a \"q\".txt"), "aa\n").unwrap();
+    fs::write(d.join("dir/gone.txt"), "g\n").unwrap();
+    ok(&d, &["log", "add", "pv", "dir", "--pass-file", "pw"]);
+    let ls = ok(&d, &["log", "ls", "pv", "--json", "--pass-file", "pw"]);
+    let seq_gone = if ls.find("gone.txt") < ls.find("a \\\"q\\\".txt") {
+        "1"
+    } else {
+        "2"
+    };
+    ok(
+        &d,
+        &[
+            "log",
+            "tombstone",
+            "pv",
+            "--seq",
+            seq_gone,
+            "--pass-file",
+            "pw",
+        ],
+    );
+    let j = ok(
+        &d,
+        &[
+            "log",
+            "restore",
+            "pv",
+            ".",
+            "-o",
+            "out",
+            "--pass-file",
+            "pw",
+            "--json",
+        ],
+    );
+    well_formed(&j);
+    assert!(
+        j.contains("\"format\":\"sigil-log-restore=1\"") && j.contains("\"folder\":true"),
+        "{j}"
+    );
+    assert!(
+        j.contains("\"path\":\"sub/a \\\"q\\\".txt\"") && j.contains("\"size\":3"),
+        "{j}"
+    );
+    assert!(
+        j.contains("\"deleted_left_out\":[{\"path\":\"gone.txt\""),
+        "{j}"
+    );
+    assert!(j.contains("\"bytes\":3"), "{j}");
+    assert_eq!(
+        fs::read_to_string(d.join("out/sub/a \"q\".txt")).unwrap(),
+        "aa\n"
+    );
+    // without the key: refused, no JSON success object
+    let o = run(&d, &["log", "restore", "pv", ".", "-o", "out2", "--json"]);
+    assert!(!o.status.success());
+    assert!(!String::from_utf8_lossy(&o.stdout).contains("\"format\""));
+}

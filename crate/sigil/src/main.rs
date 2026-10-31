@@ -1300,6 +1300,9 @@ enum LogCmd {
         /// Identity (.sgk) that opens encrypt-to segments or a private INDEX (repeatable)
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
+        /// Machine-readable report on stdout (`sigil-log-restore=1`)
+        #[arg(long)]
+        json: bool,
     },
     /// Change who can open the log's wrapped keys (per-segment key ring of a --segment-keys log,
     /// index key of a private INDEX) without touching any segment: add or remove `--to`
@@ -4459,6 +4462,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            json,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -4477,7 +4481,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                 },
                 &ver,
             )?;
-            print!("{}", r.render());
+            print!("{}", if json { r.to_json() } else { r.render() });
         }
         LogCmd::Rewrap {
             path,

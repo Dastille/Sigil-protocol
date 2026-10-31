@@ -1075,6 +1075,9 @@ as the listing).
   (`SEQ:ROOT`), sizes and roots, `signed_by`, `signer_chain`.
 * A failed check prints `{"format":…,"ok":false,"error":"…"}` and exits 2, as the text form does.
   `log verify --json` already reports health (the `doctor` JSON).
+* `log restore --json` (`sigil-log-restore=1`): `out`, `folder`, `files` (`path`, `seq`, `size`),
+  `bytes`, `deleted_left_out` (`path`, `seq`, `deleted_by`). Paths are the log's paths: as
+  sensitive as a private log's listing.
 
 ## Monthly retention check (`scripts/monthly-log-retention.sh`)
 

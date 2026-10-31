@@ -39,6 +39,40 @@ pub struct RestoreReport {
 }
 
 impl RestoreReport {
+    /// As JSON (`sigil log restore --json`, `sigil-log-restore=1`). Paths are the log's paths,
+    /// so treat the output as sensitive as the listing of a private log.
+    pub fn to_json(&self) -> String {
+        let q = |s: &str| crate::doctor::json_str(s);
+        let files: Vec<String> = self
+            .files
+            .iter()
+            .map(|(p, seq, size)| {
+                format!(
+                    "{{\"path\":{},\"seq\":{seq},\"size\":{size}}}",
+                    q(&String::from_utf8_lossy(p))
+                )
+            })
+            .collect();
+        let deleted: Vec<String> = self
+            .deleted
+            .iter()
+            .map(|(p, seq, t)| {
+                format!(
+                    "{{\"path\":{},\"seq\":{seq},\"deleted_by\":{t}}}",
+                    q(&String::from_utf8_lossy(p))
+                )
+            })
+            .collect();
+        format!(
+            "{{\"format\":\"sigil-log-restore=1\",\"out\":{},\"folder\":{},\"files\":[{}],\"bytes\":{},\"deleted_left_out\":[{}]}}\n",
+            q(&self.out.display().to_string()),
+            self.folder,
+            files.join(","),
+            self.files.iter().map(|f| f.2).sum::<u64>(),
+            deleted.join(",")
+        )
+    }
+
     pub fn render(&self) -> String {
         let mut s = String::new();
         for (p, seq, size) in &self.files {
