@@ -507,6 +507,18 @@ commit adds `skipped`, restore adds `mended`), `vault prune` (`kept`, `tip`, `re
 `out_bytes`). Output of helper programs started with `--rsync` / `--rclone` / `--wormhole` is
 not captured and may reach stdout.
 
+`keygen --json` also adds `public` (the `.pub` path), `x25519` (public hex) and `passkey`.
+`identity info --json` adds `kind` plus public `x25519` / `ed25519` hex, or for a
+passkey-protected key `kind:"passkey-protected"` and `report` (slots; no wrapped bytes);
+`identity protect` / `add-passkey` / `remove-passkey` / `unprotect` and `boot prepare` /
+`mend` / `install` print `ok` only. `import-pgp --json` adds `fingerprint`, `encrypt_subkey`,
+`user_id`, `key_version`, `public`, `x25519` and `identity` (the written path, or null) — never
+secret key bytes. `overture --json` adds `report`; `umount --json` adds `mountpoint`;
+`dispatch --json` prints `ok` (helper output is not captured). `mount --json` works only with
+`--export-dir` (the FUSE mount blocks until unmounted). No `--json` on `show`, `circle` or
+`open`: they are interactive / long-running. `boot` and `dispatch` success paths are not covered
+by tests (they need a boot medium and rsync/rclone/wormhole).
+
 **Exit codes** (seal / unseal / verify):
 
 | code | meaning |

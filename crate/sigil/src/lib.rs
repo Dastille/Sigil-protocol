@@ -31,6 +31,22 @@ mod kit;
 mod mds;
 mod merkle;
 mod mount;
+
+static HUMAN_TO_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Send library progress lines (e.g. `mount --export-dir`) to stderr, so stdout stays one
+/// JSON line under `--json`.
+pub fn set_human_to_stderr(on: bool) {
+    HUMAN_TO_STDERR.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn human_line(s: &str) {
+    if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{s}");
+    } else {
+        println!("{s}");
+    }
+}
 pub mod names;
 mod nest;
 mod open;

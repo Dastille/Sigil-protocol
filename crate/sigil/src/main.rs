@@ -266,6 +266,39 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
             json: true, output, ..
         } => Some(("gather", output.clone())),
         Cmd::Scry { json: true, .. } => Some(("scry", None)),
+        Cmd::IdentityTool {
+            cmd: IdentityCmd::Protect { json: true, .. },
+        } => Some(("identity protect", None)),
+        Cmd::IdentityTool {
+            cmd: IdentityCmd::AddPasskey { json: true, .. },
+        } => Some(("identity add-passkey", None)),
+        Cmd::IdentityTool {
+            cmd: IdentityCmd::RemovePasskey { json: true, .. },
+        } => Some(("identity remove-passkey", None)),
+        Cmd::IdentityTool {
+            cmd: IdentityCmd::Unprotect { json: true, .. },
+        } => Some(("identity unprotect", None)),
+        Cmd::IdentityTool {
+            cmd: IdentityCmd::Info { json: true, .. },
+        } => Some(("identity info", None)),
+        Cmd::Boot {
+            cmd: BootCmd::Prepare { json: true, .. },
+        } => Some(("boot prepare", None)),
+        Cmd::Boot {
+            cmd: BootCmd::Mend { json: true, .. },
+        } => Some(("boot mend", None)),
+        Cmd::Boot {
+            cmd: BootCmd::Install { json: true, .. },
+        } => Some(("boot install", None)),
+        Cmd::Dispatch { json: true, .. } => Some(("dispatch", None)),
+        Cmd::Overture { json: true, .. } => Some(("overture", None)),
+        Cmd::ImportPgp { json: true, .. } => Some(("import-pgp", None)),
+        Cmd::Mount {
+            json: true,
+            export_dir,
+            ..
+        } => Some(("mount", export_dir.clone())),
+        Cmd::Umount { json: true, .. } => Some(("umount", None)),
         Cmd::Constellation {
             cmd: SkyCmd::Add { json: true, .. },
         } => Some(("constellation add", None)),
@@ -656,6 +689,9 @@ enum Cmd {
     /// Copy an existing mark with rsync, rclone, and/or wormhole.
     #[command(visible_alias = "send")]
     Dispatch {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         input: PathBuf,
         #[arg(long)]
         rsync: Option<String>,
@@ -714,7 +750,12 @@ enum Cmd {
         idle: u64,
     },
     /// What to copy first so Play can start (Blizzard-style boot).
-    Overture { input: PathBuf },
+    Overture {
+        input: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
+    },
     /// De-scribe to temp, open in the usual app, delete when you press Enter.
     Open {
         input: PathBuf,
@@ -777,6 +818,9 @@ enum Cmd {
     /// Public key → .pub for --to. Secret key (plain, CFB, or AEAD/Argon2-protected) + -o → .sgk for --identity.
     #[command(name = "import-pgp", visible_alias = "pgp-import")]
     ImportPgp {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Armored (.asc) or binary OpenPGP key export
         input: PathBuf,
         /// Write the secret identity here (.sgk v2); needs a secret export (asks for its passphrase if protected)
@@ -966,6 +1010,10 @@ enum Cmd {
     /// A `kind=log` container mounts as one file per live segment (tombstones omitted).
     #[command(visible_alias = "fuse")]
     Mount {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr. Needs
+        /// --export-dir (a FUSE mount runs until unmounted)
+        #[arg(long, requires = "export_dir")]
+        json: bool,
         /// .sg1 / SGDR pack, vault live path / `.sgv` (with --vault), or segment log (`events` / `events.sigil`)
         input: PathBuf,
         /// Empty directory mountpoint (ignored with --export-dir)
@@ -997,7 +1045,12 @@ enum Cmd {
     },
     /// Unmount a Sigil FUSE mountpoint (`fusermount3 -u`). Alias: unmount.
     #[command(visible_alias = "unmount")]
-    Umount { mountpoint: PathBuf },
+    Umount {
+        mountpoint: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
+    },
     /// Bake-off Vandermonde vs Cauchy MDS (encode + multi-erasure decode MiB/s).
     #[command(name = "bench-mds")]
     BenchMds {
@@ -1011,6 +1064,9 @@ enum Cmd {
 enum IdentityCmd {
     /// Wrap a plain .sgk (v1 or imported v2) under a FIDO2 passkey (SGKW key file).
     Protect {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         input: PathBuf,
         /// Write the protected identity here
         #[arg(short, long, required_unless_present = "in_place")]
@@ -1030,6 +1086,9 @@ enum IdentityCmd {
     /// Add a backup passkey slot (unlock with an existing one, then register a new key).
     #[command(name = "add-passkey")]
     AddPasskey {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         input: PathBuf,
         #[arg(long = "rp-id", default_value = sigil::passkey::DEFAULT_RP_ID)]
         rp_id: String,
@@ -1039,18 +1098,29 @@ enum IdentityCmd {
     /// Remove passkey slot N (see `identity info`). Refuses to drop the last slot.
     #[command(name = "remove-passkey")]
     RemovePasskey {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         input: PathBuf,
         #[arg(long)]
         slot: usize,
     },
     /// Write a plain .sgk back out (unlocks with the passkey).
     Unprotect {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
     },
     /// Show identity kind, public keys and passkey slots (no unlock, no secrets).
-    Info { input: PathBuf },
+    Info {
+        input: PathBuf,
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1279,6 +1349,9 @@ enum KitCmd {
 enum BootCmd {
     /// Wrap live/filesystem.squashfs (or casper/) as a Seal on a mounted USB.
     Prepare {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Mounted USB root (contains live/ or casper/)
         root: PathBuf,
         #[arg(long, value_enum, default_value = "seal")]
@@ -1299,6 +1372,9 @@ enum BootCmd {
     },
     /// Scry the mark; De-scribe the squashfs if it was chewed. Exit 2 = too damaged, 3 = no mark.
     Mend {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         /// Mounted USB root. Omit with --scan to search disks.
         root: Option<PathBuf>,
         #[arg(value_parser = PassParser(false), long)]
@@ -1316,6 +1392,9 @@ enum BootCmd {
     },
     /// Write Debian live-boot + dracut hooks under a prefix (default /usr). Then rebuild the initrd.
     Install {
+        /// Machine-readable result on stdout (one JSON line); human lines go to stderr
+        #[arg(long)]
+        json: bool,
         #[arg(default_value = "/usr")]
         prefix: PathBuf,
     },
@@ -2714,6 +2793,7 @@ fn main() {
     let piped_out = matches!(&cli.cmd, Cmd::Unseal { output, .. } if output.as_os_str() == "-");
     if jctx.is_some() || piped_out {
         HUMAN_TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
+        sigil::set_human_to_stderr(true);
     }
     let res = run(cli);
     let extra = JSON_EXTRA.lock().map(|g| g.clone()).unwrap_or_default();
@@ -3611,6 +3691,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             rclone,
             wormhole,
             overture,
+            json: _,
         } => {
             if rsync.is_none() && rclone.is_none() && !wormhole {
                 return Err("dispatch needs --rsync, --rclone, and/or --wormhole".into());
@@ -3707,8 +3788,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 idle,
             )?;
         }
-        Cmd::Overture { input } => {
-            println!("{}", overture_report(&input)?);
+        Cmd::Overture { input, json: _ } => {
+            let rep = overture_report(&input)?;
+            json_extra(&format!(",\"report\":{}", jq(&rep)));
+            say!("{rep}");
         }
         Cmd::Open {
             input,
@@ -3754,6 +3837,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     PathBuf::from(p)
                 });
                 w.public.write(&pub_path)?;
+                json_extra(&format!(
+                    ",\"public\":{},\"x25519\":\"{}\",\"passkey\":true",
+                    jq(&pub_path.to_string_lossy()),
+                    hex32(&w.public.x25519_pk)
+                ));
                 say!(
                     "identity → {}  (passkey-protected, {})  x25519 {}",
                     output.display(),
@@ -3788,6 +3876,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     p.push(".pub");
                     PathBuf::from(p)
                 });
+                json_extra(&format!(
+                    ",\"public\":{},\"x25519\":\"{}\",\"passkey\":false",
+                    jq(&pub_path.to_string_lossy()),
+                    hex32(&pk.x25519_pk)
+                ));
                 say!(
                     "identity → {}  x25519 {}",
                     output.display(),
@@ -3810,6 +3903,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pub_out,
             passphrase_file,
             passkey,
+            json: _,
         } => {
             let raw = zeroize::Zeroizing::new(fs::read(&input)?);
             let mut imp = sigil::pgp::import(&raw)?;
@@ -3840,18 +3934,28 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         true,
                     )?;
                     w.write(out)?;
-                    println!("identity → {}  (passkey-protected; add a backup: sigil identity add-passkey {})", out.display(), out.display());
+                    say!("identity → {}  (passkey-protected; add a backup: sigil identity add-passkey {})", out.display(), out.display());
                 } else {
                     id.write(out)?;
-                    println!("identity → {}  (.sgk v2, owner-only)", out.display());
+                    say!("identity → {}  (.sgk v2, owner-only)", out.display());
                 }
             } else if imp.had_secret_packets {
-                println!(
-                    "note: secret packets ignored (public only); pass -o me.sgk to import them"
-                );
+                say!("note: secret packets ignored (public only); pass -o me.sgk to import them");
             }
             imp.public.write(&pub_path)?;
-            println!(
+            json_extra(&format!(
+                ",\"fingerprint\":\"{}\",\"encrypt_subkey\":\"{}\",\"user_id\":{},\"key_version\":{},\"public\":{},\"x25519\":\"{}\",\"identity\":{}",
+                hex::encode_upper(&imp.primary_fpr),
+                hex::encode_upper(&imp.subkey_fpr),
+                imp.user_id.as_deref().map_or("null".to_string(), jq),
+                imp.key_version,
+                jq(&pub_path.to_string_lossy()),
+                hex32(&imp.public.x25519_pk),
+                output
+                    .as_ref()
+                    .map_or("null".to_string(), |o| jq(&o.to_string_lossy()))
+            ));
+            say!(
                 "pgp {}  {}{}",
                 hex::encode_upper(&imp.primary_fpr),
                 imp.user_id.as_deref().unwrap_or("(no verified user id)"),
@@ -3861,8 +3965,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     ""
                 }
             );
-            println!("encrypt subkey {}", hex::encode_upper(&imp.subkey_fpr));
-            println!(
+            say!("encrypt subkey {}", hex::encode_upper(&imp.subkey_fpr));
+            say!(
                 "public → {}  x25519 {}  (encrypt-to: --to {})",
                 pub_path.display(),
                 hex32(&imp.public.x25519_pk),
@@ -4130,6 +4234,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             vault,
             export_dir,
             writable,
+            json: _,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
@@ -4153,9 +4258,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 writable,
             )?;
         }
-        Cmd::Umount { mountpoint } => {
+        Cmd::Umount {
+            mountpoint,
+            json: _,
+        } => {
             umount_path(&mountpoint)?;
-            println!("unmounted {}", mountpoint.display());
+            json_extra(&format!(
+                ",\"mountpoint\":{}",
+                jq(&mountpoint.to_string_lossy())
+            ));
+            say!("unmounted {}", mountpoint.display());
         }
         Cmd::BenchMds { iters } => {
             let rows = run_bakeoff(iters)?;
@@ -4188,6 +4300,7 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
             passkey: _,
             rp_id,
             no_uv,
+            json: _,
         } => {
             let raw = fs::read(&input)?;
             if is_wrapped(&raw) {
@@ -4206,7 +4319,7 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
                 output.unwrap()
             };
             write_atomic_secret(&dest, &w)?;
-            println!(
+            say!(
                 "protected → {}  ({}, rp {})",
                 dest.display(),
                 if w.slots[0].uv {
@@ -4217,9 +4330,9 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
                 rp_id
             );
             if !in_place {
-                println!("the plain copy {} still exists — delete it (shred -u) once you've tested the new file", input.display());
+                say!("the plain copy {} still exists — delete it (shred -u) once you've tested the new file", input.display());
             }
-            println!(
+            say!(
                 "add a backup key: sigil identity add-passkey {}",
                 dest.display()
             );
@@ -4228,6 +4341,7 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
             input,
             rp_id,
             no_uv,
+            json: _,
         } => {
             let mut w = Wrapped::load(&input)?;
             let mut unlock = default_authenticator()?;
@@ -4237,30 +4351,43 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
             );
             w.add_slot(unlock.as_mut(), new_auth.as_mut(), &rp_id, !no_uv)?;
             write_atomic_secret(&input, &w)?;
-            println!(
+            say!(
                 "added passkey slot #{} → {}",
                 w.slots.len() - 1,
                 input.display()
             );
         }
-        IdentityCmd::RemovePasskey { input, slot } => {
+        IdentityCmd::RemovePasskey {
+            input,
+            slot,
+            json: _,
+        } => {
             let mut w = Wrapped::load(&input)?;
             w.remove_slot(slot)?;
             write_atomic_secret(&input, &w)?;
-            println!("removed passkey slot #{slot}; {} left", w.slots.len());
+            say!("removed passkey slot #{slot}; {} left", w.slots.len());
         }
-        IdentityCmd::Unprotect { input, output } => {
+        IdentityCmd::Unprotect {
+            input,
+            output,
+            json: _,
+        } => {
             let id = Identity::load(&input)?;
             id.write(&output)?;
-            println!(
+            say!(
                 "plain identity → {}  (owner-only; anyone with this file can open your seals)",
                 output.display()
             );
         }
-        IdentityCmd::Info { input } => {
+        IdentityCmd::Info { input, json: _ } => {
             let raw = fs::read(&input)?;
             if is_wrapped(&raw) {
-                print!("{}", Wrapped::parse(&raw)?.describe());
+                let d = Wrapped::parse(&raw)?.describe();
+                json_extra(&format!(
+                    ",\"kind\":\"passkey-protected\",\"report\":{}",
+                    jq(&d)
+                ));
+                say_raw!("{d}");
             } else {
                 let pk = sigil::PublicIdentity::load(&input)?;
                 let kind = if raw.len() > 4 && raw[0..4] == sigil::ID_MAGIC {
@@ -4272,7 +4399,13 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     "public key"
                 };
-                println!(
+                json_extra(&format!(
+                    ",\"kind\":{},\"x25519\":\"{}\",\"ed25519\":\"{}\"",
+                    jq(kind),
+                    hex32(&pk.x25519_pk),
+                    hex32(&pk.ed25519_pk)
+                ));
+                say!(
                     "{kind}\n  x25519 {}\n  ed25519 {}",
                     hex32(&pk.x25519_pk),
                     hex32(&pk.ed25519_pk)
@@ -6307,11 +6440,12 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             only_mark,
             no_inject,
+            json: _,
         } => {
             let pass = pass.or(pass_file);
             let pass = boot_pass(pass, talisman)?;
             let find = prepare_boot(&root, mode.into(), pass.as_deref(), only_mark)?;
-            println!(
+            say!(
                 "wrapped {} → {} ({})",
                 find.payload.display(),
                 find.mark.display(),
@@ -6322,24 +6456,24 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
                 }
             );
             if only_mark {
-                println!("original squashfs removed (--only-mark). Stick must be writable, or initrd will De-scribe into RAM.");
+                say!("original squashfs removed (--only-mark). Stick must be writable, or initrd will De-scribe into RAM.");
             }
             let exe = std::env::current_exe()?;
             match copy_sigil_binary(&root, &exe) {
-                Ok(p) => println!("helper → {}", p.display()),
+                Ok(p) => say!("helper → {}", p.display()),
                 Err(e) => eprintln!("could not copy sigil onto the stick: {e}"),
             }
             if no_inject {
-                println!("skipped initrd. Hook will run if the initrd already carries it, or: sigil boot install && rebuild the live initrd.");
+                say!("skipped initrd. Hook will run if the initrd already carries it, or: sigil boot install && rebuild the live initrd.");
             } else {
                 match inject_initrd(&root, &exe) {
-                    Ok(p) => println!("initrd injected → {} (backup next to it as .bak)", p.display()),
+                    Ok(p) => say!("initrd injected → {} (backup next to it as .bak)", p.display()),
                     Err(e) => eprintln!(
                         "initrd not injected ({e}). The stick still has live/sigil. Put the hook in the initrd, or: sigil boot install && rebuild the live initrd."
                     ),
                 }
             }
-            println!("boot: firmware still loads GRUB + kernel + initrd. Initrd Scrys, De-scribes if chewed, then the live image mounts.");
+            say!("boot: firmware still loads GRUB + kernel + initrd. Initrd Scrys, De-scribes if chewed, then the live image mounts.");
         }
         BootCmd::Mend {
             root,
@@ -6348,6 +6482,7 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             stage,
             scan,
+            json: _,
         } => {
             let pass = pass.or(pass_file);
             let pass = boot_pass(pass, talisman)?;
@@ -6359,10 +6494,10 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
             };
             match out {
                 BootOutcome::Intact { find } => {
-                    println!("boot intact: {} is itself", find.payload.display());
+                    say!("boot intact: {} is itself", find.payload.display());
                 }
                 BootOutcome::Mended { find, wrote } => {
-                    println!(
+                    say!(
                         "boot mended: {} ← {}",
                         find.payload.display(),
                         wrote.display()
@@ -6370,12 +6505,12 @@ fn run_boot(cmd: BootCmd) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        BootCmd::Install { prefix } => {
+        BootCmd::Install { prefix, json: _ } => {
             let wrote = install_hooks(&prefix)?;
             for p in &wrote {
-                println!("wrote {}", p.display());
+                say!("wrote {}", p.display());
             }
-            println!("rebuild the live USB's initrd so the stick carries these (update-initramfs / dracut), or run sigil boot prepare on the mounted stick.");
+            say!("rebuild the live USB's initrd so the stick carries these (update-initramfs / dracut), or run sigil boot prepare on the mounted stick.");
         }
     }
     Ok(())
