@@ -116,6 +116,17 @@ a sealed side file" *copy* for exposure reasons only (the INDEX itself is unchan
 * **Gains:** O(new lines) append/ls instead of O(n); nothing breaks.
 * **Does not solve:** disk size or metadata exposure in a public INDEX (use `log privatize`).
 
+**Status of Option D (2026-10-31): hot-path speedups shipped; no sidecar cache.** Measured on one
+Linux box, release build, a synthetic 500,001-entry public INDEX (85 MB): hashing the whole INDEX
+takes ~65 ms, while parsing it took ~725 ms, so the cost was parsing, not the hash chain. A sidecar
+cache can only be trusted after re-hashing the whole INDEX (or by trusting file metadata, which is
+not acceptable for an integrity tool) and would then have to deserialize every entry, which costs
+about what an optimized parse costs. Shipped instead, with the format and every check unchanged:
+a cheaper line parser (459 ms for the same INDEX), one segment-folder scan in `log ls` instead of a
+`stat` per entry, and one INDEX parse instead of two in `log read --seq`. Before → after on that
+log: `log read --seq` 2.0 s → 0.8 s, `log ls` 1.9 s → 1.4 s (most of the rest is printing 500k
+rows), `log append` 0.87 s → 0.69 s. Pruning (A/B) is still pending the questions in section 7.
+
 ### Comparison
 
 | | A epoch | B base | C re-genesis | D cache |
@@ -128,7 +139,7 @@ a sealed side file" *copy* for exposure reasons only (the INDEX itself is unchan
 
 ## 4. Recommended default (proposal, pending Ashlynn's OK)
 
-**Option A (epoch rollover), plus Option D's cache if INDEX parsing is measured to matter.**
+**Option A (epoch rollover), plus Option D's cache if INDEX parsing is measured to matter** (it was measured: see the Option D status; the speedups shipped, a cache did not pay).
 Reasons: it removes nothing from any existing log, so no shipped guarantee changes; it reuses
 cards (already the documented roll-up target) and the `privatize` copy path; and it can be
 undone (keep the archive). Option B is the right answer only if "one root for all history" and

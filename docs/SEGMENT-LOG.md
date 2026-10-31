@@ -1062,7 +1062,9 @@ A batch is sealed in memory in one piece; very large single batches should be sp
 `star=` true-name, read whole by every reader (`read`, `verify`, `mend`, `compact`, `shred`, `gc`,
 `add`), so a chunked segment needs a new segment kind and a manifest bump (now `log=9`; `log=8` is taken by `enable-segment-keys`) that older
 sigils refuse, plus streaming reads in `read` / `restore` / `mount`. INDEX is ~170 bytes per entry; `append` re-reads it
-in full (O(n) hashing, fine into the hundreds of thousands of segments).
+in full (O(n) hashing, fine into the hundreds of thousands of segments). Measured, release build, a
+500,001-entry INDEX (85 MB): `append` ~0.7 s, `read --seq` ~0.8 s, `ls` ~1.4 s; there is no INDEX
+cache, by design (see INDEX-PRUNE-DESIGN.md, Option D status).
 
 ## Inclusion proofs (`sigil log prove` / `sigil log check-proof`)
 

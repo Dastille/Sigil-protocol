@@ -295,11 +295,15 @@ pub fn mount_name(seq: u64) -> String {
 }
 
 fn parse_hex32(s: &str) -> Option<[u8; 32]> {
-    hex::decode(s.trim()).ok()?.try_into().ok()
+    let mut out = [0u8; 32];
+    hex::decode_to_slice(s.trim(), &mut out).ok()?;
+    Some(out)
 }
 
 fn parse_hex64(s: &str) -> Option<[u8; 64]> {
-    hex::decode(s.trim()).ok()?.try_into().ok()
+    let mut out = [0u8; 64];
+    hex::decode_to_slice(s.trim(), &mut out).ok()?;
+    Some(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -889,10 +893,13 @@ impl State {
 }
 
 fn chain_hash(prev: &[u8; 32], body: &str) -> [u8; 32] {
-    let mut b = b"sigil-log-entry-v1\0".to_vec();
-    b.extend_from_slice(prev);
-    b.extend_from_slice(body.as_bytes());
-    sha256(&b)
+    // streamed (no per-line buffer): same bytes as SHA-256("sigil-log-entry-v1\0" ‖ prev ‖ body)
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(b"sigil-log-entry-v1\0");
+    h.update(prev);
+    h.update(body.as_bytes());
+    h.finalize().into()
 }
 
 fn root_of(entries: &[Entry]) -> [u8; 32] {
@@ -918,6 +925,30 @@ pub struct ParsedIndex {
     pub error: Option<(usize, &'static str, String)>,
 }
 
+/// The `k=v` fields of one INDEX line, first occurrence wins (a handful per line: a linear scan
+/// beats a map, and keeps `parse_index` cheap on very large logs).
+struct Fields<'a>(Vec<(&'a str, &'a str)>);
+
+impl<'a> Fields<'a> {
+    fn parse(body: &'a str) -> Self {
+        let mut v: Vec<(&str, &str)> = Vec::with_capacity(8);
+        for t in body.split_whitespace() {
+            if let Some((k, val)) = t.split_once('=') {
+                if !v.iter().any(|(kk, _)| *kk == k) {
+                    v.push((k, val));
+                }
+            }
+        }
+        Fields(v)
+    }
+    fn get(&self, k: &str) -> Option<&&'a str> {
+        self.0.iter().find(|(kk, _)| *kk == k).map(|(_, v)| v)
+    }
+    fn contains_key(&self, k: &str) -> bool {
+        self.get(k).is_some()
+    }
+}
+
 fn parse_line(
     line: &str,
     want_seq: u64,
@@ -929,12 +960,7 @@ fn parse_line(
     let body = &line[..pos];
     let chain =
         parse_hex32(&line[pos + 7..]).ok_or(("index-line", "bad chain= value".to_string()))?;
-    let mut kv: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
-    for t in body.split_whitespace() {
-        if let Some((k, v)) = t.split_once('=') {
-            kv.entry(k).or_insert(v);
-        }
-    }
+    let kv = Fields::parse(body);
     let seq = kv.get("seq").and_then(|v| v.parse::<u64>().ok());
     let time = kv.get("t").and_then(|v| v.parse::<u64>().ok());
     let (Some(seq), Some(time)) = (seq, time) else {
@@ -2026,10 +2052,12 @@ pub fn list_with(path: &Path, pass: Option<&str>, ids: &[Identity]) -> Result<Li
             "INDEX is damaged at line {line}: {msg} (run `sigil log verify`)"
         )));
     }
+    // one directory scan instead of a stat per entry (large logs)
+    let on_disk = segment_files(&log);
     let present = idx
         .entries
         .iter()
-        .map(|e| e.has_file() && log.segment_path(e.seq).is_file())
+        .map(|e| e.has_file() && on_disk.contains(&e.seq))
         .collect();
     let head = read_head(&log).and_then(|h| h.ok());
     Ok(Listing {
@@ -2039,6 +2067,34 @@ pub fn list_with(path: &Path, pass: Option<&str>, ids: &[Identity]) -> Result<Li
         head,
         present,
     })
+}
+
+/// Seqs that have a regular segment file on disk (`segments/NNNN/SEQ.sg1`), from one scan.
+fn segment_files(log: &Log) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    let Ok(shards) = fs::read_dir(log.dir.join(SEGMENTS_DIR)) else {
+        return out;
+    };
+    for shard in shards.flatten() {
+        let Ok(files) = fs::read_dir(shard.path()) else {
+            continue;
+        };
+        for f in files.flatten() {
+            let name = f.file_name();
+            let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".sg1")) else {
+                continue;
+            };
+            if let Ok(seq) = stem.parse::<u64>() {
+                // the scan only finds candidates; the exact path must match too
+                if f.file_type().map(|t| t.is_file()).unwrap_or(false)
+                    && log.segment_path(seq) == f.path()
+                {
+                    out.insert(seq);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Parse a UTC time for `--at`: unix seconds, `YYYY-MM-DD` (the **end** of that UTC day), or
@@ -3704,6 +3760,28 @@ pub fn mend(path: &Path) -> Result<MendReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_fields_and_hex_keep_their_old_meaning() {
+        // first occurrence wins, as with the old map's or_insert
+        let f = Fields::parse("seq=1 t=2 size=3 size=9 x op=tomb");
+        assert_eq!(f.get("size"), Some(&"3"));
+        assert!(f.contains_key("op") && !f.contains_key("x") && f.get("nope").is_none());
+        let h = "ab".repeat(32);
+        assert_eq!(parse_hex32(&h), Some([0xab; 32]));
+        assert_eq!(parse_hex32(&h.to_uppercase()), Some([0xab; 32]));
+        assert_eq!(parse_hex32(&format!(" {h}\n")), Some([0xab; 32]));
+        assert!(parse_hex32(&h[..62]).is_none() && parse_hex32(&format!("{h}ab")).is_none());
+        assert!(parse_hex32(&"zz".repeat(32)).is_none());
+        assert_eq!(parse_hex64(&"01".repeat(64)), Some([1; 64]));
+        assert!(parse_hex64(&"01".repeat(32)).is_none());
+        // the streamed chain hash is the documented SHA-256 over one buffer
+        let prev = [7u8; 32];
+        let mut b = b"sigil-log-entry-v1\0".to_vec();
+        b.extend_from_slice(&prev);
+        b.extend_from_slice(b"seq=1 t=2 size=3 sha=00");
+        assert_eq!(chain_hash(&prev, "seq=1 t=2 size=3 sha=00"), sha256(&b));
+    }
 
     #[test]
     fn parse_utc_roundtrip() {

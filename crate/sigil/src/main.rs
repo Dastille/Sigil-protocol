@@ -4696,14 +4696,18 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            let n = seglog::list(&path)?.entries.len() as u64;
-            let (a, b) = match seq {
-                Some(s) => (s, s),
-                None => (from.unwrap_or(1), to.unwrap_or(n)),
+            // one INDEX parse for --seq (read_range checks the bounds); the count only for a range
+            let (a, b) = match (seq, to) {
+                (Some(s), _) => (s, s),
+                (None, Some(t)) => (from.unwrap_or(1), t),
+                (None, None) => {
+                    let n = seglog::list(&path)?.entries.len() as u64;
+                    if n == 0 {
+                        return Err("the log is empty".into());
+                    }
+                    (from.unwrap_or(1), n)
+                }
             };
-            if n == 0 {
-                return Err("the log is empty".into());
-            }
             let mode = if seq.is_some() {
                 seglog::ReadMode::Single
             } else if strict {
