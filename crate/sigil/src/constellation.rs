@@ -597,12 +597,19 @@ pub(crate) fn index_stars(dir: &Path, card: Option<&Path>) -> HashMap<[u8; 32], 
 
 fn member_from_star(path: &Path, list_name: &str, digest: [u8; 32]) -> Result<Member> {
     if crate::work::is_work_pack(path) {
-        let meta = fs::metadata(path).map_err(io)?;
+        // Original size from the pack head; a hidden total stays 0 (a placeholder that
+        // Scry shows as hidden), never the sealed file size.
+        let (head, _) = crate::index_pack(path)?;
+        let orig_len = if crate::work::total_hidden(&head) {
+            0
+        } else {
+            head.orig_total
+        };
         return Ok(Member {
             name: list_name.to_string(),
             digest,
             merkle: private_star_id(path).unwrap_or([0u8; 32]),
-            orig_len: meta.len(),
+            orig_len,
             mode: Mode::Reflection,
             index: 0,
             total: 1,
@@ -1210,12 +1217,33 @@ struct Keys<'a>(Option<&'a str>, &'a [Identity]);
 /// (its size is inside the lock), so `0` with a non-empty fingerprint is not a size:
 /// open the label with the key when one is given, else say the size is hidden.
 fn size_text(m: &Member, star: Option<&Path>, keys: Keys<'_>) -> String {
+    let Keys(pass, ids) = keys;
+    let has_key = pass.is_some_and(|p| !p.is_empty()) || !ids.is_empty();
+    // A large-file pack star: older cards recorded the sealed file size, so read the
+    // original size from the pack head (or its hidden label with the key) instead.
+    if let Some(p) = star.filter(|p| crate::work::is_work_pack(p)) {
+        let shown = crate::index_pack(p).ok().and_then(|(head, _)| {
+            if !crate::work::total_hidden(&head) {
+                Some(head.orig_total)
+            } else if has_key {
+                crate::work::payload_label_keys(p, pass, &[], ids)
+                    .ok()
+                    .flatten()
+                    .map(|(_, n)| n)
+            } else {
+                None
+            }
+        });
+        return match shown {
+            Some(n) => format!("{n} bytes"),
+            None if has_key => "size hidden (could not open its label)".into(),
+            None => "size hidden (needs key)".into(),
+        };
+    }
     let empty = crate::sha256(b"");
     if m.orig_len != 0 || m.digest == empty {
         return format!("{} bytes", m.orig_len);
     }
-    let Keys(pass, ids) = keys;
-    let has_key = pass.is_some_and(|p| !p.is_empty()) || !ids.is_empty();
     let opened = if !has_key {
         None
     } else if !m.bytes.is_empty() {
