@@ -1605,6 +1605,71 @@ pub(crate) fn with_extracted_atlas<T>(
     result
 }
 
+/// `sigil mend` for an atlas bag: unpack it, rebuild every star that is damaged but
+/// repairable (marks with `mend_bytes_ex`, large-file packs with `mend_pack_path`), and
+/// write a new bag with the same entries in the same order. Refuses (and writes nothing)
+/// when a star is beyond repair. Returns the names of the stars that were mended.
+pub fn mend_atlas(input: &Path, output: &Path, soft: bool) -> Result<Vec<String>> {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("sigil-atlas-mend-{}-{seq}", std::process::id()));
+    fs::create_dir_all(&tmp).map_err(io)?;
+    let result = (|| {
+        let names = extract_atlas(input, &tmp)?;
+        let mut mended = Vec::new();
+        for name in &names {
+            let p = safe_out_path(&tmp, name)?;
+            match crate::doctor::health_file(&p) {
+                crate::doctor::Health::Ok => {}
+                crate::doctor::Health::Mendable(_) => {
+                    if crate::work::is_work_pack(&p) {
+                        crate::work::mend_pack_path(&p, &p, soft)?;
+                    } else {
+                        let data = fs::read(&p).map_err(io)?;
+                        let (healed, _) = crate::mend_bytes_ex(&data, soft)?;
+                        fs::write(&p, healed).map_err(io)?;
+                    }
+                    if !matches!(crate::doctor::health_file(&p), crate::doctor::Health::Ok) {
+                        return Err(err(format!("{name}: still damaged after mend")));
+                    }
+                    mended.push(name.clone());
+                }
+                crate::doctor::Health::Damaged(why) => {
+                    return Err(err(format!(
+                        "atlas star {name} is beyond repair ({why}): too damaged to restore from this copy; nothing was written"
+                    )));
+                }
+            }
+        }
+        let mut part = output.as_os_str().to_os_string();
+        part.push(".mend-part");
+        let part = PathBuf::from(part);
+        {
+            let mut w = BufWriter::new(File::create(&part).map_err(io)?);
+            w.write_all(&ATLAS_MAGIC).map_err(io)?;
+            w.write_all(&[2u8]).map_err(io)?;
+            w.write_all(&(names.len() as u32).to_le_bytes())
+                .map_err(io)?;
+            for name in &names {
+                let p = safe_out_path(&tmp, name)?;
+                let nb = name.as_bytes();
+                let nlen = nb.len().min(255) as u8;
+                w.write_all(&[nlen]).map_err(io)?;
+                w.write_all(&nb[..nlen as usize]).map_err(io)?;
+                w.write_all(&fs::metadata(&p).map_err(io)?.len().to_le_bytes())
+                    .map_err(io)?;
+                let mut f = File::open(&p).map_err(io)?;
+                std::io::copy(&mut f, &mut w).map_err(io)?;
+            }
+            w.flush().map_err(io)?;
+        }
+        fs::rename(&part, output).map_err(io)?;
+        Ok(mended)
+    })();
+    let _ = fs::remove_dir_all(&tmp);
+    result
+}
+
 fn unseal_atlas(
     input: &Path,
     dest: &Path,
@@ -1638,7 +1703,7 @@ fn unseal_atlas(
     result
 }
 
-fn extract_atlas(input: &Path, dest: &Path) -> Result<u32> {
+fn extract_atlas(input: &Path, dest: &Path) -> Result<Vec<String>> {
     fs::create_dir_all(dest).map_err(io)?;
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let mut mag = [0u8; 4];
@@ -1661,6 +1726,7 @@ fn extract_atlas(input: &Path, dest: &Path) -> Result<u32> {
         }
         v => return Err(err(format!("unknown atlas version {v}"))),
     };
+    let mut names = Vec::with_capacity((count as usize).min(4096));
     for _ in 0..count {
         let mut nlen = [0u8; 1];
         reader.read_exact(&mut nlen).map_err(io)?;
@@ -1679,6 +1745,7 @@ fn extract_atlas(input: &Path, dest: &Path) -> Result<u32> {
             u32::from_le_bytes(b) as u64
         };
         let out = safe_out_path(dest, &name)?;
+        names.push(name.clone());
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent).map_err(io)?;
         }
@@ -1692,7 +1759,7 @@ fn extract_atlas(input: &Path, dest: &Path) -> Result<u32> {
             left -= n as u64;
         }
     }
-    Ok(count)
+    Ok(names)
 }
 
 #[cfg(test)]

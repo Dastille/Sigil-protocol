@@ -201,3 +201,79 @@ fn atlas_bag_deep_read() {
     assert_eq!(o.status.code(), Some(1), "{}", all(&o));
     assert!(!all(&o).contains("too damaged"), "{}", all(&o));
 }
+
+/// `sigil mend` on an atlas bag (what the needs-repair line tells people to run): a
+/// repairable bag is healed into a new bag; a bag past repair is refused, nothing written.
+#[test]
+fn mend_atlas_bag() {
+    let d = common::scratch("mend-atlas");
+    let big = tree(&d, "docs");
+    ok(&d, &["constellation", "add", "Sky", "docs"]);
+    ok(&d, &["constellation", "atlas", "Sky", "-o", "s.sga"]);
+    let good = fs::read(d.join("s.sga")).unwrap();
+
+    let mut b = good.clone();
+    let k = b.len() * 60 / 100;
+    b[k] ^= 0x40;
+    fs::write(d.join("torn.sga"), &b).unwrap();
+    let t = ok(&d, &["scry", "torn.sga"]);
+    assert!(
+        t.contains("needs repair:") && t.contains("sigil mend"),
+        "{t}"
+    );
+    let j = ok(&d, &["mend", "torn.sga", "-o", "fixed.sga", "--json"]);
+    assert!(
+        j.contains("\"kind\":\"atlas\"") && !j.contains("\"mended\":[]"),
+        "{j}"
+    );
+    let j = ok(&d, &["scry", "fixed.sga", "--json"]);
+    assert!(j.contains("\"health\":\"healthy\""), "{j}");
+    ok(&d, &["unseal", "fixed.sga", "-o", "out"]);
+    assert_eq!(fs::read(d.join("out/sub/c.bin")).unwrap(), big);
+
+    let j = ok(&d, &["mend", "s.sga", "-o", "same.sga", "--json"]);
+    assert!(j.contains("\"mended\":[]"), "{j}");
+
+    let mut b = good;
+    let (a, z) = (b.len() * 40 / 100, b.len() * 90 / 100);
+    b[a..z].fill(0);
+    fs::write(d.join("dmg.sga"), &b).unwrap();
+    let o = sigil(&d, &["mend", "dmg.sga", "-o", "x.sga"]);
+    assert_eq!(o.status.code(), Some(2), "{}", all(&o));
+    assert!(all(&o).contains("beyond repair"), "{}", all(&o));
+    assert!(!d.join("x.sga").exists() && !d.join("x.sga.mend-part").exists());
+
+    ok(&d, &["constellation", "add", "--pass", "pw", "Enc", "docs"]);
+    ok(
+        &d,
+        &[
+            "constellation",
+            "atlas",
+            "Enc",
+            "--pass",
+            "pw",
+            "-o",
+            "e.sga",
+        ],
+    );
+    let mut b = fs::read(d.join("e.sga")).unwrap();
+    let k = b.len() * 60 / 100;
+    b[k] ^= 0x40;
+    fs::write(d.join("etorn.sga"), &b).unwrap();
+    ok(&d, &["mend", "etorn.sga", "-o", "efixed.sga"]);
+    let j = ok(
+        &d,
+        &[
+            "verify",
+            "efixed.sga",
+            "--pass",
+            "pw",
+            "--read-data",
+            "--json",
+        ],
+    );
+    assert!(
+        j.contains("\"health\":\"healthy\"") && j.contains("\"failed\":[]"),
+        "{j}"
+    );
+}

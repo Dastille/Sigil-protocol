@@ -99,7 +99,7 @@ pub use cdc::{
 };
 pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input,
-    is_constellation_mark, member_star_path as constellation_member_star, pack_atlas,
+    is_constellation_mark, member_star_path as constellation_member_star, mend_atlas, pack_atlas,
     pack_atlas_chart, pack_atlas_keys, remove_members as constellation_remove, scry_chart,
     scry_constellation, scry_constellation_checked, scry_constellation_keys, unseal_constellation,
     unseal_constellation_keys, AddOpts, AddReport, Chart, RemoveOpts as ConstellationRemoveOpts,
