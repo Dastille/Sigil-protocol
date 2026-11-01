@@ -1109,6 +1109,7 @@ pub fn scry_constellation_keys(
         &dir,
         card.as_deref(),
         is_atlas_file(input),
+        Keys(pass, identities),
     ))
 }
 
@@ -1135,7 +1136,13 @@ pub fn scry_constellation_checked(
         find_card(&dir)
     };
     let in_atlas = is_atlas_file(input);
-    let text = render_scry(&chart, &dir, card.as_deref(), in_atlas);
+    let text = render_scry(
+        &chart,
+        &dir,
+        card.as_deref(),
+        in_atlas,
+        Keys(pass, identities),
+    );
     let verdict = if in_atlas {
         None
     } else {
@@ -1192,10 +1199,58 @@ fn constellation_verdict(chart: &Chart, dir: &Path, card: Option<&Path>) -> Opti
 /// Scry text for a list already in hand (e.g. the one `add` just wrote).
 pub fn scry_chart(sky: &Path, chart: &Chart) -> String {
     let card = find_card(sky);
-    render_scry(chart, sky, card.as_deref(), false)
+    render_scry(chart, sky, card.as_deref(), false, Keys(None, &[]))
 }
 
-fn render_scry(chart: &Chart, dir: &Path, card: Option<&Path>, in_atlas: bool) -> String {
+/// Keys that may open a member's private label (to show its real size).
+#[derive(Clone, Copy)]
+struct Keys<'a>(Option<&'a str>, &'a [Identity]);
+
+/// What Scry prints for a member's size. A private-label star records `0` on the card
+/// (its size is inside the lock), so `0` with a non-empty fingerprint is not a size:
+/// open the label with the key when one is given, else say the size is hidden.
+fn size_text(m: &Member, star: Option<&Path>, keys: Keys<'_>) -> String {
+    let empty = crate::sha256(b"");
+    if m.orig_len != 0 || m.digest == empty {
+        return format!("{} bytes", m.orig_len);
+    }
+    let Keys(pass, ids) = keys;
+    let has_key = pass.is_some_and(|p| !p.is_empty()) || !ids.is_empty();
+    let opened = if !has_key {
+        None
+    } else if !m.bytes.is_empty() {
+        crate::seal_meta_keys(&m.bytes, pass, ids)
+            .ok()
+            .map(|x| x.orig_len)
+    } else if let Some(p) = star {
+        if crate::work::is_work_pack(p) {
+            crate::work::payload_label_keys(p, pass, &[], ids)
+                .ok()
+                .flatten()
+                .map(|(_, n)| n)
+        } else {
+            fs::read(p)
+                .ok()
+                .and_then(|b| crate::seal_meta_keys(&b, pass, ids).ok())
+                .map(|x| x.orig_len)
+        }
+    } else {
+        None
+    };
+    match opened {
+        Some(n) => format!("{n} bytes"),
+        None if has_key => "size hidden (could not open its label)".into(),
+        None => "size hidden (needs key)".into(),
+    }
+}
+
+fn render_scry(
+    chart: &Chart,
+    dir: &Path,
+    card: Option<&Path>,
+    in_atlas: bool,
+    keys: Keys<'_>,
+) -> String {
     let missing = if in_atlas {
         Vec::new()
     } else {
@@ -1209,19 +1264,24 @@ fn render_scry(chart: &Chart, dir: &Path, card: Option<&Path>, in_atlas: bool) -
         unique_digests(chart)
     );
     for m in &chart.members {
+        let star = if m.bytes.is_empty() && !in_atlas {
+            find_member_star(dir, m, &by_digest)
+        } else {
+            None
+        };
         let where_ = if !m.bytes.is_empty() {
             "packed"
         } else if in_atlas {
             "atlas"
-        } else if find_member_star(dir, m, &by_digest).is_some() {
+        } else if star.is_some() {
             "star"
         } else {
             "MISSING"
         };
         out.push_str(&format!(
-            "star  {where_}  {}  {} bytes  {}\n",
+            "star  {where_}  {}  {}  {}\n",
             m.name,
-            m.orig_len,
+            size_text(m, star.as_deref(), keys),
             hex32(&m.digest)
         ));
     }
