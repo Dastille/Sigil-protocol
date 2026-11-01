@@ -1585,6 +1585,21 @@ fn load_chart_from_atlas(
     Err(last_err.unwrap_or_else(|| err("atlas has no constellation card")))
 }
 
+/// Unpack an atlas bag into a scratch folder, run `f` on it, then remove the folder
+/// (same way `unseal` opens a bag). Stars are copied as-is; nothing is decrypted here.
+pub(crate) fn with_extracted_atlas<T>(
+    input: &Path,
+    f: impl FnOnce(&Path) -> Result<T>,
+) -> Result<T> {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("sigil-atlas-rd-{}-{seq}", std::process::id()));
+    fs::create_dir_all(&tmp).map_err(io)?;
+    let result = extract_atlas(input, &tmp).and_then(|_| f(&tmp));
+    let _ = fs::remove_dir_all(&tmp);
+    result
+}
+
 fn unseal_atlas(
     input: &Path,
     dest: &Path,
