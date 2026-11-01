@@ -244,3 +244,15 @@ pub fn scry_status_constellation(
         stars: Some(c),
     })
 }
+
+/// Name and original size inside a large-file pack's hidden label, opened with the key.
+/// `None` without a key, with a wrong key, or when the pack keeps no hidden label.
+pub fn pack_hidden_label(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[crate::keys::Identity],
+) -> Option<(String, u64)> {
+    crate::work::payload_label_keys(input, pass, &[], identities)
+        .ok()
+        .flatten()
+}
