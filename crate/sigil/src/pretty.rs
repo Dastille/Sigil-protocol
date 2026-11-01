@@ -384,7 +384,7 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
             let v = format!("{} of {} pieces intact, needs {}", p.live, p.total, p.need);
             add("REPAIR", &v, v.clone());
             let v2 = if p.live < p.need {
-                format!("{} too few: cannot restore from this copy", p.need - p.live,)
+                format!("{} too few: cannot restore from this copy", p.need - p.live)
             } else {
                 format!("can lose {} more and still restore", p.live - p.need)
             };
