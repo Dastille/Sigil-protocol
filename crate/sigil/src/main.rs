@@ -4312,6 +4312,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             Some(sigil::pretty::health_from_dir_scry(&text, bad.as_deref()));
                     }
                 }
+                // Same structured verdict as `scry --json` (Scry + doctor), for the outer
+                // file; a work pack or an item inside the file gets it too.
+                let status = sigil::status::scry_status_path(&input)
+                    .ok()
+                    .map(|st| sigil::pretty::health_from_status(&st));
+                extra.health = sigil::pretty::worse(extra.health.take(), status);
+                extra.outer = !steps.is_empty() && extra.health.is_some();
                 println!("{}", sigil::pretty::render_path_view(&view, &extra, &style));
             } else if json {
                 json_extra(&format!(",\"view\":{}", view.to_json()));
