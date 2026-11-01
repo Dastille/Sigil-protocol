@@ -228,3 +228,34 @@ fn path_pretty_title_keeps_folder() {
     let plain = sigil(&d, &["path", "album.sg1", "notes/todo.txt"]);
     assert!(plain.contains("notes/todo.txt"), "{plain}");
 }
+
+/// Plain and JSON `path` of an encrypted large-file pack: the real name with the key;
+/// without it "hidden (needs key)" / null, never the "payload.bin" placeholder.
+#[test]
+fn path_plain_hidden_pack_name() {
+    let d = common::scratch("plain-hidden-name");
+    std::fs::write(d.join("big.bin"), noise(300_000, 9)).expect("w");
+    sigil(
+        &d,
+        &[
+            "seal", "--chunk", "65536", "--pass", "pw", "big.bin", "-o", "enc.sg1",
+        ],
+    );
+    let p = sigil(&d, &["path", "enc.sg1"]);
+    assert!(p.contains("name   hidden (needs key)"), "{p}");
+    assert!(!p.contains("payload.bin"), "{p}");
+    let j = sigil(&d, &["path", "enc.sg1", "--json"]);
+    assert!(
+        j.contains("\"name\":null") && !j.contains("payload.bin"),
+        "{j}"
+    );
+    let p = sigil(&d, &["path", "enc.sg1", "--pass", "pw"]);
+    assert!(p.contains("name   big.bin"), "{p}");
+    let j = sigil(&d, &["path", "enc.sg1", "--pass", "pw", "--json"]);
+    assert!(j.contains("\"name\":\"big.bin\""), "{j}");
+    sigil(
+        &d,
+        &["seal", "--chunk", "65536", "big.bin", "-o", "plain.sg1"],
+    );
+    assert!(sigil(&d, &["path", "plain.sg1"]).contains("name   big.bin"));
+}

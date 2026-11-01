@@ -121,10 +121,14 @@ impl PathView {
         if self.nest_payload {
             out.push_str("nest   payload is a seal (use --into . to descend)\n");
         }
-        if let Some(name) = &self.payload_name {
-            if self.kind == NestKind::Mark || self.kind == NestKind::Work {
+        match &self.payload_name {
+            Some(name) if self.kind == NestKind::Mark || self.kind == NestKind::Work => {
                 out.push_str(&format!("name   {name}\n"));
             }
+            None if self.kind == NestKind::Work => {
+                out.push_str("name   hidden (needs key)\n");
+            }
+            _ => {}
         }
         match self.kind {
             NestKind::DirPack => {
@@ -224,7 +228,20 @@ fn view_mark_bytes(
             let name = if data.len() >= 4 {
                 // work head name is after magic+ver+chunk+orig — reuse payload via temp
                 let tmp = crate::staging::TempFile::with_bytes("nest-wk", data)?;
-                crate::work::payload_name(tmp.path()).ok()
+                // A hidden head keeps the name inside the lock: open it with the key, else
+                // leave it unknown (`None`) rather than the "payload.bin" placeholder.
+                let hidden = crate::index_pack(tmp.path())
+                    .map(|(h, _)| crate::work::total_hidden(&h))
+                    .unwrap_or(false);
+                if hidden {
+                    crate::work::payload_label_keys(tmp.path(), pass, &[], identities)
+                        .ok()
+                        .flatten()
+                        .map(|(n, _)| n)
+                        .filter(|n| !n.is_empty())
+                } else {
+                    crate::work::payload_name(tmp.path()).ok()
+                }
             } else {
                 None
             };
