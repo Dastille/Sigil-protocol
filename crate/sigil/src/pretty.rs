@@ -140,6 +140,42 @@ pub struct Extra<'a> {
     pub health: Option<Health>,
     /// Single-file Scry line (`ok  v2  live=… need=… orig=…`), for extent and repair budget.
     pub scry_line: Option<&'a str>,
+    /// The condition is the outer file's (the view is an item inside it).
+    pub outer: bool,
+}
+
+/// Condition from the structured status (`scry --json`'s `status`), which also runs
+/// `doctor`'s repair check: a copy Scry's line reads as fine can still need mending.
+pub fn health_from_status(st: &crate::status::ScryStatus) -> Health {
+    use crate::status::Verdict;
+    match st.verdict {
+        Verdict::Healthy => Health::Healthy,
+        Verdict::NeedsRepair => {
+            Health::NeedsRepair(st.repair.clone().unwrap_or_else(|| "damage found".into()))
+        }
+        Verdict::NotRecoverable => Health::NotRecoverable(
+            st.reason
+                .clone()
+                .unwrap_or_else(|| "too few intact pieces".into()),
+        ),
+    }
+}
+
+/// Combine a Scry-text verdict with the structured one; the more cautious wins, so the
+/// page never reads healthier than `scry --json` would.
+pub fn worse(a: Option<Health>, b: Option<Health>) -> Option<Health> {
+    fn rank(h: &Health) -> u8 {
+        match h {
+            Health::Healthy => 0,
+            Health::NeedsRepair(_) => 1,
+            Health::NotRecoverable(_) => 2,
+        }
+    }
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if rank(&y) > rank(&x) { y } else { x }),
+        (x, None) => x,
+        (None, y) => y,
+    }
 }
 
 /// Human byte size: `5 B`, `1.2 KiB`, `3.4 MiB`, …
@@ -253,6 +289,7 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
             String::new()
         }
     };
+    let health_shown = extra.health.is_some();
     match &extra.health {
         Some(Health::Healthy) => {
             let tail = checked(view.entries.len());
@@ -284,6 +321,10 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
             add("STATUS", v, st.dim(v));
         }
         None => {}
+    }
+    if extra.outer && health_shown {
+        let v = "condition of the whole outer file";
+        add("", v, st.dim(v));
     }
 
     // Extent.
@@ -321,8 +362,11 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
         if let Some(p) = pieces_from_scry(line) {
             let v = format!("{} of {} pieces intact, needs {}", p.live, p.total, p.need);
             add("REPAIR", &v, v.clone());
-            let spare = p.live.saturating_sub(p.need);
-            let v2 = format!("can lose {spare} more and still restore");
+            let v2 = if p.live < p.need {
+                format!("{} too few: cannot restore from this copy", p.need - p.live,)
+            } else {
+                format!("can lose {} more and still restore", p.live - p.need)
+            };
             add("", &v2, st.dim(&v2));
         }
     }
@@ -432,6 +476,7 @@ mod tests {
         let x = Extra {
             health: Some(Health::Healthy),
             scry_line: None,
+            outer: false,
         };
         let s = render_path_view(&folder(), &x, &ASCII);
         assert!(s.is_ascii(), "{s}");
@@ -455,6 +500,7 @@ mod tests {
         let x = Extra {
             health: health_from_mark_scry(line, None),
             scry_line: Some(line),
+            outer: false,
         };
         let s = render_path_view(&mark(), &x, &ASCII);
         let st = s.find("STATUS    healthy").expect("status");
