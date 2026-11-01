@@ -185,3 +185,121 @@ fn damaged_member_is_reported() {
         "{j}"
     );
 }
+
+fn owner_only(p: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+/// `verify --ward-file` opens a warded member in the deep read; a wrong or missing ward
+/// stays a key problem (exit 1), never damage. Literal `--ward` does not exist here and
+/// the same path twice is refused.
+#[test]
+fn ward_file_opens_warded_member() {
+    let d = common::scratch("rd-folder-wardfile");
+    tree(&d);
+    fs::write(d.join("wpw"), "ward secret\n").unwrap();
+    fs::write(d.join("bad"), "not it\n").unwrap();
+    owner_only(&d.join("wpw"));
+    owner_only(&d.join("bad"));
+    ok(
+        &d,
+        &[
+            "seal",
+            "--pass",
+            "pw",
+            "--ward-file",
+            "a.txt=wpw",
+            "-o",
+            "docs.sg1",
+            "docs",
+        ],
+    );
+    let j = ok(
+        &d,
+        &[
+            "verify",
+            "docs.sg1",
+            "--pass",
+            "pw",
+            "--ward-file",
+            "a.txt=wpw",
+            "--read-data",
+            "--json",
+        ],
+    );
+    assert!(j.contains("\"bytes_read\":70022,\"failed\":[]"), "{j}");
+
+    let o = sigil(
+        &d,
+        &[
+            "verify",
+            "docs.sg1",
+            "--pass",
+            "pw",
+            "--ward-file",
+            "a.txt=bad",
+            "--read-data",
+            "--json",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(1));
+    let t = String::from_utf8_lossy(&o.stdout);
+    assert!(
+        t.contains("\"cause\":\"wrong-key\"") && t.contains("--ward-file password"),
+        "{t}"
+    );
+    assert!(!t.contains("too damaged"), "{t}");
+
+    let o = sigil(&d, &["verify", "docs.sg1", "--pass", "pw", "--read-data"]);
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("give --ward-file a.txt=PWFILE"));
+
+    let e = fails(
+        &d,
+        &[
+            "verify",
+            "docs.sg1",
+            "--ward-file",
+            "a.txt=wpw",
+            "--ward-file",
+            "a.txt=wpw",
+            "--read-data",
+        ],
+    );
+    assert!(e.contains("more than once"), "{e}");
+    // No literal --ward on verify (raw call: the test helper would rewrite it).
+    let o = Command::new(env!("CARGO_BIN_EXE_sigil"))
+        .current_dir(&d)
+        .args(["verify", "docs.sg1", "--ward", "a.txt=x", "--read-data"])
+        .output()
+        .expect("run");
+    assert_eq!(o.status.code(), Some(2), "clap usage error");
+    let e = fails(
+        &d,
+        &[
+            "verify",
+            "docs.sg1",
+            "--pass",
+            "pw",
+            "--ward-file",
+            "a.txt=wpw",
+        ],
+    );
+    assert!(e.contains("add --read-data"), "{e}");
+    ok(&d, &["seal", "-o", "one.sg1", "docs/a.txt"]);
+    let e = fails(
+        &d,
+        &[
+            "verify",
+            "one.sg1",
+            "--ward-file",
+            "a.txt=wpw",
+            "--read-data",
+        ],
+    );
+    assert!(e.contains("not one"), "{e}");
+}

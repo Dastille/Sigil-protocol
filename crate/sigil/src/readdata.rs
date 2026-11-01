@@ -128,13 +128,31 @@ pub fn read_data_subset(
     percent: f64,
     offset: u64,
 ) -> Result<ReadDataReceipt> {
+    read_data_subset_wards(input, pass, identities, &[], percent, offset)
+}
+
+/// [`read_data_subset`] with per-file ward passwords (`PATH`, password) for folder pack
+/// members locked with their own `--ward` key. Wards are refused for anything else.
+pub fn read_data_subset_wards(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+    wards: &[(String, String)],
+    percent: f64,
+    offset: u64,
+) -> Result<ReadDataReceipt> {
+    if !wards.is_empty() && !crate::is_dir_pack(input) {
+        return Err(Error::Msg(
+            "--ward-file is for members of a folder pack; this is not one".into(),
+        ));
+    }
     if input.is_dir() {
         return Err(Error::Msg(
             "--read-data is for one .sg1 or a large-file pack, not a folder".into(),
         ));
     }
     if crate::is_dir_pack(input) {
-        return read_dir_pack(input, pass, identities, percent, offset);
+        return read_dir_pack(input, pass, identities, wards, percent, offset);
     }
     if crate::is_work_pack(input) {
         let (head, locs) = crate::index_pack_keys(input, pass, &[], identities)
@@ -270,6 +288,7 @@ fn read_dir_pack(
     input: &Path,
     pass: Option<&str>,
     identities: &[Identity],
+    wards: &[(String, String)],
     percent: f64,
     offset: u64,
 ) -> Result<ReadDataReceipt> {
@@ -299,22 +318,37 @@ fn read_dir_pack(
             continue;
         }
         r.checked.push(*i);
+        // A warded member opens with its own password (as `unseal --ward-file` does).
+        let ward_pw = wards
+            .iter()
+            .find(|(p, _)| p.trim().trim_start_matches("./") == s.path)
+            .map(|(_, w)| w.as_str());
+        let (key, ids): (Option<&str>, &[Identity]) = match ward_pw {
+            Some(w) => (Some(w), &[]),
+            None => (pass, identities),
+        };
         let opened = if s.star.starts_with(&crate::work::WORK_MAGIC) {
             let mut v = Vec::new();
-            crate::work::unseal_bytes_into(&s.star, &mut v, pass, &[], identities).map(|_| v)
+            crate::work::unseal_bytes_into(&s.star, &mut v, key, &[], ids).map(|_| v)
         } else {
-            crate::unseal_ex_keys(&s.star, pass, &[], identities)
+            crate::unseal_ex_keys(&s.star, key, &[], ids)
         };
         match opened {
             Ok(plain) => r.bytes_read += plain.len() as u64,
             Err(e) => {
                 let why = e.to_string();
-                let ward =
-                    (pass.is_some() || !identities.is_empty()) && cause_of(&why) == Cause::WrongKey;
-                let why = if ward {
+                let ward = ward_pw.is_none()
+                    && (pass.is_some() || !identities.is_empty())
+                    && cause_of(&why) == Cause::WrongKey;
+                let why = if ward_pw.is_some() && cause_of(&why) == Cause::WrongKey {
                     format!(
-                        "{}: {why} (this member may be locked with its own --ward key)",
+                        "{}: {why} (the --ward-file password did not open it)",
                         s.path
+                    )
+                } else if ward {
+                    format!(
+                        "{}: {why} (this member may be locked with its own --ward key; give --ward-file {}=PWFILE)",
+                        s.path, s.path
                     )
                 } else {
                     format!("{}: {why}", s.path)

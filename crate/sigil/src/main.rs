@@ -546,6 +546,10 @@ enum Cmd {
         talisman: Option<PathBuf>,
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
+        /// Ward password of a folder-pack member, for --read-data: --ward-file photos/cat.jpg=PWFILE
+        /// (repeatable; first line, owner-only permissions). There is no literal --ward here
+        #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
+        ward_file: Vec<String>,
     },
     #[command(visible_alias = "gaze")]
     Scry {
@@ -2773,6 +2777,7 @@ fn verify_cmd(
     identity: Vec<PathBuf>,
     subset: Option<f64>,
     subset_offset: Option<u64>,
+    wards: &[(String, String)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     if is_constellation_input(&input) {
         // A locked card opens with the same key the deep read uses.
@@ -2831,10 +2836,20 @@ fn verify_cmd(
         let pass = resolve_pass(pass, talisman)?;
         let identities = load_identities(&identity)?;
         let offset = subset_offset.unwrap_or_else(sigil::readdata::rolling_offset);
+        if is_constellation_input(&input) && !wards.is_empty() {
+            return Err("--ward-file is for members of a folder pack, not a constellation".into());
+        }
         let r = if is_constellation_input(&input) {
             sigil::readdata::read_constellation(&input, pass.as_deref(), &identities, pct, offset)?
         } else {
-            sigil::readdata::read_data_subset(&input, pass.as_deref(), &identities, pct, offset)?
+            sigil::readdata::read_data_subset_wards(
+                &input,
+                pass.as_deref(),
+                &identities,
+                wards,
+                pct,
+                offset,
+            )?
         };
         say!(
             "read-data {pct}%: tried {} of {} part(s), {} bytes read, {} failed",
@@ -2882,7 +2897,7 @@ fn verify_cmd(
                 "deep read: {} of {} sampled part(s) could not be opened with the key given \
                  (key needed, wrong key, or a member locked with its own --ward key). \
                  This is a key problem, not damage: nothing was shown to be damaged. \
-                 Give the right --pass-file / --identity and run it again",
+                 Give the right --pass-file / --identity (or --ward-file PATH=PWFILE for a warded member) and run it again",
                 r.failed.len(),
                 r.checked.len()
             )
@@ -3425,12 +3440,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             pass_file,
             talisman,
             identity,
+            ward_file,
         } => {
             let subset = if read_data {
                 Some(100.0)
             } else {
                 read_data_subset
             };
+            let wards = parse_wards(&[], &ward_file, false)?;
+            if !wards.is_empty() && subset.is_none() {
+                return Err(
+                    "--ward-file is used by the deep read: add --read-data or --read-data-subset"
+                        .into(),
+                );
+            }
             verify_cmd(
                 input,
                 pass.or(pass_file),
@@ -3438,6 +3461,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 identity,
                 subset,
                 subset_offset,
+                &wards,
             )?;
         }
         Cmd::Scry {
@@ -3448,7 +3472,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
         } => {
-            verify_cmd(input, pass.or(pass_file), talisman, identity, None, None)?;
+            verify_cmd(
+                input,
+                pass.or(pass_file),
+                talisman,
+                identity,
+                None,
+                None,
+                &[],
+            )?;
         }
         Cmd::SealFolderNames {
             input,
