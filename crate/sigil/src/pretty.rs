@@ -142,6 +142,10 @@ pub struct Extra<'a> {
     pub scry_line: Option<&'a str>,
     /// The condition is the outer file's (the view is an item inside it).
     pub outer: bool,
+    /// Large-file pack head facts (from the structured status), for extent and parts.
+    pub pack: Option<crate::status::PackFacts>,
+    /// Original size of a large-file pack whose total is hidden, opened with the key.
+    pub pack_size: Option<u64>,
 }
 
 /// Condition from the structured status (`scry --json`'s `status`), which also runs
@@ -355,6 +359,23 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
         }
         _ => {}
     }
+    if let Some(p) = &extra.pack {
+        let size = p.orig_len.or(extra.pack_size);
+        match size {
+            Some(n) => add("SIZE", &human_bytes(n), human_bytes(n)),
+            None => {
+                let v = "hidden (needs key)";
+                add("SIZE", v, st.dim(v));
+            }
+        }
+        let v = format!("{} of {} parts present", p.parts_present, p.parts_total);
+        add("REPAIR", &v, v.clone());
+        let missing = u64::from(p.parts_total).saturating_sub(p.parts_present);
+        if missing > 0 {
+            let v2 = format!("{missing} missing: cannot restore from this copy");
+            add("", &v2, st.dim(&v2));
+        }
+    }
     if let Some(line) = extra.scry_line {
         if let Some(n) = field(line, "orig").and_then(|v| v.parse::<u64>().ok()) {
             add("SIZE", &human_bytes(n), human_bytes(n));
@@ -477,6 +498,8 @@ mod tests {
             health: Some(Health::Healthy),
             scry_line: None,
             outer: false,
+            pack: None,
+            pack_size: None,
         };
         let s = render_path_view(&folder(), &x, &ASCII);
         assert!(s.is_ascii(), "{s}");
@@ -501,6 +524,8 @@ mod tests {
             health: health_from_mark_scry(line, None),
             scry_line: Some(line),
             outer: false,
+            pack: None,
+            pack_size: None,
         };
         let s = render_path_view(&mark(), &x, &ASCII);
         let st = s.find("STATUS    healthy").expect("status");

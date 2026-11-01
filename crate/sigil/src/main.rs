@@ -4287,7 +4287,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            let view = path_walk_keys(&input, &steps, pass.as_deref(), &wards, depth, &identities)?;
+            let mut view =
+                path_walk_keys(&input, &steps, pass.as_deref(), &wards, depth, &identities)?;
             if pretty {
                 use std::io::IsTerminal;
                 let style = sigil::pretty::Style::from_env(std::io::stdout().is_terminal());
@@ -4314,9 +4315,23 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 // Same structured verdict as `scry --json` (Scry + doctor), for the outer
                 // file; a work pack or an item inside the file gets it too.
-                let status = sigil::status::scry_status_path(&input)
-                    .ok()
-                    .map(|st| sigil::pretty::health_from_status(&st));
+                let full = sigil::status::scry_status_path(&input).ok();
+                if steps.is_empty() && view.kind == sigil::NestKind::Work {
+                    extra.pack = full.as_ref().and_then(|st| st.pack.clone());
+                    if extra.pack.as_ref().is_some_and(|p| p.orig_len.is_none()) {
+                        // Name and size live inside the lock: open them with the key, or
+                        // say they are hidden (never the placeholder name).
+                        let label =
+                            sigil::status::pack_hidden_label(&input, pass.as_deref(), &identities);
+                        extra.pack_size = label.as_ref().map(|(_, n)| *n);
+                        view.payload_name = Some(
+                            label
+                                .map(|(name, _)| name)
+                                .unwrap_or_else(|| "hidden (needs key)".into()),
+                        );
+                    }
+                }
+                let status = full.as_ref().map(sigil::pretty::health_from_status);
                 extra.health = sigil::pretty::worse(extra.health.take(), status);
                 extra.outer = !steps.is_empty() && extra.health.is_some();
                 println!("{}", sigil::pretty::render_path_view(&view, &extra, &style));

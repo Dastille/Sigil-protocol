@@ -340,11 +340,8 @@ pub fn path_walk_keys(
                 .or_else(|| payload_label(&next))
                 .unwrap_or_else(|| format!("nest-{}", i + 1))
         } else {
+            // The full member path: a basename alone loses which folder it came from.
             step.replace('\\', "/")
-                .rsplit('/')
-                .next()
-                .unwrap_or(step)
-                .to_string()
         };
         trail.push(label);
         cur = next;

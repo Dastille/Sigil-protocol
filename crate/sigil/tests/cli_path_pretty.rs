@@ -155,3 +155,76 @@ fn path_pretty_key_needed_claims_nothing() {
     let p = sigil(&d, &["path", "album.sg1", "--pass", "pw", "--pretty"]);
     assert!(status_line(&p).contains("healthy"), "{p}");
 }
+
+fn field_line<'a>(s: &'a str, key: &str) -> &'a str {
+    s.lines()
+        .find(|l| l.trim_start().starts_with(key))
+        .unwrap_or_else(|| panic!("no {key}: {s}"))
+}
+
+/// Large-file pack card: SIZE and REPAIR (parts present) from the pack head; a hidden
+/// label says hidden without the key and shows the real name and size with it.
+#[test]
+fn path_pretty_large_file_pack_extent() {
+    let d = common::scratch("pretty-work");
+    std::fs::write(d.join("big.bin"), noise(300_000, 9)).expect("w");
+    sigil(
+        &d,
+        &["seal", "--chunk", "65536", "big.bin", "-o", "big.sg1"],
+    );
+    let p = sigil(&d, &["path", "big.sg1", "--pretty"]);
+    assert!(field_line(&p, "SIZE").contains("293.0 KiB"), "{p}");
+    assert!(
+        field_line(&p, "REPAIR").contains("5 of 5 parts present"),
+        "{p}"
+    );
+    let (k, st, sz) = (
+        p.find("KIND").expect("k"),
+        p.find("STATUS").expect("s"),
+        p.find("SIZE").expect("z"),
+    );
+    assert!(k < st && st < sz, "identity → condition → extent: {p}");
+
+    let b = std::fs::read(d.join("big.sg1")).expect("r");
+    std::fs::write(d.join("cut.sg1"), &b[..b.len() * 7 / 10]).expect("w");
+    let p = sigil(&d, &["path", "cut.sg1", "--pretty"]);
+    assert!(status_line(&p).contains("not recoverable"), "{p}");
+    assert!(
+        field_line(&p, "REPAIR").contains("4 of 5 parts present"),
+        "{p}"
+    );
+    assert!(
+        p.contains("1 missing: cannot restore from this copy"),
+        "{p}"
+    );
+
+    sigil(
+        &d,
+        &[
+            "seal", "--chunk", "65536", "--pass", "pw", "big.bin", "-o", "enc.sg1",
+        ],
+    );
+    let p = sigil(&d, &["path", "enc.sg1", "--pretty"]);
+    assert!(field_line(&p, "NAME").contains("hidden (needs key)"), "{p}");
+    assert!(field_line(&p, "SIZE").contains("hidden (needs key)"), "{p}");
+    assert!(!p.contains("payload.bin"), "no placeholder name: {p}");
+    let p = sigil(&d, &["path", "enc.sg1", "--pass", "pw", "--pretty"]);
+    assert!(field_line(&p, "NAME").contains("big.bin"), "{p}");
+    assert!(field_line(&p, "SIZE").contains("293.0 KiB"), "{p}");
+}
+
+/// The card title keeps the member's folder, not just its file name.
+#[test]
+fn path_pretty_title_keeps_folder() {
+    let d = common::scratch("pretty-crumb");
+    std::fs::create_dir_all(d.join("album/notes")).expect("mkdir");
+    std::fs::write(d.join("album/notes/todo.txt"), b"hello").expect("w");
+    sigil(&d, &["seal", "album", "-o", "album.sg1"]);
+    let p = sigil(&d, &["path", "album.sg1", "notes/todo.txt", "--pretty"]);
+    assert!(
+        p.lines().next().unwrap_or("").contains("notes/todo.txt"),
+        "{p}"
+    );
+    let plain = sigil(&d, &["path", "album.sg1", "notes/todo.txt"]);
+    assert!(plain.contains("notes/todo.txt"), "{plain}");
+}
