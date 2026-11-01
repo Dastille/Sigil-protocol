@@ -122,9 +122,8 @@ fn damaged_star_is_not_recoverable() {
     );
 }
 
-/// An atlas bag is deep-read like its constellation (kind "atlas"). Plain Scry does not
-/// check bag stars one by one, so this is also the case where health reads fine and only
-/// the deep read finds the damage: exit 2, cause damaged.
+/// An atlas bag is deep-read like its constellation (kind "atlas"); plain verify / scry
+/// check every bag star too, so a damaged bag never reads healthy.
 #[test]
 fn atlas_bag_deep_read() {
     let d = common::scratch("rd-sky-atlas");
@@ -142,18 +141,39 @@ fn atlas_bag_deep_read() {
     let (a, z) = (b.len() * 40 / 100, b.len() * 90 / 100);
     b[a..z].fill(0);
     fs::write(d.join("dmg.sga"), &b).unwrap();
-    let j = ok(&d, &["verify", "dmg.sga", "--json"]);
+    // Plain verify / scry check bag stars too: never a false healthy.
+    for cmd in ["verify", "scry"] {
+        let o = sigil(&d, &[cmd, "dmg.sga", "--json"]);
+        assert_eq!(o.status.code(), Some(2), "{}", all(&o));
+        let t = all(&o);
+        assert!(t.contains("\"health\":\"not-recoverable\""), "{t}");
+        assert!(t.contains("\"beyond_repair\":1"), "{t}");
+        assert!(!t.contains("\"health\":\"healthy\""), "{t}");
+        assert!(
+            t.contains("NOT recoverable: 1 star(s) beyond repair"),
+            "text agrees: {t}"
+        );
+    }
+    let j = ok(&d, &["scry", "s.sga", "--json"]);
     assert!(
-        j.contains("\"health\":\"healthy\""),
-        "plain check passes: {j}"
+        j.contains("\"health\":\"healthy\"") && j.contains("\"present\":2,"),
+        "{j}"
+    );
+    // One flipped byte in a star: repairable, and said so in text and JSON.
+    let mut b = fs::read(d.join("s.sga")).unwrap();
+    let k = b.len() * 60 / 100;
+    b[k] ^= 0x40;
+    fs::write(d.join("torn.sga"), &b).unwrap();
+    let j = ok(&d, &["scry", "torn.sga", "--json"]);
+    assert!(
+        j.contains("\"health\":\"needs-repair\"") && j.contains("needs repair:"),
+        "{j}"
     );
     let o = sigil(&d, &["verify", "dmg.sga", "--read-data", "--json"]);
     assert_eq!(o.status.code(), Some(2), "{}", all(&o));
     let t = all(&o);
-    assert!(
-        t.contains("\"cause\":\"damaged\"") && t.contains("NOT recoverable"),
-        "{t}"
-    );
+    // The plain check now stops it first (as for folders and marks).
+    assert!(t.contains("NOT recoverable"), "{t}");
     assert!(!t.contains("key problem"), "{t}");
 
     ok(&d, &["constellation", "add", "--pass", "pw", "Enc", "docs"]);

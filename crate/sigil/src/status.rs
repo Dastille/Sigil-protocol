@@ -170,14 +170,20 @@ pub fn scry_status_path(input: &Path) -> Result<ScryStatus> {
 }
 
 /// Status of a constellation (folder, card or atlas), trying `pass` / `identities` on a
-/// locked card. Atlas members are not checked star by star (same as Scry).
+/// locked card. An atlas bag is unpacked to scratch and its stars checked too.
 pub fn scry_status_constellation(
     input: &Path,
     pass: Option<&str>,
     identities: &[crate::keys::Identity],
 ) -> Result<ScryStatus> {
-    let (_, bad) = crate::scry_constellation_checked(input, pass, identities)?;
     let resolved = crate::container::sky_for_read(input);
+    if crate::is_atlas_file(resolved.as_path()) {
+        // Same counts as for the unpacked constellation: every bag star is checked.
+        return crate::constellation::with_extracted_atlas(resolved.as_path(), |tmp| {
+            scry_status_constellation(tmp, pass, identities)
+        });
+    }
+    let (_, bad) = crate::scry_constellation_checked(input, pass, identities)?;
     let input = resolved.as_path();
     let (chart, dir) = crate::constellation::load_chart_keys(input, pass, identities)?;
     let in_atlas = crate::is_atlas_file(input);
