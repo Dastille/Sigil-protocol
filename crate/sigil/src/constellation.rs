@@ -1126,7 +1126,7 @@ pub fn scry_constellation_keys(
 /// missing (or too damaged to be recognised), or the star is present but beyond
 /// repair. The report then ends with a `NOT recoverable: <reason>` line. Stars
 /// that are damaged but still repairable do not count (`sigil doctor` lists them).
-/// Atlas bags are not checked star by star here; use `sigil doctor` on the bag's sky.
+/// Atlas bags are unpacked to a scratch folder and their stars checked the same way.
 pub fn scry_constellation_checked(
     input: &Path,
     pass: Option<&str>,
@@ -1151,7 +1151,12 @@ pub fn scry_constellation_checked(
         Keys(pass, identities),
     );
     let verdict = if in_atlas {
-        None
+        // Check the bag's stars one by one: unpack to scratch and run the same verdict.
+        with_extracted_atlas(input, |tmp| {
+            let (c, d) = load_chart_keys(tmp, pass, identities)?;
+            let k = find_card(tmp);
+            Ok(constellation_verdict(&c, &d, k.as_deref()))
+        })?
     } else {
         constellation_verdict(&chart, &dir, card.as_deref())
     };
