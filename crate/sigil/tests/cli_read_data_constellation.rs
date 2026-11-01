@@ -122,19 +122,62 @@ fn damaged_star_is_not_recoverable() {
     );
 }
 
+/// An atlas bag is deep-read like its constellation (kind "atlas"). Plain Scry does not
+/// check bag stars one by one, so this is also the case where health reads fine and only
+/// the deep read finds the damage: exit 2, cause damaged.
 #[test]
-fn atlas_bag_refused() {
+fn atlas_bag_deep_read() {
     let d = common::scratch("rd-sky-atlas");
     tree(&d, "docs");
     ok(&d, &["constellation", "add", "Sky", "docs"]);
     ok(&d, &["constellation", "atlas", "Sky", "-o", "s.sga"]);
-    let sga = d.join("s.sga");
-    assert!(sga.exists(), "atlas written");
-    let o = sigil(&d, &["verify", sga.to_str().unwrap(), "--read-data"]);
-    assert!(!o.status.success());
+    let j = ok(&d, &["verify", "s.sga", "--read-data", "--json"]);
+    assert!(j.contains("\"read_data\":{\"kind\":\"atlas\""), "{j}");
     assert!(
-        all(&o).contains("atlas bag is not supported yet"),
-        "{}",
-        all(&o)
+        j.contains("\"bytes_read\":60017,\"failed\":[],\"skipped\":[]"),
+        "{j}"
     );
+
+    let mut b = fs::read(d.join("s.sga")).unwrap();
+    let (a, z) = (b.len() * 40 / 100, b.len() * 90 / 100);
+    b[a..z].fill(0);
+    fs::write(d.join("dmg.sga"), &b).unwrap();
+    let j = ok(&d, &["verify", "dmg.sga", "--json"]);
+    assert!(
+        j.contains("\"health\":\"healthy\""),
+        "plain check passes: {j}"
+    );
+    let o = sigil(&d, &["verify", "dmg.sga", "--read-data", "--json"]);
+    assert_eq!(o.status.code(), Some(2), "{}", all(&o));
+    let t = all(&o);
+    assert!(
+        t.contains("\"cause\":\"damaged\"") && t.contains("NOT recoverable"),
+        "{t}"
+    );
+    assert!(!t.contains("key problem"), "{t}");
+
+    ok(&d, &["constellation", "add", "--pass", "pw", "Enc", "docs"]);
+    ok(
+        &d,
+        &[
+            "constellation",
+            "atlas",
+            "Enc",
+            "--pass",
+            "pw",
+            "-o",
+            "e.sga",
+        ],
+    );
+    let j = ok(
+        &d,
+        &["verify", "e.sga", "--pass", "pw", "--read-data", "--json"],
+    );
+    assert!(
+        j.contains("\"kind\":\"atlas\"") && j.contains("\"failed\":[]"),
+        "{j}"
+    );
+    let o = sigil(&d, &["verify", "e.sga", "--read-data"]);
+    assert_eq!(o.status.code(), Some(1), "{}", all(&o));
+    assert!(!all(&o).contains("too damaged"), "{}", all(&o));
 }

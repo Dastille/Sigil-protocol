@@ -223,9 +223,14 @@ pub fn read_constellation(
     let resolved = crate::container::sky_for_read(input);
     let input = resolved.as_path();
     if crate::is_atlas_file(input) {
-        return Err(Error::Msg(
-            "--read-data on an atlas bag is not supported yet: verify the constellation folder it was packed from (plain `verify` still checks the bag)".into(),
-        ));
+        // A bag carries the card and every star: unpack it to a scratch folder and read
+        // that, exactly as `unseal` does. The receipt is the same shape.
+        return crate::constellation::with_extracted_atlas(input, |dir| {
+            read_constellation(dir, pass, identities, percent, offset).map(|mut r| {
+                r.kind = "atlas";
+                r
+            })
+        });
     }
     let (chart, dir) = crate::constellation::load_chart_keys(input, pass, identities)?;
     let card = if input.is_dir() {
