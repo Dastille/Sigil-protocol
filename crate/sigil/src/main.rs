@@ -682,7 +682,7 @@ enum Cmd {
         json: bool,
     },
     /// Rebuild a healthy .sg1 from live shards in a torn mark (no passphrase). Alias: repair.
-    /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input.
+    /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input. An atlas bag (.sga) gets every repairable star healed into a new bag.
     #[command(visible_alias = "repair")]
     Mend {
         input: PathBuf,
@@ -3770,6 +3770,33 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     fs::write(&output, sg1)?;
                     say!("gathered mark → {}", output.display());
                 }
+            }
+        }
+        Cmd::Mend {
+            input,
+            output,
+            soft,
+            ..
+        } if sigil::is_atlas_file(&input) => {
+            let mended = sigil::mend_atlas(&input, &output, soft)?;
+            json_extra(&format!(
+                ",\"kind\":\"atlas\",\"mended\":[{}]",
+                mended.iter().map(|n| jq(n)).collect::<Vec<_>>().join(",")
+            ));
+            if mended.is_empty() {
+                say!(
+                    "atlas {} → {}: no damage",
+                    input.display(),
+                    output.display()
+                );
+            } else {
+                say!(
+                    "mended atlas {} → {}: {} star(s) healed: {}",
+                    input.display(),
+                    output.display(),
+                    mended.len(),
+                    mended.join(", ")
+                );
             }
         }
         Cmd::Mend { input, output, .. } if sigil::is_sealed_dir_pack(&input) => {
