@@ -623,16 +623,16 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 
 - There is no self-extracting archive: opening or repairing a `.sg1` needs the
   `sigil` CLI (or the web lab codec). Options are in
-  [docs/SFX-DESIGN.md](docs/SFX-DESIGN.md) (stubs: decision pending). What ships instead is a
+  [docs/SFX-DESIGN.md](docs/SFX-DESIGN.md) (stubs on hold, locked 2026-11-02). What ships instead is a
   recovery kit: `scripts/make-recovery-kit.sh ARCHIVE...` puts the program, checksums, the spec
   and a plain-English `RECOVER.txt` next to the archive (no passphrases or keys).
 
 - Releases and recovery kits are **unsigned**: `SHA256SUMS` catches accidental damage, not a
-  deliberate swap. Options: [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md)
-  (decision pending).
+  deliberate swap. minisign chosen (2026-11-02); key TBD until created:
+  [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - A segment-log batch is sealed and read in memory in one piece, so batches above RAM size do
   not work; split them or keep huge files as separate `sigil seal` packs. Options:
-  [docs/STREAMING-DESIGN.md](docs/STREAMING-DESIGN.md) (decision pending).
+  [docs/STREAMING-DESIGN.md](docs/STREAMING-DESIGN.md) (deferred, locked 2026-11-02).
 - In `scry --json` / `verify --json`, `health` combines Scry's recoverability check with
   `doctor`'s repair check; `needs-repair` errs on the cautious side. When it is `needs-repair`,
   the `scry` / `verify` text (and the JSON `report`) ends with a `needs repair: …` line pointing to `sigil mend`.
