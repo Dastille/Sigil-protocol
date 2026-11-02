@@ -317,113 +317,6 @@ fn scan_dirs(dirs: &[&Path]) -> Result<ScanResult> {
     Ok((shards, k, n, map, parts))
 }
 
-#[cfg(test)]
-mod scan_tests {
-    use super::*;
-
-    fn tmp(tag: &str) -> crate::staging::TempDir {
-        crate::staging::TempDir::create(tag).unwrap()
-    }
-
-    fn mark(seed: u8) -> Vec<u8> {
-        let data: Vec<u8> = (0..5000u32).map(|i| (i as u8) ^ seed).collect();
-        crate::seal(&data, crate::Mode::Seal, None, "scan.bin", false).unwrap()
-    }
-
-    fn flip_shard(path: &Path) {
-        let mut raw = fs::read(path).unwrap();
-        let last = raw.len() - 10;
-        raw[last] ^= 0xFF;
-        fs::write(path, raw).unwrap();
-    }
-
-    /// A damaged copy in the first folder must not hide a good copy in the second.
-    #[test]
-    fn damaged_first_copy_does_not_hide_good_copy() {
-        let file = mark(1);
-        let ta = tmp("a");
-        let tb = tmp("b");
-        let (a, b) = (ta.path().to_path_buf(), tb.path().to_path_buf());
-        scatter(&file, &a).unwrap();
-        scatter(&file, &b).unwrap();
-        let (h, _, _) = locate_header(&file).unwrap();
-        let k = h.k as usize;
-        // Remove all but k pieces from b, damage the same k in a, drop the rest of a.
-        let mut kept = 0;
-        for i in 0..h.n as usize {
-            let name = format!("piece-{i:03}.sgp");
-            if kept < k {
-                flip_shard(&a.join(&name));
-                kept += 1;
-            } else {
-                fs::remove_file(a.join(&name)).unwrap();
-                fs::remove_file(b.join(&name)).unwrap();
-            }
-        }
-        // a alone: every piece damaged, gather fails closed.
-        assert!(gather_dirs(&[a.as_path()]).is_err());
-        // a then b: b's good copies are used.
-        let back = gather_dirs(&[a.as_path(), b.as_path()]).unwrap();
-        assert_eq!(
-            crate::unseal(&back, None).unwrap(),
-            crate::unseal(&file, None).unwrap()
-        );
-        let (shards, ..) = scan_dirs(&[a.as_path(), b.as_path()]).unwrap();
-        assert_eq!(shards.len(), k);
-    }
-
-    /// Pieces of two different files are refused, not mixed.
-    #[test]
-    fn pieces_of_two_files_are_refused() {
-        let ta = tmp("one");
-        let tb = tmp("two");
-        let (a, b) = (ta.path().to_path_buf(), tb.path().to_path_buf());
-        scatter(&mark(1), &a).unwrap();
-        scatter(&mark(2), &b).unwrap();
-        let e = gather_dirs(&[a.as_path(), b.as_path()])
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("more than one file"), "{e}");
-    }
-
-    /// A piece whose map copy is unreadable is skipped; the others still gather.
-    #[test]
-    fn piece_with_damaged_map_is_skipped() {
-        let file = mark(3);
-        let ta = tmp("map");
-        let a = ta.path().to_path_buf();
-        scatter(&file, &a).unwrap();
-        let p = a.join("piece-000.sgp");
-        let mut raw = fs::read(&p).unwrap();
-        for b in raw.iter_mut().skip(12).take(64) {
-            *b = 0;
-        }
-        fs::write(&p, raw).unwrap();
-        let back = gather_dirs(&[a.as_path()]).unwrap();
-        assert_eq!(
-            crate::unseal(&back, None).unwrap(),
-            crate::unseal(&file, None).unwrap()
-        );
-    }
-
-    /// Truncated piece files are ignored, never read past their end.
-    #[test]
-    fn truncated_piece_is_ignored() {
-        let file = mark(4);
-        let ta = tmp("trunc");
-        let a = ta.path().to_path_buf();
-        scatter(&file, &a).unwrap();
-        let p = a.join("piece-001.sgp");
-        let raw = fs::read(&p).unwrap();
-        fs::write(&p, &raw[..raw.len() / 2]).unwrap();
-        let back = gather_dirs(&[a.as_path()]).unwrap();
-        assert_eq!(
-            crate::unseal(&back, None).unwrap(),
-            crate::unseal(&file, None).unwrap()
-        );
-    }
-}
-
 /// Rewrite a healthy classic mark (keystone / SGTO / vow / ember / shards) from payload shards.
 fn assemble_mark(
     h: &Header,
@@ -708,4 +601,111 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
         vow.as_deref(),
         sgto_from_prefix(&map, &h).as_deref(),
     ))
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> crate::staging::TempDir {
+        crate::staging::TempDir::create(tag).unwrap()
+    }
+
+    fn mark(seed: u8) -> Vec<u8> {
+        let data: Vec<u8> = (0..5000u32).map(|i| (i as u8) ^ seed).collect();
+        crate::seal(&data, crate::Mode::Seal, None, "scan.bin", false).unwrap()
+    }
+
+    fn flip_shard(path: &Path) {
+        let mut raw = fs::read(path).unwrap();
+        let last = raw.len() - 10;
+        raw[last] ^= 0xFF;
+        fs::write(path, raw).unwrap();
+    }
+
+    /// A damaged copy in the first folder must not hide a good copy in the second.
+    #[test]
+    fn damaged_first_copy_does_not_hide_good_copy() {
+        let file = mark(1);
+        let ta = tmp("a");
+        let tb = tmp("b");
+        let (a, b) = (ta.path().to_path_buf(), tb.path().to_path_buf());
+        scatter(&file, &a).unwrap();
+        scatter(&file, &b).unwrap();
+        let (h, _, _) = locate_header(&file).unwrap();
+        let k = h.k as usize;
+        // Remove all but k pieces from b, damage the same k in a, drop the rest of a.
+        let mut kept = 0;
+        for i in 0..h.n as usize {
+            let name = format!("piece-{i:03}.sgp");
+            if kept < k {
+                flip_shard(&a.join(&name));
+                kept += 1;
+            } else {
+                fs::remove_file(a.join(&name)).unwrap();
+                fs::remove_file(b.join(&name)).unwrap();
+            }
+        }
+        // a alone: every piece damaged, gather fails closed.
+        assert!(gather_dirs(&[a.as_path()]).is_err());
+        // a then b: b's good copies are used.
+        let back = gather_dirs(&[a.as_path(), b.as_path()]).unwrap();
+        assert_eq!(
+            crate::unseal(&back, None).unwrap(),
+            crate::unseal(&file, None).unwrap()
+        );
+        let (shards, ..) = scan_dirs(&[a.as_path(), b.as_path()]).unwrap();
+        assert_eq!(shards.len(), k);
+    }
+
+    /// Pieces of two different files are refused, not mixed.
+    #[test]
+    fn pieces_of_two_files_are_refused() {
+        let ta = tmp("one");
+        let tb = tmp("two");
+        let (a, b) = (ta.path().to_path_buf(), tb.path().to_path_buf());
+        scatter(&mark(1), &a).unwrap();
+        scatter(&mark(2), &b).unwrap();
+        let e = gather_dirs(&[a.as_path(), b.as_path()])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("more than one file"), "{e}");
+    }
+
+    /// A piece whose map copy is unreadable is skipped; the others still gather.
+    #[test]
+    fn piece_with_damaged_map_is_skipped() {
+        let file = mark(3);
+        let ta = tmp("map");
+        let a = ta.path().to_path_buf();
+        scatter(&file, &a).unwrap();
+        let p = a.join("piece-000.sgp");
+        let mut raw = fs::read(&p).unwrap();
+        for b in raw.iter_mut().skip(12).take(64) {
+            *b = 0;
+        }
+        fs::write(&p, raw).unwrap();
+        let back = gather_dirs(&[a.as_path()]).unwrap();
+        assert_eq!(
+            crate::unseal(&back, None).unwrap(),
+            crate::unseal(&file, None).unwrap()
+        );
+    }
+
+    /// Truncated piece files are ignored, never read past their end.
+    #[test]
+    fn truncated_piece_is_ignored() {
+        let file = mark(4);
+        let ta = tmp("trunc");
+        let a = ta.path().to_path_buf();
+        scatter(&file, &a).unwrap();
+        let p = a.join("piece-001.sgp");
+        let raw = fs::read(&p).unwrap();
+        fs::write(&p, &raw[..raw.len() / 2]).unwrap();
+        let back = gather_dirs(&[a.as_path()]).unwrap();
+        assert_eq!(
+            crate::unseal(&back, None).unwrap(),
+            crate::unseal(&file, None).unwrap()
+        );
+    }
 }
