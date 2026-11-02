@@ -458,7 +458,7 @@ mod tests {
             .unwrap()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+            .filter(|p| crate::fountain::is_packet_file(p))
             .collect();
         v.sort();
         v

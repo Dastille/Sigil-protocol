@@ -17,7 +17,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mar
 A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CONTAINER.md](CONTAINER.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
 
-`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` marks.
+`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
 
 ## When to use which
 
@@ -104,7 +104,7 @@ mkdir -p /tmp/sigil-dirty
 
 ## Nested `.sg1` / SGDR: path vs mount
 
-An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A star may itself be a nested seal (name ends in `.sg1`, or payload peeks as a mark).
+An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A star may itself be a nested seal (name ends in `.sg1`, or payload peeks as a Sigil).
 
 **Mount** flattens one layer for apps:
 

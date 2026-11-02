@@ -1,4 +1,11 @@
-# LRC cold-USB kits (track #4)
+# Frost Rune — cold multi-drive Seal split (track #4)
+
+**Frost Rune** is the people-facing name for spreading one Seal `.sg1` across several cold
+drives so one lost drive does not lose the Sigil. Command: `sigil frost place` / `sigil frost mend`
+(aliases `frost-rune`; the old `sigil kit …` / `sigil cold-usb …` still work but are deprecated).
+Folder names on disk (`usb-0` …, `KIT` manifest) are unchanged.
+
+Hot storage name reserved: **Fire Rune** — TBD (no behavior yet).
 
 ## Ship first — Option A (placement only)
 
@@ -6,10 +13,10 @@ Keep Seal (8,16). Round-robin 16 shards across 4 USBs (4/USB). One USB lost = 4 
 
 ```
 sigil inscribe --mode seal -o mark.sg1 file.bin
-sigil kit place mark.sg1 --drives 4 -o ./kit/
+sigil frost place mark.sg1 --drives 4 -o ./kit/
 # copy kit/usb-0 … usb-3 onto four sticks
 # if usb-2 dies, bring the other three back under ./kit/
-sigil kit mend ./kit -o healed.sg1
+sigil frost mend ./kit -o healed.sg1
 sigil de-scribe -o file.bin healed.sg1
 ```
 

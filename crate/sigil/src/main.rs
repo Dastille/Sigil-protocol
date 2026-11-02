@@ -404,7 +404,7 @@ enum Cmd {
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
-        /// With `-` input: the name stored inside the mark (default `stdin`)
+        /// With `-` input: the name stored inside the Sigil (default `stdin`)
         #[arg(long = "stdin-name", value_name = "NAME")]
         stdin_name: Option<String>,
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
@@ -466,7 +466,7 @@ enum Cmd {
         /// rclone destination, e.g. remote:bucket/path
         #[arg(long)]
         rclone: Option<String>,
-        /// run `wormhole send` on the mark (needs magic-wormhole installed)
+        /// run `wormhole send` on the Sigil (needs magic-wormhole installed)
         #[arg(long)]
         wormhole: bool,
     },
@@ -514,7 +514,7 @@ enum Cmd {
         /// Must match Inscribe --mds when Cauchy was used. Env SIGIL_MDS.
         #[arg(long, default_value = "vandermonde")]
         mds: String,
-        /// Opt-in: if the mark will not open, repair scattered bit flips in memory (same
+        /// Opt-in: if the Sigil will not open, repair scattered bit flips in memory (same
         /// salvage as `mend --soft`, Merkle + true name checked) and open that. Writes no
         /// mended file; output is written only on success. Plain .sg1 only.
         #[arg(long)]
@@ -634,33 +634,34 @@ enum Cmd {
         /// Make one extra part, copy, see if they have enough, repeat until they do.
         #[arg(long)]
         watch: bool,
-        /// RaptorQ rain (no 255 cap). Writes .rq packets. Gather rebuilds from any enough set.
+        /// Channel: pour the Sigil out as mana (no 255 cap; RaptorQ codec). Writes .mana files.
+        /// Gather rebuilds from any enough set (only .mana files are read). `--fountain` still works.
         /// Each packet gets a random symbol ID from RaptorQ's full 24-bit space (RFC 6330 3.2),
         /// so independent senders rarely overlap and partial shares can be pooled.
-        #[arg(long)]
+        #[arg(long = "channel", alias = "fountain")]
         fountain: bool,
-        /// With --fountain: number packets 0, 1, 2, ... (the old order) instead of at random.
+        /// With --channel: number packets 0, 1, 2, ... (the old order) instead of at random.
         /// Two senders using this send the same packets
         #[arg(long, requires = "fountain")]
         sequential: bool,
-        /// With --fountain: expected packet loss (0.1 or 10%). Sigil works out the extra
+        /// With --channel: expected packet loss (0.1 or 10%). Sigil works out the extra
         /// packets per block so the chance the far side cannot rebuild without a resend is at
         /// most 1 in 10 000, assuming each packet is lost independently (no bursts). Replaces --extra.
         #[arg(long, value_name = "P", requires = "fountain", conflicts_with = "extra", value_parser = sigil::fountain_loss::parse_loss)]
         loss: Option<f64>,
-        /// With --fountain: answer a receiver's `gather --report` line by writing exactly
+        /// With --channel: answer a receiver's `gather --report` line by writing exactly
         /// the packets each block is missing (fresh random IDs). A report for another file is refused.
         #[arg(long, value_name = "REPORT", requires = "fountain", conflicts_with_all = ["extra", "loss", "sequential", "watch"])]
         answer: Option<String>,
     },
-    /// Rebuild a .sg1 from a folder of pieces (scatter / deluge / fountain); any k of n will do
+    /// Rebuild a .sg1 from a folder of pieces (scatter / deluge / channel); any k of n will do
     Gather {
         input: PathBuf,
         #[arg(short, long, required_unless_present = "report")]
         output: Option<PathBuf>,
-        /// Fountain folder: print a one-line "have / need" receiver report (fits one
+        /// Channel folder: print a one-line "have / need" receiver report (fits one
         /// uplink packet) instead of rebuilding. Send it back; the sender runs
-        /// `sigil deluge --fountain --answer "<line>"` to send exactly what is missing.
+        /// `sigil deluge --channel --answer "<line>"` to send exactly what is missing.
         #[arg(long, conflicts_with_all = ["watch", "open"])]
         report: bool,
         #[arg(long)]
@@ -673,7 +674,7 @@ enum Cmd {
         /// Wait for parts to show up. Write VESSEL when rebuilt so the sender can stop.
         #[arg(long)]
         watch: bool,
-        /// If it cannot fully rebuild: still exit 2 and write no mark, but leave a JSON
+        /// If it cannot fully rebuild: still exit 2 and write no Sigil, but leave a JSON
         /// progress receipt at OUTPUT.partial.json (or on stdout with --json)
         #[arg(long, conflicts_with_all = ["watch", "report"])]
         partial: bool,
@@ -681,7 +682,7 @@ enum Cmd {
         #[arg(long, conflicts_with = "report")]
         json: bool,
     },
-    /// Rebuild a healthy .sg1 from live shards in a torn mark (no passphrase). Alias: repair.
+    /// Rebuild a healthy .sg1 from live shards in a torn Sigil (no passphrase). Alias: repair.
     /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input. An atlas bag (.sga) gets every repairable star healed into a new bag.
     #[command(visible_alias = "repair")]
     Mend {
@@ -697,7 +698,7 @@ enum Cmd {
         #[arg(long)]
         soft: bool,
     },
-    /// Copy an existing mark with rsync, rclone, and/or wormhole.
+    /// Copy an existing Sigil with rsync, rclone, and/or wormhole.
     #[command(visible_alias = "send")]
     Dispatch {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
@@ -848,7 +849,7 @@ enum Cmd {
         #[arg(long, requires = "output")]
         passkey: bool,
     },
-    /// Sign a mark (writes file.sg1.sig). Alias: attest.
+    /// Sign a Sigil (writes file.sg1.sig). Alias: attest.
     #[command(visible_alias = "attest")]
     Sign {
         input: PathBuf,
@@ -932,7 +933,7 @@ enum Cmd {
         #[arg(long)]
         quick: bool,
         /// Treat PATH as a folder of .sg1 marks: repair scattered bit flips (as `mend --soft`)
-        /// and rewrite a mark only when Merkle + true name pass; uncorrectable marks are
+        /// and rewrite a Sigil only when Merkle + true name pass; uncorrectable Sigils are
         /// reported and left byte-identical. Exit 2 if any are uncorrectable.
         #[arg(long, conflicts_with_all = ["json", "fix", "quick"])]
         scrub: bool,
@@ -962,8 +963,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SkyCmd,
     },
-    /// Cold-USB kit: spread a Seal across sticks (Option A placement). Alias: cold-usb.
-    #[command(visible_alias = "cold-usb")]
+    /// Frost Rune: spread a Seal across cold drives (Option A placement). Aliases: frost,
+    /// frost-rune. Old names `kit` / `cold-usb` still work (deprecated).
+    #[command(visible_aliases = ["frost", "frost-rune"], alias = "cold-usb")]
     Kit {
         #[command(subcommand)]
         cmd: KitCmd,
@@ -971,7 +973,7 @@ enum Cmd {
     /// Walk nested .sg1 seals (breadcrumb) without unpacking the durable store. Aliases: walk, ls.
     #[command(visible_aliases = ["walk", "ls"])]
     Path {
-        /// Outer .sg1 (folder pack or single-file mark)
+        /// Outer .sg1 (folder pack or single-file Sigil)
         input: PathBuf,
         /// Machine-readable view on stdout (one JSON line: trail, kind, name, entries); not with
         /// --pretty. For a log / constellation / vault folder use their own listing commands
@@ -1001,10 +1003,10 @@ enum Cmd {
         /// Max nest depth (hard cap 32).
         #[arg(long, default_value_t = MAX_NEST_DEPTH)]
         depth: usize,
-        /// Extract the current view (nested mark or leaf bytes) to this path — temp-friendly; outer .sg1 unchanged.
+        /// Extract the current view (nested Sigil or leaf bytes) to this path — temp-friendly; outer .sg1 unchanged.
         #[arg(short, long)]
         output: Option<PathBuf>,
-        /// Human inspect card: framed header, tree of members, seal health for a single mark.
+        /// Human inspect card: framed header, tree of members, seal health for a single Sigil.
         /// Color when stdout is a terminal (NO_COLOR off; CLICOLOR_FORCE=1 forces). SIGIL_ASCII=1 for +-| frames.
         /// Default output stays plain and stable for scripts.
         #[arg(long)]
@@ -1332,7 +1334,7 @@ enum VaultCmd {
 
 #[derive(Subcommand)]
 enum KitCmd {
-    /// Round-robin pieces into usb-0..usb-(N-1) plus a KIT manifest (Option A).
+    /// Round-robin pieces into usb-0..usb-(N-1) plus a KIT manifest (Frost Rune) (Option A).
     Place {
         input: PathBuf,
         #[arg(short, long)]
@@ -1346,7 +1348,7 @@ enum KitCmd {
     },
     /// Rebuild a healthy .sg1 from the remaining usb-* folders after a drive loss.
     Mend {
-        /// Kit folder that still has the surviving usb-* dirs (+ KIT).
+        /// Frost Rune folder that still has the surviving usb-* dirs (+ KIT).
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
@@ -1381,7 +1383,7 @@ enum BootCmd {
         #[arg(long)]
         no_inject: bool,
     },
-    /// Scry the mark; De-scribe the squashfs if it was chewed. Exit 2 = too damaged, 3 = no mark.
+    /// Scry the Sigil; De-scribe the squashfs if it was chewed. Exit 2 = too damaged, 3 = no Sigil.
     Mend {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
         #[arg(long)]
@@ -2712,7 +2714,7 @@ fn gather_partial(
                 jq(why)
             ),
         )?;
-        eprintln!("partial receipt → {} (no mark written)", rp.display());
+        eprintln!("partial receipt → {} (no Sigil written)", rp.display());
     }
     Ok(msg)
 }
@@ -3318,7 +3320,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     let (plain, repaired) =
                         sigil::unseal_repair_keys(&data, pass, &companions, &identities)?;
                     if repaired {
-                        eprintln!("warning: --repair corrected damage in memory (Merkle + true name checked); the mark on disk is still damaged — run `sigil mend --soft` to keep a healthy copy");
+                        eprintln!("warning: --repair corrected damage in memory (Merkle + true name checked); the Sigil on disk is still damaged — run `sigil mend --soft` to keep a healthy copy");
                     }
                     let mut tmp = output.as_os_str().to_os_string();
                     tmp.push(".unseal-part");
@@ -3587,7 +3589,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     eprintln!("not counted {}: belongs to another file", p.display());
                 }
                 say!(
-                    "fountain {} packets (.rq, {} symbol IDs) → {}",
+                    "channel {} mana (.mana, {} symbol IDs) → {}",
                     rep.total(),
                     if sequential { "sequential" } else { "random" },
                     output.display()
@@ -3768,7 +3770,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     say!("gathered and de-scribed → {}", output.display());
                 } else {
                     fs::write(&output, sg1)?;
-                    say!("gathered mark → {}", output.display());
+                    say!("gathered Sigil → {}", output.display());
                 }
             }
         }
@@ -4985,13 +4987,13 @@ fn run_kit(cmd: KitCmd) -> Result<(), Box<dyn std::error::Error>> {
                     .join("/"),
                 &report.star_id[..8.min(report.star_id.len())],
             );
-            say!("copy each usb-* folder to its own stick. Lose one stick → sigil kit mend");
+            say!("copy each usb-* folder to its own stick. Lose one stick → sigil frost mend");
         }
         KitCmd::Mend { input, output, .. } => {
             let healed = mend_kit(&input)?;
             let n = healed.len();
             fs::write(&output, &healed)?;
-            say!("kit mend {n} bytes → {}", output.display());
+            say!("frost mend {n} bytes → {}", output.display());
         }
     }
     Ok(())

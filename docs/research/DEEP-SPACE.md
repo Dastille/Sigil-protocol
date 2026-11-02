@@ -24,7 +24,7 @@ the result kept only if the Merkle binding and true name match. With it,
 1 024 scattered flips (bit error rate 9.6·10⁻⁵) are repaired in 10 of 10 trials
 in Reflection mode and 16 384 flips (1.0·10⁻³) in 10 of 10 trials in Seal mode,
 with no wrong output in any trial and no change to the file format. The
-RaptorQ fountain mode (`deluge --fountain`) already fits a one-way link.
+RaptorQ Channel (`deluge --channel`) already fits a one-way link.
 What it lacks is a way to size its extra packets from an expected loss rate.
 
 ## 1. Problem statement
@@ -57,7 +57,7 @@ that matter here:
 |---|---|---|
 | F (faults) | SEU/MBU bit flips, SDRAM/flash block errors, torn writes, lost packets | Repairs within the RS budget; otherwise refuses. Output must match the true name (SHA-256 of plaintext) and length. Never returns different bytes (tested, §5). |
 | P (passive reader) | Anyone who records the downlink or reads a recorder dump | Payload confidentiality only with a Ward (`--pass`, `--to`): AES-256-GCM. Without one, the bytes are readable. The fold is not a cipher. |
-| A (active tamperer) | Forged uplink file, tampered relay | Encrypted marks: the GCM tag rejects changes. Plain marks: only CRC32 and SHA-256 values in the header, which a tamperer can recompute. Authenticity needs `sigil sign` (Ed25519) or a true name learned another way. |
+| A (active tamperer) | Forged uplink file, tampered relay | Encrypted Sigils: the GCM tag rejects changes. Plain Sigils: only CRC32 and SHA-256 values in the header, which a tamperer can recompute. Authenticity needs `sigil sign` (Ed25519) or a true name learned another way. |
 
 Two points:
 
@@ -139,10 +139,10 @@ incl. Technical Corrigendum 1, Dec. 2024), https://ccsds.org/Pubs/131x5o1c1.pdf
   are LDPC/IRA erasure codes in a shim layer.
 
 **RaptorQ**: RFC 6330, https://www.rfc-editor.org/rfc/rfc6330.txt
-- Systematic fountain code. §5.8: a compliant decoder given K' symbols with
+- Systematic Channel code. §5.8: a compliant decoder given K' symbols with
   random ESIs fails at most 1 in 100 times on average, at K'+1 at most 1 in 10 000,
   at K'+2 at most 1 in 1 000 000. §5.1.2: K'_max = 56 403 symbols per source
-  block. Sigil's `deluge --fountain` uses the `raptorq` crate 2.0.0
+  block. Sigil's `deluge --channel` uses the `raptorq` crate 2.0.0
   (`docs/FOUNTAIN-v2.md`).
 
 **Onboard memory scrubbing and EDAC**
@@ -197,10 +197,10 @@ incl. Technical Corrigendum 1, Dec. 2024), https://ccsds.org/Pubs/131x5o1c1.pdf
 | Seal / Reflection | `rs.rs`, `lib.rs` | Systematic (v2) Vandermonde RS over GF(256), point x = index+1. Defaults n=16: Reflection k=12, Seal k=8. Max index 254. |
 | Shard check | `header.rs` `gather_live_shards` | Each shard has its own CRC32. A CRC failure drops the whole shard (erasure). |
 | Header copies | Keystone (3 copies), Ember (one per shard) | Header found even with the front destroyed. |
-| Final check | `pieces::accept_folded`, unseal | Re-encode, compare Merkle root of all n shards with the header. Plain marks: SHA-256 of plaintext = true name. |
+| Final check | `pieces::accept_folded`, unseal | Re-encode, compare Merkle root of all n shards with the header. Plain Sigils: SHA-256 of plaintext = true name. |
 | Soft mend (before this branch) | `rs::decode_soft` | Keeps CRC-failed bodies and tries erasing up to n−k "soft" shards or 4 KiB stripes in index order. Has no way to locate which bytes are wrong. Measured: it fixed none of the scattered-flip cases (§5) and took about 9 s per refusal on a 1 MB file. |
 | Large files | `work.rs` (SGWK) | 4 MiB chunks, each a complete seal (per-chunk recovery exists). Peak memory stays below file size (§5.4). |
-| Fountain | `fountain.rs`, `deluge --fountain`, `gather` | RaptorQ over the whole `.sg1`; packets carry per-packet SHA-256 and the object SHA-256. Damaged packets are skipped (erasures). The rebuilt `.sg1` is checked against the object SHA-256. |
+| Channel | `fountain.rs`, `deluge --channel`, `gather` | RaptorQ over the whole `.sg1`; packets carry per-packet SHA-256 and the object SHA-256. Damaged packets are skipped (erasures). The rebuilt `.sg1` is checked against the object SHA-256. |
 | Scatter / deluge | `pieces.rs` | Extra RS evaluations up to index 254 as `.sgp` files. |
 
 ## 5. Measurements
@@ -260,7 +260,7 @@ Readings:
   pass. At 16 flips, more than 4 (Reflection) or 8 (Seal) of the 16 shards are
   hit with high probability, and every trial refused.
 - The 20% zeroed run in Reflection fails 2 of 10 times. That is the budget
-  edge: a run of 20% of the mark can overlap 5 of 16 shards depending on where
+  edge: a run of 20% of the Sigil can overlap 5 of 16 shards depending on where
   it starts. Seal at 45% behaves the same way.
 - Column repair changed none of the run or truncation rows. That is expected:
   those cases are erasures and were already handled.
@@ -328,9 +328,9 @@ single runs): 2 000 flips took 14.0 s and 8 000 flips took 39.8 s to mend, both
 exact. The Berlekamp–Welch solve is O(p·(k+2t)²) per damaged column, so large `n`
 is slow. At the default n = 16 it is not noticeable (the table above).
 
-### 5.5 Fountain over a lossy one-way link (1 MB Reflection mark, 10 trials)
+### 5.5 Channel over a lossy one-way link (1 MB Reflection mark, 10 trials)
 
-`deluge --fountain --extra E` on the 1 336 608-byte mark gives 82 source
+`deluge --channel --extra E` on the 1 336 608-byte mark gives 82 source
 packets plus E. Random packets are then deleted, and the rest is run through
 `gather` + `unseal`.
 
@@ -340,7 +340,7 @@ packets plus E. Random packets are then deleted, and the rest is run through
 | 16 (19.5%) | 98 | 10/10 | 10/10 | 10/10 | 0/10 | 0/10 |
 | 64 (78%) | 146 | 10/10 | 10/10 | 10/10 | 10/10 | 0/10 |
 
-Same results before and after this branch (fountain code unchanged). All
+Same results before and after this branch (RaptorQ code unchanged). All
 refusals were "not enough packets". None produced wrong bytes. Median
 gather + unseal ≈ 32–35 ms. Each outcome follows from the count: the rebuild
 works when the packets that survive are ≥ 82 (RaptorQ may need K'+1 or K'+2
@@ -351,10 +351,10 @@ in rare cases, RFC 6330 §5.8).
 | Need | Standards approach | Sigil today | Gap |
 |---|---|---|---|
 | Bit errors on the link | CCSDS 131.0: RS(255,223) corrects 16 symbol errors; LDPC/turbo | Not Sigil's layer | None (use the link codes) |
-| Lost frames/packets, no time to re-ask | CCSDS 131.5-O-1 LDPC erasure codes; LTP green-part; CFDP unacknowledged | `deluge --fountain` (RaptorQ, rateless, random ESIs) | No rule for how many extras to send for a given loss rate |
+| Lost frames/packets, no time to re-ask | CCSDS 131.5-O-1 LDPC erasure codes; LTP green-part; CFDP unacknowledged | `deluge --channel` (RaptorQ, rateless, random ESIs) | No rule for how many extras to send for a given loss rate |
 | Re-ask when there is time | CFDP acknowledged (deferred NAK); LTP red-part | `gather` prints "need N more"; `deluge --extra` tops up | No compact "what I have" summary to send back |
 | End-to-end file integrity | CFDP checksum (modular checksum mandatory; stronger recommended); BP CRC16/CRC32C; BPSec | SHA-256 true name + Merkle; per-packet SHA-256 | Sigil's check is stronger than the CFDP default |
-| Authenticity | LTP authentication (RFC 5327); BPSec | Ed25519 `sigil sign`; AES-GCM tag when encrypted | Plain marks unauthenticated unless signed |
+| Authenticity | LTP authentication (RFC 5327); BPSec | Ed25519 `sigil sign`; AES-GCM tag when encrypted | Plain Sigils unauthenticated unless signed |
 | Memory upsets | EDAC (SECDED, multi-bit codes) + periodic scrubbing | Shard-level erasure, and now column repair in `mend --soft` | No built-in scrub schedule; repair only on request |
 
 ## 7. Proposed changes, each with a test that would verify it
@@ -367,7 +367,7 @@ in rare cases, RFC 6330 §5.8).
    rule until it has more field time. Test: for each §5.2 bit-flip row,
    `unseal --repair` gives the same ok/refused counts as `mend --soft` + `unseal`,
    with no output file on refusal.
-3. **Fountain sizing from a loss estimate: `deluge --fountain --loss P`.** BUILT
+3. **Channel sizing from a loss estimate: `deluge --channel --loss P`.** BUILT
    (`crate/sigil/src/fountain_loss.rs`, `cli_fountain::loss_picks_the_packet_count_and_bad_values_are_refused`;
    seeded trials at P ∈ {0.05, 0.10, 0.25, 0.5} rebuild 100 of 100, and the packets written equal
    the formula exactly). Pick
@@ -375,23 +375,23 @@ in rare cases, RFC 6330 §5.8).
    binomial tail. Test: for P ∈ {0.05, 0.10, 0.25}, 100 trials of random
    deletion at rate P each rebuild in ≥ 99. A second test checks that the
    overhead written is within one packet of the formula.
-4. **Fountain-first sends with per-chunk blocks for large files.** Raining
+4. **Channel-first sends with per-chunk blocks for large files.** Raining
    each 4 MiB chunk star separately would let the receiver verify and keep each
    chunk as soon as its packets suffice. Today the whole `.sg1` is one object.
    Test: drop every packet of one chunk. `gather --partial` (opt-in) writes the
    other chunks verified into a part file plus a map of the missing ranges,
    and never writes the final name. A normal `gather` still refuses.
 5. **Compact receiver report (deferred-NAK style).** BUILT as `gather --report` +
-   `deluge --fountain --answer` (`fountain::tests::report_*`, `cli_fountain::gather_report_then_deluge_answer_fills_the_gap`). `gather --report` prints a
+   `deluge --channel --answer` (`fountain::tests::report_*`, `cli_fountain::gather_report_then_deluge_answer_fills_the_gap`). `gather --report` prints a
    short line per source block, "have / need", that fits in one uplink packet,
    for the CFDP-acknowledged style follow-up. Test: the report size for a
    100-block object is ≤ 1 KiB. Feeding it to `deluge --extra` on the sender
    produces exactly the missing count per block.
 6. **Scrub command: `sigil doctor --scrub DIR`.** BUILT (`crate/sigil/src/scrub.rs`,
-   `tests/cli_doctor_scrub.rs`: 10 flipped marks, ≥9/10 open after scrub, 0/10 before). Periodically run column repair
+   `tests/cli_doctor_scrub.rs`: 10 flipped Sigils, ≥9/10 open after scrub, 0/10 before). Periodically run column repair
    on every mark and rewrite only when the Merkle/true-name check passes, then
    log what changed. Test: the §5.3 experiment run through the command, with
-   9/10 or better scrubbed vs 0/10 unscrubbed. A mark with an uncorrectable
+   9/10 or better scrubbed vs 0/10 unscrubbed. A Sigil with an uncorrectable
    column is reported and left byte-identical.
 7. **Faster column decoder for large n and low-power CPUs.** Syndrome decoding
    (Berlekamp–Massey + Chien search + Forney) is O(t²) + O(n·t) per dirty
@@ -451,7 +451,7 @@ in rare cases, RFC 6330 §5.8).
 - Column repair runs only in `mend --soft`. A plain `unseal` of a bit-flipped file
   still refuses (by design; proposal 2).
 - Damage outside shard bodies is handled separately: the front header (four
-  copies plus the Embers), the SGTO key block of encrypted marks, and work-pack
+  copies plus the Embers), the SGTO key block of encrypted Sigils, and work-pack
   heads. Heavy damage to the SGTO block of an encrypted mark makes it unopenable
   even when every shard is repaired. **UNVERIFIED** at what rate this happens; not
   measured.
@@ -459,7 +459,7 @@ in rare cases, RFC 6330 §5.8).
 - At large n (254 shards) column repair is slow (§5.4). A hostile file can make
   `mend --soft` spend roughly (shard length × per-column solve) time before it
   refuses. It is bounded but can take minutes at n = 254.
-- The fountain results assume packets are either intact or detected as damaged
+- The Channel results assume packets are either intact or detected as damaged
   (the per-packet SHA-256 does that). They say nothing about packet sizes that fit
   CCSDS frames or BP bundles. Matching those is **UNVERIFIED**.
 - No flight software, real-time OS, radiation-hardened CPU or power budget was
@@ -537,7 +537,7 @@ file: 1000000 random bytes, trials per case: 10
 | seal (2003264 B) | truncate 30.0% of .sg1 | 10 | 0 | 0 | 0 | 24 |
 | seal (2003264 B) | truncate 45.0% of .sg1 | 10 | 0 | 0 | 0 | 22 |
 
-| fountain (.rq of a reflection .sg1) | extra | packets written | dropped | rebuilt exact | refused | WRONG | median gather+unseal ms |
+| Channel (.mana of a reflection .sg1) | extra | packets written | dropped | rebuilt exact | refused | WRONG | median gather+unseal ms |
 |---|---|---|---|---|---|---|---|
 | reflection | 4 | 86 | 0% | 10 | 0 | 0 | 32 |
 | reflection | 4 | 86 | 5% | 10 | 0 | 0 | 30 |
@@ -601,7 +601,7 @@ file: 1000000 random bytes, trials per case: 10
 | seal (2003264 B) | truncate 30.0% of .sg1 | 10 | 0 | 0 | 0 | 26 |
 | seal (2003264 B) | truncate 45.0% of .sg1 | 10 | 0 | 0 | 0 | 24 |
 
-| fountain (.rq of a reflection .sg1) | extra | packets written | dropped | rebuilt exact | refused | WRONG | median gather+unseal ms |
+| Channel (.mana of a reflection .sg1) | extra | packets written | dropped | rebuilt exact | refused | WRONG | median gather+unseal ms |
 |---|---|---|---|---|---|---|---|
 | reflection | 4 | 86 | 0% | 10 | 0 | 0 | 33 |
 | reflection | 4 | 86 | 5% | 10 | 0 | 0 | 32 |

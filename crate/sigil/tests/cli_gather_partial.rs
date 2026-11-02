@@ -27,7 +27,7 @@ fn rq(d: &Path) -> Vec<PathBuf> {
         .expect("ls")
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("mana"))
         .collect();
     v.sort();
     v
@@ -41,7 +41,7 @@ fn short(d: &Path, keep: usize) -> PathBuf {
         &[
             "deluge",
             m.to_str().expect("p"),
-            "--fountain",
+            "--channel",
             "--extra",
             "2",
             "-o",
@@ -92,16 +92,16 @@ fn partial_writes_receipt_and_exits_2_and_skips_bad_and_foreign() {
     let d = scratch("partial");
     let s = short(&d, 4);
     // A damaged packet file and packets of a different file: never progress.
-    std::fs::write(s.join("junk.rq"), b"not a packet").expect("w");
+    std::fs::write(s.join("junk.mana"), b"not a packet").expect("w");
     std::fs::write(d.join("other.bin"), vec![7u8; 3000]).expect("w");
     assert!(sigil(&d, &["seal", "other.bin", "-o", "other.sg1"])
         .status
         .success());
-    assert!(sigil(&d, &["deluge", "other.sg1", "--fountain", "-o", "o"])
+    assert!(sigil(&d, &["deluge", "other.sg1", "--channel", "-o", "o"])
         .status
         .success());
     let foreign = rq(&d.join("o"));
-    std::fs::copy(&foreign[0], s.join("zz-foreign.rq")).expect("cp");
+    std::fs::copy(&foreign[0], s.join("zz-foreign.mana")).expect("cp");
 
     let o = sigil(&d, &["gather", "short", "-o", "no.sg1", "--partial"]);
     assert_eq!(
@@ -149,7 +149,7 @@ fn partial_with_zero_valid_packets() {
     let d = scratch("zero");
     let s = d.join("empty");
     std::fs::create_dir_all(&s).expect("mkdir");
-    std::fs::write(s.join("a.rq"), b"junk").expect("w");
+    std::fs::write(s.join("a.mana"), b"junk").expect("w");
     let o = sigil(&d, &["gather", "empty", "-o", "z.sg1", "--partial"]);
     assert_eq!(
         o.status.code(),

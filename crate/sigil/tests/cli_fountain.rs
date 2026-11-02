@@ -1,5 +1,5 @@
-//! `deluge --fountain`: random RaptorQ symbol IDs by default, `--sequential` for the
-//! old order, old v1 `.rq` packets still gather, damaged/stray packet files are
+//! `deluge --channel`: random RaptorQ symbol IDs by default, `--sequential` for the
+//! old order, version-1 mana still gather, `.rq` files are not read, damaged/stray packet files are
 //! skipped, and a short folder says how many more packets are needed.
 mod common;
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ fn rq(d: &Path) -> Vec<PathBuf> {
         .unwrap()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("mana"))
         .collect();
     v.sort();
     v
@@ -46,7 +46,7 @@ fn rq(d: &Path) -> Vec<PathBuf> {
 #[test]
 fn old_v1_packets_still_gather() {
     let d = scratch("v1");
-    let rain = fx().join("rain");
+    let rain = fx().join("mana");
     ok(&d, &["gather", "-o", "back.sg1", rain.to_str().unwrap()]);
     assert_eq!(
         std::fs::read(d.join("back.sg1")).unwrap(),
@@ -69,7 +69,7 @@ fn old_v1_packets_still_gather() {
         &[
             "deluge",
             mark.to_str().unwrap(),
-            "--fountain",
+            "--channel",
             "--extra",
             "0",
             "-o",
@@ -92,7 +92,7 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
     let d = scratch("cli");
     let mark = fx().join("mark.sg1");
     let m = mark.to_str().unwrap();
-    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "2", "-o", "r"]);
+    let (o, _) = ok(&d, &["deluge", m, "--channel", "--extra", "2", "-o", "r"]);
     assert!(o.contains("random symbol IDs"), "{o}");
     let names: Vec<String> = rq(&d.join("r"))
         .iter()
@@ -100,7 +100,7 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
         .collect();
     assert_eq!(names.len(), 8);
     assert!(
-        names.iter().all(|n| n.starts_with("rain-000-")),
+        names.iter().all(|n| n.starts_with("mana-000-")),
         "{names:?}"
     );
     let (o, _) = ok(
@@ -108,7 +108,7 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
         &[
             "deluge",
             m,
-            "--fountain",
+            "--channel",
             "--sequential",
             "--extra",
             "2",
@@ -117,8 +117,8 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
         ],
     );
     assert!(o.contains("sequential"), "{o}");
-    assert!(d.join("s/rain-00000.rq").is_file() && d.join("s/rain-00007.rq").is_file());
-    // --sequential without --fountain is refused.
+    assert!(d.join("s/mana-00000.mana").is_file() && d.join("s/mana-00007.mana").is_file());
+    // --sequential without --channel is refused.
     assert!(!sigil(&d, &["deluge", m, "--sequential", "-o", "x"])
         .status
         .success());
@@ -129,7 +129,7 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
     for p in rq(&d.join("r")).iter().take(4) {
         std::fs::copy(p, short.join(p.file_name().unwrap())).unwrap();
     }
-    std::fs::write(short.join("notes.rq"), b"not a packet").unwrap();
+    std::fs::write(short.join("notes.mana"), b"not a packet").unwrap();
     let o = sigil(&d, &["gather", "-o", "no.sg1", "short"]);
     assert!(!o.status.success());
     let e = String::from_utf8_lossy(&o.stderr);
@@ -141,7 +141,7 @@ fn default_is_random_sequential_is_old_order_and_short_folders_say_how_many() {
         std::fs::copy(p, short.join(p.file_name().unwrap())).unwrap();
     }
     let (_, e) = ok(&d, &["gather", "-o", "yes.sg1", "short"]);
-    assert!(e.contains("notes.rq"), "{e}");
+    assert!(e.contains("notes.mana"), "{e}");
     assert_eq!(
         std::fs::read(d.join("yes.sg1")).unwrap(),
         std::fs::read(&mark).unwrap()
@@ -155,29 +155,29 @@ fn extra_is_a_target_top_up_not_an_increment() {
     let mark = fx().join("mark.sg1");
     let m = mark.to_str().unwrap();
     // mark.sg1 has 6 source symbols: --extra 2 = 8 packets.
-    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "2", "-o", "r"]);
-    assert!(o.contains("fountain 8 packets"), "{o}");
+    let (o, _) = ok(&d, &["deluge", m, "--channel", "--extra", "2", "-o", "r"]);
+    assert!(o.contains("channel 8 mana"), "{o}");
     assert!(
         !o.contains("topped up") && !o.contains("nothing written"),
         "{o}"
     );
-    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "5", "-o", "r"]);
-    assert!(o.contains("fountain 11 packets"), "{o}");
+    let (o, _) = ok(&d, &["deluge", m, "--channel", "--extra", "5", "-o", "r"]);
+    assert!(o.contains("channel 11 mana"), "{o}");
     assert!(o.contains("kept 8 already there, wrote 3 new"), "{o}");
     assert_eq!(rq(&d.join("r")).len(), 11);
-    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "5", "-o", "r"]);
+    let (o, _) = ok(&d, &["deluge", m, "--channel", "--extra", "5", "-o", "r"]);
     assert!(o.contains("nothing written"), "{o}");
     assert_eq!(rq(&d.join("r")).len(), 11);
     // Old v1 packets of the same file count toward the target too.
     let v1 = d.join("v1");
     std::fs::create_dir_all(&v1).unwrap();
-    for p in rq(&fx().join("rain")) {
+    for p in rq(&fx().join("mana")) {
         std::fs::copy(&p, v1.join(p.file_name().unwrap())).unwrap();
     }
-    std::fs::write(v1.join("junk.rq"), b"not a packet").unwrap();
-    let (o, e) = ok(&d, &["deluge", m, "--fountain", "--extra", "2", "-o", "v1"]);
+    std::fs::write(v1.join("junk.mana"), b"not a packet").unwrap();
+    let (o, e) = ok(&d, &["deluge", m, "--channel", "--extra", "2", "-o", "v1"]);
     assert!(o.contains("nothing written"), "{o}");
-    assert!(e.contains("not counted") && e.contains("junk.rq"), "{e}");
+    assert!(e.contains("not counted") && e.contains("junk.mana"), "{e}");
     ok(&d, &["gather", "-o", "back.sg1", "r"]);
     assert_eq!(
         std::fs::read(d.join("back.sg1")).unwrap(),
@@ -203,7 +203,7 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
     // K=82 at 10% loss, target 1e-4: 23 extra (exact-rational reference in fountain_loss).
     let (out, _) = ok(
         &d,
-        &["deluge", "f.bin", "-o", "r", "--fountain", "--loss", "10%"],
+        &["deluge", "f.bin", "-o", "r", "--channel", "--loss", "10%"],
     );
     assert!(out.contains("23 extra packets per block"), "{out}");
     assert_eq!(rq(&d.join("r")).len(), 105);
@@ -214,7 +214,7 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
             "f.bin",
             "-o",
             "s",
-            "--fountain",
+            "--channel",
             "--sequential",
             "--loss",
             "0.1",
@@ -236,7 +236,7 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
     let o = sigil(&d, &["gather", "r", "-o", "short.bin"]);
     assert!(!o.status.success());
     assert!(!d.join("short.bin").exists());
-    // Refused: no --fountain, with --extra, a bare 10, 100%, negative, junk.
+    // Refused: no --channel, with --extra, a bare 10, 100%, negative, junk.
     for args in [
         &["deluge", "f.bin", "-o", "x", "--loss", "0.1"][..],
         &[
@@ -244,16 +244,16 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
             "f.bin",
             "-o",
             "x",
-            "--fountain",
+            "--channel",
             "--loss",
             "0.1",
             "--extra",
             "5",
         ],
-        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "10"],
-        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "100%"],
-        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "-0.1"],
-        &["deluge", "f.bin", "-o", "x", "--fountain", "--loss", "nan"],
+        &["deluge", "f.bin", "-o", "x", "--channel", "--loss", "10"],
+        &["deluge", "f.bin", "-o", "x", "--channel", "--loss", "100%"],
+        &["deluge", "f.bin", "-o", "x", "--channel", "--loss", "-0.1"],
+        &["deluge", "f.bin", "-o", "x", "--channel", "--loss", "nan"],
     ] {
         let o = sigil(&d, args);
         assert!(!o.status.success(), "{args:?} should be refused");
@@ -262,7 +262,7 @@ fn loss_picks_the_packet_count_and_bad_values_are_refused() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// `gather --report` prints one short line; `deluge --fountain --answer` sends exactly
+/// `gather --report` prints one short line; `deluge --channel --answer` sends exactly
 /// what it lists, and a report for another file is refused with nothing written.
 #[test]
 fn gather_report_then_deluge_answer_fills_the_gap() {
@@ -287,7 +287,7 @@ fn gather_report_then_deluge_answer_fills_the_gap() {
     };
     assert!(run(&["inscribe", "-o", "a.sg1", "in.bin"]).status.success());
     assert!(
-        run(&["deluge", "--fountain", "--extra", "0", "-o", "tx", "a.sg1"])
+        run(&["deluge", "--channel", "--extra", "0", "-o", "tx", "a.sg1"])
             .status
             .success()
     );
@@ -312,7 +312,7 @@ fn gather_report_then_deluge_answer_fills_the_gap() {
     let missing = pkts.len() - 3;
     assert!(run(&[
         "deluge",
-        "--fountain",
+        "--channel",
         "--answer",
         &line,
         "-o",
@@ -327,7 +327,7 @@ fn gather_report_then_deluge_answer_fills_the_gap() {
     assert!(run(&["inscribe", "-o", "b.sg1", "b.bin"]).status.success());
     assert!(!run(&[
         "deluge",
-        "--fountain",
+        "--channel",
         "--answer",
         &line,
         "-o",
@@ -338,4 +338,31 @@ fn gather_report_then_deluge_answer_fills_the_gap() {
     .success());
     assert!(!dir.join("rx2").exists() || std::fs::read_dir(dir.join("rx2")).unwrap().count() == 0);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rq_files_are_not_read_and_fountain_is_an_alias_of_channel() {
+    let d = scratch("rqgone");
+    // The same packet bytes under the retired .rq name are not Channel mana.
+    let old = d.join("old");
+    std::fs::create_dir_all(&old).unwrap();
+    for p in std::fs::read_dir(fx().join("mana")).unwrap().flatten() {
+        let n = p.file_name().to_string_lossy().replace(".mana", ".rq");
+        std::fs::copy(p.path(), old.join(n)).unwrap();
+    }
+    let o = sigil(&d, &["gather", "-o", "no.sg1", "old"]);
+    assert!(!o.status.success());
+    assert!(!d.join("no.sg1").exists());
+    // --fountain still works and writes .mana, like --channel.
+    let mark = fx().join("mark.sg1");
+    let m = mark.to_str().unwrap();
+    let (o, _) = ok(&d, &["deluge", m, "--fountain", "--extra", "2", "-o", "f"]);
+    assert!(o.contains("channel 8 mana"), "{o}");
+    assert_eq!(rq(&d.join("f")).len(), 8);
+    ok(&d, &["gather", "-o", "back.sg1", "f"]);
+    assert_eq!(
+        std::fs::read(d.join("back.sg1")).unwrap(),
+        std::fs::read(&mark).unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&d);
 }

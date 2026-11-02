@@ -64,7 +64,7 @@ Chart fields (backward compatible): `retention=full` or `retention=light` plus `
 
 Each pruned seal lands under `DIR/vN/`:
 
-- **Seal** (and Reflection when the drive budget fits): `sigil kit place` layout (`usb-*` + `KIT`) so one lost USB is still mendable.
+- **Seal** (and Reflection when the drive budget fits): `sigil frost place` layout (`usb-*` + `KIT`) so one lost USB is still mendable.
 - **Glyph** (or kit place rejected): plain `vN.sg1` copy plus an `ARCHIVE` note — still better than a silent delete.
 - **Folder vault** versions (SGDR packs): always the plain `vN.sg1` copy + `ARCHIVE` (kit place is single-star only).
 
@@ -77,6 +77,6 @@ After a successful (non-skipped) **commit**, light policy auto-prunes to `keep`.
 
 ## Restore after prune
 
-Only versions still listed in `CHART` (hot set) restore via `vault restore`. Cold kit folders are ordinary kits / archives — use `sigil kit mend` (or copy the plain `.sg1` back) if you need an older seal again; re-track / re-commit is a separate story.
+Only versions still listed in `CHART` (hot set) restore via `vault restore`. Cold kit folders are ordinary kits / archives — use `sigil frost mend` (or copy the plain `.sg1` back) if you need an older seal again; re-track / re-commit is a separate story.
 
 Passkeys and PGP import live in key files (see PASSKEY.md, PGP-IMPORT.md), not in retention.
