@@ -1,5 +1,28 @@
 # Release and recovery-kit signatures: design options (decision pending)
 
+> **DECISION (Ashlynn locked 2026-11-02): Option A (minisign) + C (signed tags).** Shipped:
+> `scripts/make-sha256sums.sh` and a `checksums` job in `release.yml` that uploads
+> `SHA256SUMS` (no key, no secret). **Not done, needs Ashlynn:** creating the minisign key
+> offline. Until then the public key is **TBD until key created**, releases carry no
+> `SHA256SUMS.minisig`, and the kit copies no signature or key. CI never signs.
+>
+> Manual signing after each release (key holder, offline machine):
+> ```
+> minisign -G -p sigil-release.pub -s sigil-release.key     # once; back the .key up offline
+> gh release download vX.Y.Z -p SHA256SUMS
+> minisign -Sm SHA256SUMS -s sigil-release.key -t "sigil vX.Y.Z"
+> gh release upload vX.Y.Z SHA256SUMS.minisig
+> ```
+> Verify: `minisign -Vm SHA256SUMS -P <public key from README/paper>` then `sha256sum -c SHA256SUMS`.
+>
+> Tag signing (SSH): `git config gpg.format ssh; git config user.signingkey ~/.ssh/id_ed25519.pub;
+> git tag -s vX.Y.Z -m "sigil vX.Y.Z"; git push origin vX.Y.Z`. Verify with an allowed-signers
+> file: `git config gpg.ssh.allowedSignersFile allowed_signers; git tag -v vX.Y.Z`.
+>
+> Intended kit layout once a real key exists (not implemented): `sigil-recovery/SHA256SUMS.minisig`
+> (release signature) and `sigil-recovery/SIGNING-KEY.pub`, with RECOVER.txt telling the reader to
+> compare the key against the one printed in README / on paper, never only the kit copy.
+
 Status: **design note only.** Releases are unsigned today, and nothing here is implemented. The
 recommendation is **pending Ashlynn's OK** (it needs a key she controls). Related:
 SFX-DESIGN.md (kit, "Not yet: signatures"), `scripts/make-recovery-kit.sh`,

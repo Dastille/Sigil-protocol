@@ -123,6 +123,9 @@ One `.html` file: the TypeScript codec, a small UI, and the `.sg1` bytes (base64
 
 ## 3. Recommended default (proposal, pending Ashlynn's OK)
 
+**Ashlynn locked 2026-11-02: recovery-kit Option 0 stays the answer; stubs A–D are on hold
+(deferred, no stub implementation).**
+
 **Option 0 now, as the documented answer; Option D next if the TS codec's repair is confirmed;
 Option A only for a concrete Linux cold-storage need.** Reasons: Option 0 adds no new attack
 surface and covers every platform with the full repair path; the archive stays plain data. Option

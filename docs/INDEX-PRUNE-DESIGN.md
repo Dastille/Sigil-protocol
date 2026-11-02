@@ -1,5 +1,22 @@
 # INDEX pruning: design options (decision pending)
 
+> **DECISION (Ashlynn locked 2026-11-02): Option A (epoch rollover) is the chosen direction;
+> Option C rejected; Option B not now (only if one root for all history becomes a hard
+> requirement, and then after A); Option D speedups stay as shipped. No prune code is merged
+> yet: nothing in this note is implemented beyond the Option D speedups.** Answers to section 7:
+> 1. A. One Merkle root for all history is not a requirement; card → old root → entry is accepted.
+> 2. Explicit `op=epoch` first line in the new log **and** a signed card (belt and braces; the
+>    line makes the link visible to `verify` without the card file).
+> 3. Seqs restart at 1 per epoch; the epoch line records `prev-size`, so no offset in the manifest.
+> 4. The tool never deletes the archive; deleting it is always the operator's explicit act.
+> 5. Manual only in the first slice; no trigger from `monthly-log-retention.sh`.
+> 6. Unsigned logs: refuse (fail closed) unless `--identity` signs the card; an unsigned epoch
+>    link is too easy to forge.
+> 7. N/A (B not chosen).
+> 8. Yes: `restore --at` / `log add` history before the cut requires the archive.
+> Next step before code: a small spec PR for the `op=epoch` line + manifest flag, then the
+> implementation with crash-order tests (§5).
+
 **Status: design note only. Nothing here is implemented. No option is approved; the
 "recommended default" below is a proposal pending Ashlynn's decision. Numbers are estimates from
 the format, not measurements, unless marked otherwise.**

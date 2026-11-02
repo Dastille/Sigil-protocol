@@ -92,6 +92,9 @@ storage; they do not hold the log's keys. Requirements for any streaming form:
 
 ## 5. Recommended default (unverified, pending Ashlynn's OK)
 
+**Ashlynn locked 2026-11-02: defer (Option D); Option C (external pack + reference segment) by
+hand meanwhile. No `log=9` code.**
+
 **D now, A when needed.** Keep the documented limit and the work-pack workaround (C by hand)
 until a real user needs segments above memory size. If that happens, implement **A** in this
 order: readers first (`read` / `restore` / `verify` / `mend` stream chunked segments), then

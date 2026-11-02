@@ -220,7 +220,7 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery kit (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
 | [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (decision pending, not implemented) |
 | [STREAMING-DESIGN.md](STREAMING-DESIGN.md) | Design note: segments above memory size (`log=9`, chunked segments); decision pending, not implemented |
-| [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery kits (minisign recommended); decision pending, releases unsigned |
+| [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery kits (minisign recommended); minisign chosen; releases carry SHA256SUMS, signature key TBD until created |
 | [PASSKEY.md](PASSKEY.md) | Lock a `.sgk` identity to a FIDO2 security key |
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
 | [LRC-COLD-USB.md](LRC-COLD-USB.md) | Cold kit across USB sticks |
@@ -258,3 +258,10 @@ Not in this Friday slice — come back later:
 To leave a way back next to an archive (program, checksums, spec, plain-English `RECOVER.txt`; no secrets): `scripts/make-recovery-kit.sh --check photos.sg1 --bin sigil-macos --bin sigil.exe` (see SFX-DESIGN.md, Option 0).
 
 Day-to-day use does not need those. A monthly read-only health + compaction-plan check ships as `scripts/monthly-log-retention.sh` (see SEGMENT-LOG.md, "Monthly retention check"); add `--apply --older-than 90d --seal-pass-file F` to let it compact when the log is healthy.
+
+## Checking a release download
+
+Each release has `SHA256SUMS`: `sha256sum -c SHA256SUMS --ignore-missing`. This catches damage,
+not tampering. Release signing key (minisign): **TBD until key created**; once it exists it will
+be printed here and in README, and releases will carry `SHA256SUMS.minisig`
+(`minisign -Vm SHA256SUMS -P <key>`). See [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md).
