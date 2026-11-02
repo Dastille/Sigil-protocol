@@ -218,8 +218,8 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [CONTAINER.md](CONTAINER.md) | One `name.sigil/` folder per thing; tidy / doctor / gc |
 | [SEGMENT-LOG.md](SEGMENT-LOG.md) | Append-only sealed batches, verify, prove, shred, rotate signer |
 | [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery kit (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
-| [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (decision pending, not implemented) |
-| [STREAMING-DESIGN.md](STREAMING-DESIGN.md) | Design note: segments above memory size (`log=9`, chunked segments); decision pending, not implemented |
+| [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (Option A epoch rollover chosen 2026-11-02, not implemented) |
+| [STREAMING-DESIGN.md](STREAMING-DESIGN.md) | Design note: segments above memory size (`log=9`, chunked segments); deferred 2026-11-02, not implemented |
 | [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery kits (minisign recommended); minisign chosen; releases carry SHA256SUMS, signature key TBD until created |
 | [PASSKEY.md](PASSKEY.md) | Lock a `.sgk` identity to a FIDO2 security key |
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
@@ -243,7 +243,7 @@ Consistency proofs between anchors now ship without the full INDEX: `sigil log p
 
 Re-wrapping a segment-key log's keys to new recipients now ships: `sigil log rewrap LOG --identity me.sgk --add-to bob.pub` (or `--remove-to`, `--replace`, `--new-pass-file`); see SEGMENT-LOG.md, "rewrap".
 
-Roll-up cards (a card of logs, a card of cards) ship as an MVP: `sigil log card day-01 day-02 --name 2026-10 --identity me.sgk -o 2026-10.card`, `sigil log check-card 2026-10.card --child day-01 --child day-02 --all --signer me.pub` One child can be proved alone (`sigil log card-prove` / `check-card-child`), and a newer card checked against an older one (`sigil log check-card-consistency`) (see SEGMENT-LOG.md, "Cards"). Pruning old INDEX history into a card is still later; the options are in [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) (decision pending).
+Roll-up cards (a card of logs, a card of cards) ship as an MVP: `sigil log card day-01 day-02 --name 2026-10 --identity me.sgk -o 2026-10.card`, `sigil log check-card 2026-10.card --child day-01 --child day-02 --all --signer me.pub` One child can be proved alone (`sigil log card-prove` / `check-card-child`), and a newer card checked against an older one (`sigil log check-card-consistency`) (see SEGMENT-LOG.md, "Cards"). Pruning old INDEX history into a card is still later; the options are in [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) (Option A chosen 2026-11-02, not implemented).
 
 ---
 
