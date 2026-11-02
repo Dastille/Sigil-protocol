@@ -166,68 +166,153 @@ fn scan(dir: &Path) -> Result<ScanResult> {
     scan_dirs(&[dir])
 }
 
+/// One `.sgp` file as read from disk (header fields not yet trusted).
+struct Candidate {
+    file: String,
+    index: usize,
+    n: u8,
+    k: u8,
+    map: Vec<u8>,
+    body: Vec<u8>,
+}
+
+fn read_candidate(path: &Path, file: String) -> Result<Option<Candidate>> {
+    let raw = fs::read(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    if raw.len() < 16 || raw[0..4] != PIECE_MAGIC {
+        return Ok(None);
+    }
+    let index = raw[5] as usize;
+    let map_len = u32::from_le_bytes(raw[8..12].try_into().map_err(crate::short_field)?) as usize;
+    let Some(map_end) = 12usize.checked_add(map_len) else {
+        return Ok(None);
+    };
+    if map_end + 4 > raw.len() {
+        return Ok(None);
+    }
+    let body_len = u32::from_le_bytes(
+        raw[map_end..map_end + 4]
+            .try_into()
+            .map_err(crate::short_field)?,
+    ) as usize;
+    let start = map_end + 4;
+    let Some(body_end) = start.checked_add(body_len) else {
+        return Ok(None);
+    };
+    if body_end > raw.len() || index > MAX_INDEX {
+        return Ok(None);
+    }
+    Ok(Some(Candidate {
+        file,
+        index,
+        n: raw[6],
+        k: raw[7],
+        map: raw[12..map_end].to_vec(),
+        body: raw[start..body_end].to_vec(),
+    }))
+}
+
 /// Collect pieces from one or more folders (e.g. cold-USB `usb-*` dirs).
+///
+/// Every piece carries its own copy of the map, so pieces are grouped by the file
+/// header their map decodes to. Pieces of more than one file are refused rather than
+/// mixed. Within the file, a damaged copy of a piece never hides a good copy of the
+/// same piece in another folder (or under another name): for each index the first
+/// copy whose checksum holds is used. Folders are read in the order given and file
+/// names in sorted order, so the result does not depend on directory listing order.
 fn scan_dirs(dirs: &[&Path]) -> Result<ScanResult> {
-    let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
-    let mut map: Option<Vec<u8>> = None;
-    let mut k = 0u8;
-    let mut n = 0u8;
+    let mut cands: Vec<Candidate> = Vec::new();
     for dir in dirs {
         let rd = match fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(_) => continue,
         };
+        let mut names: Vec<std::path::PathBuf> = Vec::new();
         for ent in rd {
             let ent = ent.map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let name = ent.file_name();
-            let name = name.to_string_lossy();
-            if !name.ends_with(".sgp") {
-                continue;
+            if ent.file_name().to_string_lossy().ends_with(".sgp") {
+                names.push(ent.path());
             }
-            let raw = fs::read(ent.path()).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            if raw.len() < 16 || raw[0..4] != PIECE_MAGIC {
-                continue;
-            }
-            let index = raw[5] as usize;
-            n = raw[6];
-            k = raw[7];
-            let map_len =
-                u32::from_le_bytes(raw[8..12].try_into().map_err(crate::short_field)?) as usize;
-            if 12 + map_len + 4 > raw.len() {
-                continue;
-            }
-            if map.is_none() {
-                map = Some(raw[12..12 + map_len].to_vec());
-            }
-            let body_len = u32::from_le_bytes(
-                raw[12 + map_len..16 + map_len]
-                    .try_into()
-                    .map_err(crate::short_field)?,
-            ) as usize;
-            let start = 16 + map_len;
-            if start + body_len > raw.len() {
-                continue;
-            }
-            let body = raw[start..start + body_len].to_vec();
-            if index <= MAX_INDEX && !parts.iter().any(|(i, _)| *i == index) {
-                parts.push((index, body));
+        }
+        names.sort();
+        for path in names {
+            if let Some(c) = read_candidate(&path, path.display().to_string())? {
+                cands.push(c);
             }
         }
     }
-    let map = map.ok_or(crate::Error::Msg("no pieces yet".into()))?;
-    let k = k as usize;
-    let n = n as usize;
+    if cands.is_empty() {
+        return Err(crate::Error::Msg("no pieces yet".into()));
+    }
+    // Group by decoded header: (header bytes, header, member indices).
+    let mut groups: Vec<(Vec<u8>, Header, Vec<usize>)> = Vec::new();
+    for (ci, c) in cands.iter().enumerate() {
+        let Ok((h, _, _)) = locate_header(&c.map) else {
+            continue;
+        };
+        if h.n != c.n || h.k != c.k {
+            continue;
+        }
+        let key = write_header(&h);
+        match groups.iter_mut().find(|(gk, _, _)| *gk == key) {
+            Some((_, _, members)) => members.push(ci),
+            None => groups.push((key, h, vec![ci])),
+        }
+    }
+    if groups.len() > 1 {
+        let files: Vec<String> = groups
+            .iter()
+            .map(|(_, h, m)| {
+                let first = m.first().map(|&i| cands[i].file.as_str()).unwrap_or("?");
+                format!("{:?} ({} piece(s), e.g. {first})", h.name, m.len())
+            })
+            .collect();
+        return Err(crate::Error::Msg(format!(
+            "these folders hold pieces of more than one file: {}. Gather each file from its own pieces.",
+            files.join("; ")
+        )));
+    }
+    let Some((_, h, members)) = groups.into_iter().next() else {
+        return Err(crate::Error::Msg(
+            "no readable piece map: every piece header is damaged".into(),
+        ));
+    };
+    // Most common exact map copy among this file's pieces (first seen wins a tie).
+    let mut maps: Vec<(&[u8], usize)> = Vec::new();
+    for &ci in &members {
+        let m = cands[ci].map.as_slice();
+        match maps.iter_mut().find(|(x, _)| *x == m) {
+            Some((_, count)) => *count += 1,
+            None => maps.push((m, 1)),
+        }
+    }
+    let mut best: Option<(&[u8], usize)> = None;
+    for &(m, count) in &maps {
+        if best.is_none_or(|(_, c)| count > c) {
+            best = Some((m, count));
+        }
+    }
+    let map = best.map(|(m, _)| m.to_vec()).unwrap_or_default();
+    let mut shards: Vec<(usize, Vec<u8>)> = Vec::new();
+    let mut parts: Vec<(usize, Vec<u8>)> = Vec::new();
+    for &ci in &members {
+        let c = &cands[ci];
+        if shards.iter().any(|(i, _)| *i == c.index) {
+            continue;
+        }
+        if let Some(sh) = shard_from_stride(&h, &c.body) {
+            shards.push((c.index, sh));
+            parts.retain(|(i, _)| *i != c.index);
+            parts.push((c.index, c.body.clone()));
+        } else if !parts.iter().any(|(i, _)| *i == c.index) {
+            // Kept only as a last resort (Glyph copies the raw stride); a later good
+            // copy of the same index replaces it.
+            parts.push((c.index, c.body.clone()));
+        }
+    }
+    let k = h.k as usize;
+    let n = h.n as usize;
     if k == 0 || n == 0 {
         return Err(crate::Error::Msg("piece headers missing k/n".into()));
-    }
-    let (h, _, _) = locate_header(&map)?;
-    let mut shards: Vec<(usize, Vec<u8>)> = Vec::new();
-    for (index, body) in &parts {
-        if let Some(sh) = shard_from_stride(&h, body) {
-            if !shards.iter().any(|(i, _)| i == index) {
-                shards.push((*index, sh));
-            }
-        }
     }
     Ok((shards, k, n, map, parts))
 }
@@ -516,4 +601,111 @@ pub fn gather_dirs(dirs: &[&Path]) -> Result<Vec<u8>> {
         vow.as_deref(),
         sgto_from_prefix(&map, &h).as_deref(),
     ))
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> crate::staging::TempDir {
+        crate::staging::TempDir::create(tag).unwrap()
+    }
+
+    fn mark(seed: u8) -> Vec<u8> {
+        let data: Vec<u8> = (0..5000u32).map(|i| (i as u8) ^ seed).collect();
+        crate::seal(&data, crate::Mode::Seal, None, "scan.bin", false).unwrap()
+    }
+
+    fn flip_shard(path: &Path) {
+        let mut raw = fs::read(path).unwrap();
+        let last = raw.len() - 10;
+        raw[last] ^= 0xFF;
+        fs::write(path, raw).unwrap();
+    }
+
+    /// A damaged copy in the first folder must not hide a good copy in the second.
+    #[test]
+    fn damaged_first_copy_does_not_hide_good_copy() {
+        let file = mark(1);
+        let ta = tmp("a");
+        let tb = tmp("b");
+        let (a, b) = (ta.path().to_path_buf(), tb.path().to_path_buf());
+        scatter(&file, &a).unwrap();
+        scatter(&file, &b).unwrap();
+        let (h, _, _) = locate_header(&file).unwrap();
+        let k = h.k as usize;
+        // Remove all but k pieces from b, damage the same k in a, drop the rest of a.
+        let mut kept = 0;
+        for i in 0..h.n as usize {
+            let name = format!("piece-{i:03}.sgp");
+            if kept < k {
+                flip_shard(&a.join(&name));
+                kept += 1;
+            } else {
+                fs::remove_file(a.join(&name)).unwrap();
+                fs::remove_file(b.join(&name)).unwrap();
+            }
+        }
+        // a alone: every piece damaged, gather fails closed.
+        assert!(gather_dirs(&[a.as_path()]).is_err());
+        // a then b: b's good copies are used.
+        let back = gather_dirs(&[a.as_path(), b.as_path()]).unwrap();
+        assert_eq!(
+            crate::unseal(&back, None).unwrap(),
+            crate::unseal(&file, None).unwrap()
+        );
+        let (shards, ..) = scan_dirs(&[a.as_path(), b.as_path()]).unwrap();
+        assert_eq!(shards.len(), k);
+    }
+
+    /// Pieces of two different files are refused, not mixed.
+    #[test]
+    fn pieces_of_two_files_are_refused() {
+        let ta = tmp("one");
+        let tb = tmp("two");
+        let (a, b) = (ta.path().to_path_buf(), tb.path().to_path_buf());
+        scatter(&mark(1), &a).unwrap();
+        scatter(&mark(2), &b).unwrap();
+        let e = gather_dirs(&[a.as_path(), b.as_path()])
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("more than one file"), "{e}");
+    }
+
+    /// A piece whose map copy is unreadable is skipped; the others still gather.
+    #[test]
+    fn piece_with_damaged_map_is_skipped() {
+        let file = mark(3);
+        let ta = tmp("map");
+        let a = ta.path().to_path_buf();
+        scatter(&file, &a).unwrap();
+        let p = a.join("piece-000.sgp");
+        let mut raw = fs::read(&p).unwrap();
+        for b in raw.iter_mut().skip(12).take(64) {
+            *b = 0;
+        }
+        fs::write(&p, raw).unwrap();
+        let back = gather_dirs(&[a.as_path()]).unwrap();
+        assert_eq!(
+            crate::unseal(&back, None).unwrap(),
+            crate::unseal(&file, None).unwrap()
+        );
+    }
+
+    /// Truncated piece files are ignored, never read past their end.
+    #[test]
+    fn truncated_piece_is_ignored() {
+        let file = mark(4);
+        let ta = tmp("trunc");
+        let a = ta.path().to_path_buf();
+        scatter(&file, &a).unwrap();
+        let p = a.join("piece-001.sgp");
+        let raw = fs::read(&p).unwrap();
+        fs::write(&p, &raw[..raw.len() / 2]).unwrap();
+        let back = gather_dirs(&[a.as_path()]).unwrap();
+        assert_eq!(
+            crate::unseal(&back, None).unwrap(),
+            crate::unseal(&file, None).unwrap()
+        );
+    }
 }
