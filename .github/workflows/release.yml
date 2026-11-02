@@ -56,3 +56,23 @@ jobs:
             crate/sigil/${{ matrix.artifact }}.tar.gz
             crate/sigil/${{ matrix.artifact }}.zip
             crate/sigil/${{ matrix.artifact }}
+
+  # RELEASE-SIGNING-DESIGN.md §6 step 1: one checksum list over every uploaded artefact.
+  # No secret and no signing here: the key holder signs SHA256SUMS offline with minisign
+  # after the release and uploads SHA256SUMS.minisig by hand.
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: download artefacts and write SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" --dir dist
+          bash scripts/make-sha256sums.sh dist
+          cat dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SHA256SUMS

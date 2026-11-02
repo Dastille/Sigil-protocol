@@ -593,6 +593,12 @@ they do not run on push, pull requests, tags, or a schedule (free plan billing),
 no CI results appear on commits or PRs. The merge gate is the local fmt / clippy /
 audit / test checks above.
 
+## Release checksums and signing
+
+Releases carry `SHA256SUMS` (`sha256sum -c SHA256SUMS --ignore-missing`); it catches damage, not
+tampering. Release signing key (minisign): **TBD until key created**. No release is signed yet.
+See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
+
 ## Known limitations
 
 - `--pass -` needs a terminal: it never reads a piped stdin (use
