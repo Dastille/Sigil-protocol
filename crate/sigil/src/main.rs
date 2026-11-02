@@ -963,9 +963,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SkyCmd,
     },
-    /// Frost Rune: spread a Seal across cold drives (Option A placement). Aliases: frost,
-    /// frost-rune. Old names `kit` / `cold-usb` still work (deprecated).
-    #[command(visible_aliases = ["frost", "frost-rune"], alias = "cold-usb")]
+    /// Frost Rune: spread a Seal across cold drives (Option A placement). Alias: frost-rune.
+    /// Old names `kit` / `cold-usb` still work (deprecated).
+    #[command(name = "frost", visible_alias = "frost-rune", aliases = ["kit", "cold-usb"])]
     Kit {
         #[command(subcommand)]
         cmd: KitCmd,
