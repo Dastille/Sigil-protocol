@@ -1,6 +1,6 @@
 # Self-extracting archives (SFX) with repair: design options (decision pending)
 
-**Status: Option 0 (recovery kit) recipe shipped as `scripts/make-recovery-kit.sh`; options A–D
+**Status: Option 0 (recovery folder) recipe shipped as `scripts/make-recovery-kit.sh`; options A–D
 are design only and no stub binary exists. The recommended
 default below is a proposal pending Ashlynn's decision. Sizes are from the current build
 (`target/release/sigil`, Linux x86_64, ~6.6 MB, all features of the default build), not from a
@@ -31,7 +31,7 @@ it, lists five options with their costs, and asks the questions that must be ans
 
 ## 2. Options
 
-### Option 0: No SFX; ship a recovery kit convention (recipe shipped)
+### Option 0: No SFX; ship a recovery folder convention (recipe shipped)
 
 **Shipped:** `scripts/make-recovery-kit.sh [--dest DIR] [--bin FILE]... [--dry-run] [--force]
 ARCHIVE...` writes `sigil-recovery/` with `bin/` (the running `sigil`, or each `--bin`, e.g.
@@ -190,7 +190,7 @@ the web codec's repair coverage was not checked for this note.
 ## Prior work in this repo
 
 * [sigil-v1.txt](sigil-v1.txt): the format specification (independent decoders).
-* [LRC-COLD-USB.md](LRC-COLD-USB.md): cold USB kits, `kit place` / `kit mend`.
+* [LRC-COLD-USB.md](LRC-COLD-USB.md): Frost Rune kits, `kit place` / `kit mend`.
 * [PACK-HEAD-REPAIR.md](PACK-HEAD-REPAIR.md), [SOFT-RS.md](SOFT-RS.md): what `mend` repairs.
 * README "Web lab": the TypeScript codec and its cross-checks against the CLI.
 * Common SFX practice (7-Zip / RAR SFX modules, `makeself` shell archives) is the model for

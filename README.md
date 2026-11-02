@@ -128,7 +128,7 @@ Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default
   writing a mended copy. It prints a warning that the file on disk is still damaged,
   and writes nothing at all if the repair or the checks fail (wrong passphrase too).
 - `sigil doctor --scrub DIR` checks every `.sg1` in a folder, repairs flipped bits, and
-  rewrites a mark only when the hash tree and file hash match. A mark it cannot fix is
+  rewrites a Sigil only when the hash tree and file hash match. A Sigil it cannot fix is
   listed as UNCORRECTABLE and left byte-for-byte as it was (exit code 2). Run it on a
   schedule so small damage is fixed before it piles up.
 
@@ -394,7 +394,8 @@ warning. Logs created before this change keep the INDEX they were made with; `si
 
 ### Other commands
 
-`sigil deluge --fountain` writes RaptorQ packets with random symbol IDs, so
+**Channel** (`sigil deluge --channel`; old `--fountain` still accepted) pours a Sigil out as
+**mana**: `.mana` files (`mana-<block>-<id>.mana`, RaptorQ codec) with random symbol IDs, so
 several people can rain the same file into one folder without coordinating
 (`--sequential` = the old 0, 1, 2, ... order). `--extra N` is a target, not an
 increment: running deluge again into the same folder tops it up to N spare packets
@@ -410,7 +411,7 @@ stray packet files and, when short, says `have 4 of 10 needed, need 6 more`
 On a slow or one-way link the receiver can ask for just what is missing:
 `sigil gather --report rx/` prints one short line (`SGNAK1 <id> <blocks> <have>/<need>
 <list>`, under 1 KiB even for 100 blocks). Send that line back; the sender runs
-`sigil deluge --fountain --answer "<line>" -o out/ file.sg1`, which writes exactly the
+`sigil deluge --channel --answer "<line>" -o out/ file.sg1`, which writes exactly the
 missing number of fresh packets per block. A report for a different file is refused.
 RaptorQ occasionally needs one or two packets beyond the exact count; report again if so.
 
@@ -483,7 +484,7 @@ exactly one JSON line on stdout; the friendly lines move to stderr.
 `"status"` object (`"schema":1`, additive — `report` stays) built from library data, not
 the text: `kind` (`mark`, `work-pack`, `folder-pack`, `constellation`), `health`
 (`healthy`, `needs-repair`, `not-recoverable`), `reason` (why not recoverable, else null),
-`repair` (what needs `sigil mend`, else null). A mark adds `version`, `shards` (`live`,
+`repair` (what needs `sigil mend`, else null). A Sigil adds `version`, `shards` (`live`,
 `total`, `need`, `len`), `merkle_closed`, `header_recovered`, `encrypted`, `compressed`,
 `private_label`, `orig_len` (null when private); a large-file pack adds `parts` (`total`,
 `present`), `chunk_size`, `overture`, `orig_len`; a folder pack adds `members` and
@@ -533,7 +534,7 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 
 | code | meaning |
 |------|---------|
-| 0 | it worked / the mark is healthy |
+| 0 | it worked / the Sigil is healthy |
 | 1 | error or refused (bad key, missing file, empty stdin, wrong option combo) |
 | 2 | too damaged to restore, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
 | 3 | no boot mark found |
@@ -544,7 +545,7 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 cheap: it checks structure and repair checksums and needs no key. Add `--read-data` to
 open every part all the way back to the original bytes (decrypt + true-name check), or
 `--read-data-subset 10%` to open an evenly spaced tenth. The sample moves each day, so
-a daily 10% check covers the whole file in about ten days (like restic). Encrypted marks
+a daily 10% check covers the whole file in about ten days (like restic). Encrypted Sigils
 need `--pass-file` / `--identity`. Nothing is written to disk. Pin the sample with
 `--subset-offset N`. Works on one `.sg1`, a large-file pack, a folder pack or a
 constellation (each member's star is a part; a locked card takes the same `--pass-file` /
@@ -624,10 +625,10 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - There is no self-extracting archive: opening or repairing a `.sg1` needs the
   `sigil` CLI (or the web lab codec). Options are in
   [docs/SFX-DESIGN.md](docs/SFX-DESIGN.md) (stubs on hold, locked 2026-11-02). What ships instead is a
-  recovery kit: `scripts/make-recovery-kit.sh ARCHIVE...` puts the program, checksums, the spec
+  recovery folder: `scripts/make-recovery-kit.sh ARCHIVE...` puts the program, checksums, the spec
   and a plain-English `RECOVER.txt` next to the archive (no passphrases or keys).
 
-- Releases and recovery kits are **unsigned**: `SHA256SUMS` catches accidental damage, not a
+- Releases and recovery folders are **unsigned**: `SHA256SUMS` catches accidental damage, not a
   deliberate swap. minisign chosen (2026-11-02); key TBD until created:
   [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - A segment-log batch is sealed and read in memory in one piece, so batches above RAM size do

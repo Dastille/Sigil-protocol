@@ -4,9 +4,9 @@ Friendly map of Sigil. Pick what you want to do, run the short command, then ope
 
 **Defaults that keep things simple**
 
-- Everyday marks use **Reflection** (default). Use **Seal** when the copy might take heavy damage (about half the pieces can die).
+- Everyday Sigils use **Reflection** (default). Use **Seal** when the copy might take heavy damage (about half the pieces can die).
 - A **passphrase Ward** (`--pass`) is still fine for a personal lock. Type it with `--pass -`, or in scripts read it from a private file with `--pass-file PATH` (see [Passphrases in scripts](#passphrases-in-scripts)).
-- **Encrypt-to** (`--to`) is opt-in — only when you want a recipient’s public key to open the mark.
+- **Encrypt-to** (`--to`) is opt-in — only when you want a recipient’s public key to open the Sigil.
 - **Cauchy** MDS is opt-in lab math; leave the default alone unless you know you need it.
 
 Workshop names still work: `seal` / `unseal` / `scry` mean the same as inscribe / de-scribe / scry.
@@ -58,9 +58,9 @@ Edit through an export tree, then seal a **new** tip (old seals stay untouched):
 ./sigil vault commit --from-export /tmp/sigil-dirty
 ```
 
-Full story: [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) · retention (full vs light + cold kit): [VAULT-RETENTION.md](VAULT-RETENTION.md) · remembered encrypt-to people: [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md)
+Full story: [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) · retention (full vs light + Frost Rune): [VAULT-RETENTION.md](VAULT-RETENTION.md) · remembered encrypt-to people: [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md)
 
-### Browse a mark like a folder (mount / export)
+### Browse a Sigil like a folder (mount / export)
 
 ```
 ./sigil mount ./notes.txt ./view --vault --export-dir /tmp/view
@@ -136,7 +136,7 @@ Without the key the log's list shows only "sealed" rows; verify, mend and gc sti
 
 Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder", "Private INDEX")
 
-### Lock a mark to someone’s public key (encrypt-to)
+### Lock a Sigil to someone’s public key (encrypt-to)
 
 ```
 ./sigil keygen -o me.sgk                 # also writes me.pub
@@ -197,11 +197,11 @@ Guide: [PASSKEY.md](PASSKEY.md)
 
 Guide: [PGP-IMPORT.md](PGP-IMPORT.md)
 
-### Cold USB kit (split a Seal across sticks)
+### Frost Rune (split a Seal across sticks)
 
 ```
-./sigil kit place out.sg1 --drives 4 -o ./kit/
-./sigil kit mend ./kit -o healed.sg1
+./sigil frost place out.sg1 --drives 4 -o ./kit/
+./sigil frost mend ./kit -o healed.sg1
 ```
 
 Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
@@ -217,10 +217,10 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md) | Remember who a vault seals to on later commits |
 | [CONTAINER.md](CONTAINER.md) | One `name.sigil/` folder per thing; tidy / doctor / gc |
 | [SEGMENT-LOG.md](SEGMENT-LOG.md) | Append-only sealed batches, verify, prove, shred, rotate signer |
-| [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery kit (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
+| [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery folder (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
 | [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (Option A epoch rollover chosen 2026-11-02, not implemented) |
 | [STREAMING-DESIGN.md](STREAMING-DESIGN.md) | Design note: segments above memory size (`log=9`, chunked segments); deferred 2026-11-02, not implemented |
-| [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery kits (minisign recommended); minisign chosen; releases carry SHA256SUMS, signature key TBD until created |
+| [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery folders (minisign recommended); minisign chosen; releases carry SHA256SUMS, signature key TBD until created |
 | [PASSKEY.md](PASSKEY.md) | Lock a `.sgk` identity to a FIDO2 security key |
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
 | [LRC-COLD-USB.md](LRC-COLD-USB.md) | Cold kit across USB sticks |
@@ -232,7 +232,7 @@ Frozen layout: [`docs/sigil-v1.txt`](sigil-v1.txt). CLI dump: `sigil --help`.
 | Note | What it is |
 |------|------------|
 | [CAUCHY-BAKEOFF.md](CAUCHY-BAKEOFF.md) | Opt-in Cauchy MDS bake-off notes |
-| [FOUNTAIN-v2.md](FOUNTAIN-v2.md) | Fountain / Deluge piece experiments |
+| [FOUNTAIN-v2.md](FOUNTAIN-v2.md) | Channel / Deluge piece experiments |
 | [SOFT-RS.md](SOFT-RS.md) | Soft Reed–Solomon lab notes |
 | [RS-FAST.md](RS-FAST.md) | How Reed–Solomon got fast without changing a byte |
 | [FAIL-CLOSED.md](FAIL-CLOSED.md) | Unseal/mend never return part of a file silently |
@@ -253,7 +253,7 @@ Not in this Friday slice — come back later:
 
 - INDEX roll-up of very old history
 - Self-extracting archives with repair: options and open questions in
-  [SFX-DESIGN.md](SFX-DESIGN.md) (stubs pending; the recovery kit below is shipped)
+  [SFX-DESIGN.md](SFX-DESIGN.md) (stubs pending; the recovery folder below is shipped)
 
 To leave a way back next to an archive (program, checksums, spec, plain-English `RECOVER.txt`; no secrets): `scripts/make-recovery-kit.sh --check photos.sg1 --bin sigil-macos --bin sigil.exe` (see SFX-DESIGN.md, Option 0).
 

@@ -13,7 +13,7 @@ Cases:
   bits N     flip N random bits anywhere in the .sg1 (scattered, independent)
   run F      zero one contiguous run of F x file size at a random offset
   trunc F    cut the last F x file size bytes off
-  fountain   `deluge --fountain --extra E`, delete K% of the .rq packets at
+  fountain   `deluge --channel --extra E`, delete K% of the .mana packets at
              random, `gather`, unseal (fountain only, no .sg1 damage)
 
 Outcome columns per case (out of `trials`):
@@ -118,7 +118,7 @@ for mode in ["reflection", "seal"]:
         row(f"{mode} ({len(base)} B)", label, res, times)
 
 # Fountain: drop K% of RaptorQ packets.
-print("\n| fountain (.rq of a reflection .sg1) | extra | packets written | dropped | rebuilt exact | refused | WRONG | median gather+unseal ms |")
+print("\n| channel (.mana of a reflection .sg1) | extra | packets written | dropped | rebuilt exact | refused | WRONG | median gather+unseal ms |")
 print("|---|---|---|---|---|---|---|---|")
 for extra in [4, 16, 64]:
     for drop in [0.0, 0.05, 0.10, 0.25, 0.50]:
@@ -126,8 +126,8 @@ for extra in [4, 16, 64]:
         for s in range(T):
             rain = f"{d}/rain"
             shutil.rmtree(rain, ignore_errors=True)
-            sh("deluge", "--fountain", "--extra", str(extra), "-o", rain, f"{d}/reflection.sg1")
-            pk = sorted(p for p in os.listdir(rain) if p.endswith(".rq"))
+            sh("deluge", "--channel", "--extra", str(extra), "-o", rain, f"{d}/reflection.sg1")
+            pk = sorted(p for p in os.listdir(rain) if p.endswith(".mana"))
             written = len(pk)
             r = random.Random(1000 + s)
             for p in r.sample(pk, int(len(pk) * drop)):

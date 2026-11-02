@@ -98,7 +98,7 @@ pub(crate) fn block_sizes(oti: &ObjectTransmissionInformation) -> Option<Vec<u32
 
 fn parse_packet(b: &[u8]) -> std::result::Result<Parsed, String> {
     if b.len() < 5 || b[0..4] != FT_MAGIC {
-        return Err("not a fountain packet".into());
+        return Err("not a Channel mana file".into());
     }
     let (cfg_at, body_at, end, object) = match b[4] {
         1 => (5usize, 17usize, b.len(), None),
@@ -150,10 +150,10 @@ pub struct DelugeReport {
     pub kept: u32,
     /// New packet files written by this run.
     pub written: u32,
-    /// `.rq` files not counted: unreadable, damaged, or claiming to be this file
+    /// `.mana` files not counted: unreadable, damaged, or claiming to be this file
     /// but not matching it. Left in place.
     pub bad: Vec<(PathBuf, String)>,
-    /// `.rq` files of another file. Left in place, not counted.
+    /// `.mana` files of another file. Left in place, not counted.
     pub stray: Vec<PathBuf>,
     /// Extra copies of a packet already counted (same block and symbol ID).
     pub duplicates: usize,
@@ -204,7 +204,7 @@ fn expected_packet(
 /// [`DelugeReport`]). Random mode (default) counts the valid packets of this file
 /// already in `dir` (any name, v1 or v2) and writes only the missing number, with
 /// fresh random ESIs that collide with none already there; at or above the target
-/// it writes nothing. `sequential` fills in the missing `rain-NNNNN.rq` files of
+/// it writes nothing. `sequential` fills in the missing `mana-NNNNN.mana` files of
 /// ESIs 0..K+repair-1; an existing one that does not match is reported, not replaced.
 pub fn deluge_fountain_report(
     file: &[u8],
@@ -237,7 +237,7 @@ pub(crate) fn deluge_fountain_with(
 ) -> Result<DelugeReport> {
     if file.len() >= 4 && file.starts_with(&crate::work::WORK_MAGIC) {
         return Err(err(
-            "work pack: fountain each star, or Scatter the pack first.",
+            "work pack: channel each star, or Scatter the pack first.",
         ));
     }
     if file.is_empty() {
@@ -253,7 +253,7 @@ pub(crate) fn deluge_fountain_with(
     if sequential {
         for (i, pkt) in enc.get_encoded_packets(repair).iter().enumerate() {
             rep.target = rep.target.saturating_add(1);
-            let path = dir.join(format!("rain-{i:05}.rq"));
+            let path = dir.join(format!("mana-{i:05}.{MANA_EXT}"));
             let want = packet_v2(&cfg, &object, pkt);
             if path.exists() {
                 if fs::read(&path).ok().as_deref() == Some(want.as_slice()) {
@@ -279,7 +279,7 @@ pub(crate) fn deluge_fountain_with(
         .map_err(|e| err(e.to_string()))?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+        .filter(|p| crate::fountain::is_packet_file(p))
         .collect();
     files.sort();
     for p in files {
@@ -341,7 +341,7 @@ pub(crate) fn deluge_fountain_with(
         let mut misses = 0u32;
         while missing > 0 {
             let esi = next_esi()? & MAX_ESI;
-            let path = dir.join(format!("rain-{sbn_u8:03}-{esi:08}.rq"));
+            let path = dir.join(format!("mana-{sbn_u8:03}-{esi:08}.{MANA_EXT}"));
             if taken[sbn].contains(&esi) || path.exists() {
                 misses += 1;
                 if misses >= ESI_MISS_LIMIT {
@@ -381,9 +381,9 @@ pub struct FountainReport {
     pub packets: usize,
     /// Source symbols needed in total (sum of K over the source blocks).
     pub needed: u32,
-    /// `.rq` files skipped as damaged / unreadable, with the reason.
+    /// `.mana` files skipped as damaged / unreadable, with the reason.
     pub bad: Vec<(PathBuf, String)>,
-    /// `.rq` files skipped because they belong to another file (stray).
+    /// `.mana` files skipped because they belong to another file (stray).
     pub stray: Vec<PathBuf>,
     /// Duplicate packets (same block and ESI) ignored.
     pub duplicates: usize,
@@ -411,7 +411,7 @@ pub fn gather_fountain(dir: &Path) -> Result<Vec<u8>> {
     gather_fountain_report(dir).map(|(d, _)| d)
 }
 
-/// Rebuild from the `.rq` packets in `dir`. Damaged and stray packet files are
+/// Rebuild from the `.mana` mana files in `dir`. Damaged and stray packet files are
 /// skipped (listed in the report); when too few are left the error says how many
 /// more are needed ("have 4 of 10 needed, need 6 more").
 /// Packets of the chosen object in a folder, deduplicated, with per-block counts.
@@ -429,7 +429,7 @@ fn collect(dir: &Path) -> Result<Collected> {
         .map_err(|e| err(e.to_string()))?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+        .filter(|p| crate::fountain::is_packet_file(p))
         .collect();
     files.sort();
     let mut parsed = Vec::new();
@@ -445,9 +445,9 @@ fn collect(dir: &Path) -> Result<Collected> {
     if parsed.is_empty() {
         let note = rep.skipped_note();
         return Err(err(if note.is_empty() {
-            "no .rq fountain packets here".to_string()
+            "no Channel mana (.mana files) here".to_string()
         } else {
-            format!("no usable .rq fountain packets here ({note})")
+            format!("no usable Channel mana here ({note})")
         }));
     }
     // Choose the object: the v2 object with the most packets, else the commonest v1 config.
@@ -469,7 +469,7 @@ fn collect(dir: &Path) -> Result<Collected> {
             .max_by_key(|(k, n)| (**n, std::cmp::Reverse(**k)))
         {
             Some((c, _)) => (*c, None),
-            None => return Err(err("no .rq fountain packets here")),
+            None => return Err(err("no Channel mana (.mana files) here")),
         },
     };
     // v2 packets of the chosen object first; old v1 packets with the same transmission
@@ -544,12 +544,12 @@ pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
             .sum();
         return Err(err(if more > 0 {
             format!(
-                "not enough fountain packets yet: have {usable} of {} needed, need {more} more (keep raining){note}",
+                "not enough mana yet: have {usable} of {} needed, need {more} more (keep raining){note}",
                 rep.needed
             )
         } else {
             format!(
-                "not enough fountain packets yet: have {} for {} needed; RaptorQ sometimes needs 1-2 extra, keep raining{note}",
+                "not enough mana yet: have {} for {} needed; RaptorQ sometimes needs 1-2 extra, keep raining{note}",
                 rep.packets, rep.needed
             )
         }));
@@ -629,7 +629,7 @@ pub fn fountain_progress(dir: &Path) -> FountainProgress {
             damaged: fs::read_dir(dir)
                 .map(|rd| {
                     rd.flatten()
-                        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rq"))
+                        .filter(|e| crate::fountain::is_packet_file(&e.path()))
                         .count()
                 })
                 .unwrap_or(0),
@@ -642,7 +642,7 @@ pub fn receiver_report(dir: &Path) -> Result<String> {
     let c = collect(dir)?;
     let Some(obj) = c.chosen.1 else {
         return Err(err(
-            "these are old v1 packets (no object id); --report needs packets from a current `deluge --fountain`",
+            "these are old v1 packets (no object id); --report needs mana from a current `deluge --channel`",
         ));
     };
     let need: Vec<u32> = c
@@ -770,7 +770,7 @@ fn answer_with(
             if esi < k || !taken.insert(esi) {
                 continue;
             }
-            let path = dir.join(format!("rain-{sbn_u8:03}-{esi:08}.rq"));
+            let path = dir.join(format!("mana-{sbn_u8:03}-{esi:08}.{MANA_EXT}"));
             if path.exists() {
                 continue;
             }
@@ -783,13 +783,21 @@ fn answer_with(
     Ok(written)
 }
 
+/// Extension of Channel packet files (one file = one mana). Only `.mana` is read or written.
+pub const MANA_EXT: &str = "mana";
+
+/// True for a Channel mana file (`.mana`).
+pub fn is_packet_file(p: &Path) -> bool {
+    p.extension().and_then(|x| x.to_str()) == Some(MANA_EXT)
+}
+
 pub fn is_fountain_dir(dir: &Path) -> bool {
     fs::read_dir(dir)
         .ok()
         .into_iter()
         .flatten()
         .flatten()
-        .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some("rq"))
+        .any(|e| crate::fountain::is_packet_file(&e.path()))
 }
 
 #[cfg(test)]
@@ -827,7 +835,7 @@ mod tests {
             .unwrap()
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("rq"))
+            .filter(|p| crate::fountain::is_packet_file(p))
             .collect();
         v.sort();
         v
@@ -980,10 +988,10 @@ mod tests {
         deluge_fountain_opts(&m, &sa, 0, true).unwrap();
         deluge_fountain_opts(&m, &sb, 0, true).unwrap();
         for (i, p) in rq_files(&sa).iter().take(take).enumerate() {
-            fs::copy(p, sp.join(format!("a-{i}.rq"))).unwrap();
+            fs::copy(p, sp.join(format!("a-{i}.mana"))).unwrap();
         }
         for (i, p) in rq_files(&sb).iter().take(take).enumerate() {
-            fs::copy(p, sp.join(format!("b-{i}.rq"))).unwrap();
+            fs::copy(p, sp.join(format!("b-{i}.mana"))).unwrap();
         }
         let e = gather_fountain(&sp).unwrap_err().to_string();
         assert!(e.contains("need"), "{e}");
@@ -1098,7 +1106,7 @@ mod tests {
         let forged = fs::read(&files[1]).unwrap();
         let o = scratch("topother");
         deluge_fountain(&mark(90_000), &o, 0).unwrap();
-        fs::copy(&rq_files(&o)[0], d.join("zz-stray.rq")).unwrap();
+        fs::copy(&rq_files(&o)[0], d.join("zz-stray.mana")).unwrap();
         let rep = deluge_fountain_report(&m, &d, 2, false).unwrap();
         assert_eq!((rep.kept, rep.written, rep.target), (k, 2, k + 2));
         assert_eq!(rep.bad.len(), 2, "{:?}", rep.bad);
@@ -1128,7 +1136,7 @@ mod tests {
         let m = mark(100_000);
         let d = scratch("seqtamper");
         deluge_fountain_opts(&m, &d, 1, true).unwrap();
-        let p = d.join("rain-00000.rq");
+        let p = d.join("mana-00000.mana");
         forge(&p);
         let forged = fs::read(&p).unwrap();
         let rep = deluge_fountain_report(&m, &d, 1, true).unwrap();
@@ -1146,23 +1154,23 @@ mod tests {
         let d = scratch("skip");
         deluge_fountain(&m, &d, 6).unwrap();
         let files = rq_files(&d);
-        // bit flip in one, truncate another, garbage, an empty .rq, a 17-byte v1 stub
+        // bit flip in one, truncate another, garbage, an empty .mana, a 17-byte v1 stub
         let mut b = fs::read(&files[0]).unwrap();
         b[60] ^= 0x01;
         fs::write(&files[0], b).unwrap();
         let b = fs::read(&files[1]).unwrap();
         fs::write(&files[1], &b[..b.len() / 2]).unwrap();
-        fs::write(d.join("junk.rq"), b"hello").unwrap();
-        fs::write(d.join("empty.rq"), b"").unwrap();
+        fs::write(d.join("junk.mana"), b"hello").unwrap();
+        fs::write(d.join("empty.mana"), b"").unwrap();
         let mut stub = FT_MAGIC.to_vec();
         stub.push(1);
         stub.extend_from_slice(&[0u8; 12]);
-        fs::write(d.join("stub.rq"), &stub).unwrap();
+        fs::write(d.join("stub.mana"), &stub).unwrap();
         // stray packets of a different file
         let o = scratch("other");
         deluge_fountain(&other, &o, 0).unwrap();
         for (i, p) in rq_files(&o).iter().take(2).enumerate() {
-            fs::copy(p, d.join(format!("zz-stray-{i}.rq"))).unwrap();
+            fs::copy(p, d.join(format!("zz-stray-{i}.mana"))).unwrap();
         }
         let (back, rep) = gather_fountain_report(&d).unwrap();
         assert_eq!(back, m);

@@ -1,4 +1,4 @@
-HOW TO GET YOUR FILES BACK (Sigil recovery kit)
+HOW TO GET YOUR FILES BACK (Sigil recovery folder)
 ================================================
 
 This folder was made on @DATE@ with @VERSION@.
@@ -6,19 +6,19 @@ It sits next to (or travels with) these archives:
 
 @ARCHIVES@
 
-Nothing in this kit is secret. Passphrases and identity keys (.sgk) are NOT here:
+Nothing in this folder is secret. Passphrases and identity keys (.sgk) are NOT here:
 you need the passphrase (or key) the archive was sealed with, if it was locked.
 
-1. Check the kit is untouched
+1. Check the folder is untouched
    In this folder:   sha256sum -c SHA256SUMS      (macOS: shasum -a 256 -c SHA256SUMS)
    Every line must say OK. If a program fails, get a fresh copy from
    https://github.com/Dastille/Sigil-protocol/releases (source code is there too, AGPL-3.0).
    SHA256SUMS here only catches damage. Release signing key (minisign): TBD until key
    created; when it exists, check the release's SHA256SUMS.minisig with the key printed in
    the project README or on paper, never only a copy found in this folder.
-   The archives as they were when this kit was made: from the folder that holds them,
+   The archives as they were when this folder was made: from the folder that holds them,
      sha256sum -c sigil-recovery/ARCHIVES.sha256
-   A FAILED .sg1 line means damage (go to 4b). A log folder grows after the kit was made, so
+   A FAILED .sg1 line means damage (go to 4b). A log folder grows after the folder was made, so
    INDEX / HEAD / new segments may differ; use step 4c (log verify) for logs instead.
 
 2. Pick the program for this computer from bin/
@@ -46,10 +46,10 @@ you need the passphrase (or key) the archive was sealed with, if it was locked.
    bin/NAME log mend NAME.sigil              (heal damaged segments in place)
    bin/NAME log restore NAME.sigil . -o restored [--pass-file pw.txt]
 
-4d. Pieces spread over several sticks or folders (scatter / deluge / cold kit)
+4d. Pieces spread over several sticks or folders (scatter / deluge / Frost Rune)
    Put all the pieces you have in one folder, then
    bin/NAME gather FOLDER -o ARCHIVE.sg1     (any k of n pieces are enough)
-   Cold USB kits:  bin/NAME kit mend --help
+   Frost Rune:     bin/NAME frost mend --help   (older programs: kit mend)
 
 5. No program works on this computer?
    spec/sigil-v1.txt describes the format exactly; any programmer can write a reader.

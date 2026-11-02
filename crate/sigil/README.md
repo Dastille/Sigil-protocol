@@ -22,7 +22,7 @@ cargo build --release --target x86_64-pc-windows-gnu
 ./sigil de-scribe -o file.bin out.sg1
 ```
 
-Large files become a **work pack** (many marks in one file, 4 MiB chunks). Same commands.
+Large files become a **work pack** (many Sigils in one file, 4 MiB chunks). Same commands.
 
 `./sigil mend big.sg1 -o big.sg1` heals a whole work pack in one go: every torn 4 MiB chunk star is rebuilt, each star's true-name is checked against the pack's facet list, and the file is replaced atomically (temp + rename). No passphrase or identity needed; Warded and `--to` packs mend as-is. The pack's own head, chunk-length framing and facet trailer aren't RS-coded, so damage there (or a chunk past its mode's repair budget) is refused with the star named, and nothing is written.
 
@@ -114,8 +114,8 @@ Encrypt-to constellations: `--to` on `constellation add` encrypts every new star
 
 # split an existing .sg1
 ./sigil scatter mark.sg1 -o ./pieces
-./sigil kit place mark.sg1 --drives 4 -o ./kit/
-./sigil kit mend ./kit -o healed.sg1
+./sigil frost place mark.sg1 --drives 4 -o ./kit/
+./sigil frost mend ./kit -o healed.sg1
 ./sigil gather ./pieces -o mark.sg1
 
 # rain extra pieces (Seal/Reflection). Far side needs any k, not all 16.
@@ -127,7 +127,7 @@ Encrypt-to constellations: `--to` on `constellation add` encrypts every new star
 # symbol ID (RFC 6330: 24-bit ESI), so several senders can pool into one folder.
 # --sequential keeps the old 0, 1, 2, ... order. A short folder says how many more it needs.
 # --extra is a target: rerunning into ./rain tops it up to 32 spare packets (or writes nothing).
-./sigil deluge dump.sg1 --fountain --extra 32 -o ./rain
+./sigil deluge dump.sg1 --channel --extra 32 -o ./rain
 ./sigil gather ./rain -o dump.sg1
 
 
@@ -141,7 +141,7 @@ Encrypt-to constellations: `--to` on `constellation add` encrypts every new star
 
 Shrink still runs **before** the Ward. Encrypted bytes do not shrink.
 
-**Dispatch (copy the mark)** — calls tools you already have. Does not replace them.
+**Dispatch (copy the Sigil)** — calls tools you already have. Does not replace them.
 
 ```
 # one shot: pack and rsync (usual for you)

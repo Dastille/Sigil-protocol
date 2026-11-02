@@ -32,11 +32,11 @@ SFX-DESIGN.md (kit, "Not yet: signatures"), `scripts/make-recovery-kit.sh`,
 
 * `release.yml` (manual dispatch) uploads binaries to a GitHub release. It publishes no checksum
   list and no signature.
-* The recovery kit writes `SHA256SUMS` and `ARCHIVES.sha256` next to the binaries. A checksum
+* The recovery folder writes `SHA256SUMS` and `ARCHIVES.sha256` next to the binaries. A checksum
   file catches **accidental** damage only: whoever can swap a binary can rewrite the checksums
   in the same folder, the same release page or the same mirror.
 * So nothing today lets someone years later tell "this is the sigil Ashlynn built" from "a
-  binary someone replaced", and a recovery kit is exactly the thing people run in a hurry.
+  binary someone replaced", and a recovery folder is exactly the thing people run in a hurry.
 
 ## 2. Options
 
@@ -52,7 +52,7 @@ the public key is a one-line string that can be printed in README, START.md and 
 CI signs with a short-lived certificate tied to the workflow identity; signatures are logged.
 * No long-lived key; public, auditable log.
 * Verification needs `cosign` plus network access to Rekor/Fulcio roots (or a saved bundle),
-  and trust in GitHub + Sigstore. Weak fit for an offline recovery kit opened in 2040.
+  and trust in GitHub + Sigstore. Weak fit for an offline recovery folder opened in 2040.
 
 ### C. Signed git tags (SSH or OpenPGP)
 Proves the source tag, not the binaries; needs reproducible builds to connect the two. Good
@@ -60,7 +60,7 @@ complement, not a replacement.
 
 ### D. Sigil-native signatures
 Sigil already has Ed25519 identities (`log` signers). Signing releases with `sigil` itself is
-circular for a recovery kit (you must trust the binary to check the binary) and would be new
+circular for a recovery folder (you must trust the binary to check the binary) and would be new
 tooling; no new crypto, but no gain over A. Not recommended.
 
 ### E. Platform code signing (Authenticode, Apple Developer ID + notarisation)
@@ -75,7 +75,7 @@ version being inside the signed list and the trusted comment).
 Out of scope: a compromised signing key or build machine (needs reproducible builds and
 multiple builders), a compromised verifier binary already on the user's machine.
 
-## 4. Recovery kit (embedding)
+## 4. Recovery folder (embedding)
 
 With A, `make-recovery-kit.sh` would copy in `SHA256SUMS.minisig` from the release and the
 public key as `SIGNING-KEY.pub`, and `RECOVER.txt` would say: check with minisign **using the key

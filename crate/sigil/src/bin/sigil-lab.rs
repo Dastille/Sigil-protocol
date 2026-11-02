@@ -1535,7 +1535,7 @@ impl Lab {
         let mut do_scatter = false;
         let mut do_gather = false;
         card(ui, false, |ui| {
-            ui.label(RichText::new("Mark").color(CREAM).size(13.5));
+            ui.label(RichText::new("Sigil").color(CREAM).size(13.5));
             ui.horizontal(|ui| {
                 ui.add(
                     TextEdit::singleline(&mut self.mark)

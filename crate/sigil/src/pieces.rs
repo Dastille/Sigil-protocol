@@ -103,7 +103,7 @@ pub fn deluge(file: &[u8], extra: u8, dir: &Path, only_rain: bool, from: Option<
         }
         if parts.len() < k {
             return Err(crate::Error::Msg(format!(
-                "need {k} live pieces in the mark to rain more, have {}",
+                "need {k} live pieces in the Sigil to rain more, have {}",
                 parts.len()
             )));
         }
