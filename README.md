@@ -414,6 +414,8 @@ On a slow or one-way link the receiver can ask for just what is missing:
 `sigil deluge --channel --answer "<line>" -o out/ file.sg1`, which writes exactly the
 missing number of fresh packets per block. A report for a different file is refused.
 RaptorQ occasionally needs one or two packets beyond the exact count; report again if so.
+The numbered-piece options `--from`, `--only-rain` and `--watch` do not apply to a channel and
+are refused with `--channel` (they used to be silently ignored); use `--report` / `--answer` instead.
 
 **`gather --partial` (for scripts).** If there are not enough packets yet, gather still
 fails (exit 2) and still writes **no** mark — it never leaves a pretend-complete archive.

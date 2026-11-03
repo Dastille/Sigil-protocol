@@ -620,10 +620,12 @@ enum Cmd {
         #[arg(long, default_value_t = 16)]
         extra: u8,
         /// First extra part number (16–254). Different people pick different numbers so their rain does not overlap.
-        #[arg(long)]
+        /// Not with --channel (mana packets already get random symbol IDs, so senders rarely overlap).
+        #[arg(long, conflicts_with = "fountain")]
         from: Option<u8>,
-        /// Write only the new drops (for “they’re one short”).
-        #[arg(long)]
+        /// Write only the new drops (for “they’re one short”). Not with --channel (a channel
+        /// folder is topped up in place; use `gather --report` + `deluge --channel --answer`).
+        #[arg(long, conflicts_with = "fountain")]
         only_rain: bool,
         #[arg(long)]
         rsync: Option<String>,
@@ -631,8 +633,9 @@ enum Cmd {
         rclone: Option<String>,
         #[arg(long)]
         wormhole: bool,
-        /// Make one extra part, copy, see if they have enough, repeat until they do.
-        #[arg(long)]
+        /// Make one extra part, copy, see if they have enough, repeat until they do. Not with
+        /// --channel (use `gather --report` + `deluge --channel --answer`).
+        #[arg(long, conflicts_with = "fountain")]
         watch: bool,
         /// Channel: pour the Sigil out as mana (no 255 cap; RaptorQ codec). Writes .mana files.
         /// Gather rebuilds from any enough set (only .mana files are read). `--fountain` still works.
