@@ -366,3 +366,35 @@ fn rq_files_are_not_read_and_fountain_is_an_alias_of_channel() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `--from`, `--only-rain` and `--watch` steer the numbered-piece rain only. With
+/// `--channel` they used to be silently ignored; now they are refused before anything
+/// is written, and the same flags without `--channel` still work.
+#[test]
+fn piece_rain_flags_are_refused_with_channel_not_ignored() {
+    let d = scratch("refuse");
+    let mark = fx().join("mark.sg1");
+    let m = mark.to_str().unwrap();
+    for (flags, name) in [
+        (&["--from", "40"][..], "--from"),
+        (&["--only-rain"][..], "--only-rain"),
+        (&["--watch"][..], "--watch"),
+    ] {
+        for ch in ["--channel", "--fountain"] {
+            let mut args = vec!["deluge", m, ch, "-o", "r"];
+            args.extend_from_slice(flags);
+            let o = sigil(&d, &args);
+            let e = String::from_utf8_lossy(&o.stderr);
+            assert!(!o.status.success(), "{args:?} should be refused");
+            assert!(e.contains(name) && e.contains("cannot be used with"), "{e}");
+            assert!(!d.join("r").exists(), "{args:?} wrote output");
+        }
+    }
+    // Without --channel, --from still works (numbered pieces from part 40).
+    ok(
+        &d,
+        &["deluge", m, "--from", "40", "--extra", "2", "-o", "p"],
+    );
+    assert!(std::fs::read_dir(d.join("p")).unwrap().count() > 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
