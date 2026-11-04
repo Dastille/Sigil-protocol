@@ -14,6 +14,7 @@ Lab: https://dove-bloom-star-island.grok.me
 - **Deluge** — extra indexed RS rain past `n` (index ≤ 254); mixed lanes for coupon collection.
 - **RaptorQ Channel** — `--channel` / `.mana` packets via `deluge_fountain` / `gather_fountain` (no 255 ceiling).
 - **In-place mend** — `sigil mend torn.sg1 -o healed.sg1` (alias `repair`): locate header → gather live shards → decode ≥`k` → re-encode classic `0..n-1` → rewrite full Sigil (keystone / ember / vow). No passphrase; stays in the folded domain. Glyph errors if any shard is missing.
+- **Multi-copy mend** — `sigil mend A.sg1 B.sg1 -o healed.sg1`: pool CRC-good shards by index across copies of one Sigil (copies with an unreadable front still contribute, located with another copy's header); refuse differing headers, conflicting CRC-good shards at the same index, or a result that fails Merkle / true name. Single-file Sigils only; no `--soft`.
 - **Soft-decision RS (opt-in)** — `sigil mend --soft`: when Hard CRC-kill leaves too few shards, keep Soft (CRC-failed) bodies, stripe GMD-lite, accept only on Merkle / true-name. Not a Ward or RaptorQ substitute; no layout break.
 - **Cauchy MDS bake-off** — `MdsBackend` + `sigil bench-mds`; Cauchy opt-in (`--mds cauchy`) after measured encode/decode win; Vandermonde remains default. See `docs/CAUCHY-BAKEOFF.md`.
 - **Frost Rune (Option A)** — `sigil frost place` / `sigil frost mend`: round-robin Seal shards across N USB dirs; one drive loss stays in Seal budget. No Azure LRC codec yet. See `docs/LRC-COLD-USB.md`.

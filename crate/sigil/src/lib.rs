@@ -143,8 +143,8 @@ pub use open::{run_open, run_open_keys};
 pub use packhead::HeadSource;
 pub use pieces::{
     deluge as deluge_pieces, gather as gather_pieces, gather_dirs as gather_piece_dirs, mend_bytes,
-    mend_bytes_ex, scatter as scatter_pieces, tally as tally_pieces, vessel_present, write_vessel,
-    VESSEL,
+    mend_bytes_ex, mend_copies, scatter as scatter_pieces, tally as tally_pieces, vessel_present,
+    write_vessel, CopiesMend, VESSEL,
 };
 pub use privacy::{FingerprintKey, Pad, SealMeta, SealOpts};
 pub use show::run_showing;
@@ -1497,6 +1497,200 @@ mod tests {
         .unwrap();
         assert_eq!(suggested_output_name(&packed), "notes.txt");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Byte offset of shard `i` and the stride, for test damage.
+    fn shard_span(bytes: &[u8], i: usize) -> (usize, usize) {
+        let (h, prefix, _) = header::locate_header(bytes).unwrap();
+        let stride = header::shard_stride(&h);
+        (prefix + i * stride, stride)
+    }
+
+    fn smash(bytes: &mut [u8], shards: std::ops::Range<usize>) {
+        for i in shards {
+            let (off, stride) = shard_span(bytes, i);
+            bytes[off..off + stride].fill(0);
+            bytes[off] = 3;
+        }
+    }
+
+    /// Rewrite shard `i`'s body with `f` and fix its CRC so it still passes its own check.
+    fn forge_shard(bytes: &mut [u8], i: usize, f: impl Fn(&mut [u8])) {
+        let h = read_header(bytes).unwrap();
+        let (start, _) = shard_span(bytes, i);
+        let lead =
+            if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { header::VOW_SIZE } else { 0 };
+        let off = start + lead;
+        let sl = h.shard_len as usize;
+        f(&mut bytes[off..off + sl]);
+        let crc = crc32fast::hash(&bytes[off..off + sl]);
+        bytes[off + sl..off + sl + 4].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    fn sample(len: usize) -> Vec<u8> {
+        let mut x = 0x2545f4914f6cdd1du64;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mend_copies_pools_two_unrecoverable_copies() {
+        let msg = sample(40_000);
+        let bytes = seal(&msg, Mode::Seal, None, "c.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let (n, k) = (h.n as usize, h.k as usize);
+        // Each copy loses k+1 shards (one past its budget), at opposite ends.
+        let mut a = bytes.clone();
+        smash(&mut a, 0..k + 1);
+        let mut b = bytes.clone();
+        smash(&mut b, n - k - 1..n);
+        assert!(crate::pieces::mend_bytes(&a).is_err());
+        assert!(crate::pieces::mend_bytes(&b).is_err());
+        let rep = crate::pieces::mend_copies(&[&a, &b]).unwrap();
+        assert_eq!(rep.live_per_copy, vec![n - k - 1, n - k - 1]);
+        // Together they still miss the two shards both lost, but that leaves n - 2 >= k.
+        assert_eq!(rep.live_combined, 2 * (n - k - 1));
+        assert!(rep.live_combined >= k);
+        assert_eq!(rep.header_per_copy, vec![true, true]);
+        assert_eq!(
+            rep.bytes, bytes,
+            "rebuild is byte-identical to the original"
+        );
+        let (_, merkle_ok, live, _, _) = verify(&rep.bytes).unwrap();
+        assert!(merkle_ok);
+        assert_eq!(live, n);
+        assert_eq!(unseal(&rep.bytes, None).unwrap(), msg);
+        // Order of copies does not matter.
+        let rev = crate::pieces::mend_copies(&[&b, &a]).unwrap();
+        assert_eq!(rev.bytes, bytes);
+    }
+
+    #[test]
+    fn mend_copies_uses_a_copy_whose_front_is_destroyed() {
+        let msg = sample(30_000);
+        let bytes = seal(&msg, Mode::Seal, None, "front.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let (n, k) = (h.n as usize, h.k as usize);
+        let (first, _) = shard_span(&bytes, 0);
+        // Copy A: header, every Keystone spare and every per-shard header copy (Ember)
+        // gone; shard bodies and their checksums intact.
+        let mut a = bytes.clone();
+        a[..first].fill(0);
+        if h.ember() {
+            for i in 0..n {
+                let (off, _) = shard_span(&bytes, i);
+                a[off..off + HEADER_SIZE].fill(0);
+            }
+        }
+        assert!(header::locate_header(&a).is_err());
+        // Copy B: header fine, but too many shards gone to mend alone.
+        let mut b = bytes.clone();
+        smash(&mut b, 0..k + 2);
+        assert!(crate::pieces::mend_bytes(&b).is_err());
+        let rep = crate::pieces::mend_copies(&[&a, &b]).unwrap();
+        assert_eq!(rep.header_per_copy, vec![false, true]);
+        assert_eq!(rep.live_per_copy, vec![n, n - k - 2]);
+        assert_eq!(unseal(&rep.bytes, None).unwrap(), msg);
+        // Only header-less copies: refused, nothing guessed.
+        let err = crate::pieces::mend_copies(&[&a, &a])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no copy has a readable header"), "{err}");
+    }
+
+    #[test]
+    fn mend_copies_heals_encrypted_without_key() {
+        let msg = sample(20_000);
+        let bytes = seal(&msg, Mode::Seal, Some("correct horse"), "e.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let (n, k) = (h.n as usize, h.k as usize);
+        let mut a = bytes.clone();
+        smash(&mut a, 0..k + 1);
+        let mut b = bytes.clone();
+        smash(&mut b, n - k - 1..n);
+        let rep = crate::pieces::mend_copies(&[&a, &b]).unwrap();
+        assert_eq!(unseal(&rep.bytes, Some("correct horse")).unwrap(), msg);
+        assert!(unseal(&rep.bytes, Some("wrong")).is_err());
+    }
+
+    #[test]
+    fn mend_copies_glyph_needs_every_shard_pooled() {
+        let msg = sample(5_000);
+        let bytes = seal(&msg, Mode::Glyph, None, "g.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let n = h.n as usize;
+        let mut a = bytes.clone();
+        smash(&mut a, 0..1);
+        let mut b = bytes.clone();
+        smash(&mut b, n - 1..n);
+        assert!(crate::pieces::mend_bytes(&a).is_err());
+        let rep = crate::pieces::mend_copies(&[&a, &b]).unwrap();
+        assert_eq!(unseal(&rep.bytes, None).unwrap(), msg);
+        // Same shard missing in both: still all-or-nothing.
+        let err = crate::pieces::mend_copies(&[&a, &a])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("NOT recoverable"), "{err}");
+    }
+
+    #[test]
+    fn mend_copies_fails_closed() {
+        let msg = sample(30_000);
+        let bytes = seal(&msg, Mode::Seal, None, "x.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let (n, k) = (h.n as usize, h.k as usize);
+        // One copy is not enough for the multi-copy path.
+        assert!(crate::pieces::mend_copies(&[&bytes]).is_err());
+        // Same damage in both copies: pooling does not invent shards.
+        let mut a = bytes.clone();
+        smash(&mut a, 0..k + 1);
+        let err = crate::pieces::mend_copies(&[&a, &a])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("NOT recoverable"), "{err}");
+        // Copies of two different Sigils are refused.
+        let other = seal(&sample(30_001), Mode::Seal, None, "x.bin", false).unwrap();
+        let err = crate::pieces::mend_copies(&[&bytes, &other])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a copy of the same Sigil"), "{err}");
+        // A copy holding a different (re-CRC'd) shard at the same position is refused.
+        let mut forged = bytes.clone();
+        forge_shard(&mut forged, 3, |b| b[0] ^= 1);
+        let err = crate::pieces::mend_copies(&[&bytes, &forged])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("different shard"), "{err}");
+        // Both copies forged the same way (bit flip + CRC fixed) and too few clean
+        // shards elsewhere: the Merkle/true-name gate refuses the result.
+        let mut c = bytes.clone();
+        forge_shard(&mut c, 0, |b| b[0] ^= 1);
+        smash(&mut c, k..n);
+        let mut d = c.clone();
+        smash(&mut d, 1..2);
+        let err = crate::pieces::mend_copies(&[&c, &d])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Merkle"), "{err}");
+        // Truncated copies still pool what survives and fail closed when short.
+        let (cut, _) = shard_span(&bytes, k - 1);
+        let t = bytes[..cut].to_vec();
+        let err = crate::pieces::mend_copies(&[&t, &t])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("NOT recoverable"), "{err}");
+        let rep = crate::pieces::mend_copies(&[&t, &bytes]).unwrap();
+        assert_eq!(unseal(&rep.bytes, None).unwrap(), msg);
+        // Work packs go one copy at a time.
+        let mut wk = bytes.clone();
+        wk[0..4].copy_from_slice(b"SGWK");
+        assert!(crate::pieces::mend_copies(&[&wk, &bytes]).is_err());
     }
 
     #[test]

@@ -114,6 +114,23 @@ in Seal, fewer when pieces are missing) and keeps the result only if the hash
 tree and file hash match. Measured on a 1 MB file: 1 024 flipped bits repaired in
 10 of 10 trials (Reflection). Details and limits: [docs/research/DEEP-SPACE.md](docs/research/DEEP-SPACE.md).
 
+Two or more damaged copies of the same Sigil can be mended together: `mend`
+pools the good pieces from every copy. Here each copy lost 45 KB (one at the front,
+one at the end) and neither can be mended alone:
+
+```
+$ sigil mend copy1.sg1 -o fixed.sg1
+need 12 live shards to mend, have 11
+$ sigil mend copy1.sg1 copy2.sg1 -o fixed.sg1
+mended 2 copies → fixed.sg1 (good shards per copy: copy1.sg1 (11/16), copy2.sg1 (11/16); pooled 16/16, need 12; now live 16/16, merkle ok)
+```
+
+This works for single-file Sigils (plain or encrypted; no passphrase needed). It
+refuses, and writes nothing, when the copies are of different Sigils, when two
+copies hold different contents for the same piece, or when the rebuilt file does
+not match its hash tree. `--soft` works on one copy at a time. Large-file work
+packs and folder packs are mended one copy at a time.
+
 Folder wraps mend too: `sigil mend folder.sg1 -o fixed.sg1` heals each damaged file
 inside (small files and large ones) and says which. If any file inside is beyond
 repair, nothing is written. The folder's own index (file names and sizes) has no

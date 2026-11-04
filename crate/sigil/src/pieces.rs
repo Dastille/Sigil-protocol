@@ -503,6 +503,154 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     ))
 }
 
+/// What a multi-copy mend found: how many good shards each copy held and how many
+/// distinct good shards they held together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopiesMend {
+    /// The rebuilt, healthy `.sg1` bytes.
+    pub bytes: Vec<u8>,
+    /// Good (CRC-checked) shards found in each copy, in the order given.
+    pub live_per_copy: Vec<usize>,
+    /// Whether each copy's own front header (or a Keystone spare) was readable.
+    pub header_per_copy: Vec<bool>,
+    /// Distinct good shards across all copies.
+    pub live_combined: usize,
+    /// Shards in the Sigil.
+    pub n: usize,
+    /// Shards needed to rebuild it.
+    pub k: usize,
+}
+
+/// Rebuild one healthy `.sg1` from two or more damaged copies of the **same** Sigil.
+///
+/// Each copy may have lost different shards; the good shards are pooled by index and
+/// the result is decoded as usual. Fails closed:
+/// - fewer than two copies, or no copy with a readable header, is refused;
+/// - copies whose readable headers differ are refused (not copies of one Sigil);
+/// - two copies holding different CRC-good bytes for the same shard are refused;
+/// - work packs, folder packs and stacked seals are refused (mend them one at a time);
+/// - the rebuilt payload must match the header's Merkle root (and, when not
+///   encrypted, the plaintext length and SHA-256), or nothing is returned.
+///
+/// A copy whose own header is unreadable still contributes shards, located with the
+/// header taken from another copy; its shards are still CRC-checked and the
+/// result still has to pass the Merkle check.
+pub fn mend_copies(copies: &[&[u8]]) -> Result<CopiesMend> {
+    if copies.len() < 2 {
+        return Err(crate::Error::Msg(
+            "multi-copy mend needs at least two copies".into(),
+        ));
+    }
+    for c in copies {
+        if c.len() >= 4 && &c[0..4] == b"SGWK" {
+            return Err(crate::Error::Msg(
+                "a large-file work pack can only be mended one copy at a time".into(),
+            ));
+        }
+    }
+    let located: Vec<Option<(Header, usize)>> = copies
+        .iter()
+        .map(|c| locate_header(c).ok().map(|(h, p, _)| (h, p)))
+        .collect();
+    let Some((ref_idx, (h, _))) = located
+        .iter()
+        .enumerate()
+        .find_map(|(i, l)| l.as_ref().map(|v| (i, v.clone())))
+    else {
+        return Err(crate::Error::Msg(
+            "no copy has a readable header; cannot tell where the shards are".into(),
+        ));
+    };
+    let ref_hdr = write_header(&h);
+    for (i, l) in located.iter().enumerate() {
+        if let Some((hi, prefix)) = l {
+            if write_header(hi) != ref_hdr {
+                return Err(crate::Error::Msg(format!(
+                    "copy {} is not a copy of the same Sigil as copy {} (headers differ); refusing to mix them",
+                    i + 1,
+                    ref_idx + 1
+                )));
+            }
+            header::ensure_single_seal(copies[i], hi, *prefix)?;
+        }
+    }
+    let n = h.n as usize;
+    let k = h.k as usize;
+    let mut pooled: Vec<Option<Vec<u8>>> = vec![None; n];
+    let mut live_per_copy = Vec::with_capacity(copies.len());
+    let mut vow: Option<Vec<u8>> = None;
+    let mut sgto: Option<Vec<u8>> = None;
+    for (i, c) in copies.iter().enumerate() {
+        let prefix = match &located[i] {
+            Some((_, p)) => *p,
+            None => header::body_prefix_file(&h, c),
+        };
+        let live = header::gather_live_shards(c, &h, prefix);
+        live_per_copy.push(live.iter().filter(|s| s.is_some()).count());
+        for (slot, shard) in pooled.iter_mut().zip(live) {
+            let Some(shard) = shard else { continue };
+            match slot {
+                Some(have) if *have != shard => {
+                    return Err(crate::Error::Msg(format!(
+                        "copy {} holds a different shard than an earlier copy (same position, both pass their checks); refusing to mix them",
+                        i + 1
+                    )));
+                }
+                Some(_) => {}
+                None => *slot = Some(shard),
+            }
+        }
+        if vow.is_none() {
+            vow = vow_from_prefix(c, &h, prefix);
+        }
+        if sgto.is_none() {
+            sgto = sgto_from_prefix(c, &h);
+        }
+    }
+    let live_combined = pooled.iter().filter(|s| s.is_some()).count();
+    let header_per_copy: Vec<bool> = located.iter().map(|l| l.is_some()).collect();
+    let need = if h.mode() == crate::Mode::Glyph { n } else { k };
+    if live_combined < need {
+        return Err(crate::Error::Msg(format!(
+            "NOT recoverable from these copies: together they hold {live_combined} good shards, {need} needed"
+        )));
+    }
+    let systematic = h.version >= 2;
+    let shards: Vec<Vec<u8>> = if h.mode() == crate::Mode::Glyph {
+        let all: Vec<Vec<u8>> = pooled.into_iter().flatten().collect();
+        let leaves: Vec<[u8; 32]> = all.iter().map(|s| sha256(s)).collect();
+        if merkle::merkle_root(&leaves) != h.merkle {
+            return Err(crate::Error::Msg(
+                "pooled shards fail the Merkle check; refusing to write a result".into(),
+            ));
+        }
+        all
+    } else {
+        let parts: Vec<(usize, Vec<u8>)> = pooled
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.map(|b| (i, b)))
+            .collect();
+        let payload = rs::decode_indexed(&parts, k, h.folded_len as usize, systematic)?;
+        if !accept_folded(&h, &payload) {
+            return Err(crate::Error::Msg(
+                "pooled shards fail the true-name/Merkle check; refusing to write a result".into(),
+            ));
+        }
+        (0..n)
+            .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
+            .collect::<Result<_>>()?
+    };
+    Ok(CopiesMend {
+        bytes: assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
+        live_per_copy,
+        header_per_copy,
+        live_combined,
+        n,
+        k,
+    })
+}
+
 fn accept_folded(h: &Header, payload: &[u8]) -> bool {
     if payload.len() != h.folded_len as usize {
         return false;

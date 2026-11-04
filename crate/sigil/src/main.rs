@@ -687,9 +687,14 @@ enum Cmd {
     },
     /// Rebuild a healthy .sg1 from live shards in a torn Sigil (no passphrase). Alias: repair.
     /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input. An atlas bag (.sga) gets every repairable star healed into a new bag.
+    /// Several damaged copies of one Sigil (`sigil mend A.sg1 B.sg1 -o fixed.sg1`) are pooled: the good shards from every copy are combined.
     #[command(visible_alias = "repair")]
     Mend {
         input: PathBuf,
+        /// More damaged copies of the same Sigil (.sg1). Their good shards are pooled with
+        /// INPUT's; copies of different Sigils are refused
+        #[arg(value_name = "MORE_COPIES")]
+        more: Vec<PathBuf>,
         #[arg(short, long)]
         output: PathBuf,
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
@@ -3776,6 +3781,67 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     say!("gathered Sigil → {}", output.display());
                 }
             }
+        }
+        Cmd::Mend {
+            input,
+            more,
+            output,
+            soft,
+            ..
+        } if !more.is_empty() => {
+            if soft {
+                return Err(
+                    "--soft works on one copy at a time; mend several copies without --soft".into(),
+                );
+            }
+            let mut paths = vec![input];
+            paths.extend(more);
+            for p in &paths {
+                if sigil::is_atlas_file(p)
+                    || sigil::is_sealed_dir_pack(p)
+                    || sigil::is_plain_dir_pack(p)
+                    || sigil::is_work_pack(p)
+                {
+                    return Err(format!(
+                        "{} is a folder pack, atlas bag or large-file work pack; mend those one copy at a time",
+                        p.display()
+                    )
+                    .into());
+                }
+            }
+            let data: Vec<Vec<u8>> = paths.iter().map(fs::read).collect::<Result<_, _>>()?;
+            let views: Vec<&[u8]> = data.iter().map(|d| d.as_slice()).collect();
+            let rep = sigil::mend_copies(&views)?;
+            drop(data);
+            let mut tmp = output.as_os_str().to_os_string();
+            tmp.push(".mend-part");
+            let tmp = PathBuf::from(tmp);
+            fs::write(&tmp, &rep.bytes)?;
+            fs::rename(&tmp, &output)?;
+            let (h, merkle_ok, live, k, _) = sigil::verify(&rep.bytes)?;
+            let per: Vec<String> = rep.live_per_copy.iter().map(|c| c.to_string()).collect();
+            json_extra(&format!(
+                ",\"kind\":\"mark\",\"copies\":{},\"live_per_copy\":[{}],\"pooled\":{},\"live\":{live},\"n\":{},\"need\":{k},\"merkle\":{merkle_ok}",
+                paths.len(),
+                per.join(","),
+                rep.live_combined,
+                h.n
+            ));
+            let names: Vec<String> = paths
+                .iter()
+                .zip(&rep.live_per_copy)
+                .map(|(p, c)| format!("{} ({c}/{})", p.display(), rep.n))
+                .collect();
+            say!(
+                "mended {} copies → {} (good shards per copy: {}; pooled {}/{n}, need {need}; now live {live}/{n}, merkle {ok})",
+                paths.len(),
+                output.display(),
+                names.join(", "),
+                rep.live_combined,
+                n = h.n,
+                need = rep.k,
+                ok = if merkle_ok { "ok" } else { "open" }
+            );
         }
         Cmd::Mend {
             input,
