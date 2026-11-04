@@ -2,9 +2,9 @@
 
 New here? Start with the friendly map: [START.md](START.md).
 
-How the **version tip**, **read/edit views**, and **nested seals** fit together. Retention policy (full vs light, cold kit) lives in [VAULT-RETENTION.md](VAULT-RETENTION.md) — this page does not repeat that deep-dive.
+How the **version tip**, **read/edit views**, and **nested seals** fit together. Retention policy (full vs light, Frost Rune cold folder) lives in [VAULT-RETENTION.md](VAULT-RETENTION.md) — this page does not repeat that deep-dive.
 
-Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mark in place. A new tip is always a new seal.
+Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare Sigil in place. A new tip is always a new seal.
 
 ## Pieces
 
@@ -12,7 +12,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare mar
 |-------|------------|---------------|
 | **Vault** | Live file + sidecar chart `<live>.sgv/` (`CHART` + `v1.sg1`, `v2.sg1`, …) | Version stack; tip moves on commit |
 | **Mount** | Apps see normal paths over a tip / bare `.sg1` / SGDR pack / segment log | Seal/log untouched; cleartext in RAM (FUSE) or an export tree |
-| **Path / nest** | Breadcrumb walk into nested `.sg1` layers inside a pack or mark | Outer mark unchanged; optional extract to a temp path |
+| **Path / nest** | Breadcrumb walk into nested `.sg1` layers inside a pack or Sigil | Outer Sigil unchanged; optional extract to a temp path |
 
 A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CONTAINER.md](CONTAINER.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
@@ -26,7 +26,7 @@ A segment log mounts as one file per live segment (`0000000007` …), honouring 
 | Keep history of one live file | `vault track` → edit live → `vault commit` |
 | Browse tip / pack like a filesystem (read-only) | `mount` FUSE, or `mount … --export-dir` |
 | Edit cleartext, then re-seal a **new** vault tip | `mount … --vault --export-dir DIR --writable` → edit → `vault commit --from-export DIR` |
-| Peek / extract a nested mark without unpacking the whole store | `sigil path` / `path --into … -o …` |
+| Peek / extract a nested Sigil without unpacking the whole store | `sigil path` / `path --into … -o …` |
 | Restore an older hot version over the live path | `vault restore` (see retention doc for prune / cold) |
 
 Quick rule: **vault** owns versions; **mount** owns the OS view; **path** owns nest breadcrumbs. Combine them — do not fork the `.sg1` layout.
@@ -99,7 +99,7 @@ mkdir -p /tmp/sigil-dirty
 - After a from-export commit the live dir is **synced** (adds / edits / deletes) only if it was clean (matched a hot version) or missing. If it had its own uncommitted edits it is left untouched and commit prints a `note:`; use `vault restore --force` to take the tip.
 - `vault restore` mirrors a version into the live dir (unpacks to a staging dir, verifies the tree true-name, then syncs). It refuses to drop edits that match no hot version unless `--force`. Dotfiles in the live dir are never touched.
 - Secrets are not remembered: pass the same `--pass` / `--ward` on commit as on track (the sidecar never stores them). Encrypt-to recipients (public keys) **are** remembered in `CHART` — see [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md). Mount the export with `--identity` / `--pass` / `--ward` to read protected entries.
-- Light retention archives pruned folder versions as a plain `vN.sg1` copy + `ARCHIVE` note (kit place is single-star only).
+- Light retention archives pruned folder versions as a plain `vN.sg1` copy + `ARCHIVE` note (Frost Rune placement is single-star only).
 - A bare SGDR (not vault-tracked) `--writable` export cannot `--from-export`; `vault track` the folder, or pack the edited tree with `sigil inscribe EXPORT -o new.sg1`.
 
 ## Nested `.sg1` / SGDR: path vs mount
@@ -112,7 +112,7 @@ An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A sta
 - A nested `.sg1` entry appears as a **file** whose bytes are the unsealed payload of that star (often still an inner `.sg1`). Mount does not auto-descend further nest layers into a second virtual tree.
 - Further nest-walk is optional — use `sigil path`.
 
-**Path** walks breadcrumbs without rewriting the outer mark:
+**Path** walks breadcrumbs without rewriting the outer Sigil:
 
 ```
 # List outer pack (aliases: walk, ls)
@@ -136,7 +136,7 @@ An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A sta
 
 Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. An encrypted folder pack (sealed directory) cannot be path-walked; unseal or mount it with the key. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
 
-What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart history. Path extract and mount export only write cleartext (or nested mark bytes) to the destination you named.
+What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart history. Path extract and mount export only write cleartext (or nested Sigil bytes) to the destination you named.
 
 ## Encrypt-to through vault, mount, path, open
 
@@ -176,5 +176,5 @@ Constellations take `--to` on `constellation add` (stars + card) and `--identity
 
 ## Related
 
-- Retention full/light, prune, cold kit: [VAULT-RETENTION.md](VAULT-RETENTION.md)
+- Retention full/light, prune, Frost Rune cold folder: [VAULT-RETENTION.md](VAULT-RETENTION.md)
 - CLI Mount / Vault / Keys sections: [crate/sigil/README.md](../crate/sigil/README.md)

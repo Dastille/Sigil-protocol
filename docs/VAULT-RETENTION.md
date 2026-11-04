@@ -7,7 +7,7 @@ Think Bitcoin: **full** node vs **light/pruned** node.
 | Policy | Hot chart | Older versions |
 |--------|-----------|----------------|
 | **full** (default) | Keep every `vN.sg1` | Stay in `.sgv` forever |
-| **light keep=N** | Newest N only | Must go to a **cold kit** (`--cold DIR`) before leaving the chart — or `--force-drop` to discard |
+| **light keep=N** | Newest N only | Must go to a **Frost Rune cold folder** (`--cold DIR`) before leaving the chart — or `--force-drop` to discard |
 
 ## Everyday commands
 
@@ -48,7 +48,7 @@ Dirty write path (export tree → new version): see [VAULT-MOUNT-NEST.md](VAULT-
 
 Chart fields (backward compatible): `retention=full` or `retention=light` plus `keep=N` (N≥1). Unknown keys are tolerated.
 
-## Prune + cold kit
+## Prune + Frost Rune cold folder
 
 ```
 # Full retention: explicit prune may drop without cold (legacy). Prefer --cold anyway.
@@ -60,13 +60,13 @@ Chart fields (backward compatible): `retention=full` or `retention=light` plus `
 ./sigil vault prune ./notes.txt --keep 3 --force-drop
 ```
 
-`--cold-here` is shorthand for the container's own `<name>.sigil/cold/` (tidy containers only; see [CONTAINER.md](CONTAINER.md)). To drop one specific old version rather than the oldest N: `sigil vault remove ./notes.txt --version 2` (never the tip; light retention needs `--cold`/`--cold-here` or `--force-drop`). `sigil gc` never touches cold kits.
+`--cold-here` is shorthand for the container's own `<name>.sigil/cold/` (tidy containers only; see [CONTAINER.md](CONTAINER.md)). To drop one specific old version rather than the oldest N: `sigil vault remove ./notes.txt --version 2` (never the tip; light retention needs `--cold`/`--cold-here` or `--force-drop`). `sigil gc` never touches Frost Rune cold folders.
 
 Each pruned seal lands under `DIR/vN/`:
 
 - **Seal** (and Reflection when the drive budget fits): `sigil frost place` layout (`usb-*` + `KIT`) so one lost USB is still mendable.
-- **Glyph** (or kit place rejected): plain `vN.sg1` copy plus an `ARCHIVE` note — still better than a silent delete.
-- **Folder vault** versions (SGDR packs): always the plain `vN.sg1` copy + `ARCHIVE` (kit place is single-star only).
+- **Glyph** (or Frost Rune placement rejected): plain `vN.sg1` copy plus an `ARCHIVE` note — still better than a silent delete.
+- **Folder vault** versions (SGDR packs): always the plain `vN.sg1` copy + `ARCHIVE` (Frost Rune placement is single-star only).
 
 After a successful (non-skipped) **commit**, light policy auto-prunes to `keep`. Explicit `--keep` on commit overrides for that commit. Pass `--cold` (or `--force-drop`) the same way:
 
@@ -77,6 +77,6 @@ After a successful (non-skipped) **commit**, light policy auto-prunes to `keep`.
 
 ## Restore after prune
 
-Only versions still listed in `CHART` (hot set) restore via `vault restore`. Cold kit folders are ordinary kits / archives — use `sigil frost mend` (or copy the plain `.sg1` back) if you need an older seal again; re-track / re-commit is a separate story.
+Only versions still listed in `CHART` (hot set) restore via `vault restore`. Cold folders are ordinary Frost Rune folders / archives — use `sigil frost mend` (or copy the plain `.sg1` back) if you need an older seal again; re-track / re-commit is a separate story.
 
 Passkeys and PGP import live in key files (see PASSKEY.md, PGP-IMPORT.md), not in retention.

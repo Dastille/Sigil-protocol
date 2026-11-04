@@ -36,7 +36,7 @@ Firmware cannot boot a `.sg1`. The stick stays a normal live USB (GRUB + kernel 
 # default is Seal. Copies this `sigil` onto live/sigil and tries to inject the initrd hook.
 
 ./sigil boot mend /media/usb
-# exit 0 = intact or repaired, 2 = too damaged, 3 = no mark
+# exit 0 = intact or repaired, 2 = too damaged, 3 = no Sigil
 
 # Debian/dracut hooks onto this machine (then rebuild the live initrd):
 sudo ./sigil boot install
@@ -113,10 +113,10 @@ Encrypt-to constellations: `--to` on `constellation add` encrypts every new star
 ./sigil inscribe --pieces ./pieces file.bin
 
 # split an existing .sg1
-./sigil scatter mark.sg1 -o ./pieces
-./sigil frost place mark.sg1 --drives 4 -o ./kit/
-./sigil frost mend ./kit -o healed.sg1
-./sigil gather ./pieces -o mark.sg1
+./sigil scatter archive.sg1 -o ./pieces
+./sigil frost place archive.sg1 --drives 4 -o ./frost/
+./sigil frost mend ./frost -o healed.sg1
+./sigil gather ./pieces -o archive.sg1
 
 # rain extra pieces (Seal/Reflection). Far side needs any k, not all 16.
 ./sigil deluge dump.sg1 --extra 16 -o ./rain
@@ -236,7 +236,7 @@ Encrypt-to vaults remember their recipients (public keys in `CHART`): `vault com
 
 **Vault (version tip + retention)**
 
-Track a live file or folder; each commit adds an immutable `vN.sg1` under `<live>.sgv/` (folder vaults: SGDR packs, CHART `kind=folder`). Retention is full (keep all) or light (newest N hot; older seals go to a cold kit before leaving the chart).
+Track a live file or folder; each commit adds an immutable `vN.sg1` under `<live>.sgv/` (folder vaults: SGDR packs, CHART `kind=folder`). Retention is full (keep all) or light (newest N hot; older seals go to a Frost Rune cold folder before leaving the chart).
 
 ```
 ./sigil vault track ./notes.txt

@@ -8,9 +8,9 @@ trimmed extractor.**
 
 ## Abstract
 
-A Sigil mark (`.sg1`) survives damage because it carries Reed–Solomon parity, spare header copies
+A Sigil (`.sg1`) survives damage because it carries Reed–Solomon parity, spare header copies
 (Keystone) and a Merkle binding; but healing and opening it needs a program that understands the
-format: today the `sigil` CLI (`mend`, `unseal` / `de-scribe`, `gather`, `kit mend`) or the web
+format: today the `sigil` CLI (`mend`, `unseal` / `de-scribe`, `gather`, `frost mend`) or the web
 lab's TypeScript codec. An archive found years later on a drive, by someone without the tool, is
 only as recoverable as their ability to get that program. A self-extracting archive (SFX) bundles
 an extractor with the payload so "run this file" is enough. This note states when that is worth
@@ -18,7 +18,7 @@ it, lists five options with their costs, and asks the questions that must be ans
 
 ## 1. Problem
 
-* **Who asks for it.** Cold storage and hand-offs: a USB kit in a drawer (see
+* **Who asks for it.** Cold storage and hand-offs: a recovery folder on a USB stick in a drawer (see
   [LRC-COLD-USB.md](LRC-COLD-USB.md)), an archive sent to a relative or a lawyer, a backup opened
   on a fresh machine with no Rust toolchain and no network.
 * **What they need, in order:** (1) open the data; (2) repair it first if it is damaged; (3) trust
@@ -37,25 +37,25 @@ it, lists five options with their costs, and asks the questions that must be ans
 ARCHIVE...` writes `sigil-recovery/` with `bin/` (the running `sigil`, or each `--bin`, e.g.
 release builds for other platforms), `spec/sigil-v1.txt`, `RECOVER.txt` (plain steps: check
 sums, scry, unseal with `--pass-file`, mend / `mend --soft`, log verify/mend/restore, gather,
-kit mend; filled from `scripts/RECOVER.txt.in` with the archives' SHA-256) and `SHA256SUMS`.
+frost mend; filled from `scripts/RECOVER.txt.in` with the archives' SHA-256) and `SHA256SUMS`.
 It refuses key files and `--pass*` / `--identity` / `--ward*` options, so nothing secret goes in.
 `ARCHIVES.sha256` records the archives as they were (every file of a log folder; checked from the
 folder that holds them; a log that grew later differs, use `log verify`). `--check` runs `scry` /
-`log verify` (no keys) with the kit's binary first and refuses to make a kit for a damaged archive.
-A test runs RECOVER.txt's steps with the kit's binary: mend a torn copy, private log verify / mend /
+`log verify` (no keys) with the recovery folder's binary first and refuses to make a recovery folder for a damaged archive.
+A test runs RECOVER.txt's steps with the recovery folder's binary: mend a torn copy, private log verify / mend /
 restore, and gather from scattered pieces with some lost.
-Not yet: signatures over the kit (releases are unsigned; options in [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md)), fetching release binaries for other
+Not yet: signatures over the recovery folder (releases are unsigned; options in [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md)), fetching release binaries for other
 platforms (pass them with `--bin`).
 
 
 Put next to every archive: the release binaries for the three platforms, their SHA-256 list (and
 a signature once releases are signed), `sigil-v1.txt`, and a one-page `RECOVER.txt` ("`sigil
 mend X.sg1 -o fixed.sg1`, then `sigil unseal fixed.sg1 -o out`"). Could be written by a
-`sigil kit` subcommand later (copy the running binary + docs), but works by hand today.
+`sigil` subcommand later (copy the running binary + docs), but works by hand today.
 
 * **Gains:** no new code path that runs untrusted bytes; the `.sg1` stays a plain data file
   (no antivirus trouble, no executable bit on archives); every platform covered; repair is the
-  full `mend` / `kit mend` / `gather`.
+  full `mend` / `frost mend` / `gather`.
 * **Costs:** two files instead of one; the user must pick the right binary; binaries can be lost
   or separated from the archive (the drawer problem again, smaller).
 
@@ -111,7 +111,7 @@ One `.html` file: the TypeScript codec, a small UI, and the `.sg1` bytes (base64
 
 ### Comparison
 
-| | 0 kit | A Linux stub | B script | C matrix | D HTML |
+| | 0 folder | A Linux stub | B script | C matrix | D HTML |
 |---|---|---|---|---|---|
 | One file | no | yes | yes | yes | yes |
 | Needs install | no (binary beside it) | no | yes | no | no (browser) |
@@ -123,7 +123,7 @@ One `.html` file: the TypeScript codec, a small UI, and the `.sg1` bytes (base64
 
 ## 3. Recommended default (proposal, pending Ashlynn's OK)
 
-**Ashlynn locked 2026-11-02: recovery-kit Option 0 stays the answer; stubs A–D are on hold
+**Ashlynn locked 2026-11-02: recovery-folder Option 0 stays the answer; stubs A–D are on hold
 (deferred, no stub implementation).**
 
 **Option 0 now, as the documented answer; Option D next if the TS codec's repair is confirmed;
@@ -152,7 +152,7 @@ the web codec's repair coverage was not checked for this note.
   do not trigger this class.
 * **Repair without the full tool.** The parity protects the payload, not the extractor. Damage to
   the stub (A/C) or the page (D) leaves the payload intact but the "just run it" path broken; the
-  fallback is always "extract the `.sg1` bytes and use a trusted `sigil`" (keep Option 0's kit).
+  fallback is always "extract the `.sg1` bytes and use a trusted `sigil`" (keep Option 0's recovery folder).
 * **Downgrade.** An old stub may lack fixes. The payload must stay openable by current `sigil`, so
   users can always step outside the stub.
 
@@ -161,8 +161,8 @@ the web codec's repair coverage was not checked for this note.
 * `inscribe` / `seal`: unchanged; an SFX wraps a finished `.sg1` (or a folder pack, a work pack).
 * `mend` / `mend --soft` / `unseal --repair`: the stub (A) would expose exactly these; HTML (D)
   only as far as the TS codec does.
-* `scatter` / `deluge` / `gather` and `kit place` / `kit mend`: multi-file forms; an SFX of one
-  piece does not help reassembly. Option 0's kit is the natural home (the binary beside the
+* `scatter` / `deluge` / `gather` and `frost place` / `frost mend`: multi-file forms; an SFX of one
+  piece does not help reassembly. Option 0's recovery folder is the natural home (the binary beside the
   pieces). A stub could gather from sibling files, but that grows it into the full CLI.
 * Encrypted folder packs, private labels, wards: unchanged; the extractor needs the same keys.
 * Segment logs: out of scope (a log is a directory, not one file).
@@ -177,7 +177,7 @@ the web codec's repair coverage was not checked for this note.
 
 ## 7. Open questions for Ashlynn
 
-1. Is SFX wanted at all, or is Option 0 (kit convention, possibly `sigil kit recover-pack`) enough?
+1. Is SFX wanted at all, or is Option 0 (recovery-folder convention, possibly a future `sigil` subcommand) enough?
 2. If single-file: HTML (D) or native Linux stub (A) first?
 3. Must the one-file form repair, or is "open if healthy, otherwise use the CLI" acceptable?
 4. Size budget per archive for an embedded extractor?
@@ -190,7 +190,7 @@ the web codec's repair coverage was not checked for this note.
 ## Prior work in this repo
 
 * [sigil-v1.txt](sigil-v1.txt): the format specification (independent decoders).
-* [LRC-COLD-USB.md](LRC-COLD-USB.md): Frost Rune kits, `kit place` / `kit mend`.
+* [LRC-COLD-USB.md](LRC-COLD-USB.md): Frost Rune, `frost place` / `frost mend`.
 * [PACK-HEAD-REPAIR.md](PACK-HEAD-REPAIR.md), [SOFT-RS.md](SOFT-RS.md): what `mend` repairs.
 * README "Web lab": the TypeScript codec and its cross-checks against the CLI.
 * Common SFX practice (7-Zip / RAR SFX modules, `makeself` shell archives) is the model for

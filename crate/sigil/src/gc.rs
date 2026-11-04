@@ -547,7 +547,7 @@ fn gc_vault(vdir: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
         let cold = vdir.join(container::COLD_DIR);
         if cold.is_dir() {
             rep.notes.push(format!(
-                "cold/ holds {} kit folder(s); gc never touches cold kits",
+                "cold/ holds {} cold folder(s) (Frost Rune); gc never touches them",
                 entries(&cold).len()
             ));
         }

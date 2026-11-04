@@ -1746,7 +1746,7 @@ pub fn prune_with(
         let is_light = matches!(chart.retention, RetentionPolicy::Light { .. });
         if is_light && cold.is_none() && !force_drop {
             return Err(crate::Error::Msg(
-                "light retention prune would drop version seals — pass --cold DIR                  (kit-place / archive) or --force-drop to discard without a cold kit"
+                "light retention prune would drop version seals — pass --cold DIR                  (Frost Rune placement / archive) or --force-drop to discard without a cold folder"
                     .into(),
             ));
         }
@@ -1833,7 +1833,7 @@ pub fn remove_version(
     }
     if matches!(chart.retention, RetentionPolicy::Light { .. }) && cold.is_none() && !force_drop {
         return Err(crate::Error::Msg(
-            "light retention: removing a version needs --cold DIR (or --cold-here) to keep a cold kit, or --force-drop to discard it"
+            "light retention: removing a version needs --cold DIR (or --cold-here) to keep a cold folder (Frost Rune), or --force-drop to discard it"
                 .into(),
         ));
     }

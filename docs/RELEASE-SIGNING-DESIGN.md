@@ -1,10 +1,10 @@
-# Release and recovery-kit signatures: design options (decision pending)
+# Release and recovery-folder signatures: design options (decision pending)
 
 > **DECISION (Ashlynn locked 2026-11-02): Option A (minisign) + C (signed tags).** Shipped:
 > `scripts/make-sha256sums.sh` and a `checksums` job in `release.yml` that uploads
 > `SHA256SUMS` (no key, no secret). **Not done, needs Ashlynn:** creating the minisign key
 > offline. Until then the public key is **TBD until key created**, releases carry no
-> `SHA256SUMS.minisig`, and the kit copies no signature or key. CI never signs.
+> `SHA256SUMS.minisig`, and the recovery folder copies no signature or key. CI never signs.
 >
 > Manual signing after each release (key holder, offline machine):
 > ```
@@ -19,9 +19,9 @@
 > git tag -s vX.Y.Z -m "sigil vX.Y.Z"; git push origin vX.Y.Z`. Verify with an allowed-signers
 > file: `git config gpg.ssh.allowedSignersFile allowed_signers; git tag -v vX.Y.Z`.
 >
-> Intended kit layout once a real key exists (not implemented): `sigil-recovery/SHA256SUMS.minisig`
+> Intended recovery folder layout once a real key exists (not implemented): `sigil-recovery/SHA256SUMS.minisig`
 > (release signature) and `sigil-recovery/SIGNING-KEY.pub`, with RECOVER.txt telling the reader to
-> compare the key against the one printed in README / on paper, never only the kit copy.
+> compare the key against the one printed in README / on paper, never only the recovery folder copy.
 
 Status: **design note only.** Releases are unsigned today, and nothing here is implemented. The
 recommendation is **pending Ashlynn's OK** (it needs a key she controls). Related:
@@ -69,7 +69,7 @@ needed if SFX Option A/C stubs ship (see SFX-DESIGN.md).
 
 ## 3. Threat model
 
-In scope: a swapped binary or kit file on a mirror, release page, shared drive or USB stick; a
+In scope: a swapped binary or recovery folder file on a mirror, release page, shared drive or USB stick; a
 tampered `SHA256SUMS`; downgrade to an older, signed but vulnerable release (mitigated by the
 version being inside the signed list and the trusted comment).
 Out of scope: a compromised signing key or build machine (needs reproducible builds and
@@ -79,15 +79,15 @@ multiple builders), a compromised verifier binary already on the user's machine.
 
 With A, `make-recovery-kit.sh` would copy in `SHA256SUMS.minisig` from the release and the
 public key as `SIGNING-KEY.pub`, and `RECOVER.txt` would say: check with minisign **using the key
-printed in the project README / on paper, not only the copy in this folder** (a swapped kit can
-swap its own key). `ARCHIVES.sha256` stays unsigned unless the kit maker signs it with their own
-key (optional `--sign-key`, later). The kit would refuse `--bin` files whose hash is not in the
+printed in the project README / on paper, not only the copy in this folder** (a swapped recovery folder can
+swap its own key). `ARCHIVES.sha256` stays unsigned unless the recovery folder maker signs it with their own
+key (optional `--sign-key`, later). The recovery folder would refuse `--bin` files whose hash is not in the
 signed list only when asked (`--require-signed`), so local builds still work.
 
 ## 5. Licence / distribution notes
 
 * The CLI is AGPL-3.0 (LICENSE, LICENSE.app); the byte layout spec is Apache-2.0 (LICENSE.SPEC).
-  Signing does not change obligations: a kit that ships binaries should keep a source offer
+  Signing does not change obligations: a recovery folder that ships binaries should keep a source offer
   (URL + exact tag/commit) in `RECOVER.txt`; signing the tag (C) makes that offer checkable.
 * minisign is ISC-licensed and is used as an external tool, not bundled into sigil.
 * Signatures add no restriction on redistribution: third parties may re-host unchanged signed
@@ -99,7 +99,7 @@ signed list only when asked (`--require-signed`), so local builds still work.
 2. Ashlynn creates one minisign key offline; sign `SHA256SUMS` locally after each manual
    release; upload `SHA256SUMS.minisig`; print the public key in README, START.md, RECOVER.txt.
 3. Sign release tags (SSH signing) as a complement.
-4. Kit: copy signature + key, add the "check against the key printed elsewhere" step.
+4. Recovery folder: copy signature + key, add the "check against the key printed elsewhere" step.
 Keyless Sigstore (B) can be added later in CI without replacing A.
 
 ## 7. Open questions for Ashlynn
@@ -108,5 +108,5 @@ Keyless Sigstore (B) can be added later in CI without replacing A.
 2. minisign (A) acceptable, or a preference for OpenPGP / SSH signatures?
 3. Should CI ever sign (B), or only local manual signing?
 4. Where is the public key published so it outlives the GitHub repo (paper, website, keyserver)?
-5. Should kits made by others be signable with their own key (`--sign-key`)?
+5. Should recovery folders made by others be signable with their own key (`--sign-key`)?
 6. Reproducible builds: worth pursuing so tag signatures cover binaries?

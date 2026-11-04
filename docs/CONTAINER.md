@@ -5,7 +5,7 @@ ahead of the segment-log mode.
 
 Goal: after years of use a folder holds **one `name.sigil/` per thing** — not a pile of
 loose `.sg1` stars, `.sgv/` sidecars and orphans. This is purely a *folder* layout:
-the `.sg1` byte layout is unchanged, plain `.sg1` marks and every old layout still open
+the `.sg1` byte layout is unchanged, plain `.sg1` Sigils and every old layout still open
 forever, and Vandermonde stays the default (Cauchy opt-in) exactly as before.
 
 ## Layout
@@ -115,10 +115,10 @@ sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the con
   Removing the last name is refused (delete the folder instead).
 * **Vault remove** drops one version. The **tip** and the only version can never be removed.
   Retention rules from [VAULT-RETENTION.md](VAULT-RETENTION.md) hold: under **light**
-  retention the seal must go to a cold kit (`--cold DIR` or `--cold-here`) or be discarded on
+  retention the seal must go to a cold folder (Frost Rune; `--cold DIR` or `--cold-here`) or be discarded on
   purpose (`--force-drop`); under **full** an explicit remove is allowed. The CHART is
   rewritten before the seal file is deleted (same order now used by `prune`).
-* `--cold-here` = `<name>.sigil/cold/` (containers only). Cold kits land in `cold/vN/` exactly
+* `--cold-here` = `<name>.sigil/cold/` (containers only). Frost Rune cold folders land in `cold/vN/` exactly
   as with an external `--cold DIR`.
 
 ## `sigil gc PATH`
@@ -144,7 +144,7 @@ Reclaims (containers):
 | stale staging                | sibling `.tidy-<name>.sigil/` from an interrupted tidy, same age rule |
 | empty shard folder           | `stars/ab/` left with nothing in it |
 
-Never touched: anything the card / CHART references, **`cold/`** (cold kits are history you
+Never touched: anything the card / CHART references, **`cold/`** (Frost Rune cold folders are history you
 chose to keep), the atlas `.sga`, `CONTAINER`, and any file gc does not recognise (listed as
 "left alone"). A constellation card that cannot be opened (no `--pass` / `--identity`) stops
 gc — it will not guess what is referenced. Old flat constellation folders are reported but
@@ -178,19 +178,19 @@ check (not a vault / constellation). Handy for a cron job.
 | `chart-digest` | WARN | a single-file seal's true-name differs from its CHART entry |
 | `orphan-star`, `orphan-version`, `duplicate-star`, `temp-file`, `stale-staging` | WARN | what `sigil gc` would reclaim |
 | `card-locked` | WARN | card needs `--pass` / `--identity`; list-based checks skipped (bit rot on stars is still checked) |
-| `cold-broken` | ERROR | cold kit cannot be rebuilt, or its seal is beyond repair / empty |
-| `cold-degraded` | WARN | cold kit lost some `usb-*` folders (still mendable) or holds a repairable seal |
-| `cold-missing` | WARN / info | light retention: a departed version has no kit in `cold/`. Only a warning when `cold/` is in use; otherwise a note, since an external `--cold DIR` cannot be seen |
+| `cold-broken` | ERROR | Frost Rune cold folder cannot be rebuilt, or its seal is beyond repair / empty |
+| `cold-degraded` | WARN | Frost Rune cold folder lost some `usb-*` folders (still mendable) or holds a repairable seal |
+| `cold-missing` | WARN / info | light retention: a departed version has no cold folder in `cold/`. Only a warning when `cold/` is in use; otherwise a note, since an external `--cold DIR` cannot be seen |
 | `cold-stale` | info | `cold/vN/` for a version that is still hot (redundant copy; delete by hand if unwanted) |
 | `live-changed`, `live-missing` | info | vault drift notes |
 
-Bit rot is checked with the same ECC machinery as `sigil verify` / `sigil mend` — single marks,
+Bit rot is checked with the same ECC machinery as `sigil verify` / `sigil mend` — single Sigils,
 large-file work packs, and folder (SGDR) packs member by member — and nothing is decrypted, so
 warded and encrypt-to data checks without keys.
 
 **`--fix` is deliberately narrow:** it runs `sigil tidy` on an old layout (copy → verify →
 atomic rename) and `sigil gc --apply` (orphans, duplicates, abandoned temp files). It never
-touches bit rot, missing members or cold kits — those need a human (`sigil mend`, a backup, a
+touches bit rot, missing members or cold folders — those need a human (`sigil mend`, a backup, a
 decision). The report is recomputed after the fixes and lists them as `fixed:` lines.
 
 ## Names, not hashes (`ls`, `mount`)
