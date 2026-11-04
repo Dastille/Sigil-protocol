@@ -875,11 +875,11 @@ impl Lab {
                 ui.set_max_width(ui.available_width() - 280.0);
                 eyebrow(ui, "Lab");
                 ui.add_space(4.0);
-                headline(ui, "Turn a file into a mark you can copy.");
+                headline(ui, "Turn a file into a Sigil you can copy.");
                 ui.add_space(6.0);
                 muted(
                     ui,
-                    "Inscribe makes a .sg1 file. De-scribe unpacks the original. To look at a mark without unpacking it, use Scry.",
+                    "Inscribe makes a .sg1 file. De-scribe unpacks the original. To look at a Sigil without unpacking it, use Scry.",
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Max), |ui| {
@@ -1196,7 +1196,7 @@ impl Lab {
             let mut describe = false;
             card(ui, false, |ui| {
                 ui.label(
-                    RichText::new(format!("Your mark · {}", spec.metaphor))
+                    RichText::new(format!("Your Sigil · {}", spec.metaphor))
                         .color(MUTED)
                         .size(11.0)
                         .family(FontFamily::Monospace)
@@ -1258,7 +1258,7 @@ impl Lab {
                     if secondary_btn(ui, "Scry without opening").clicked() {
                         scry = true;
                     }
-                    if secondary_btn(ui, "De-scribe this mark").clicked() {
+                    if secondary_btn(ui, "De-scribe this Sigil").clicked() {
                         describe = true;
                     }
                 });
@@ -1276,7 +1276,7 @@ impl Lab {
         let mut do_describe = false;
         card(ui, false, |ui| {
             ui.label(
-                RichText::new("The 16 pieces — Hex damages the mark on purpose")
+                RichText::new("The 16 pieces — Hex damages the Sigil on purpose")
                     .color(MUTED)
                     .size(11.0)
                     .family(FontFamily::Monospace)
@@ -1382,7 +1382,7 @@ impl Lab {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("Geas — companion files this mark requires")
+                    RichText::new("Geas — companion files this Sigil requires")
                         .color(CREAM)
                         .size(13.0),
                 );
@@ -1456,7 +1456,7 @@ impl Lab {
         ui.set_max_width(640.0);
         eyebrow(ui, "Scry");
         ui.add_space(4.0);
-        headline(ui, "Look at a mark without opening it.");
+        headline(ui, "Look at a Sigil without opening it.");
         ui.add_space(8.0);
         muted(
             ui,
@@ -1523,11 +1523,11 @@ impl Lab {
         ui.set_max_width(720.0);
         eyebrow(ui, "Sky");
         ui.add_space(4.0);
-        headline(ui, "Scatter a mark. Gather it back.");
+        headline(ui, "Scatter a Sigil. Gather it back.");
         ui.add_space(8.0);
         muted(
             ui,
-            "Scatter splits one mark into piece files you can send on different paths. Any k pieces are enough. Gather puts them back into one .sg1. A constellation is different: it is a named list of stars (whole marked files), not the pieces of one file.",
+            "Scatter splits one Sigil into piece files you can send on different paths. Any k pieces are enough. Gather puts them back into one .sg1. A constellation is different: it is a named list of stars (whole Sigil files), not the pieces of one file.",
         );
         ui.add_space(16.0);
         self.status_line(ui);
@@ -1609,7 +1609,7 @@ impl Lab {
             ),
             (
                 "Glyph",
-                "k = n = 16. Content identity only. No repair. Smallest mark. If any piece is damaged, it stops.",
+                "k = n = 16. Content identity only. No repair. Smallest Sigil. If any piece is damaged, it stops.",
             ),
             (
                 "Reflection",
@@ -1625,7 +1625,7 @@ impl Lab {
             ),
             (
                 "Covenant / Geas",
-                "A Covenant is a short note on the mark, not a lock. A Geas binds companion files: De-scribe refuses if they are missing or changed.",
+                "A Covenant is a short note on the Sigil, not a lock. A Geas binds companion files: De-scribe refuses if they are missing or changed.",
             ),
             (
                 "Keystone / Ember",
@@ -1724,7 +1724,7 @@ impl Lab {
             ),
             Verdict::Mismatch => (
                 "Not the true name you pasted.",
-                "This is a valid mark, but it is not the file you thought. Treat it as a different file.",
+                "This is a valid Sigil, but it is not the file you thought. Treat it as a different file.",
                 false,
             ),
         };

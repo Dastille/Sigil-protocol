@@ -167,7 +167,7 @@ fn mark_id(bytes: &[u8]) -> [u8; 32] {
 fn push_seen(seen: &mut Vec<[u8; 32]>, id: [u8; 32]) -> Result<()> {
     if seen.iter().any(|s| s == &id) {
         return Err(crate::Error::Msg(format!(
-            "nest cycle refused (mark {} already on the trail)",
+            "nest cycle refused (Sigil {} already on the trail)",
             &hex32(&id)[..16]
         )));
     }
@@ -445,7 +445,7 @@ fn descend_one(
                 // Reject unrelated paths so typos fail loudly.
                 if !h.name.contains(step) {
                     return Err(crate::Error::Msg(format!(
-                        "mark payload is '{}' — use --into . or that name (trail: {})",
+                        "Sigil payload is '{}' — use --into . or that name (trail: {})",
                         h.name,
                         trail.join(" → ")
                     )));
@@ -535,7 +535,7 @@ pub fn path_list(mark: &Path, pass: Option<&str>, max_depth: usize) -> Result<Pa
 pub fn refuse_if_cycle(seen: &[[u8; 32]], next: &[u8; 32]) -> Result<()> {
     if seen.iter().any(|s| s == next) {
         return Err(crate::Error::Msg(format!(
-            "nest cycle refused (mark {} already on the trail)",
+            "nest cycle refused (Sigil {} already on the trail)",
             &hex32(next)[..16]
         )));
     }

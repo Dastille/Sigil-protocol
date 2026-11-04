@@ -137,7 +137,7 @@ fn find_squashfs(root: &Path) -> Option<PathBuf> {
 /// Scry the mark. If the payload is missing or not itself, De-scribe. Refuse if too damaged.
 pub fn mend_boot(root: &Path, pass: Option<&str>, stage: &Path) -> Result<BootOutcome> {
     let find = find_boot_mark(root)
-        .ok_or_else(|| crate::Error::Msg("no boot mark (.sg1) on this medium".into()))?;
+        .ok_or_else(|| crate::Error::Msg("no boot Sigil (.sg1) on this medium".into()))?;
     mend_find(&find, pass, stage)
 }
 
@@ -173,7 +173,7 @@ pub fn mend_find(find: &BootFind, pass: Option<&str>, stage: &Path) -> Result<Bo
 fn refuse_if_attest_forged(mark: &Path) -> Result<()> {
     match verify_attestation(mark) {
         Ok(s) if s.contains("FAILED") => Err(crate::Error::Msg(format!(
-            "Attest refused this mark — {s}. Will not boot it."
+            "Attest refused this Sigil — {s}. Will not boot it."
         ))),
         _ => Ok(()),
     }
@@ -319,7 +319,7 @@ pub fn mend_scan(stage: &Path, pass: Option<&str>) -> Result<BootOutcome> {
     }
     let mnts = stage.join("mnt");
     fs::create_dir_all(&mnts).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let mut last = crate::Error::Msg("no boot mark on any disk".into());
+    let mut last = crate::Error::Msg("no boot Sigil on any disk".into());
     for (i, dev) in list_block_devices().into_iter().enumerate() {
         let mp = mnts.join(format!("{i}"));
         let _ = fs::create_dir_all(&mp);
@@ -786,7 +786,7 @@ mod tests {
         let err = mend_boot(&dir, None, &dir.join("s"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("no boot mark"), "{err}");
+        assert!(err.contains("no boot Sigil"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -74,7 +74,7 @@ impl ScrubReport {
             s.push_str(&format!("{}: {line}\n", p.display()));
         }
         s.push_str(&format!(
-            "scrub: {} mark(s), {} repaired, {} uncorrectable, {} clean\n",
+            "scrub: {} Sigil(s), {} repaired, {} uncorrectable, {} clean\n",
             self.files.len(),
             self.repaired(),
             self.uncorrectable(),

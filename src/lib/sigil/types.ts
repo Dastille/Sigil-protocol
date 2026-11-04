@@ -29,7 +29,7 @@ export const MODE_PARAMS: Record<ResilienceMode, ModeSpec> = {
     cost: "smallest",
     blurb: "Checks that nothing changed. It cannot repair a damaged file.",
     essence:
-      "Use Glyph when you need proof, not repair. It is the smallest mark. If any piece is missing or damaged, it stops and will not rebuild the file.",
+      "Use Glyph when you need proof, not repair. It is the smallest Sigil. If any piece is missing or damaged, it stops and will not rebuild the file.",
     useful: [
       "Evidence you must prove untouched — a court packet, a dump, a contract",
       "A file you already keep a second copy of",
@@ -49,7 +49,7 @@ export const MODE_PARAMS: Record<ResilienceMode, ModeSpec> = {
     cost: "~1.3×",
     blurb: "Can rebuild the file if up to 4 of 16 pieces are lost or damaged.",
     essence:
-      "Use Reflection for USB sticks, email, and bad connections. The mark is a bit larger. Any 12 of the 16 pieces are enough to get the original back.",
+      "Use Reflection for USB sticks, email, and bad connections. The Sigil is a bit larger. Any 12 of the 16 pieces are enough to get the original back.",
     useful: [
       "Sending a file across a channel that routinely drops or corrupts blocks",
       "Everyday copies where a little extra size is fine",
@@ -84,11 +84,11 @@ export const MODE_PARAMS: Record<ResilienceMode, ModeSpec> = {
 export const MAGIC = new Uint8Array([0x53, 0x47, 0x49, 0x4c]); // SGIL
 export const MAGIC_EMBER = new Uint8Array([0x53, 0x47, 0x45, 0x4d]); // SGEM
 export const VERSION = 2;
-/** Private label: new encrypted marks (name, size, SHA-256 inside the AEAD). */
+/** Private label: new encrypted Sigils (name, size, SHA-256 inside the AEAD). */
 export const PRIVATE_VERSION = 3;
 export const HEADER_SIZE = 160;
 export const KEYSTONE_COPIES = 3;
-/** Primary header + spare copies. Pieces start here on new marks. */
+/** Primary header + spare copies. Pieces start here on new Sigils. */
 export const KEYSTONE_SPAN = HEADER_SIZE * (1 + KEYSTONE_COPIES);
 /** Covenant + Geas slab after the map (and after each Ember). */
 export const VOW_SIZE = 128;
@@ -98,7 +98,7 @@ export const SHARD_CRC = 4;
 export const MAX_BYTES = 1_500_000;
 export const GRAPH_MAGIC = new Uint8Array([0x53, 0x49, 0x47, 0x47]); // SIGG
 export const ATLAS_MAGIC = new Uint8Array([0x41, 0x54, 0x4c, 0x53]); // ATLS
-/** Plaintext per star when a file is too big for one mark. */
+/** Plaintext per star when a file is too big for one Sigil. */
 export const CHUNK_PLAIN = 384 * 1024;
 export const MAX_STARS = 32;
 export const MAX_WORK = CHUNK_PLAIN * MAX_STARS;
