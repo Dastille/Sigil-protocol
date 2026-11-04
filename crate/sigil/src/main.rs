@@ -97,7 +97,7 @@ impl StdinStage {
         }
         if output.as_os_str() == "-" {
             return Err(
-                "seal writes a mark file: give -o PATH (stdout output is not supported)".into(),
+                "seal writes a Sigil file: give -o PATH (stdout output is not supported)".into(),
             );
         }
         {
@@ -935,7 +935,7 @@ enum Cmd {
         /// Skip bit-level verification (existence and structure only)
         #[arg(long)]
         quick: bool,
-        /// Treat PATH as a folder of .sg1 marks: repair scattered bit flips (as `mend --soft`)
+        /// Treat PATH as a folder of .sg1 Sigils: repair scattered bit flips (as `mend --soft`)
         /// and rewrite a Sigil only when Merkle + true name pass; uncorrectable Sigils are
         /// reported and left byte-identical. Exit 2 if any are uncorrectable.
         #[arg(long, conflicts_with_all = ["json", "fix", "quick"])]
@@ -2674,7 +2674,7 @@ fn dispatch(
 
 /// `gather --partial` after a failed rebuild: collect progress, write the receipt (file,
 /// or JSON fields on the stdout result line with `--json`), and return the exit-2 error.
-/// Writes no mark: nothing that looks complete is left behind.
+/// Writes no Sigil: nothing that looks complete is left behind.
 fn gather_partial(
     input: &Path,
     output: &Path,
@@ -2989,7 +2989,7 @@ fn not_recoverable(why: &str) -> String {
 }
 
 fn classify_exit(msg: &str) -> i32 {
-    if msg.contains("no boot mark") {
+    if msg.contains("no boot Sigil") {
         3
     } else if msg.contains("too damaged")
         || msg.contains("will not guess")

@@ -195,7 +195,7 @@ export async function seal(opts: {
   geas?: Uint8Array[];
 }): Promise<SealResult> {
   if (opts.data.length > MAX_BYTES) {
-    throw new Error(`this bench caps a single mark at ${MAX_BYTES} bytes`);
+    throw new Error(`this bench caps a single Sigil at ${MAX_BYTES} bytes`);
   }
   const { k, n } = MODE_PARAMS[opts.mode];
   const digest = await sha256(opts.data);
@@ -213,7 +213,7 @@ export async function seal(opts: {
   const geas = (opts.geas ?? []).slice(0, MAX_GEAS);
   const hasVow = Boolean(cov || geas.length);
   const entropyMilli = Math.round(shannonEntropy(opts.data) * 1000);
-  // New encrypted marks use the private label (v3), as Rust does: the outside shows
+  // New encrypted Sigils use the private label (v3), as Rust does: the outside shows
   // a keyed fingerprint and the ciphertext length only.
   let label = {
     version: VERSION,

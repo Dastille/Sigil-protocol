@@ -669,7 +669,7 @@ fn gc_sky(sky: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
         }
         if ext == "sg1" && crate::constellation::is_constellation_mark(&p) {
             rep.notes
-                .push(format!("another card-like mark left alone: {n}"));
+                .push(format!("another card-like Sigil left alone: {n}"));
             continue;
         }
         if ext == "sg1" {

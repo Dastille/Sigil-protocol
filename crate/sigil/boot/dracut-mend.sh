@@ -1,5 +1,5 @@
 #!/bin/sh
-# dracut pre-mount: Scry + De-scribe the live squashfs if a boot mark is present.
+# dracut pre-mount: Scry + De-scribe the live squashfs if a boot Sigil is present.
 
 SIGIL=
 if command -v sigil >/dev/null 2>&1; then
@@ -13,7 +13,7 @@ mkdir -p /run/sigil
 "$SIGIL" boot mend --scan --stage /run/sigil
 st=$?
 if [ "$st" = 2 ]; then
-    echo "Sigil: mark is too damaged to boot. Sigil will not guess."
+    echo "Sigil: this Sigil is too damaged to boot. Sigil will not guess."
     emergency_shell
 fi
 exit 0

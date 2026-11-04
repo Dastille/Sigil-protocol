@@ -1,5 +1,5 @@
 #!/bin/sh
-# After the live medium is mounted: Scry the mark, mend the squashfs if chewed, then continue.
+# After the live medium is mounted: Scry the Sigil, mend the squashfs if chewed, then continue.
 
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
@@ -74,7 +74,7 @@ fi
 
 case $st in
     0) exit 0 ;;
-    3) exit 0 ;; # no mark on this medium — not a Sigil stick
-    2) sigil_fail "mark is too damaged to boot. Sigil will not guess." ;;
+    3) exit 0 ;; # no Sigil on this medium — not a Sigil stick
+    2) sigil_fail "Sigil is too damaged to boot. Sigil will not guess." ;;
     *) sigil_fail "could not mend the image (exit $st). Check Ward / Attest." ;;
 esac

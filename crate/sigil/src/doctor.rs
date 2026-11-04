@@ -235,13 +235,13 @@ pub(crate) enum Health {
     Ok,
     /// Damaged but within the repair budget.
     Mendable(String),
-    /// Beyond repair, or not readable as a mark.
+    /// Beyond repair, or not readable as a Sigil.
     Damaged(String),
 }
 
 pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
     match crate::verify(bytes) {
-        Err(e) => Health::Damaged(format!("not readable as a mark: {e}")),
+        Err(e) => Health::Damaged(format!("not readable as a Sigil: {e}")),
         Ok((h, merkle_ok, live, k, recovered)) => {
             let n = h.n as usize;
             if live < k {

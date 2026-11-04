@@ -1,5 +1,5 @@
 /**
- * Private label (header v3) for encrypted marks. Mirrors `crate/sigil/src/privacy.rs`:
+ * Private label (header v3) for encrypted Sigils. Mirrors `crate/sigil/src/privacy.rs`:
  * name, sizes, entropy and plaintext SHA-256 travel in an SGIN block inside the
  * AES-256-GCM plaintext; the 160-byte label is associated data; the true-name slot
  * holds a keyed fingerprint, HMAC-SHA-256 (RFC 2104) under HKDF-SHA-256 (RFC 5869).

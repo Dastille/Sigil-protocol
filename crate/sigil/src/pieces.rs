@@ -66,7 +66,7 @@ pub fn scatter(file: &[u8], dir: &Path) -> Result<u8> {
 pub fn deluge(file: &[u8], extra: u8, dir: &Path, only_rain: bool, from: Option<u8>) -> Result<u8> {
     if file.len() >= 4 && &file[0..4] == b"SGWK" {
         return Err(crate::Error::Msg(
-            "this is a work pack of many marks. Deluge each star.sg1.".into(),
+            "this is a work pack of many Sigils. Deluge each star.sg1.".into(),
         ));
     }
     let (h, prefix, _) = locate_header(file)?;
@@ -381,7 +381,7 @@ pub fn mend_bytes(file: &[u8]) -> Result<Vec<u8>> {
 pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
     if file.len() >= 4 && &file[0..4] == b"SGWK" {
         return Err(crate::Error::Msg(
-            "this is a work pack of many marks; use `sigil mend` on the file (work::mend_pack_path)".into(),
+            "this is a work pack of many Sigils; use `sigil mend` on the file (work::mend_pack_path)".into(),
         ));
     }
     let (h, prefix, _) = locate_header(file)?;

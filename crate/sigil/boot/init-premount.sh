@@ -1,5 +1,5 @@
 #!/bin/sh
-# Fallback if live-boot is not in use: scan disks for a boot mark and mend.
+# Fallback if live-boot is not in use: scan disks for a boot Sigil and mend.
 
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
@@ -25,7 +25,7 @@ st=$?
 case $st in
     0|3) exit 0 ;;
     2)
-        echo "Sigil: mark is too damaged to boot." >&2
+        echo "Sigil: this Sigil is too damaged to boot." >&2
         if command -v panic >/dev/null 2>&1; then panic "Sigil: too damaged"; fi
         exec /bin/sh
         ;;

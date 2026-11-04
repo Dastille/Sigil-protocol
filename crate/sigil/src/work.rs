@@ -1759,7 +1759,7 @@ pub fn overture_report(input: &Path) -> Result<String> {
         }
         return Err(crate::Error::Msg("no OVERTURE list in this folder".into()));
     }
-    Ok("This is one small mark — copy the whole file; there is no separate boot.".into())
+    Ok("This is one small Sigil — copy the whole file; there is no separate boot.".into())
 }
 
 #[cfg(test)]

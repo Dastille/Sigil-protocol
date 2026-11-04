@@ -3264,7 +3264,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                     Severity::Error,
                     "bit-rot-unrecoverable",
                     subject.clone(),
-                    "not readable as a mark",
+                    "not readable as a Sigil",
                     Some("restore this segment from another copy"),
                 ));
                 continue;
