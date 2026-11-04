@@ -418,14 +418,14 @@ The numbered-piece options `--from`, `--only-rain` and `--watch` do not apply to
 are refused with `--channel` (they used to be silently ignored); use `--report` / `--answer` instead.
 
 **`gather --partial` (for scripts).** If there are not enough packets yet, gather still
-fails (exit 2) and still writes **no** mark — it never leaves a pretend-complete archive.
+fails (exit 2) and still writes **no** Sigil — it never leaves a pretend-complete archive.
 With `--partial` it also writes `OUT.partial.json` (or, with `--json`, one JSON line on
 stdout) saying how far it got: `packets_accepted`, `packets_needed`, `packets_more`,
 damaged and foreign packet files (never counted as progress), the `--report` line and
 the reason. When there are enough packets, `--partial` changes nothing.
 
 `sigil --help` lists the rest (pieces/`deluge`/`gather`, `dispatch`, `boot` for
-live USBs, `vault`, `mount`, `kit`, `sign`, `import-pgp`, ...). They are not
+live USBs, `vault`, `mount`, `frost`, `sign`, `import-pgp`, ...). They are not
 covered by the examples here; see [docs/START.md](docs/START.md) and
 [crate/sigil/README.md](crate/sigil/README.md).
 
@@ -461,7 +461,7 @@ pg_dump mydb | sigil seal - --pass-file ~/.sigil-pass -o dump.sg1 --stdin-name m
 
 - The pipe is copied into a private temp folder next to `-o` (so big dumps take the
   normal large-file path) and that folder is removed when the seal ends.
-- **Empty stdin is refused** (exit 1, no mark written): if `pg_dump` failed you get an
+- **Empty stdin is refused** (exit 1, no Sigil written): if `pg_dump` failed you get an
   error, not an empty backup. A terminal on stdin is refused too.
 - Passphrase rules are the same as always: use `--pass-file` or `--to` in scripts
   (stdin is busy carrying the data). `--stdin-name` sets the name stored inside.
@@ -471,8 +471,8 @@ Works for one file (plain `.sg1` or a large-file pack, also with `--star` / `--f
 `--to-mb`). Not for folder wraps or constellations. A large pack streams part by part;
 if a later part fails, the exit code is not 0 — treat that output as incomplete.
 
-**`--json`** on `seal`, `unseal`, `verify`, `scry`, `mend`, `scatter`, `gather`, `kit place`,
-`kit mend`, `path`, `vault` (all subcommands), `constellation`, `gc`, `tidy`, `sign`, `deluge`,
+**`--json`** on `seal`, `unseal`, `verify`, `scry`, `mend`, `scatter`, `gather`, `frost place`,
+`frost mend`, `path`, `vault` (all subcommands), `constellation`, `gc`, `tidy`, `sign`, `deluge`,
 `keygen`, `seal-folder-names` (and `doctor`, which already had it) prints
 exactly one JSON line on stdout; the friendly lines move to stderr.
 
@@ -484,7 +484,7 @@ exactly one JSON line on stdout; the friendly lines move to stderr.
 `verify --json` adds `"report"` (the normal text) and, with a deep read, `"read_data"`.
 `scry --json` adds the same `"report"`. Both (and `constellation scry --json`) also add a structured
 `"status"` object (`"schema":1`, additive — `report` stays) built from library data, not
-the text: `kind` (`mark`, `work-pack`, `folder-pack`, `constellation`), `health`
+the text: `kind` (`mark` = a single Sigil, `work-pack`, `folder-pack`, `constellation`; JSON values are stable), `health`
 (`healthy`, `needs-repair`, `not-recoverable`), `reason` (why not recoverable, else null),
 `repair` (what needs `sigil mend`, else null). A Sigil adds `version`, `shards` (`live`,
 `total`, `need`, `len`), `merkle_closed`, `header_recovered`, `encrypted`, `compressed`,
@@ -493,10 +493,11 @@ the text: `kind` (`mark`, `work-pack`, `folder-pack`, `constellation`), `health`
 `encrypted`; a constellation adds `stars` (`members`, `packed`, `present`, `missing`,
 `needs_repair`, `beyond_repair`). A not-recoverable copy is `ok:false`, exit 2, and still
 carries `status`. New fields may be added within schema 1; a rename or removal bumps it. `mend --json` adds `"kind"` (`mark`, `folder-pack`,
-`sealed-folder-pack`, `work-pack`) and, for one mark, `"live"`, `"n"`, `"need"`, `"merkle"`,
+`sealed-folder-pack`, `work-pack`) and, for one Sigil (`kind` `mark`), `"live"`, `"n"`, `"need"`, `"merkle"`,
 `"soft_salvage"` (counted on the mended copy); a work pack adds `"stars"`, `"facets_checked"`.
-`scatter --json` adds `"pieces"`; `kit place --json` adds `"drives"`, `"pieces"`, `"per_drive"`,
-`"star"`; `kit mend --json` has `"output"` / `"output_bytes"`. A copy too damaged to mend is
+`scatter --json` adds `"pieces"`; `frost place --json` adds `"drives"`, `"pieces"`, `"per_drive"`,
+`"star"`; `frost mend --json` has `"output"` / `"output_bytes"`. For script stability their
+`"cmd"` field still reads `"kit place"` / `"kit mend"` (the deprecated alias names). A copy too damaged to mend is
 `"ok":false` with the error, exit 1, and no output file.
 
 More `--json` (same one-line shape): `path --json` adds `"view"` (`trail`, `kind`, `name`,
@@ -539,7 +540,7 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 | 0 | it worked / the Sigil is healthy |
 | 1 | error or refused (bad key, missing file, empty stdin, wrong option combo) |
 | 2 | too damaged to restore, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
-| 3 | no boot mark found |
+| 3 | no boot Sigil found |
 
 `doctor` keeps its own documented codes.
 

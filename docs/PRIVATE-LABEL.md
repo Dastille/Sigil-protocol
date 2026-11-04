@@ -30,7 +30,7 @@ directory. There is no opt-out flag. Layout (code: `crate/sigil/src/folder.rs`):
 
     "SGDR" | ver=2 | file count u32 LE | body length u64 LE | body
 
-`body` is one ordinary encrypted `.sg1` (a v3 private-label mark, or an SGWK work
+`body` is one ordinary encrypted `.sg1` (a v3 private-label Sigil, or an SGWK work
 pack when the folder is over the chunk size, 4 MiB by default) sealed with the same
 mode and keys. Its plaintext is the complete v1 folder pack, so the member names,
 the folder tree and the per-member star lengths are all inside AES-256-GCM.
@@ -77,9 +77,9 @@ after unlock.
 
 ## Compatibility
 
-Plain marks stay v2. Every existing file (v0–v2, packs, folder packs,
+Plain Sigils stay v2. Every existing file (v0–v2, packs, folder packs,
 constellations, logs) opens as before; fixtures in `tests/fixtures/enc-v2/`.
-Readers refuse a v3 label on an unencrypted mark, a v3 mark without SGTO, a
+Readers refuse a v3 label on an unencrypted Sigil, a v3 Sigil without SGTO, a
 nonzero outer entropy slot, and any label edit.
 
 ## Still leaks

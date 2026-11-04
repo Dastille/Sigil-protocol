@@ -747,7 +747,7 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
             if uses_cold { Severity::Warn } else { Severity::Info },
             "cold-missing",
             "cold/",
-            format!("light retention: {list} left the chart and no cold kit for it is inside this container{}", if uses_cold { "" } else { " (fine if you used an external --cold DIR, which doctor cannot see)" }),
+            format!("light retention: {list} left the chart and no Frost Rune (cold folder) for it is inside this container{}", if uses_cold { "" } else { " (fine if you used an external --cold DIR, which doctor cannot see)" }),
             Some("keep cold kits with `--cold-here` so they travel with the container".into()),
         ));
     }
@@ -791,13 +791,13 @@ fn check_cold_kit(rep: &mut DoctorReport, dir: &Path, subject: &str, quick: bool
                 Severity::Error,
                 "cold-broken",
                 subject,
-                format!("cold kit cannot be rebuilt: {e}"),
+                format!("cold folder (Frost Rune) cannot be rebuilt: {e}"),
                 Some("copy the missing usb-* folders back under the kit".into()),
             )),
             Ok(bytes) => {
                 rep.verified += 1;
                 if usbs < want {
-                    rep.findings.push(f(Severity::Warn, "cold-degraded", subject, format!("cold kit has {usbs}/{want} usb folders; still mendable but one more loss may not be"), Some("re-place the kit (`sigil kit place`) after mending".into())));
+                    rep.findings.push(f(Severity::Warn, "cold-degraded", subject, format!("cold folder (Frost Rune) has {usbs}/{want} usb folders; still mendable but one more loss may not be"), Some("re-place it (`sigil frost place`) after mending".into())));
                 } else if !quick {
                     match health_bytes(&bytes) {
                         Health::Ok => {}

@@ -69,7 +69,7 @@ Two points:
   a signature, rejects it (test
   `mend_soft_column_repair_fails_closed_when_flooded`, forged part).
 - **Column repair needs no key.** It works on the stored bytes (ciphertext if
-  encrypted) and checks the Merkle binding of the ciphertext. An encrypted mark
+  encrypted) and checks the Merkle binding of the ciphertext. An encrypted Sigil
   is repaired without its passphrase and still needs the passphrase to open
   (test `mend_soft_column_repair_encrypted_and_wrong_key`).
 
@@ -225,7 +225,7 @@ the same time, so treat them as rough.
 
 ### 5.2 Storage damage (1 MB file, 10 trials per row)
 
-Reflection mark = 1 336 608 B (16 shards of 83 334 B, any 12). Seal mark =
+Reflection Sigil = 1 336 608 B (16 shards of 83 334 B, any 12). Seal Sigil =
 2 003 264 B (16 of 125 000 B, any 8). "ok" = exact bytes, either directly or
 after `mend --soft`. No row in either build had a WRONG result.
 
@@ -239,7 +239,7 @@ after `mend --soft`. No row in either build had a WRONG result.
 | Reflection | 1 024 (BER 9.6e-5) | 0 / 10 | 10 / 0 | mend --soft | 64 |
 | Reflection | 4 096 (BER 3.8e-4) | 0 / 10 | 3 / 7 | mend --soft | 81 |
 | Reflection | 16 384 | 0 / 10 | 0 / 10 | none | - |
-| Reflection | zeroed run 1% / 10% of mark | 10 / 0 each | 10 / 0 each | direct | 26-27 |
+| Reflection | zeroed run 1% / 10% of Sigil | 10 / 0 each | 10 / 0 each | direct | 26-27 |
 | Reflection | zeroed run 20% | 8 / 2 | 8 / 2 | direct | 26 |
 | Reflection | zeroed run 30% / 45% | 0 / 10 each | 0 / 10 each | - | - |
 | Reflection | truncate 0.1% / 10% / 20% | 10 / 0 each | 10 / 0 each | direct | 24-25 |
@@ -316,7 +316,7 @@ uncorrectable error.
 | seal (Reflection; 16 × 4 MiB chunk stars) | 0 | 3.05 | 30 |
 | unseal | 0 | 1.49 | 38 |
 | mend (healthy) | 0 | 0.32 | 16 |
-| mend --soft (1 flip per 64 KiB of mark, ≈ 1 370 flips) | 0 | 2.15 | 52 |
+| mend --soft (1 flip per 64 KiB of Sigil, ≈ 1 370 flips) | 0 | 2.15 | 52 |
 | unseal of the mended copy | 0 | 1.42 | 38 |
 
 The mended copy unsealed to the exact input. Large files are processed one
@@ -328,9 +328,9 @@ single runs): 2 000 flips took 14.0 s and 8 000 flips took 39.8 s to mend, both
 exact. The Berlekamp–Welch solve is O(p·(k+2t)²) per damaged column, so large `n`
 is slow. At the default n = 16 it is not noticeable (the table above).
 
-### 5.5 Channel over a lossy one-way link (1 MB Reflection mark, 10 trials)
+### 5.5 Channel over a lossy one-way link (1 MB Reflection Sigil, 10 trials)
 
-`deluge --channel --extra E` on the 1 336 608-byte mark gives 82 source
+`deluge --channel --extra E` on the 1 336 608-byte Sigil gives 82 source
 packets plus E. Random packets are then deleted, and the rest is run through
 `gather` + `unseal`.
 
@@ -389,7 +389,7 @@ in rare cases, RFC 6330 §5.8).
    produces exactly the missing count per block.
 6. **Scrub command: `sigil doctor --scrub DIR`.** BUILT (`crate/sigil/src/scrub.rs`,
    `tests/cli_doctor_scrub.rs`: 10 flipped Sigils, ≥9/10 open after scrub, 0/10 before). Periodically run column repair
-   on every mark and rewrite only when the Merkle/true-name check passes, then
+   on every Sigil and rewrite only when the Merkle/true-name check passes, then
    log what changed. Test: the §5.3 experiment run through the command, with
    9/10 or better scrubbed vs 0/10 unscrubbed. A Sigil with an uncorrectable
    column is reported and left byte-identical.
@@ -401,7 +401,7 @@ in rare cases, RFC 6330 §5.8).
 8. **Interleaving across shards for burst damage.** Block errors of hundreds of
    addresses (Ladbury 2013) land in one or two shards, which erasure decoding
    already absorbs, so no change is proposed. Test to confirm: zero 1 KiB runs at
-   100 random offsets in a Seal mark, and all trials recover.
+   100 random offsets in a Seal Sigil, and all trials recover.
 
 ## 8. Prototype: column repair (additive, decoder only)
 
@@ -430,7 +430,7 @@ in rare cases, RFC 6330 §5.8).
   `column_errors_beyond_budget_never_return_the_original_unchecked`,
   `column_errors_without_spare_shards_refuse` (budget 0, fewer than k, wrong
   lengths, k = 0, duplicate/out-of-range indexes);
-  `tests::mend_soft_column_repair_fixes_scattered_bit_flips` (mended mark is
+  `tests::mend_soft_column_repair_fixes_scattered_bit_flips` (mended Sigil is
   byte-identical to the original), `..._encrypted_and_wrong_key`,
   `..._with_truncation_and_flips`, `..._fails_closed_when_flooded` (5% of bits
   flipped, and a consistent forgery: refused),
@@ -452,7 +452,7 @@ in rare cases, RFC 6330 §5.8).
   still refuses (by design; proposal 2).
 - Damage outside shard bodies is handled separately: the front header (four
   copies plus the Embers), the SGTO key block of encrypted Sigils, and work-pack
-  heads. Heavy damage to the SGTO block of an encrypted mark makes it unopenable
+  heads. Heavy damage to the SGTO block of an encrypted Sigil makes it unopenable
   even when every shard is repaired. **UNVERIFIED** at what rate this happens; not
   measured.
 - Glyph mode has no parity and gains nothing.
@@ -623,7 +623,7 @@ file: 1000000 random bytes, trials per case: 10
 Scrub experiment (this branch):
 
 ```
-1024 flips per epoch x 8 epochs = 8192 flips total, 1336608 B mark, 10 trials
+1024 flips per epoch x 8 epochs = 8192 flips total, 1336608 B Sigil, 10 trials
 
 | policy | exact | refused | WRONG |
 |---|---|---|---|

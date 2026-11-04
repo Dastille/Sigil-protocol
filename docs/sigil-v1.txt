@@ -1,12 +1,13 @@
 SIGIL PROTOCOL SPECIFICATION
 Version 2/3 · writers emit v2 (plain) and v3 (encrypted, private label) · readers accept v1–v3 · AGPL-3.0 (programs) · Apache-2.0 (this layout)
 
-New marks are version 2: first k shards are the payload (systematic Reed–Solomon);
+New Sigils are version 2: first k shards are the payload (systematic Reed–Solomon);
 parity shards are extra evaluations. Version 1 evaluation-code files still De-scribe.
 Default mode is Reflection (~1.3×, ~25% shard loss). Seal is opt-in (~2×, ~50%
 shard loss). Loss means whole shards; see THREAT MODEL for scattered bit rot.
 
-Sigil is a portable object format (.sg1) that combines a content identifier,
+Sigil is a portable object format (.sg1); one .sg1 file is called a Sigil.
+The format combines a content identifier,
 Reed–Solomon erasure coding, replicated headers, and optional AES-256-GCM.
 It is not a network, filesystem, identity provider, or replacement for PGP,
 rsync, IPFS, or a database. Independent implementations must match this layout.
@@ -85,6 +86,47 @@ The Vow is copied after each Ember so Geas still applies if the prefix is gone.
 Work packs (magic SGWK) concatenate sequential .sg1 stars for large payloads.
 The browser lab remains size-capped; the Rust CLI is not.
 
+DERIVED CARRIERS (no change to the .sg1 layout)
+Both carriers below are built from an existing .sg1 and rebuild a
+.sg1 of the same object, checked against its hash before output.
+Neither adds confidentiality or authenticity:
+a Ward, if any, stays inside the .sg1, and the carriers need no key.
+
+Channel (sigil deluge --channel; old hidden alias --fountain)
+  Encodes the whole .sg1 with RaptorQ (IETF RFC 6330) into rateless
+  packets called mana, one per file, extension .mana only.
+  Packet file v2: "SGFT" | 2 | OTI (12) | object SHA-256 (32) |
+    FEC payload id (4: 8-bit source block number, 24-bit ESI) |
+    symbol | SHA-256 of all preceding bytes (32).
+  v1 packets ("SGFT" | 1 | OTI | payload id | symbol) are still read.
+  Default ESIs are random over the 24-bit space, so uncoordinated
+  senders rarely duplicate a packet and their packets can be pooled.
+  Gather drops damaged, truncated, foreign or impossible packets and
+  duplicate ESIs, and writes output only if the rebuilt bytes match
+  the object SHA-256. The trailing SHA-256 is an integrity check, not
+  a MAC: anyone can forge a packet with a valid checksum; such a packet
+  is caught only by the final object hash, so gather fails closed
+  (no wrong output) but an attacker who can inject packets can deny
+  recovery. RaptorQ decoding is probabilistic: K source symbols
+  usually suffice, sometimes 1-2 more are needed (RFC 6330 5.8).
+  Details: docs/FOUNTAIN-v2.md.
+
+Frost Rune (sigil frost place / frost mend; alias frost-rune;
+  deprecated hidden aliases kit, cold-usb)
+  Placement only, no new code: the n shards of one Seal .sg1, as
+  scatter pieces (.sgp), are dealt round-robin into folders
+  usb-0 .. usb-(D-1) (default D = 4, so 4 of 16 shards per drive), plus a plain-text manifest named KIT
+  listing star_id (true-name hex), n, k and shard=i usb=j rows.
+  Losing whole drives is tolerated while at least k shards survive
+  (Seal 8 of 16: any two of four default drives). frost mend gathers
+  the pieces in the folders that remain, with the same checks as
+  sigil gather. The manifest is not authenticated; the rebuilt Sigil is
+  still checked against its true name and length.
+  Details: docs/LRC-COLD-USB.md.
+
+Fire Rune is a reserved name for a future hot-storage counterpart.
+It has no behavior and nothing about it is claimed here.
+
 THREAT MODEL
 This section states what a .sg1 protects, against whom, and what it does not.
 It describes the reference implementation (crate/sigil) as of October 2026.
@@ -102,7 +144,7 @@ Adversaries
      front of file. Not malicious.
   P  passive holder of a copy without the key (cloud host, courier,
      finder of a lost USB stick). Reads every byte, changes nothing.
-  A  active tamperer without the key: edits bytes, swaps whole marks,
+  A  active tamperer without the key: edits bytes, swaps whole Sigils,
      crafts hostile headers, piece files, packs and SGTO blocks.
   G  offline guesser: runs the passphrase KDF on candidate passphrases.
   K  anyone holding the passphrase or identity key: full access, by
@@ -125,13 +167,13 @@ In scope (what is claimed)
      header findable when the front of the file is destroyed.
   P  With a Ward or encrypt-to wrap, payload content is protected by
      AES-256-GCM under a 256-bit key. The fold is not a cipher.
-  A  On encrypted marks the GCM tag rejects any change to the payload.
-     On every mark the decoder checks the true name and length after
+  A  On encrypted Sigils the GCM tag rejects any change to the payload.
+     On every Sigil the decoder checks the true name and length after
      decode. Parsers treat all input as hostile: malformed geometry,
      counts and lengths are errors, not panics or unbounded allocations.
-     NOT claimed: authenticity of an unencrypted mark. The header is
+     NOT claimed: authenticity of an unencrypted Sigil. The header is
      protected only by CRC32, so whoever rewrites payload and header
-     consistently produces a valid mark with a new true name. Proving
+     consistently produces a valid Sigil with a new true name. Proving
      origin needs a signature kept outside the header (sigil sign,
      an Ed25519 attestation) or a true name learned out of band.
   G  Cost per guess is the KDF. New passphrase wraps (SGTO v2, record
@@ -146,7 +188,7 @@ In scope (what is claimed)
 Out of scope (what is not claimed)
   Metadata confidentiality. FIXED FOR NEW ENCRYPTED FILES (header v3,
     "private label", October 2026; options 1 and 4 on by default). Every
-    new encrypted mark (passphrase, encrypt-to, both, Talisman; single
+    new encrypted Sigil (passphrase, encrypt-to, both, Talisman; single
     seals, work-pack stars, constellation stars, log segments) writes:
       - outside: magic, version 3, flags (deflate bit cleared), k, n, the
         CIPHERTEXT length, salt, nonce, tag, shard length, the Merkle
@@ -161,7 +203,7 @@ Out of scope (what is not claimed)
         binding bytes zeroed). Those excluded bytes are bound separately:
         the binding is recomputed from the shards and must match, the
         entropy slot must be zero. Editing any label field, swapping
-        labels or fields between marks, or rewriting v3 to v2 fails closed.
+        labels or fields between Sigils, or rewriting v3 to v2 fails closed.
       - keyed fingerprint = HMAC-SHA256 (RFC 2104) of the plaintext under
         HKDF-SHA256 (RFC 5869): ikm = content key, salt = file salt,
         info "sigil v3 keyed fingerprint". Per file by default, so two
@@ -177,10 +219,10 @@ Out of scope (what is not claimed)
     Cost: about 72 bytes plus the name length inside the ciphertext,
     times the parity ratio, rounded up to whole shard rows (measured: a
     10 000-byte file grows from 3 461 to 3 573 bytes; under 0.01% for
-    MiB-sized files). Plain marks and every existing .sg1 are unchanged
+    MiB-sized files). Plain Sigils and every existing .sg1 are unchanged
     and open exactly as before.
   STILL LEAKS (not fixed, or fixed only by opt-in):
-      - every v1/v2 encrypted mark written before the fix: re-seal it.
+      - every v1/v2 encrypted Sigil written before the fix: re-seal it.
       - the ciphertext length, i.e. the compressed size plus ~72 bytes plus
         the name. Opt-in padding (size buckets / power of two) is a
         follow-up; until then the folded length can fingerprint a file.
@@ -188,7 +230,7 @@ Out of scope (what is not claimed)
         only by per-file wards: member names and sizes inside the folder
         record, and per-member plaintext SHA-256 for large members. An
         encrypted pack is now written as SGDR ver=2 ("SGDR" | 2 | count u32
-        | body_len u64 | body), where body is one encrypted mark or work pack
+        | body_len u64 | body), where body is one encrypted Sigil or work pack
         whose plaintext is the ver=1 pack; only the file count and the total
         ciphertext length stay visible (docs/PRIVATE-LABEL.md).
       - vault CHART version lines: plaintext SHA-256 and size of each
@@ -204,7 +246,7 @@ Out of scope (what is not claimed)
   Always visible: that the file is a .sg1, whether it is encrypted, its
     mode and shard counts, the ciphertext length (or its bucket once
     padding is used), and file-system names and dates.
-  Rollback and replay: an older valid mark of the same file is
+  Rollback and replay: an older valid Sigil of the same file is
     indistinguishable from the current one without an external record
     (vaults and segment logs add one; see docs/SEGMENT-LOG.md).
   Destruction beyond the budget: more than n-k bad shards, or all copies.

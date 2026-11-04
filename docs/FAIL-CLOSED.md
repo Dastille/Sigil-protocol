@@ -57,7 +57,7 @@ and `staging::tests`.
 
 ## Private label (v3)
 
-New encrypted marks authenticate their label as AES-GCM associated data. A rewritten name, size, fingerprint, salt, nonce, version or binding, a swapped label, or an outer entropy score makes unseal refuse. See docs/PRIVATE-LABEL.md.
+New encrypted Sigils authenticate their label as AES-GCM associated data. A rewritten name, size, fingerprint, salt, nonce, version or binding, a swapped label, or an outer entropy score makes unseal refuse. See docs/PRIVATE-LABEL.md.
 
 ## Passphrase files (`--pass-file`)
 

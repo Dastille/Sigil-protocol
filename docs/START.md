@@ -19,7 +19,7 @@ Workshop names still work: `seal` / `unseal` / `scry` mean the same as inscribe 
 
 ```
 ./sigil inscribe -o out.sg1 file.bin          # Reflection by default
-./sigil inscribe --mode seal -o out.sg1 file.bin   # harder damage, bigger mark
+./sigil inscribe --mode seal -o out.sg1 file.bin   # harder damage, bigger Sigil
 ./sigil scry out.sg1
 ./sigil de-scribe -o file.bin out.sg1
 ```
@@ -69,7 +69,7 @@ Full story: [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) · retention (full vs lig
 ./sigil umount ./view
 ```
 
-### Peek inside a nested mark (breadcrumb path)
+### Peek inside a nested Sigil (breadcrumb path)
 
 ```
 ./sigil path tree.sg1 --into photos
@@ -164,7 +164,7 @@ chmod 600 ~/.sigil-pass                       # only you can read or change it
 What Sigil promises (each checked by `tests/cli_pass_file.rs`):
 
 - `--pass-file PATH` works everywhere `--pass` does (seal, unseal, scry, log, vault,
-  constellation, boot, kit, …) and opens the same files: the passphrase is the
+  constellation, boot, frost, …) and opens the same files: the passphrase is the
   file's **first line**, with one trailing newline or CRLF dropped.
 - **It fails closed.** A missing file, an empty file (or empty first line), or the
   wrong passphrase stops with an error and writes nothing.
@@ -200,8 +200,8 @@ Guide: [PGP-IMPORT.md](PGP-IMPORT.md)
 ### Frost Rune (split a Seal across sticks)
 
 ```
-./sigil frost place out.sg1 --drives 4 -o ./kit/
-./sigil frost mend ./kit -o healed.sg1
+./sigil frost place out.sg1 --drives 4 -o ./frost/
+./sigil frost mend ./frost -o healed.sg1
 ```
 
 Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
@@ -213,17 +213,17 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | Guide | What it is |
 |-------|------------|
 | [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) | Version tip + mount/export views + nested path walk |
-| [VAULT-RETENTION.md](VAULT-RETENTION.md) | Full vs light history, prune, cold kit |
+| [VAULT-RETENTION.md](VAULT-RETENTION.md) | Full vs light history, prune, Frost Rune cold folder |
 | [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md) | Remember who a vault seals to on later commits |
 | [CONTAINER.md](CONTAINER.md) | One `name.sigil/` folder per thing; tidy / doctor / gc |
 | [SEGMENT-LOG.md](SEGMENT-LOG.md) | Append-only sealed batches, verify, prove, shred, rotate signer |
-| [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery folder (Option 0) shipped as `scripts/make-recovery-kit.sh`; stubs pending |
+| [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery folder (Option 0) shipped as the script `scripts/make-recovery-kit.sh`; stubs pending |
 | [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (Option A epoch rollover chosen 2026-11-02, not implemented) |
 | [STREAMING-DESIGN.md](STREAMING-DESIGN.md) | Design note: segments above memory size (`log=9`, chunked segments); deferred 2026-11-02, not implemented |
 | [RELEASE-SIGNING-DESIGN.md](RELEASE-SIGNING-DESIGN.md) | Design note: signing releases and recovery folders (minisign recommended); minisign chosen; releases carry SHA256SUMS, signature key TBD until created |
 | [PASSKEY.md](PASSKEY.md) | Lock a `.sgk` identity to a FIDO2 security key |
 | [PGP-IMPORT.md](PGP-IMPORT.md) | Turn a Curve25519 OpenPGP key into Sigil key files |
-| [LRC-COLD-USB.md](LRC-COLD-USB.md) | Cold kit across USB sticks |
+| [LRC-COLD-USB.md](LRC-COLD-USB.md) | Frost Rune: one Seal spread across cold USB sticks |
 
 Frozen layout: [`docs/sigil-v1.txt`](sigil-v1.txt). CLI dump: `sigil --help`.
 

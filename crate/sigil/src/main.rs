@@ -892,7 +892,7 @@ enum Cmd {
         identity: Vec<PathBuf>,
     },
     /// Reclaim orphan stars / versions and abandoned temp files from a container (report-only
-    /// unless --apply). Never deletes anything the card / CHART lists, nor cold/ kits.
+    /// unless --apply). Never deletes anything the card / CHART lists, nor cold/ folders (Frost Rune).
     Gc {
         /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
         path: PathBuf,
@@ -921,7 +921,7 @@ enum Cmd {
         temp_age: u64,
     },
     /// Read-only health check of a vault or constellation: manifest, old layout, missing
-    /// members, bit rot (ECC verify), orphans/temp files, cold kits. Exit 0 healthy, 1 warnings,
+    /// members, bit rot (ECC verify), orphans/temp files, cold folders (Frost Rune). Exit 0 healthy, 1 warnings,
     /// 2 problems, 3 could not check. `--fix` only tidies an old layout and runs gc --apply.
     Doctor {
         /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
@@ -929,7 +929,7 @@ enum Cmd {
         /// Machine-readable report on stdout
         #[arg(long)]
         json: bool,
-        /// Safe fixes only: `sigil tidy` an old layout, then `sigil gc --apply`. Never touches bit rot, missing members or cold kits
+        /// Safe fixes only: `sigil tidy` an old layout, then `sigil gc --apply`. Never touches bit rot, missing members or cold folders
         #[arg(long)]
         fix: bool,
         /// Skip bit-level verification (existence and structure only)
@@ -1214,7 +1214,7 @@ enum VaultCmd {
         /// After commit, keep only the newest N version seals (overrides light policy for this commit)
         #[arg(long)]
         keep: Option<u32>,
-        /// Cold kit root for auto-prune / --keep (DIR/vN/); required when light policy would drop
+        /// Cold folder root (Frost Rune) for auto-prune / --keep (DIR/vN/); required when light policy would drop
         #[arg(long)]
         cold: Option<PathBuf>,
         /// Light auto-prune: discard without --cold
@@ -1267,7 +1267,7 @@ enum VaultCmd {
         /// How many newest versions to keep (≥ 1)
         #[arg(long)]
         keep: u32,
-        /// Before deleting a version seal, archive it under DIR/vN/ (kit place or plain .sg1)
+        /// Before deleting a version seal, archive it under DIR/vN/ (Frost Rune placement or plain .sg1)
         #[arg(long)]
         cold: Option<PathBuf>,
         /// Light retention: allow dropping seals without --cold (discards history)
@@ -1288,13 +1288,13 @@ enum VaultCmd {
         /// Version number to remove (see `vault versions`)
         #[arg(long)]
         version: u32,
-        /// Archive the seal under DIR/vN/ first (kit place or plain .sg1)
+        /// Archive the seal under DIR/vN/ first (Frost Rune placement or plain .sg1)
         #[arg(long)]
         cold: Option<PathBuf>,
         /// Archive into the container's own `cold/` folder (tidy containers only)
         #[arg(long = "cold-here", conflicts_with = "cold")]
         cold_here: bool,
-        /// Discard without a cold kit (light retention)
+        /// Discard without a cold folder (light retention)
         #[arg(long = "force-drop")]
         force_drop: bool,
         /// Show what would happen; change nothing

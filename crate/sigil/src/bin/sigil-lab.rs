@@ -1633,7 +1633,7 @@ impl Lab {
             ),
             (
                 "Hex",
-                "Writes holes into a mark on purpose so you can watch Reflection or Seal rebuild the original. Not something you do to a file you care about keeping damaged.",
+                "Writes holes into a Sigil on purpose so you can watch Reflection or Seal rebuild the original. Not something you do to a file you care about keeping damaged.",
             ),
             (
                 "Boot disk",

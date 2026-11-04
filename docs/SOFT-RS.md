@@ -27,7 +27,7 @@ or a chewed CRC trailer discards an otherwise intact body.
   (2·errors + erasures ≤ n − k per column). Any column past that budget fails the call.
 - Accepted only through the same gate: Merkle binding of the re-encoded shards, plus the
   true name when not encrypted. Then the old GMD-lite path runs as before.
-- No byte layout change. Old marks benefit as-is. Plain `unseal` and plain `mend` are unchanged.
+- No byte layout change. Old Sigils benefit as-is. Plain `unseal` and plain `mend` are unchanged.
 - Measured numbers and limits: `docs/research/DEEP-SPACE.md`.
 - Also fixed while measuring: when every front header copy is gone and bit rot leaves no
   CRC-good shard, the body offset is chosen by where surviving Embers sit (tie-break after

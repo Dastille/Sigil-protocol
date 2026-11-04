@@ -52,4 +52,4 @@ stored with an all-zero Ed25519 half, exactly as `--to` already treats it.
 
 ## Private label (v3)
 
-Version seals are v3 private-label marks; restore checks the inner SHA-256. The CHART sidecar still records plaintext SHA-256 and size per version (keyed fingerprints for the CHART are a follow-up).
+Version seals are v3 private-label Sigils; restore checks the inner SHA-256. The CHART sidecar still records plaintext SHA-256 and size per version (keyed fingerprints for the CHART are a follow-up).

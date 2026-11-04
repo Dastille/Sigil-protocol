@@ -316,7 +316,7 @@ hierarchical-cards work, not here.
 `compact --apply` is the **retention path to actual erasure**: it unlinks the old files (a
 tombstoned batch inside a merged segment goes when that segment is rewritten without it). That is
 file-system deletion: no overwrite, no secure wipe, and snapshots / backups / copies of the old
-files (rsync, cold kits) are untouched. Real, key-based **crypto-shredding** (each segment under its
+files (rsync, Frost Rune cold folders) are untouched. Real, key-based **crypto-shredding** (each segment under its
 own key, destroy the key) is slice 3 (see "Per-segment keys and crypto-shredding" below). In a log **without** segment keys, treat tombstone
 + compact as "deleted from the log and from this disk", not as forensic erasure.
 
@@ -521,7 +521,7 @@ Be precise about what you are buying:
   anyone who does not hold a key copy — including you. The INDEX keeps its hash and size, so you
   can still prove a batch of that size and true-name existed and was shredded.
 * **It does not reach copies.** Anything that copied the key ring **or** the ciphertext **before**
-  the shred (backups, snapshots, rsync mirrors, cold kits, cloud sync, an exported `keys/`) still
+  the shred (backups, snapshots, rsync mirrors, Frost Rune cold folders, cloud sync, an exported `keys/`) still
   has them; a copy of the *old key ring shard plus* a copy of the old segment file decrypts the
   batch for whoever holds the recipient key or passphrase. sigil cannot erase what it cannot see.
   Shred only works end to end if no copy of the key survives, so decide up front which copies of
@@ -1004,7 +1004,7 @@ misreading it.
 | Private INDEX: a receipt with a forged or swapped `entry-key=` | key commitment mismatch → `check-proof` exit 2 |
 | Private INDEX: plaintext line inserted, or `privindex=1` removed from the manifest | `index-private` / `log-format` error, keyless |
 | Private INDEX: `IXKEY.sg1` lost | `ixkey-missing` (error); sizes and names cannot be opened, the segments still open with their own keys. Keep copies of the whole container |
-| Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, cold kit) of the container |
+| Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, Frost Rune cold folder) of the container |
 
 Unauthorised concurrent writers are not a security feature: `LOG.lock` is advisory and local. One
 writer at a time; do not put the container on a filesystem without atomic `rename` / `create_new`.
@@ -1585,4 +1585,4 @@ open its index key, before anything is written.
 
 ## Private label (v3)
 
-Encrypted segments are v3 marks. INDEX lines gain an additive `star=<hex>` field holding the star label digest (keyed fingerprint); verify/mend compare it keylessly. `size` and `sha` remain the plaintext values (receipts and compaction rely on them), so the INDEX still reveals them, unless the log was created with `--private-index` (see "Private INDEX"). Adopted v3 stars are label-only (`star` = `sha`) and are not merged by compaction.
+Encrypted segments are v3 Sigils. INDEX lines gain an additive `star=<hex>` field holding the star label digest (keyed fingerprint); verify/mend compare it keylessly. `size` and `sha` remain the plaintext values (receipts and compaction rely on them), so the INDEX still reveals them, unless the log was created with `--private-index` (see "Private INDEX"). Adopted v3 stars are label-only (`star` = `sha`) and are not merged by compaction.

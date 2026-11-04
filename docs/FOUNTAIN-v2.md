@@ -23,7 +23,7 @@ sigil mend torn.sg1 -o healed.sg1
 1. `locate_header` on the file (Keystone / Ember / hunt).
 2. `gather_live_shards` for live classic slots.
 3. **Glyph**: error if any shard missing.
-4. Need ≥`k` live → `decode_indexed` → `encode_shard_index` for `0..n-1` → assemble mark the same way seal/gather finish (keystone, ember, vow, CRCs).
+4. Need ≥`k` live → `decode_indexed` → `encode_shard_index` for `0..n-1` → assemble Sigil the same way seal/gather finish (keystone, ember, vow, CRCs).
 
 `pieces::mend_bytes` is the shared rebuild primitive; `gather` for Seal/Reflection also finishes through the same assemble path.
 
@@ -77,13 +77,13 @@ ESIs 0..K-1 of a block are its source symbols, K and up are repair symbols (sect
 
 - Inventing fountain codes.
 - Changing `docs/sigil-v1.txt`.
-- Replacing Seal’s on-mark 50% budget (extras are outside the classic `n` slots).
+- Replacing Seal’s in-file 50% budget (extras are outside the classic `n` slots).
 
 ## Next leaps after mend
 
 1. Streaming / chunked Inscribe (whole-file RAM).
 2. zstd + codec flag (v2).
-3. Constellation / Geas productization (Frost Rune, atlas kits).
+3. Constellation / Geas productization (Frost Rune, atlases).
 4. Optional cross-star heal and Argon2id Ward.
 
 ## Success checks (regression)
