@@ -6,14 +6,15 @@ use sigil::{
     is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
     mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
     place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
-    run_showing, scatter_pieces, seal_kn_mds_to, sha256, sha256_path, talisman_pass, tally_pieces,
-    umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys, unseal_path_keys,
-    unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex, vault_format_recipients,
-    vault_format_retention, vault_format_status, vault_format_versions, vault_get_recipients,
-    vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
-    vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status, vault_track_ex,
-    vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, VaultRetention,
-    CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    run_showing, scatter_pieces, seal_kn_mds_to_opts, sha256, sha256_path, talisman_pass,
+    tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys,
+    unseal_path_keys, unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex,
+    vault_format_recipients, vault_format_retention, vault_format_status, vault_format_versions,
+    vault_get_recipients, vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit,
+    vault_prune_with, vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status,
+    vault_track_ex, vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode,
+    Pad, SealOpts, VaultRetention, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE,
+    VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -458,6 +459,11 @@ enum Cmd {
         /// Cauchy is experimental (no header marker) — De-scribe with the same --mds. Single-star .sg1 only.
         #[arg(long, default_value = "vandermonde")]
         mds: String,
+        /// Opt-in ciphertext-length padding for encrypted seals only (default off).
+        /// `off` = no padding; `bucket` / `buckets` ≈ ≤6.25% growth; `max` / `pow2` = next power of two.
+        /// Needs `--pass` / `--pass-file` / `--talisman` / `--to`. Single-file seals only for now.
+        #[arg(long, default_value = "off", value_name = "MODE", value_parser = parse_pad_mode)]
+        pad: Pad,
         #[arg(long)]
         pieces: Option<PathBuf>,
         /// rsync destination, e.g. user@host:/backup/  (your usual truck)
@@ -3008,6 +3014,10 @@ fn classify_exit(msg: &str) -> i32 {
     }
 }
 
+fn parse_pad_mode(s: &str) -> Result<Pad, String> {
+    Pad::parse(s).map_err(|e| e.to_string())
+}
+
 fn resolve_mds(cli: &str) -> Result<Box<dyn sigil::MdsBackend>, String> {
     let from_cli = cli.trim().to_ascii_lowercase();
     let name = if from_cli != "vandermonde" && !from_cli.is_empty() {
@@ -3048,6 +3058,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             overture_mb,
             cdc,
             mds,
+            pad,
             pieces,
             rsync,
             rclone,
@@ -3069,6 +3080,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         .into(),
                 );
             }
+            if pad != Pad::Off {
+                if pass.is_none() && recipients.is_empty() {
+                    return Err(
+                        "--pad needs encryption (--pass / --pass-file / --talisman / --to)".into(),
+                    );
+                }
+                if input.is_dir() {
+                    return Err(
+                        "--pad is for a single encrypted file for now (not a folder pack)".into(),
+                    );
+                }
+            }
+            let seal_opts = SealOpts {
+                pad,
+                ..Default::default()
+            };
             let piece_bytes = piece_mb.saturating_mul(1024 * 1024).max(64 * 1024);
             let mds_be = resolve_mds(&mds)?;
             if mds_be.name() != "vandermonde" {
@@ -3080,7 +3107,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let data = fs::read(&input)?;
                 let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                let sg1 = seal_kn_mds_to(
+                let sg1 = seal_kn_mds_to_opts(
                     &data,
                     mode.into(),
                     pass.as_deref(),
@@ -3092,6 +3119,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     piece_bytes,
                     &*mds_be,
                     &recipients,
+                    &seal_opts,
                 )?;
                 fs::write(&output, &sg1)?;
                 say!(
@@ -3147,7 +3175,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if meta.len() <= chunk as u64 {
                     let data = fs::read(&input)?;
                     let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                    let sg1 = seal_kn_mds_to(
+                    let sg1 = seal_kn_mds_to_opts(
                         &data,
                         mode.into(),
                         pass.as_deref(),
@@ -3159,10 +3187,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         piece_bytes,
                         &*mds_be,
                         &recipients,
+                        &seal_opts,
                     )?;
                     let n = scatter_pieces(&sg1, &dir)?;
                     say!("scattered {n} pieces into {}", dir.display());
                 } else {
+                    if pad != Pad::Off {
+                        return Err(
+                            "--pad is for a single encrypted file for now (not a multi-star --pieces layout)"
+                                .into(),
+                        );
+                    }
                     let (orig, stars) = inscribe_stars_dir_to(
                         &input,
                         &dir,
@@ -3188,11 +3223,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     );
                     say!("Overture list: {}/{OVERTURE}", dir.display());
                 }
-            } else if !recipients.is_empty() && cdc.is_none() {
-                // Single-star encrypt-to (vandermonde / explicit mds already handled above).
+            } else if (!recipients.is_empty() && cdc.is_none())
+                || (pad != Pad::Off && cdc.is_none())
+            {
+                // Single-star encrypt-to, or passphrase seal with --pad (vandermonde /
+                // explicit mds already handled above). --pad on a work-pack-sized file
+                // or with --cdc is refused: pad is single-file for now.
+                if pad != Pad::Off {
+                    let meta = fs::metadata(&input)?;
+                    if meta.len() > chunk as u64 {
+                        return Err(
+                            "--pad is for a single encrypted file for now (file would become a work pack; omit --pad or raise --chunk)"
+                                .into(),
+                        );
+                    }
+                }
                 let data = fs::read(&input)?;
                 let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                let sg1 = seal_kn_mds_to(
+                let sg1 = seal_kn_mds_to_opts(
                     &data,
                     mode.into(),
                     pass.as_deref(),
@@ -3204,6 +3252,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     piece_bytes,
                     &*mds_be,
                     &recipients,
+                    &seal_opts,
                 )?;
                 fs::write(&output, &sg1)?;
                 say!(
@@ -3215,6 +3264,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {
+                if pad != Pad::Off {
+                    return Err(
+                        "--pad is for a single encrypted file for now (not --cdc / work packs)"
+                            .into(),
+                    );
+                }
                 let (orig, stars, work) = inscribe_path_to(
                     &input,
                     &output,
