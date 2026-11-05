@@ -224,8 +224,10 @@ Out of scope (what is not claimed)
   STILL LEAKS (not fixed, or fixed only by opt-in):
       - every v1/v2 encrypted Sigil written before the fix: re-seal it.
       - the ciphertext length, i.e. the compressed size plus ~72 bytes plus
-        the name. Opt-in padding (size buckets / power of two) is a
-        follow-up; until then the folded length can fingerprint a file.
+        the name, unless the seal was made with opt-in `--pad bucket`
+        (size buckets, ≤ ~6.25% growth) or `--pad max` / `pow2` (next
+        power of two). Default remains off (no silent size growth).
+        `--pad` needs encryption and is single-file for now.
       - folder packs (SGDR) written before sealed directories, or protected
         only by per-file wards: member names and sizes inside the folder
         record, and per-member plaintext SHA-256 for large members. An
@@ -241,8 +243,9 @@ Out of scope (what is not claimed)
         key; see docs/SEGMENT-LOG.md "Private INDEX"); star= is keyed.
       - constellation card member names: hidden only when the card itself
         is encrypted; star counts and sizes are always visible.
-    Until padding ships: give encrypted outputs neutral names and do not
-    rely on the size of an encrypted .sg1 being secret.
+    Without `--pad`: give encrypted outputs neutral names and do not rely
+    on the size of an encrypted .sg1 being secret. With `--pad bucket` or
+    `--pad max`, only the bucket / power-of-two size shows.
   Always visible: that the file is a .sg1, whether it is encrypted, its
     mode and shard counts, the ciphertext length (or its bucket once
     padding is used), and file-system names and dates.

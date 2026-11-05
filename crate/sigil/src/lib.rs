@@ -582,6 +582,11 @@ pub fn seal_kn_mds_to_opts(
     // parameters are stored in the wrap record. The legacy Ward (PBKDF2, fixed 80k iterations,
     // nothing stored) is read-only; see `keys::KIND_PASS_ARGON2ID`.
     let use_to = !recipients.is_empty() || pass_nonempty.is_some();
+    if opts.pad != privacy::Pad::Off && !use_to {
+        return Err(Error::Msg(
+            "padding needs an encrypted seal (passphrase or encrypt-to recipients)".into(),
+        ));
+    }
     if !use_to {
         return seal_plain(
             data,

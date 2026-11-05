@@ -628,9 +628,12 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - Damage near the start of a file costs more: the header region is used to find
   everything else, so recovery there leans on the spare header copies (Keystone)
   and loses more margin than the same damage in the middle.
-- Encrypted files still reveal their ciphertext length. Encrypted folder packs
-  reveal how many files they hold and their total encrypted size (not names or
-  per-file sizes).
+- Encrypted files still reveal their ciphertext length **unless** sealed with
+  `--pad bucket` or `--pad max` (then only the bucket or power-of-two size
+  shows). Default is `--pad off` (no silent size growth). `--pad` needs
+  encryption and is single-file for now (folder / work packs not yet). Encrypted
+  folder packs still reveal how many files they hold and their total encrypted
+  size (not names or per-file sizes).
 - Some folder packs still show member names: encrypted packs made before October
   2026, ward-only packs made before wards needed `--pass` / `--to`, and packs sealed
   with `--ward-names-visible`. Convert them with `sigil seal-folder-names OLD -o NEW

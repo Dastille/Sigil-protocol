@@ -4,7 +4,7 @@ mod common;
 
 use sigil::{
     locate_header, mend_bytes, seal_kn_to, seal_kn_to_opts, unseal_ex_keys, unseal_meta_keys,
-    verify, FingerprintKey, Identity, Mode, SealOpts, DEFAULT_PIECE, HEADER_SIZE,
+    verify, FingerprintKey, Identity, Mode, Pad, SealOpts, DEFAULT_PIECE, HEADER_SIZE,
 };
 use std::path::{Path, PathBuf};
 
@@ -538,4 +538,183 @@ fn large_file_packs_hide_name_total_and_chunk_hashes() {
         }
     }
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn padded_encrypted_seal_round_trips_and_grows() {
+    let data = plain();
+    let off = seal_kn_to_opts(
+        &data,
+        Mode::Reflection,
+        Some("pw"),
+        NAME,
+        false,
+        "",
+        &[],
+        None,
+        DEFAULT_PIECE,
+        &[],
+        &SealOpts::default(),
+    )
+    .unwrap();
+    let bucket = seal_kn_to_opts(
+        &data,
+        Mode::Reflection,
+        Some("pw"),
+        NAME,
+        false,
+        "",
+        &[],
+        None,
+        DEFAULT_PIECE,
+        &[],
+        &SealOpts {
+            pad: Pad::Bucket,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let max = seal_kn_to_opts(
+        &data,
+        Mode::Reflection,
+        Some("pw"),
+        NAME,
+        false,
+        "",
+        &[],
+        None,
+        DEFAULT_PIECE,
+        &[],
+        &SealOpts {
+            pad: Pad::Pow2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (h_off, _, _) = locate_header(&off).unwrap();
+    let (h_bucket, _, _) = locate_header(&bucket).unwrap();
+    let (h_max, _, _) = locate_header(&max).unwrap();
+    assert_eq!(
+        h_off.folded_len,
+        sigil::privacy::padded_len(h_off.folded_len, Pad::Off)
+    );
+    assert_eq!(
+        h_bucket.folded_len,
+        sigil::privacy::padded_len(h_off.folded_len, Pad::Bucket),
+        "bucket folded_len matches padded_len of the unpadded twin"
+    );
+    assert_eq!(
+        h_max.folded_len,
+        sigil::privacy::padded_len(h_off.folded_len, Pad::Pow2)
+    );
+    assert!(bucket.len() > off.len(), "bucket seal larger on disk");
+    assert!(
+        max.len() >= bucket.len(),
+        "pow2 at least as large as bucket"
+    );
+    assert_eq!(unseal_ex_keys(&bucket, Some("pw"), &[], &[]).unwrap(), data);
+    assert_eq!(unseal_ex_keys(&max, Some("pw"), &[], &[]).unwrap(), data);
+    let meta = unseal_meta_keys(&bucket, Some("pw"), &[], &[])
+        .unwrap()
+        .1
+        .unwrap();
+    assert!(meta.pad_len > 0, "inner block records pad_len");
+    assert_eq!(meta.orig_len, data.len() as u64);
+}
+
+#[test]
+fn default_seal_length_unchanged_without_pad() {
+    let data = plain();
+    let a = seal_pass(&data, Mode::Reflection);
+    let b = seal_kn_to_opts(
+        &data,
+        Mode::Reflection,
+        Some("pw"),
+        NAME,
+        false,
+        "",
+        &[],
+        None,
+        DEFAULT_PIECE,
+        &[],
+        &SealOpts {
+            pad: Pad::Off,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (ha, _, _) = locate_header(&a).unwrap();
+    let (hb, _, _) = locate_header(&b).unwrap();
+    assert_eq!(ha.folded_len, hb.folded_len);
+}
+
+#[test]
+fn pad_without_encryption_fails_closed() {
+    let data = b"plain bytes";
+    let err = seal_kn_to_opts(
+        data,
+        Mode::Reflection,
+        None,
+        "x",
+        false,
+        "",
+        &[],
+        None,
+        DEFAULT_PIECE,
+        &[],
+        &SealOpts {
+            pad: Pad::Bucket,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("padding") && msg.contains("encrypt"), "{msg}");
+}
+
+#[test]
+fn padded_seal_fails_closed_on_wrong_key_and_bit_flip() {
+    let data = plain();
+    let s = seal_kn_to_opts(
+        &data,
+        Mode::Reflection,
+        Some("pw"),
+        NAME,
+        false,
+        "",
+        &[],
+        None,
+        DEFAULT_PIECE,
+        &[],
+        &SealOpts {
+            pad: Pad::Bucket,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(unseal_ex_keys(&s, Some("wrong"), &[], &[]).is_err());
+    // Flip the GCM tag in every label copy (CRC fixed): must fail closed, never
+    // return different plaintext. A single shard flip is within the repair budget.
+    let mut t = s.clone();
+    rewrite_label(&mut t, |h| h[84] ^= 0x5A); // tag starts at offset 84
+    assert!(
+        unseal_ex_keys(&t, Some("pw"), &[], &[]).is_err(),
+        "tampered GCM tag must fail closed"
+    );
+    // Past-budget shard damage with CRC rewritten: open may repair or refuse,
+    // but must never return different bytes.
+    let (h, prefix, _) = locate_header(&s).unwrap();
+    let stride = HEADER_SIZE + h.shard_len as usize + 4;
+    let mut u = s.clone();
+    let kill = (h.n - h.k + 1) as usize;
+    for shard in 0..kill {
+        let off = prefix + shard * stride + HEADER_SIZE;
+        u[off + 7] ^= 0xA5;
+        let body = &u[off..off + h.shard_len as usize];
+        let crc = crc32(body).to_le_bytes();
+        u[off + h.shard_len as usize..off + h.shard_len as usize + 4].copy_from_slice(&crc);
+    }
+    if let Ok(p) = unseal_ex_keys(&u, Some("pw"), &[], &[]) {
+        assert_eq!(p, data, "never different bytes after past-budget damage");
+    }
 }
