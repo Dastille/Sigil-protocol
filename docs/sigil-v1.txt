@@ -19,7 +19,8 @@ A .sg1 packs a payload into n shards (default 16; the CLI may increase n).
   Ward       optional AES-256-GCM. New passphrase seals: random content key
              wrapped with Argon2id (parameters stored, SGTO v2). Legacy Wards:
              key = PBKDF2-HMAC-SHA256, 80 000 iterations (read-only)
-  Keystone   three extra copies of the 160-byte header after the primary
+  Keystone   three extra copies of the 160-byte header after the primary;
+             new seals also append one trailing spare (SGKT) after the body
   Ember      SGEM-tagged header copy at the start of each shard
   Covenant   optional purpose string (not an access-control decision)
   Geas       optional companion SHA-256 values; decode refuses if absent
@@ -78,6 +79,11 @@ HEADER (160 bytes)
 160-639 Keystone (three copies)
 640-767 Vow slab if FLAG_VOW
 then    n × (Ember SGEM 160 [+ Vow] + shard + CRC32 of shard)
+then    Keystone trailer (new seals): SGKT | version=1 | 160-byte header copy
+        (primary header with SGIL stored as four zero bytes so a scan does
+         not see a second seal; locate restores SGIL and uses it when the
+         front is gone; does not move SGTO — body still starts after
+         KEYSTONE_SPAN from file start)
 
 Ember magic is SGEM so a shard prefix is not mistaken for the object front.
 Shard CRC covers payload only, so the binding is independent of Ember bytes.
@@ -163,8 +169,9 @@ In scope (what is claimed)
      layout change) also decodes each byte column on its own and fixes up
      to (present-k)/2 wrong symbols per column, accepting the result only
      if the Merkle binding and true name match; measured numbers are in
-     docs/research/DEEP-SPACE.md. Keystone and Ember copies keep the
-     header findable when the front of the file is destroyed.
+     docs/research/DEEP-SPACE.md. Keystone (front copies and the trailing
+     SGKT spare on new seals) and Ember copies keep the header findable
+     when the front of the file is destroyed.
   P  With a Ward or encrypt-to wrap, payload content is protected by
      AES-256-GCM under a 256-bit key. The fold is not a cipher.
   A  On encrypted Sigils the GCM tag rejects any change to the payload.

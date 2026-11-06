@@ -625,9 +625,11 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
-- Damage near the start of a file costs more: the header region is used to find
-  everything else, so recovery there leans on the spare header copies (Keystone)
-  and loses more margin than the same damage in the middle.
+- Damage near the start of a file still costs more: the header region is used to
+  find everything else. New seals also keep one spare header copy at the end
+  (`SGKT` trailer) so a wiped front can still locate when Embers are gone too;
+  recovery still leans on Keystone / Ember / trailer, and hitting both ends at
+  once loses more margin than the same damage in the middle.
 - Encrypted files still reveal their ciphertext length **unless** sealed with
   `--pad bucket` or `--pad max` (then only the bucket or power-of-two size
   shows). Default is `--pad off` (no silent size growth). `--pad` needs

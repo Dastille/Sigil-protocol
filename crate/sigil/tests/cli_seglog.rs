@@ -77,7 +77,11 @@ fn sample(dir: &Path, n: u64) -> PathBuf {
 fn zero_mid(p: &Path, len: usize) {
     let mut b = fs::read(p).unwrap();
     let mid = b.len() / 2;
-    b[mid..mid + len].fill(0);
+    let end = (mid + len).min(b.len());
+    // Non-zero damage: filling zeros can be a no-op after layout shifts (SGKT trailer).
+    for x in &mut b[mid..end] {
+        *x ^= 0xff;
+    }
     fs::write(p, b).unwrap();
 }
 

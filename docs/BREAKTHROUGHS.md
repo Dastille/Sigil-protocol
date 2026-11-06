@@ -6,7 +6,7 @@ Lab: https://dove-bloom-star-island.grok.me
 
 ## Already shipped in this crate
 
-- **Keystone + Ember** — smashed or wiped front header still locates; live shards stay findable.
+- **Keystone + Ember** — smashed or wiped front header still locates; live shards stay findable. New seals also keep a trailing `SGKT` Keystone spare after the body so a wiped front can locate even when Embers are gone.
 - **Honest repair budget** — Reflection ~25%, Seal ~50%; Glyph is all-or-nothing.
 - **Ward** — AES-256-GCM; chaos fold is obfuscation only.
 - **True name + Merkle** — SHA-256 of plaintext; Merkle binds the classic `n` shards.

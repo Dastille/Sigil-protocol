@@ -118,7 +118,8 @@ pub use fountain::{
     receiver_report, DelugeReport, FountainProgress, FountainReport, MAX_ESI, NAK_MAGIC,
 };
 pub use header::{
-    locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN, VERSION,
+    locate_header, read_header, write_header, Header, HEADER_SIZE, KEYSTONE_SPAN,
+    KEYSTONE_TRAILER_SIZE, VERSION,
 };
 pub use keys::{
     keygen_ecc, keygen_legacy, resolve_recipient, Identity, PublicIdentity, ID_MAGIC, PUB_MAGIC,
@@ -721,6 +722,8 @@ fn assemble(
         out.extend_from_slice(s);
         out.extend_from_slice(&crc32fast::hash(s).to_le_bytes());
     }
+    // Trailing Keystone spare (SGKT): header copy after the seal body (SGIL elided).
+    out.extend_from_slice(&header::write_keystone_trailer(hdr));
     out
 }
 
@@ -1583,10 +1586,14 @@ mod tests {
         let h = read_header(&bytes).unwrap();
         let (n, k) = (h.n as usize, h.k as usize);
         let (first, _) = shard_span(&bytes, 0);
-        // Copy A: header, every Keystone spare and every per-shard header copy (Ember)
-        // gone; shard bodies and their checksums intact.
+        // Copy A: header, every Keystone spare, the trailing SGKT spare, and every
+        // per-shard header copy (Ember) gone; shard bodies and their checksums intact.
         let mut a = bytes.clone();
         a[..first].fill(0);
+        if a.len() >= header::KEYSTONE_TRAILER_SIZE {
+            let t0 = a.len() - header::KEYSTONE_TRAILER_SIZE;
+            a[t0..].fill(0);
+        }
         if h.ember() {
             for i in 0..n {
                 let (off, _) = shard_span(&bytes, i);

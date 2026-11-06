@@ -11,6 +11,9 @@ fn le_u32_at(b: &[u8], at: usize) -> Option<u32> {
 pub const HEADER_SIZE: usize = 160;
 pub const KEYSTONE_COPIES: usize = 3;
 pub const KEYSTONE_SPAN: usize = HEADER_SIZE * (1 + KEYSTONE_COPIES);
+/// Trailing Keystone spare: magic + version + one full header copy after the seal body.
+pub const KEYSTONE_TRAILER_VERSION: u8 = 1;
+pub const KEYSTONE_TRAILER_SIZE: usize = 4 + 1 + HEADER_SIZE;
 /// Version written for plain (unencrypted) seals; unchanged since v2.
 pub const VERSION: u8 = 2;
 pub const VERSION_MIN: u8 = 1;
@@ -19,6 +22,7 @@ pub const VERSION_MIN: u8 = 1;
 pub const VERSION_MAX: u8 = crate::privacy::PRIVATE_VERSION;
 const MAGIC: [u8; 4] = *b"SGIL";
 const MAGIC_EMBER: [u8; 4] = *b"SGEM";
+const MAGIC_KEYSTONE_TRAILER: [u8; 4] = *b"SGKT";
 pub const FLAG_KEYSTONE: u8 = 1 << 5;
 pub const FLAG_EMBER: u8 = 1 << 6;
 pub const FLAG_VOW: u8 = 1 << 7;
@@ -495,6 +499,96 @@ pub fn wrap_keystone(header: &[u8]) -> Vec<u8> {
     out
 }
 
+/// End-of-file Keystone spare: `SGKT` | version | one header copy.
+///
+/// Written after the seal body so a wiped front Keystone span can still locate
+/// the header when Embers are also gone. Does not move SGTO: body prefix stays
+/// keyed off the recovered header's Keystone flag from file start.
+///
+/// The copy stores the primary header with its `SGIL` magic overwritten as
+/// four zero bytes so a byte scan (including older readers that look for a
+/// second `SGIL`) does not treat the spare as another seal. Parsers restore
+/// `SGIL` before checking the header CRC.
+pub fn write_keystone_trailer(header: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(KEYSTONE_TRAILER_SIZE);
+    out.extend_from_slice(&MAGIC_KEYSTONE_TRAILER);
+    out.push(KEYSTONE_TRAILER_VERSION);
+    let n = header.len().min(HEADER_SIZE);
+    out.extend_from_slice(&header[..n]);
+    if n < HEADER_SIZE {
+        out.resize(KEYSTONE_TRAILER_SIZE, 0);
+    }
+    // Elide SGIL so older ensure_single_seal / hunt ignore this spare.
+    if out.len() >= 9 {
+        out[5..9].copy_from_slice(&[0, 0, 0, 0]);
+    }
+    out
+}
+
+/// How many trailing bytes at `off` are a Keystone trailer (`SGKT` magic).
+/// Returns [`KEYSTONE_TRAILER_SIZE`] when the magic matches (header may be
+/// damaged); otherwise 0. Used when measuring a seal that may still carry a
+/// trailer in front of a pack guard.
+pub fn keystone_trailer_len_at(file: &[u8], off: usize) -> usize {
+    match file.get(off..off.saturating_add(4)) {
+        Some(m) if m == MAGIC_KEYSTONE_TRAILER => KEYSTONE_TRAILER_SIZE,
+        _ => 0,
+    }
+}
+
+/// Parse a Keystone trailer at `off`. Garbage or non-keystone headers yield `None`
+/// (fail closed, never panic).
+fn try_parse_keystone_trailer_at(file: &[u8], off: usize) -> Option<Header> {
+    let end = off.checked_add(KEYSTONE_TRAILER_SIZE)?;
+    let block = file.get(off..end)?;
+    if block[0..4] != MAGIC_KEYSTONE_TRAILER {
+        return None;
+    }
+    if block[4] != KEYSTONE_TRAILER_VERSION {
+        return None;
+    }
+    let mut hdr = block[5..].to_vec();
+    if hdr.len() < HEADER_SIZE {
+        return None;
+    }
+    // Magic was stored as zeros; restore SGIL so the header CRC matches.
+    hdr[0..4].copy_from_slice(&MAGIC);
+    let h = read_header(&hdr).ok()?;
+    if !h.keystone() {
+        return None;
+    }
+    Some(h)
+}
+
+/// True when `off` points at an SGIL that is the payload of a Keystone trailer
+/// (`SGKT` | version immediately before it). Hunt must skip these so a small
+/// file's trailing spare is not mistaken for a mid-file header.
+fn sgil_is_keystone_trailer_payload(file: &[u8], off: usize) -> bool {
+    off.checked_sub(5)
+        .is_some_and(|t| try_parse_keystone_trailer_at(file, t).is_some())
+}
+
+/// Scan a bounded tail window for a Keystone trailer. Body prefix matches a
+/// front Keystone spare: SGTO still sits at `KEYSTONE_SPAN` from file start.
+fn locate_from_trailer(file: &[u8]) -> Option<(Header, usize)> {
+    if file.len() < KEYSTONE_TRAILER_SIZE {
+        return None;
+    }
+    // Trailer sits after the seal body; allow a little trailing junk/padding.
+    const TAIL_SLACK: usize = 1024;
+    let window = KEYSTONE_TRAILER_SIZE.saturating_add(TAIL_SLACK);
+    let start = file.len().saturating_sub(window);
+    let mut i = start;
+    while i + KEYSTONE_TRAILER_SIZE <= file.len() {
+        if let Some(h) = try_parse_keystone_trailer_at(file, i) {
+            let prefix = body_prefix_file(&h, file);
+            return Some((h, prefix));
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Fail closed when `file` holds more than the one seal its header describes.
 ///
 /// A large-file pack (SGWK) is many complete seals back to back. If the pack's
@@ -527,7 +621,26 @@ pub fn ensure_single_seal(file: &[u8], h: &Header, prefix: usize) -> Result<()> 
     let tail = &file[end..];
     let mut i = 0;
     while i + 4 <= tail.len() {
+        // New seals append an SGKT Keystone trailer after the shards. Skip a
+        // recognized trailer so header-field bytes that happen to look like
+        // SGIL/SGEM are not treated as a second seal. The copy's SGIL magic is
+        // stored as zeros, so older readers that scan for SGIL ignore it too.
+        if try_parse_keystone_trailer_at(file, end + i).is_some() {
+            i += KEYSTONE_TRAILER_SIZE;
+            continue;
+        }
         let w = &tail[i..i + 4];
+        // A middle-byte deletion can shift the SGKT trailer so its embedded SGIL
+        // sits in the tail without a recognizable SGKT prefix. Same merkle as the
+        // located header means it is our own spare, not a second seal.
+        if w == MAGIC {
+            if let Ok(th) = read_header(&tail[i..]) {
+                if th.keystone() && th.merkle == h.merkle {
+                    i += HEADER_SIZE;
+                    continue;
+                }
+            }
+        }
         let hit = (w == MAGIC && read_header(&tail[i..]).is_ok())
             || (w == MAGIC_EMBER && parse_header(&tail[i..], &MAGIC_EMBER).is_ok())
             || (w == b"SGFC"
@@ -596,6 +709,8 @@ pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
         }
     }
     // Leading junk (e.g. a UTF-8 BOM) — search a little way in for SGIL.
+    // Skip an SGIL that is the payload of an end-of-file Keystone trailer so a
+    // small seal's trailing spare is not treated as a mid-file header.
     let hunt = file.len().min(8192);
     for i in 1..hunt {
         if i + HEADER_SIZE > file.len() {
@@ -604,16 +719,24 @@ pub fn locate_header(file: &[u8]) -> Result<(Header, usize, bool)> {
         if file[i..i + 4] != MAGIC {
             continue;
         }
+        if sgil_is_keystone_trailer_payload(file, i) {
+            continue;
+        }
         if let Ok(h) = read_header(&file[i..]) {
             let prefix = i + body_prefix_file(&h, &file[i..]);
             return Ok((h, prefix, true));
         }
     }
+    // Trailing Keystone spare before Ember: cheaper bounded scan, and covers
+    // the case where every Ember marker is also gone.
+    if let Some((h, prefix)) = locate_from_trailer(file) {
+        return Ok((h, prefix, true));
+    }
     if let Some((h, prefix)) = locate_from_ember(file) {
         return Ok((h, prefix, true));
     }
     Err(Error::Msg(
-        "header damaged and no Keystone or Ember survived".into(),
+        "header damaged and no Keystone, trailer, or Ember survived".into(),
     ))
 }
 
@@ -660,6 +783,145 @@ mod tests {
             if let Ok((h, prefix, _)) = locate_header(f) {
                 let _ = gather_live_shards(f, &h, prefix);
                 let _ = gather_graded_shards(f, &h, prefix);
+            }
+        }
+    }
+
+    #[test]
+    fn keystone_trailer_roundtrip_extends_file() {
+        let msg = b"trailer roundtrip payload -- long enough for seal shards xx";
+        let bytes = crate::seal(msg, Mode::Seal, None, "tr.bin", false).unwrap();
+        assert!(bytes.len() >= KEYSTONE_TRAILER_SIZE);
+        let t = &bytes[bytes.len() - KEYSTONE_TRAILER_SIZE..];
+        assert_eq!(&t[0..4], b"SGKT");
+        assert_eq!(t[4], KEYSTONE_TRAILER_VERSION);
+        assert_eq!(
+            &t[5..9],
+            &[0, 0, 0, 0],
+            "SGIL elided so older readers do not see a second seal"
+        );
+        assert_eq!(&t[9..], &bytes[4..HEADER_SIZE]);
+        assert_eq!(crate::unseal(&bytes, None).unwrap(), msg);
+        let h = read_header(&bytes).unwrap();
+        let prefix = body_prefix_file(&h, &bytes);
+        ensure_single_seal(&bytes, &h, prefix).expect("healthy seal with SGKT trailer");
+    }
+
+    #[test]
+    fn keystone_trailer_recovers_wiped_front_and_embers() {
+        let msg = b"front and embers gone; trailer must still open this seal xx";
+        let bytes = crate::seal(msg, Mode::Seal, None, "wipe.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let prefix = body_prefix_file(&h, &bytes);
+        let stride = shard_stride(&h);
+        let mut torn = bytes.clone();
+        torn[..KEYSTONE_SPAN].fill(0);
+        torn[0] = 0x58;
+        for i in 0..h.n as usize {
+            let off = prefix + i * stride;
+            if off + 4 <= torn.len() {
+                torn[off..off + 4].fill(0);
+            }
+        }
+        let (rh, rprefix, recovered) = locate_header(&torn).expect("trailer locate");
+        assert!(recovered);
+        assert_eq!(rh.merkle, h.merkle);
+        assert_eq!(rprefix, prefix);
+        assert_eq!(crate::unseal(&torn, None).unwrap(), msg);
+        let healed = crate::pieces::mend_bytes(&torn).unwrap();
+        assert_eq!(crate::unseal(&healed, None).unwrap(), msg);
+        assert_eq!(healed, bytes);
+    }
+
+    #[test]
+    fn keystone_trailer_absent_old_style_still_opens() {
+        let msg = b"old style without trailer still opens via front header xx";
+        let bytes = crate::seal(msg, Mode::Seal, None, "old.bin", false).unwrap();
+        assert!(bytes.len() > KEYSTONE_TRAILER_SIZE);
+        let stripped = bytes[..bytes.len() - KEYSTONE_TRAILER_SIZE].to_vec();
+        let t = &bytes[bytes.len() - KEYSTONE_TRAILER_SIZE..];
+        assert_eq!(&t[0..4], b"SGKT");
+        assert_eq!(crate::unseal(&stripped, None).unwrap(), msg);
+        let (h, prefix, recovered) = locate_header(&stripped).unwrap();
+        assert!(!recovered);
+        assert!(h.keystone());
+        ensure_single_seal(&stripped, &h, prefix).expect("old-style single seal");
+    }
+
+    #[test]
+    fn keystone_trailer_bitflip_alone_does_not_break_healthy_file() {
+        let msg = b"bitflip only in trailer; front header still wins xx";
+        let bytes = crate::seal(msg, Mode::Seal, None, "flip.bin", false).unwrap();
+        let mut torn = bytes.clone();
+        let i = torn.len() - 20;
+        torn[i] ^= 0xff;
+        assert_ne!(torn, bytes);
+        assert_eq!(crate::unseal(&torn, None).unwrap(), msg);
+        let (_, _, recovered) = locate_header(&torn).unwrap();
+        assert!(!recovered, "front header must still win");
+    }
+
+    #[test]
+    fn keystone_trailer_garbage_sgkt_is_ignored() {
+        let mut junk = vec![0u8; 200];
+        junk[0..4].copy_from_slice(b"SGKT");
+        junk[4] = KEYSTONE_TRAILER_VERSION;
+        // No valid header follows — must not panic or claim a locate.
+        assert!(try_parse_keystone_trailer_at(&junk, 0).is_none());
+        assert!(locate_from_trailer(&junk).is_none());
+    }
+
+    #[test]
+    fn keystone_start_bitflips_still_open_or_mend() {
+        let msg = b"bitflips near the start must still open or mend xx";
+        let bytes = crate::seal(msg, Mode::Seal, None, "flipstart.bin", false).unwrap();
+        // Primary header only: remaining Keystone copies should carry us.
+        let mut torn = bytes.clone();
+        for b in &mut torn[..HEADER_SIZE] {
+            *b ^= 0xff;
+        }
+        assert_eq!(crate::unseal(&torn, None).unwrap(), msg);
+        let healed = crate::pieces::mend_bytes(&torn).unwrap();
+        assert_eq!(crate::unseal(&healed, None).unwrap(), msg);
+
+        // Entire front Keystone span: trailer (or Ember) must still open.
+        let mut torn = bytes.clone();
+        for b in &mut torn[..KEYSTONE_SPAN] {
+            *b ^= 0xff;
+        }
+        assert_eq!(crate::unseal(&torn, None).unwrap(), msg);
+        let healed = crate::pieces::mend_bytes(&torn).unwrap();
+        assert_eq!(crate::unseal(&healed, None).unwrap(), msg);
+        assert_eq!(healed, bytes);
+    }
+
+    #[test]
+    fn keystone_start_truncation_fails_closed_or_correct() {
+        let msg = b"truncation near start must not return different bytes xx";
+        let bytes = crate::seal(msg, Mode::Seal, None, "cutstart.bin", false).unwrap();
+        // File cut down from the end, leaving only a prefix: fail closed or
+        // (if enough survived) return the real payload — never different bytes.
+        for cut in [
+            0usize,
+            16,
+            80,
+            HEADER_SIZE,
+            KEYSTONE_SPAN,
+            KEYSTONE_SPAN + 8,
+        ] {
+            let f = &bytes[..cut.min(bytes.len())];
+            if let Ok(got) = crate::unseal(f, None) {
+                assert_eq!(got, msg, "truncation at {cut} returned different bytes");
+            }
+        }
+        // Leading bytes removed: never return the wrong payload.
+        for drop in [1usize, 8, 80, HEADER_SIZE, KEYSTONE_SPAN] {
+            if drop >= bytes.len() {
+                continue;
+            }
+            let f = &bytes[drop..];
+            if let Ok(got) = crate::unseal(f, None) {
+                assert_eq!(got, msg, "leading drop {drop} returned different bytes");
             }
         }
     }

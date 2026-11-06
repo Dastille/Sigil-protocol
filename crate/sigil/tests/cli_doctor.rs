@@ -62,7 +62,11 @@ fn zero_mid(p: &Path, len: usize) {
     let mut b = fs::read(p).unwrap();
     let mid = b.len() / 2;
     let end = (mid + len).min(b.len());
-    b[mid..end].fill(0);
+    // Prefer non-zero damage: a run of zeros in a header spare can be a no-op
+    // after layout changes (e.g. trailing Keystone trailer shifting mid).
+    for x in &mut b[mid..end] {
+        *x ^= 0xff;
+    }
     fs::write(p, b).unwrap();
 }
 
