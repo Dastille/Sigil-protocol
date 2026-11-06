@@ -239,6 +239,14 @@ pub(crate) enum Health {
     Damaged(String),
 }
 
+/// True when `healed` is `bytes` plus a trailing Keystone spare only (layout upgrade).
+fn trailer_only_upgrade(bytes: &[u8], healed: &[u8]) -> bool {
+    use crate::header::{keystone_trailer_len_at, KEYSTONE_TRAILER_SIZE};
+    healed.len() == bytes.len() + KEYSTONE_TRAILER_SIZE
+        && healed.starts_with(bytes)
+        && keystone_trailer_len_at(healed, bytes.len()) > 0
+}
+
 pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
     match crate::verify(bytes) {
         Err(e) => Health::Damaged(format!("not readable as a Sigil: {e}")),
@@ -262,10 +270,17 @@ pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
             } else {
                 // Every shard has one good copy, but Reflection / Seal keep redundant embers: if
                 // the repaired form differs byte-for-byte, some copy has rotted (still safe today).
+                // A healthy pre-trailer seal whose mend only appends an SGKT spare is not damage.
                 match crate::mend_bytes(bytes) {
-                    Ok(healed) if healed != bytes => Health::Mendable(
-                        "redundant shard copies are damaged (data still intact)".into(),
-                    ),
+                    Ok(healed) if healed != bytes => {
+                        if trailer_only_upgrade(bytes, &healed) {
+                            Health::Ok
+                        } else {
+                            Health::Mendable(
+                                "redundant shard copies are damaged (data still intact)".into(),
+                            )
+                        }
+                    }
                     Ok(_) => Health::Ok,
                     Err(e) => Health::Damaged(format!("repair pass failed: {e}")),
                 }

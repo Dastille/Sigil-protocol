@@ -5,6 +5,7 @@ mod common;
 use sigil::{
     locate_header, mend_bytes, seal_kn_to, seal_kn_to_opts, unseal_ex_keys, unseal_meta_keys,
     verify, FingerprintKey, Identity, Mode, Pad, SealOpts, DEFAULT_PIECE, HEADER_SIZE,
+    KEYSTONE_TRAILER_SIZE,
 };
 use std::path::{Path, PathBuf};
 
@@ -397,8 +398,20 @@ fn files_written_before_the_private_label_still_open() {
         let (got, meta) = unseal_meta_keys(&s, pass, &[], &ids).unwrap();
         assert_eq!(got, want, "{f}");
         assert!(meta.is_none(), "{f}: no inner block");
-        // and they still mend keylessly
-        assert_eq!(mend_bytes(&s).unwrap(), s);
+        // and they still mend keylessly (may append an SGKT trailer old writers omitted)
+        let healed = mend_bytes(&s).unwrap();
+        assert_eq!(
+            unseal_meta_keys(&healed, pass, &[], &ids).unwrap().0,
+            want,
+            "{f}: mended still opens"
+        );
+        assert!(
+            healed == s
+                || (healed.len() == s.len() + KEYSTONE_TRAILER_SIZE
+                    && healed.starts_with(&s)
+                    && healed[s.len()..s.len() + 4] == *b"SGKT"),
+            "{f}: mend identical or adds only an SGKT trailer"
+        );
     }
     // large-file pack written by the old writer (plain head, plaintext facets)
     let d = tmp("fix-pack");

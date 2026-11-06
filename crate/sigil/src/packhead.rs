@@ -567,8 +567,11 @@ pub(crate) fn seal_part(star: &[u8]) -> &[u8] {
     // Guard damaged or absent: the seal ends where its own header says.
     match crate::locate_header(star) {
         Ok((h, prefix, _)) => {
-            let end = prefix
+            let mut end = prefix
                 .saturating_add((h.n as usize).saturating_mul(crate::header::shard_stride(&h)));
+            // New Keystone seals append an SGKT trailer after the shards; keep it
+            // when measuring the seal in front of a (possibly damaged) guard.
+            end = end.saturating_add(crate::header::keystone_trailer_len_at(star, end));
             &star[..end.min(star.len())]
         }
         Err(_) => star,

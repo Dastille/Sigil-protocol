@@ -340,6 +340,9 @@ fn assemble_mark(
         let body = pack_stride(&hdr, h, s, i as u8, vow);
         out.extend_from_slice(&body);
     }
+    if h.keystone() {
+        out.extend_from_slice(&header::write_keystone_trailer(&hdr));
+    }
     out
 }
 
