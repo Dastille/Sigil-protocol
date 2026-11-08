@@ -53,8 +53,15 @@ pub const KIND: &str = "log";
 /// `log=5` = private INDEX (`privindex=1`, `IXKEY.sg1`, sealed `box=` entries; `init --private-index`);
 /// `log=6` = a private log's tombstone / shred lines may carry a sealed `box=` with their reason;
 /// `log=7` = padded segments (`pad=padme`): new private segments are zero-padded before sealing;
-/// `log=8` = segment keys turned on later (`segkeys-from=N`): segments before N have no ring key.
-pub const LOG_FORMAT: u32 = 8;
+/// `log=8` = segment keys turned on later (`segkeys-from=N`): segments before N have no ring key;
+/// `log=9` is reserved for streaming segments (not implemented: refused on open);
+/// `log=10` = an epoch log (`epoch=1`): seq 1 is an `op=epoch` line naming the archived log
+/// (`sigil log epoch`, `epoch.rs`).
+pub const LOG_FORMAT: u32 = 10;
+/// Reserved for streaming segments (`docs/STREAMING-DESIGN.md`); no sigil writes or reads it yet.
+pub const LOG_FORMAT_RESERVED_STREAMING: u32 = 9;
+/// The format of an epoch log (`epoch=1`).
+pub const LOG_FORMAT_EPOCH: u32 = 10;
 /// What `init` writes, and what a log stays at until it first needs a newer feature.
 pub const LOG_BASE_FORMAT: u32 = 1;
 pub const INDEX_FILE: &str = "INDEX";
@@ -106,6 +113,8 @@ pub struct Log {
     pub pad: bool,
     /// `privindex=1`: sizes, SHA-256s and paths are sealed in the INDEX (`log=5`, `private.rs`).
     pub privindex: bool,
+    /// `epoch=1` (`log=10`): seq 1 is an `op=epoch` line linking to an archived log (`epoch.rs`).
+    pub epoch: bool,
     /// The unlocked index key of a private log (see `Log::unlock_index`); never written anywhere.
     ixkey: Option<private::IndexKey>,
 }
@@ -167,6 +176,11 @@ impl Log {
                 "segment log format {fmt} is newer than this sigil understands ({LOG_FORMAT}); upgrade sigil"
             )));
         }
+        if fmt == LOG_FORMAT_RESERVED_STREAMING {
+            return Err(err(format!(
+                "segment log format {fmt} (streaming segments) is reserved and not supported by this sigil; upgrade sigil"
+            )));
+        }
         let id = m
             .extra
             .get("log-id")
@@ -212,6 +226,20 @@ impl Log {
                 )))
             }
         };
+        let epoch = match m.extra.get("epoch").map(|v| v.trim()) {
+            None => false,
+            Some("1") => true,
+            Some(other) => {
+                return Err(err(format!(
+                    "epoch={other} in manifest is not known to this sigil; upgrade sigil"
+                )))
+            }
+        };
+        if epoch && (fmt < LOG_FORMAT_EPOCH || signer.is_none()) {
+            return Err(err(
+                "segment log manifest has epoch=1 but not log>=10 with a signer (an epoch log is always signed)",
+            ));
+        }
         if pad && (fmt < 7 || !privindex) {
             return Err(err(
                 "segment log manifest has pad= but not log>=7 with a private INDEX",
@@ -227,6 +255,7 @@ impl Log {
             segkeys_from,
             privindex,
             pad,
+            epoch,
             ixkey: None,
         })
     }
@@ -334,6 +363,23 @@ pub enum Op {
         to: [u8; 32],
         sig: [u8; 64],
     },
+    /// `op=epoch` (log=10, seq 1 of an `epoch=1` log only): this log continues the archived log
+    /// `prev_log`, cut at its first `prev_size` entries with Merkle root `prev_root`; `card` is the
+    /// SHA-256 of the signed epoch card (`EPOCH.card`). No segment file.
+    Epoch(EpochLink),
+}
+
+/// The link an `op=epoch` line records (see [`Op::Epoch`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochLink {
+    /// Log id of the archived log.
+    pub prev_log: String,
+    /// Entries of the archived log covered by the cut (its vouched HEAD seq, at least 1).
+    pub prev_size: u64,
+    /// Merkle root of the archived log's first `prev_size` entries.
+    pub prev_root: [u8; 32],
+    /// SHA-256 of the exact bytes of the epoch card.
+    pub card: [u8; 32],
 }
 
 /// One INDEX line.
@@ -385,6 +431,10 @@ impl Entry {
                         | "sig"
                         | "star"
                         | "box"
+                        | "prev-log"
+                        | "prev-size"
+                        | "prev-root"
+                        | "card"
                 )
             })
             .collect()
@@ -447,6 +497,19 @@ impl Entry {
     /// True for a signer handover line (needs `log=4`).
     pub fn is_handover(&self) -> bool {
         matches!(self.op, Op::Signer { .. })
+    }
+
+    /// True for an epoch link line (needs `log=10`, seq 1 only).
+    pub fn is_epoch(&self) -> bool {
+        matches!(self.op, Op::Epoch(_))
+    }
+
+    /// The epoch link of an `op=epoch` line.
+    pub fn epoch_link(&self) -> Option<&EpochLink> {
+        match &self.op {
+            Op::Epoch(l) => Some(l),
+            _ => None,
+        }
     }
 
     /// The entry owns a segment file (a segment or a compaction segment; not a record).
@@ -571,6 +634,7 @@ enum K {
     Tomb,
     Compact,
     Signer,
+    Epoch,
 }
 
 /// What a segment file's slot means once the whole INDEX is folded.
@@ -759,6 +823,19 @@ impl State {
                 self.kinds.push(K::Signer);
                 self.sizes.push(0);
             }
+            Op::Epoch(_) => {
+                if e.seq != 1 {
+                    return Err((
+                        "index-epoch",
+                        format!(
+                            "seq {}: an epoch line is only valid as seq 1 of an epoch log",
+                            e.seq
+                        ),
+                    ));
+                }
+                self.kinds.push(K::Epoch);
+                self.sizes.push(0);
+            }
         }
         Ok(())
     }
@@ -853,7 +930,7 @@ impl State {
 
     pub fn slot(&self, h: u64) -> Slot {
         match self.kinds.get((h as usize).wrapping_sub(1)) {
-            None | Some(K::Tomb) | Some(K::Signer) => Slot::NoFile,
+            None | Some(K::Tomb) | Some(K::Signer) | Some(K::Epoch) => Slot::NoFile,
             Some(_) => {
                 if !self.live_members(h).is_empty() {
                     Slot::Needed
@@ -1009,6 +1086,37 @@ fn parse_line(
                 return Err(bad("from/to/sig= (an unsigned handover is not a handover)"));
             };
             (0, [0u8; 32], Op::Signer { from, to, sig })
+        }
+        Some("epoch") => {
+            let prev_log = kv
+                .get("prev-log")
+                .filter(|v| {
+                    v.len() == 32
+                        && v.bytes()
+                            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                })
+                .map(|v| v.to_string());
+            let prev_size = kv
+                .get("prev-size")
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|n| *n >= 1);
+            let prev_root = kv.get("prev-root").and_then(|v| parse_hex32(v));
+            let card = kv.get("card").and_then(|v| parse_hex32(v));
+            let (Some(prev_log), Some(prev_size), Some(prev_root), Some(card)) =
+                (prev_log, prev_size, prev_root, card)
+            else {
+                return Err(bad("prev-log/prev-size/prev-root/card= of an epoch line"));
+            };
+            (
+                0,
+                [0u8; 32],
+                Op::Epoch(EpochLink {
+                    prev_log,
+                    prev_size,
+                    prev_root,
+                    card,
+                }),
+            )
         }
         Some(other) => {
             return Err((
@@ -1346,6 +1454,34 @@ fn read_index(log: &Log) -> Result<ParsedIndex> {
             }
         }
     }
+    // An epoch line outside an `epoch=1` log, or an `epoch=1` log whose seq 1 is not one, cannot come
+    // from a sigil that follows the format (`log epoch` writes both together): damage, not data.
+    let epoch_bad = if log.epoch {
+        match idx.entries.first() {
+            Some(e) if !e.is_epoch() => Some((
+                0,
+                "this log has epoch=1 but seq 1 is not an op=epoch line".to_string(),
+            )),
+            _ => None,
+        }
+    } else {
+        idx.entries.iter().position(|e| e.is_epoch()).map(|i| {
+            (
+                i,
+                format!(
+                    "INDEX has an epoch line at seq {} but the manifest has no epoch=1",
+                    i + 1
+                ),
+            )
+        })
+    };
+    if let Some((i, msg)) = epoch_bad {
+        idx.entries.truncate(i);
+        idx.state = State::build(&idx.entries);
+        if idx.error.is_none() {
+            idx.error = Some((i + 2, "index-epoch", msg));
+        }
+    }
     if let Some((i, msg)) = handover_problem(log, &idx.entries) {
         idx.entries.truncate(i);
         idx.state = State::build(&idx.entries);
@@ -1444,6 +1580,7 @@ mod card;
 mod cardproof;
 mod compact;
 mod consistency;
+mod epoch;
 mod exclude;
 mod keyring;
 mod private;
@@ -1460,6 +1597,7 @@ pub use card::*;
 pub use cardproof::*;
 pub use compact::*;
 pub use consistency::*;
+pub use epoch::*;
 pub use exclude::{parse_ignore_file, ExcludePattern, Excluder, IGNORE_FILE};
 use keyring::RingCache;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
@@ -1606,6 +1744,7 @@ pub fn init_opts(path: &Path, o: &InitOpts<'_>) -> Result<Log> {
         segkeys_from: 1,
         privindex: o.private_index,
         pad: o.pad,
+        epoch: false,
         ixkey,
     };
     write_atomic(&dir.join(INDEX_FILE), format!("{INDEX_MAGIC}\n").as_bytes())?;
@@ -2277,7 +2416,9 @@ impl Listing {
         s.push_str("  seq  time (UTC)            size        sha256            segment\n");
         for (e, p) in self.entries.iter().zip(&self.present) {
             let (size, sha) = match e.op {
-                Op::Tomb { .. } | Op::Signer { .. } => ("-".to_string(), "-".to_string()),
+                Op::Tomb { .. } | Op::Signer { .. } | Op::Epoch(_) => {
+                    ("-".to_string(), "-".to_string())
+                }
                 _ if e.is_locked() => ("sealed".to_string(), "sealed".to_string()),
                 _ => (e.size.to_string(), format!("{}…", &hex32(&e.sha)[..16])),
             };
@@ -2315,6 +2456,12 @@ impl Listing {
                     "signer handover: {}… → {}…  (signed by the outgoing key; later HEADs by the new one)",
                     &hex32(from)[..16],
                     &hex32(to)[..16]
+                ),
+                Op::Epoch(l) => format!(
+                    "epoch: continues archive {} at {}:{}…  (history before the cut is in the archive)",
+                    l.prev_log,
+                    l.prev_size,
+                    &hex32(&l.prev_root)[..16]
                 ),
             };
             // `sigil log add` entries name their file (additive `path=`; absent elsewhere)
@@ -2423,6 +2570,16 @@ impl Listing {
                 Op::Signer { from, to, .. } => (
                     "signer",
                     format!(",\"from\":{},\"to\":{}", q(&hex32(from)), q(&hex32(to))),
+                ),
+                Op::Epoch(l) => (
+                    "epoch",
+                    format!(
+                        ",\"prev_log\":{},\"prev_size\":{},\"prev_root\":{},\"card\":{}",
+                        q(&l.prev_log),
+                        l.prev_size,
+                        q(&hex32(&l.prev_root)),
+                        q(&hex32(&l.card))
+                    ),
                 ),
             };
             let data = matches!(e.op, Op::Seg | Op::Compact { .. });
@@ -3036,6 +3193,18 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
             None => findings.push(fnd(Severity::Error, "anchor", format!("seq {seq}"), format!("INDEX has only {n} entries; the anchor needs {seq} (log truncated or rolled back)"), None)),
         }
     }
+    if log.epoch && index.error.is_none() {
+        match index.entries.first().and_then(|e| e.epoch_link()) {
+            Some(link) => findings.extend(epoch::card_finding(log, link)),
+            None => findings.push(fnd(
+                Severity::Error,
+                "index-epoch",
+                INDEX_FILE,
+                "this log has epoch=1 but no epoch line",
+                None,
+            )),
+        }
+    }
     let trusted = trusted_len(log, &index);
     Loaded {
         index,
@@ -3620,6 +3789,7 @@ pub(crate) fn scan_extras(log: &Log, all: &[Entry], trusted: usize, temp_age: u6
             n.as_str(),
             container::CONTAINER_FILE | INDEX_FILE | HEAD_FILE
         ) || (log.privindex && n == IXKEY_FILE)
+            || (log.epoch && n == EPOCH_CARD_FILE && p.is_file())
             || (n == ADD_CACHE_FILE && p.is_file())
         {
             continue;
@@ -4277,6 +4447,7 @@ mod tests {
             segkeys_from: 1,
             privindex: false,
             pad: false,
+            epoch: false,
             ixkey: None,
         };
         let h = make_head(&log, &[], Some(&id));

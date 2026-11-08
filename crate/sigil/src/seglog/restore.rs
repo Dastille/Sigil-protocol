@@ -202,6 +202,9 @@ pub fn restore_version(
     let entries = &loaded.index.entries;
     let st = &loaded.index.state;
     let trusted = trusted_len(&log, &loaded.index).min(entries.len());
+    if let Some(t) = ver.at {
+        super::epoch::before_cut(entries, t)?;
+    }
     // latest vouched version of every path
     let mut latest: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
     let mut any = false;

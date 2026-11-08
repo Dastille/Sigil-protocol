@@ -1,4 +1,4 @@
-# INDEX pruning: design options (Option A chosen; specified)
+# INDEX pruning: design options (Option A chosen and shipped)
 
 > **DECISION (Ashlynn locked 2026-11-02): Option A (epoch rollover) is the chosen direction;
 > Option C rejected; Option B not now (only if one root for all history becomes a hard
@@ -24,9 +24,13 @@
 > reserved for streaming; Option B, if ever built, would take a later number); for an unsigned old
 > log, `--identity` both signs the card and is pinned as the new log's signer (answer 6: no
 > unsigned epoch link); the card is kept inside the new log as `EPOCH.card`; the new log copies the
-> live batches at the cut (as `privatize`). Implementation follows in a separate PR.
+> live batches at the cut (as `privatize`).
+>
+> **Implemented (2026-11-08):** `sigil log epoch OLD NEW` / `sigil log check-epoch`
+> (`crate/sigil/src/seglog/epoch.rs`), with the round-trip, tamper and crash-order (§5) tests listed
+> in SEGMENT-LOG.md "Epoch rollover" → "Tests".
 
-**Status: Option A approved (2026-11-02) and specified (2026-11-08); implementation pending. The
+**Status: Option A approved (2026-11-02), specified and implemented (2026-11-08). The
 rest of this note is the original design record: the "recommended default" below was the proposal
 Ashlynn then approved. Numbers are estimates from the format, not measurements, unless marked
 otherwise.**

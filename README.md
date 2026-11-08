@@ -409,6 +409,15 @@ on-disk segment sizes stay visible. `--private-index` is still accepted.
 warning. Logs created before this change keep the INDEX they were made with; `sigil log privatize OLD NEW --pass-file pw.txt` copies one into a new private log (the old folder and its backups still show the names until you delete them). Details: "Private INDEX" in
 [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
 
+A log that has grown large can be rolled over into a new epoch:
+`sigil log epoch events events-2027 --identity me.sgk` closes `events` at its
+HEAD, signs a card over it, and starts `events-2027` with a first line that
+names the old log and copies the live data across. `sigil log check-epoch
+events-2027 --archive events` checks the link. The old log is only read and
+stays as the archive (sigil never deletes it); restoring a version from before
+the cut needs it. Details: "Epoch rollover" in
+[docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
+
 ### Other commands
 
 **Channel** (`sigil deluge --channel`; old `--fountain` still accepted) pours a Sigil out as

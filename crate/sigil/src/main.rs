@@ -248,6 +248,7 @@ fn log_json_fail_format(cmd: &Cmd) -> Option<&'static str> {
             LogCmd::CardProve { json: true, .. } => Some("sigil-log-card-prove=1"),
             LogCmd::ProveConsistency { json: true, .. } => Some("sigil-log-prove-consistency=1"),
             LogCmd::Privatize { json: true, .. } => Some("sigil-log-privatize=1"),
+            LogCmd::Epoch { json: true, .. } => Some("sigil-log-epoch=1"),
             LogCmd::Pad { json: true, .. } => Some("sigil-log-pad=1"),
             LogCmd::EnableSegmentKeys { json: true, .. } => Some("sigil-log-enable-segment-keys=1"),
             LogCmd::AddSigner { json: true, .. } => Some("sigil-log-add-signer=1"),
@@ -1746,6 +1747,58 @@ enum LogCmd {
         /// Also turn on segment padding in DEST (`log=7`, `pad=padme`), like `log pad DEST`
         #[arg(long)]
         pad: bool,
+    },
+    /// Close a log at its HEAD and start a NEW epoch log (seqs from 1) whose first line links to it
+    /// through a signed card. OLD is only read and becomes the archive; sigil never deletes it.
+    Epoch {
+        /// Machine-readable summary on stdout (`sigil-log-epoch=1`); a failure prints
+        /// `"ok":false` with the error and keeps the exit code
+        #[arg(long)]
+        json: bool,
+        old: PathBuf,
+        new: PathBuf,
+        /// Signs the epoch card and the new log (required; a signed OLD needs its current signer)
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// Identity (.sgk) that also opens OLD's encrypted segments / private INDEX (repeatable)
+        #[arg(long = "unlock")]
+        unlock: Vec<PathBuf>,
+        /// Passphrase: only `-` (hidden prompt); scripts use --pass-file
+        #[arg(value_parser = PassParser(true), long)]
+        pass: Option<String>,
+        /// Passphrase file: opens OLD's encrypted segments and wraps the new log's keys and segments
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with = "pass", value_parser = parse_pass_file)]
+        pass_file: Option<String>,
+        #[arg(long)]
+        talisman: Option<PathBuf>,
+        /// Recipient the new log's keys and segments are wrapped to (repeatable)
+        #[arg(long = "to")]
+        to: Vec<String>,
+        #[arg(long, value_enum, default_value = "reflection")]
+        mode: ModeArg,
+        /// Epoch card name (default epoch-<old id prefix>-<N>)
+        #[arg(long)]
+        name: Option<String>,
+        /// Also write the epoch card to this file (it is always kept in NEW as EPOCH.card)
+        #[arg(long = "card-out")]
+        card_out: Option<PathBuf>,
+    },
+    /// Check an epoch log's link: its epoch line, the signed card and (with --archive) the archived
+    /// log's root at the cut. Exit 0 ok, 2 does not verify.
+    CheckEpoch {
+        /// Machine-readable result on stdout (`sigil-log-check-epoch=1`)
+        #[arg(long)]
+        json: bool,
+        path: PathBuf,
+        /// The epoch card file (default: EPOCH.card inside the log)
+        #[arg(long)]
+        card: Option<PathBuf>,
+        /// The archived log: check card → root → archive
+        #[arg(long)]
+        archive: Option<PathBuf>,
+        /// Require the log and card signed by this key (64-hex, .pub or .sgk)
+        #[arg(long)]
+        signer: Option<String>,
     },
     /// Turn per-segment keys on for an existing log: segments written from now on are sealed under
     /// their own key (key ring, `log=8`); older segments keep their bytes until `log compact --apply`.
@@ -5566,6 +5619,86 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             if pad {
                 seglog::enable_pad(&dest, sign.as_slice())?;
                 println!("padding on in DEST: new segments are padded (log=7); copied segments keep their sizes until `log compact --apply`");
+            }
+        }
+        LogCmd::Epoch {
+            old,
+            new,
+            identity,
+            unlock,
+            pass,
+            pass_file,
+            talisman,
+            to,
+            mode,
+            name,
+            card_out,
+            json,
+        } => {
+            let pass = resolve_pass(pass.or(pass_file), talisman)?;
+            let recipients = load_recipients(&to)?;
+            let unlock = load_identities(&unlock)?;
+            let identity = identity.as_deref().map(Identity::load).transpose()?;
+            let r = seglog::epoch(
+                &old,
+                &new,
+                &seglog::EpochOpts {
+                    identity: identity.as_ref(),
+                    pass: pass.as_deref(),
+                    to: &recipients,
+                    unlock: &unlock,
+                    mode: mode.into(),
+                    name: name.as_deref(),
+                    card_out: card_out.as_deref(),
+                },
+            )?;
+            if json {
+                println!(
+                    "{{\"format\":\"sigil-log-epoch=1\",\"ok\":true,\"prev_log\":{},\"prev_size\":{},\"prev_root\":\"{}\",\"dest\":{},\"dest_id\":{},\"dest_size\":{},\"dest_root\":\"{}\",\"card_name\":{},\"card_sha256\":\"{}\",\"copied\":{},\"skipped\":{}}}",
+                    jstr(&r.prev_id),
+                    r.prev_size,
+                    hex::encode(r.prev_root),
+                    jstr(&r.dest.display().to_string()),
+                    jstr(&r.dest_id),
+                    r.dest_size,
+                    hex::encode(r.dest_root),
+                    jstr(&r.card_name),
+                    hex::encode(r.card_sha),
+                    r.copied.len(),
+                    r.skipped.len()
+                );
+                return Ok(());
+            }
+            print!("{}", r.render());
+        }
+        LogCmd::CheckEpoch {
+            path,
+            card,
+            archive,
+            signer,
+            json,
+        } => {
+            let opts = seglog::EpochCheckOpts {
+                card: card.as_deref(),
+                archive: archive.as_deref(),
+                signer: signer.as_deref().map(parse_signer).transpose()?,
+            };
+            match seglog::check_epoch(&path, &opts) {
+                Ok(c) if json => println!(
+                    "{{\"format\":\"sigil-log-check-epoch=1\",\"ok\":true,\"log_id\":{},\"prev_log\":{},\"prev_size\":{},\"prev_root\":\"{}\",\"card_signer\":\"{}\",\"archive_size\":{}}}",
+                    jstr(&c.log_id),
+                    jstr(&c.link.prev_log),
+                    c.link.prev_size,
+                    hex::encode(c.link.prev_root),
+                    hex::encode(c.card_signer),
+                    c.archive_size.map(|n| n.to_string()).unwrap_or_else(|| "null".into())
+                ),
+                Ok(c) => print!("{}", c.render()),
+                Err(e) => {
+                    check_fail_json(json, "sigil-log-check-epoch=1", &e.to_string());
+                    eprintln!("error: {e}");
+                    std::process::exit(2);
+                }
             }
         }
         LogCmd::EnableSegmentKeys {
