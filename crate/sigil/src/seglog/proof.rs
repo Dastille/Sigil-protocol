@@ -381,6 +381,16 @@ impl ProofCheck {
                 format!(",\"deletes\":{}", q(&fmt_ranges(del))),
             ),
             Op::Signer { .. } => ("signer", String::new()),
+            Op::Epoch(l) => (
+                "epoch",
+                format!(
+                    ",\"prev_log\":{},\"prev_size\":{},\"prev_root\":{},\"card\":{}",
+                    q(&l.prev_log),
+                    l.prev_size,
+                    q(&hex32(&l.prev_root)),
+                    q(&hex32(&l.card))
+                ),
+            ),
         };
         let data = matches!(e.op, Op::Seg | Op::Compact { .. });
         let path = match e.path() {
@@ -431,6 +441,12 @@ impl ProofCheck {
                 "signer handover {}… → {}…",
                 &hex32(from)[..16],
                 &hex32(to)[..16]
+            ),
+            Op::Epoch(l) => format!(
+                "epoch link to archive {} at {}:{}",
+                l.prev_log,
+                l.prev_size,
+                hex32(&l.prev_root)
             ),
         };
         let mut s = format!(
@@ -495,6 +511,7 @@ pub fn check_proof(p: &Proof, opts: &ProofCheckOpts) -> Result<ProofCheck> {
         segkeys_from: 1,
         privindex: false,
         pad: false,
+        epoch: false,
         ixkey: None,
     };
     if seq == 1 && p.prev != probe.genesis() {

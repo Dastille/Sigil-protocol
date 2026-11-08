@@ -851,7 +851,9 @@ fn stray_files_in_keys_are_left_alone_and_abandoned_temp_files_are_reclaimed() {
 fn newer_log_format_is_still_refused() {
     let d = tmp("newer");
     let c = sample(&d, 2);
-    fs::write(c.join("CONTAINER"), manifest(&c).replace("log=3", "log=9")).unwrap();
+    let m = manifest(&c);
+    // log=11: newer than this sigil (10 = epoch logs)
+    fs::write(c.join("CONTAINER"), m.replace("log=3", "log=11")).unwrap();
     for args in [
         vec!["log", "ls", "ev"],
         vec!["log", "shred", "ev", "--seq", "1"],
@@ -860,6 +862,19 @@ fn newer_log_format_is_still_refused() {
         let e = fails(&d, &args);
         assert!(
             e.contains("newer than this sigil") && e.contains("upgrade"),
+            "{args:?}: {e}"
+        );
+    }
+    // log=9 is reserved for streaming segments: refused, never read as a lower format
+    fs::write(c.join("CONTAINER"), m.replace("log=3", "log=9")).unwrap();
+    for args in [
+        vec!["log", "ls", "ev"],
+        vec!["log", "shred", "ev", "--seq", "1"],
+        vec!["gc", "ev"],
+    ] {
+        let e = fails(&d, &args);
+        assert!(
+            e.contains("reserved") && e.contains("upgrade"),
             "{args:?}: {e}"
         );
     }

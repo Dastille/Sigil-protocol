@@ -1548,8 +1548,10 @@ Reed–Solomon code.
 
 ## Epoch rollover (`sigil log epoch OLD NEW`, `log=10`)
 
-Status: **specified 2026-11-08 (INDEX prune Option A, locked by Ashlynn 2026-11-02); not
-implemented in this revision.** Design and the decision record: [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md).
+Status: **shipped 2026-11-08** (INDEX prune Option A, locked by Ashlynn 2026-11-02; spec PR #97,
+implementation in `crate/sigil/src/seglog/epoch.rs`). Design and the decision record:
+[INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md). Every behaviour below is covered by the unit tests in
+`seglog/epoch.rs` and `tests/cli_seglog_epoch.rs` (named in "Tests" at the end of this section).
 
 An epoch rollover closes a log at its vouched HEAD `N:ROOT` and starts a **new** log (new log id,
 new chain, seqs from 1) whose first INDEX line names the old one. The old log is only read: it stays
@@ -1623,7 +1625,10 @@ visible to `verify`; the signed card is the same commitment as a file any card t
 
 Exactly the live data at the cut, as `log privatize` copies: every segment entry the archive's
 HEAD vouches for that is not tombstoned / shredded is read with the checked reader and sealed again
-into the new log as seqs 2, 3, … with its original `t=` and `log add` path. Tombstones, compactions
+into the new log as seqs 2, 3, … with its original `t=` and `log add` path. In a `log add` backup
+log that includes **older versions** of a file that were never tombstoned (they are live batches);
+tombstone them (or run the retention check) before rolling over if the new epoch should hold only
+the latest versions. Tombstones, compactions
 (their live members are copied one by one), shred and signer lines are not copied. A segment that
 was encrypted in the archive must be re-sealed encrypted: the command refuses unless `--pass-file`
 and/or `--to` are given (no silent downgrade to clear segments). A private, segment-keys or padded
@@ -1671,11 +1676,37 @@ is two-step (card → archive root → entry, with `log prove` on the archive).
 
 ### Limits
 
+* In a private log the epoch line is not sealed: `prev-log`, `prev-size`, `prev-root` and `card`
+  are visible without the index key (they are hashes and a count, like a card's child line).
+* A sigil older than this one stops at the manifest (`log=10`). If someone edits the manifest
+  down, an older sigil stops at the `op=epoch` line instead; it then also reports the copied
+  segments as unindexed, so do not run an older sigil's `gc --apply` on a tampered epoch log.
 * Appending to the archive after the rollover is not prevented (the archive is not modified to mark
   it closed); such entries belong to no epoch, and `check-epoch --archive` reports them.
 * There is no single Merkle root over all epochs (Option B, not chosen).
 * Losing the archive loses the history before the cut; the card still proves the archive had root
   `prev-root` at size `prev-size`, not what it held.
+* The new folder is renamed into place without an fsync of the parent directory (as every other
+  sigil write); on a power cut right after the rename the file system decides whether the rename
+  survived. Either way `NEW` is complete or absent (unverified on real power loss; the crash tests
+  simulate an interrupted process).
+
+### Tests
+
+`seglog/epoch.rs`: `rollover_round_trip_keeps_archive_byte_identical` (copies, seqs, archive bytes,
+append after, `check-epoch` with and without archive, epoch of an epoch),
+`identity_is_required_and_must_be_the_current_signer` (incl. after `rotate-signer`),
+`unsigned_log_fails_closed_unless_identity_signs`, `edited_epoch_line_fails_closed`,
+`wrong_prev_root_or_size_fails_closed_even_when_resigned` (incl. wrong / rewritten archive),
+`forged_or_unsigned_card_fails_closed`, `epoch_line_only_at_seq_1_of_an_epoch_log` (incl.
+`log=9` reserved, `epoch=1` without signer / `log>=10`), `old_style_logs_still_open_and_verify`
+(incl. a hand-written slice-1 log), `crash_at_every_step_leaves_old_intact_or_a_valid_new_epoch`
+(six crash points), `appends_to_the_archive_after_the_cut_are_reported`,
+`encrypted_archive_needs_a_wrap_and_private_flags_carry_over`. `tests/cli_seglog_epoch.rs`: the
+commands end to end on a `log add` backup (restore latest, `--at` at / before the cut, `log add`
+after, `--card-out`, tampered card, missing archive, JSON). Older-binary refusal (the messages
+quoted above) was checked by running the previous main build (8cc062e) against an epoch log; it is a receipt,
+not a test in this repo.
 
 ## Deferred (later slices)
 
@@ -1686,7 +1717,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes"). Re-evaluated 2026-10-31: every reader (`read`, `verify`, `mend`, `compact`, `shred --rewrite`, `restore`, `mount`) holds a whole segment in memory and checks it against the INDEX in one piece, so a streaming *append* alone would write segments nothing can read without loading them; not shipped as an MVP. Options (chunked work-pack segments, framed AEAD, external pack, defer) and open questions: [STREAMING-DESIGN.md](STREAMING-DESIGN.md) (deferred, locked 2026-11-02).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them until converted with `sigil seal-folder-names` (see PRIVATE-LABEL.md; old copies keep the names).
-* INDEX roll-up / pruning of very old history: Option A (epoch rollover into a new log, see "Epoch rollover") chosen 2026-11-02 and specified 2026-11-08 (`log=10`); not implemented yet. Dropping old INDEX lines in place stays chain-breaking by nature and is not done. [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md).
+* INDEX roll-up / pruning of very old history: Option A (epoch rollover into a new log, `sigil log epoch`, `log=10`) shipped 2026-11-08, see "Epoch rollover". Dropping old INDEX lines in place stays chain-breaking by nature and is not done. [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md).
 * Unattended retention by default: the monthly script only applies with an explicit `--apply` and a rule (see "Monthly retention check").
 * Shredding one batch inside a compaction segment **without rewriting that segment**: impossible
   with one AEAD tag per segment (see `shred --rewrite`, which rewrites only that file).
