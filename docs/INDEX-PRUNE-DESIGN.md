@@ -1,4 +1,4 @@
-# INDEX pruning: design options (decision pending)
+# INDEX pruning: design options (Option A chosen; specified)
 
 > **DECISION (Ashlynn locked 2026-11-02): Option A (epoch rollover) is the chosen direction;
 > Option C rejected; Option B not now (only if one root for all history becomes a hard
@@ -16,10 +16,20 @@
 > 8. Yes: `restore --at` / `log add` history before the cut requires the archive.
 > Next step before code: a small spec PR for the `op=epoch` line + manifest flag, then the
 > implementation with crash-order tests (§5).
+>
+> **Spec (2026-11-08):** the `op=epoch` line, the `log=10` / `epoch=1` manifest flag, the epoch card
+> (`EPOCH.card`), the signing rule, what is copied, the write order and the verify rules are
+> written down in [SEGMENT-LOG.md "Epoch rollover"](SEGMENT-LOG.md#epoch-rollover-sigil-log-epoch-old-new-log10).
+> Choices made there that §7 did not answer explicitly: format number `log=10` (`log=9` stays
+> reserved for streaming; Option B, if ever built, would take a later number); for an unsigned old
+> log, `--identity` both signs the card and is pinned as the new log's signer (answer 6: no
+> unsigned epoch link); the card is kept inside the new log as `EPOCH.card`; the new log copies the
+> live batches at the cut (as `privatize`). Implementation follows in a separate PR.
 
-**Status: design note only. Nothing here is implemented. No option is approved; the
-"recommended default" below is a proposal pending Ashlynn's decision. Numbers are estimates from
-the format, not measurements, unless marked otherwise.**
+**Status: Option A approved (2026-11-02) and specified (2026-11-08); implementation pending. The
+rest of this note is the original design record: the "recommended default" below was the proposal
+Ashlynn then approved. Numbers are estimates from the format, not measurements, unless marked
+otherwise.**
 
 ## Abstract
 
@@ -66,7 +76,7 @@ why this is deferred, not forgotten.
 
 ## 3. Options
 
-### Option A — Epoch rollover (new log, old log archived) — *no format change*
+### Option A — Epoch rollover (new log, old log archived) — *no change to existing logs*
 
 Close the current log at HEAD `N:ROOT`, sign a card over it (`log card old --identity …`), start a
 **new** log whose first entry records the predecessor (`op=epoch prev-log=<id> prev-size=N
@@ -88,7 +98,7 @@ archive; it may be moved offline or deleted later by the operator.
   log (additive; likely a manifest bump only for the new log). The `epoch` line could even be
   avoided by making the card the only link (Q2).
 
-### Option B — Checkpoint base + archived prefix — *format bump (`log=10`; 9 is reserved for streaming)*
+### Option B — Checkpoint base + archived prefix — *format bump (a new `log=N`: 9 is reserved for streaming, 10 is taken by Option A's epoch logs)*
 
 Keep one log id. Write `INDEX.base` = `{size N, chain hash of N, Merkle frontier (≤ ~64 hashes),
 signer-at-N, HEAD signature at N}` and move lines 1..N to `INDEX.archive` (or delete them).
@@ -101,7 +111,7 @@ New lines keep chaining from the stored chain hash; new roots are computed from 
   consistency proofs from anchors < N (all need the archive, or become impossible if it is
   deleted). `verify` can only check the chain from the base, so a forged base is accepted unless
   it is signed and the reader has an anchor ≥ N or the signer key. `restore --at` before N, old
-  versions in `log add`. A sigil that knows only `log≤9` must refuse the log.
+  versions in `log add`. A sigil that does not know B's format number must refuse the log.
 * **Hard constraint:** cannot prune past any line that live data still depends on: a live
   segment, a compaction segment with a live member, a tombstone / shred target that still has a
   file, or the last signer handover. In practice "compact, then base at the oldest still-needed
@@ -148,7 +158,7 @@ rows), `log append` 0.87 s → 0.69 s. Pruning (A/B) is still pending the questi
 
 | | A epoch | B base | C re-genesis | D cache |
 |---|---|---|---|---|
-| Format change | new log only | yes (`log=10`) | yes, chain-breaking | none |
+| Format change | new log only (`log=10`) | yes (new `log=N`) | yes, chain-breaking | none |
 | Old anchors / proofs | all keep verifying | only ≥ N without archive | all broken | all keep |
 | One root for all history | no (card links) | yes | yes (new) | yes |
 | Bounded INDEX | yes | yes | yes | no (bounded *cost*) |
