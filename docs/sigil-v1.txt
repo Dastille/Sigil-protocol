@@ -259,6 +259,10 @@ Out of scope (what is not claimed)
   Rollback and replay: an older valid Sigil of the same file is
     indistinguishable from the current one without an external record
     (vaults and segment logs add one; see docs/SEGMENT-LOG.md).
+    A segment log rolled over into a new epoch (log=10, `op=epoch` first
+    INDEX line + a signed card; docs/SEGMENT-LOG.md "Epoch rollover")
+    links to the archived log by its id, size and root; history before the
+    cut is provable only with the archive. The .sg1 layout is unchanged.
   Destruction beyond the budget: more than n-k bad shards, or all copies.
     Keep a second copy; Sigil is not a backup schedule.
   Compromised endpoints, key theft, malware, side channels, coercion,

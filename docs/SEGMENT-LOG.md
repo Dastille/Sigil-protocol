@@ -62,6 +62,9 @@ opened as before. Logs made with `init --segment-keys` stay `log=3` (or 5/7) wit
 A sigil that only knows an older format refuses a newer log with
 "segment log format 3 is newer than this sigil understands; upgrade sigil" (it never gets as far as
 misreading entries as "missing segments").
+`log=9` is reserved for streaming segments (not implemented). `log=10` = an **epoch log** (`epoch=1`):
+seq 1 is an `op=epoch` line naming the archived log it continues (see "Epoch rollover"); only
+`sigil log epoch` creates it, from its first byte. No existing log is ever raised to `log=10`.
 
 ## Layout
 
@@ -98,6 +101,7 @@ seq=10 t=1760000120 op=tomb del=3 shred=1 reason=gdpr chain=<64 hex>            
 seq=11 t=1760000200 op=signer from=<64 hex> to=<64 hex> sig=<128 hex> chain=<64 hex>   signer handover (log=4)
 seq=12 t=1760000300 size=0 sha=<star> star=<star> box=<hex> chain=<64 hex>             private segment entry (log=5)
 seq=13 t=1760000400 op=tomb del=12 box=<hex> chain=<64 hex>                              private tombstone, sealed reason (log=6)
+seq=1 t=1790000000 op=epoch prev-log=<32 hex> prev-size=N prev-root=<64 hex> card=<64 hex> chain=<64 hex>   epoch link, seq 1 only (log=10)
 ```
 
 | Field   | Meaning |
@@ -106,7 +110,7 @@ seq=13 t=1760000400 op=tomb del=12 box=<hex> chain=<64 hex>                     
 | `t`     | unix seconds at append (informational; not trusted for ordering) |
 | `size`  | plain length in bytes (segment / compaction entries) |
 | `sha`   | SHA-256 of the **plain** bytes — the star's true-name, readable from its header without any key |
-| `op`    | absent = segment; `tomb` = tombstone; `compact` = compaction; `signer` = signer handover. Any other value is an error ("upgrade sigil") |
+| `op`    | absent = segment; `tomb` = tombstone; `compact` = compaction; `signer` = signer handover; `epoch` = epoch link (seq 1 of a `log=10` log only, see "Epoch rollover"). Any other value is an error ("upgrade sigil") |
 | `del`   | tombstone: the deleted segment seqs as ascending ranges (`2,4-5`) |
 | `shred` | tombstone, optional, only `1`: this is a crypto-shred — the key of the named segments' file was destroyed (needs `segkeys=1`; in any other log it is a `log-format` error) |
 | `reason`| tombstone, optional: free text, `%XX`-escaped so the value stays one token. The INDEX is not secret: no secrets in reasons |
@@ -1542,6 +1546,137 @@ handover are themselves appended, signed-over entries, so anchors and receipts t
 stay valid. No new cryptography: SHA-256, Ed25519, AES-256-GCM and the existing Sigil
 Reed–Solomon code.
 
+## Epoch rollover (`sigil log epoch OLD NEW`, `log=10`)
+
+Status: **specified 2026-11-08 (INDEX prune Option A, locked by Ashlynn 2026-11-02); not
+implemented in this revision.** Design and the decision record: [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md).
+
+An epoch rollover closes a log at its vouched HEAD `N:ROOT` and starts a **new** log (new log id,
+new chain, seqs from 1) whose first INDEX line names the old one. The old log is only read: it stays
+byte-for-byte as it was, so every anchor, receipt, inclusion / consistency proof and card made from
+it keeps verifying against it. It becomes the **archive** of the history before the cut. The tool
+never deletes it; moving it offline or deleting it is always the operator's own, separate act.
+There is no automatic trigger (`monthly-log-retention.sh` does not call it): it is a manual command.
+
+```sh
+sigil log epoch events events-2027 --identity me.sgk            # signed log: its current signer
+sigil log epoch photos photos-2027 --identity me.sgk --pass-file pw.txt   # private / keyed / encrypted
+sigil log check-epoch events-2027 --signer me.pub                # the link, from the new log alone
+sigil log check-epoch events-2027 --archive events --signer me.pub  # card → old root → old log
+```
+
+### The `op=epoch` line (seq 1 of the new log)
+
+```text
+seq=1 t=<unix> op=epoch prev-log=<32 hex> prev-size=<N> prev-root=<64 hex> card=<64 hex> chain=<64 hex>
+```
+
+| Field | Meaning |
+|---|---|
+| `prev-log` | log id of the archived log |
+| `prev-size` | `N`, the number of entries of the archive covered by the cut (its vouched HEAD seq; at least 1) |
+| `prev-root` | the archive's Merkle root over its first `N` chain hashes (its HEAD root) |
+| `card` | SHA-256 of the exact bytes of the **epoch card** (`EPOCH.card`, below) |
+
+* It is chained like every line (`chain` covers the whole line), and the new log is always signed,
+  so every HEAD signature of the new log covers it: `verify` sees the link without the card file.
+* It is only valid as **seq 1** of a log whose manifest has `epoch=1`. Anywhere else, or in a log
+  without `epoch=1`, it is damage (`index-epoch` error), never data. A log with `epoch=1` whose
+  seq 1 is not `op=epoch` is damage too.
+* Seqs **restart at 1** in each epoch; `prev-size` records where the archive stopped, so no seq
+  offset is kept anywhere. The epoch line itself is entry 1 (a leaf of the new Merkle tree).
+* The line carries no data and no segment file (like a tombstone).
+
+### Manifest of the new log
+
+`CONTAINER` gets `log=10` and `epoch=1`, plus the old log's other flags (`segkeys=1`,
+`privindex=1`, `pad=padme`; `segkeys-from` is not carried: the new log has keys from seq 1), and a
+`signer=` (always). `log=9` stays reserved for streaming segments ([STREAMING-DESIGN.md](STREAMING-DESIGN.md)):
+a sigil that knows `log=10` but not streaming refuses `log=9` ("reserved, not supported"), it does
+not read it as a lower format. `epoch=1` with `log<10` or without `signer=` is refused when the log
+is opened.
+
+**Older sigils.** A sigil that knows only `log<=8` refuses the new log on open with "segment log
+format 10 is newer than this sigil understands (8); upgrade sigil". If the manifest were edited down,
+it would still stop at seq 1 with "entry type op=epoch is not known to this sigil; upgrade sigil":
+it never misreads the epoch line as a segment or the copied entries as the archive's.
+
+### The epoch card (`EPOCH.card` in the new log)
+
+An ordinary `sigil-log-card=1` card (see "Cards") with **exactly one child**: the archive at its
+vouched HEAD (`kind=log log=<prev-log> size=<N> root=<prev-root> chain=… t=…`, with that HEAD's
+signature when the archive is signed), **signed by `--identity`**. Default name
+`epoch-<first 16 hex of prev-log>-<N>`. It is written into the new log as `EPOCH.card` (and with
+`--card-out FILE` also beside it, for keeping elsewhere). Belt and braces: the line makes the link
+visible to `verify`; the signed card is the same commitment as a file any card tool checks.
+
+### Signing (unsigned logs fail closed)
+
+* `--identity KEY.sgk` is **required**. Without it the command refuses, whatever the old log is.
+* A **signed** old log: KEY must be its current signer (after any `rotate-signer` handovers). The
+  new log is pinned to the same key.
+* An **unsigned** old log: refused unless `--identity` is given; KEY then signs the card and is
+  pinned as the new log's signer (so the new log, including its epoch line, is signed from seq 1).
+  An unsigned epoch link would be too easy to forge, so there is no unsigned new epoch.
+
+### What is copied
+
+Exactly the live data at the cut, as `log privatize` copies: every segment entry the archive's
+HEAD vouches for that is not tombstoned / shredded is read with the checked reader and sealed again
+into the new log as seqs 2, 3, … with its original `t=` and `log add` path. Tombstones, compactions
+(their live members are copied one by one), shred and signer lines are not copied. A segment that
+was encrypted in the archive must be re-sealed encrypted: the command refuses unless `--pass-file`
+and/or `--to` are given (no silent downgrade to clear segments). A private, segment-keys or padded
+archive gives a new log with the same flags (new index key / key ring wrapped to `--pass-file` /
+`--to`, which are then required). An archive with no live data gives a new log with only the
+epoch line.
+
+### Write order (crash safety)
+
+1. Take the archive's `LOG.lock` (no append can run during the rollover); read and fully check it;
+   refuse a damaged archive, an empty one, or one without a vouched HEAD.
+2. Build the new log in a hidden temporary sibling (`.NEW.sigil.epoch-<pid>-<random>.sigil`):
+   manifest with `log=10 epoch=1`, `EPOCH.card`, copied segments (each written and fsynced), INDEX
+   (epoch line + copies, fsynced), signed HEAD.
+3. Rename the temporary folder to `NEW` (the commit point), then release the archive's lock. With
+   `--card-out`, copy the card there last.
+
+A crash at any step leaves either **no `NEW`** (the archive untouched; possibly a leftover hidden
+temporary folder to delete, and a stale `LOG.lock` in the archive, exactly as after an interrupted
+append) or a **complete, valid `NEW`**. Never a half-made log under the final name. The archive is
+never written to.
+
+### Verifying
+
+* `sigil log verify NEW` checks the epoch line's place and shape and the signed HEAD as for any log,
+  and, when `EPOCH.card` is present, that its SHA-256 equals `card=`, it verifies as a card, it is
+  signed by the new log's pinned signer, and its one child names `prev-log` / `prev-size` /
+  `prev-root`. A mismatch is an error; a missing `EPOCH.card` is a warning (the line alone is still
+  signed).
+* `sigil log check-epoch NEW [--card FILE] [--archive OLD] [--signer KEY]` checks the whole
+  two-step link: the new log verifies, the card (`--card` or `EPOCH.card`) matches the line and is
+  signed (by `--signer` when given), and, with `--archive`, OLD has id `prev-log` and the Merkle root
+  of its first `prev-size` entries is `prev-root` (OLD may have grown since: entries after the cut
+  belong to no epoch and are reported). For a signed archive the card signer must also be the
+  archive's signer at the cut. Exit 0 ok, 2 does not verify.
+
+### History before the cut
+
+`log restore --at TIME` in the new log with a TIME before the epoch line's `t` refuses and names
+the archive ("before the epoch cut: restore from the archive log <id>"): the new log holds only the
+live state at the cut, not older versions or deleted files. `--seq` numbers are per epoch.
+`log add` into the new log only needs the latest version of each path, which was copied, so it
+works without the archive. Inclusion and consistency proofs are per epoch; across epochs the proof
+is two-step (card → archive root → entry, with `log prove` on the archive).
+
+### Limits
+
+* Appending to the archive after the rollover is not prevented (the archive is not modified to mark
+  it closed); such entries belong to no epoch, and `check-epoch --archive` reports them.
+* There is no single Merkle root over all epochs (Option B, not chosen).
+* Losing the archive loses the history before the cut; the card still proves the archive had root
+  `prev-root` at size `prev-size`, not what it held.
+
 ## Deferred (later slices)
 
 Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + crypto-shredding
@@ -1551,7 +1686,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes"). Re-evaluated 2026-10-31: every reader (`read`, `verify`, `mend`, `compact`, `shred --rewrite`, `restore`, `mount`) holds a whole segment in memory and checks it against the INDEX in one piece, so a streaming *append* alone would write segments nothing can read without loading them; not shipped as an MVP. Options (chunked work-pack segments, framed AEAD, external pack, defer) and open questions: [STREAMING-DESIGN.md](STREAMING-DESIGN.md) (deferred, locked 2026-11-02).
 * Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them until converted with `sigil seal-folder-names` (see PRIVATE-LABEL.md; old copies keep the names).
-* INDEX roll-up / pruning of very old history (cards now give the commitment to roll up into; dropping old INDEX lines is still chain-breaking by nature and not done). Options and open questions: [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) (Option A epoch rollover chosen 2026-11-02; not implemented).
+* INDEX roll-up / pruning of very old history: Option A (epoch rollover into a new log, see "Epoch rollover") chosen 2026-11-02 and specified 2026-11-08 (`log=10`); not implemented yet. Dropping old INDEX lines in place stays chain-breaking by nature and is not done. [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md).
 * Unattended retention by default: the monthly script only applies with an explicit `--apply` and a rule (see "Monthly retention check").
 * Shredding one batch inside a compaction segment **without rewriting that segment**: impossible
   with one AEAD tag per segment (see `shred --rewrite`, which rewrites only that file).
