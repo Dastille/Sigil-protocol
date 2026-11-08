@@ -833,6 +833,70 @@ mod tests {
         assert_eq!(healed, bytes);
     }
 
+    /// Zero the primary header, every front Keystone copy and the end-of-file
+    /// SGKT trailer. Ember copies inside the body are left alone.
+    fn wipe_both_ends(bytes: &[u8]) -> Vec<u8> {
+        let mut torn = bytes.to_vec();
+        torn[..KEYSTONE_SPAN].fill(0);
+        torn[0] = 0x58;
+        let t0 = torn.len() - KEYSTONE_TRAILER_SIZE;
+        torn[t0..].fill(0);
+        torn
+    }
+
+    #[test]
+    fn both_ends_wiped_recovers_from_middle_ember() {
+        let msg: Vec<u8> = (0..40_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        for pass in [None, Some("both ends pass")] {
+            let bytes = crate::seal(&msg, Mode::Seal, pass, "ends.bin", false).unwrap();
+            let h = read_header(&bytes).unwrap();
+            assert!(h.ember(), "new seals carry Embers");
+            let prefix = body_prefix_file(&h, &bytes);
+            let mut torn = wipe_both_ends(&bytes);
+            // Also kill shard 0's Ember so the header must come from a later one.
+            torn[prefix..prefix + 4].fill(0);
+            assert!(read_header(&torn).is_err(), "primary header gone");
+            for slot in 1..=KEYSTONE_COPIES {
+                assert!(
+                    read_header(&torn[slot * HEADER_SIZE..]).is_err(),
+                    "Keystone {slot} gone"
+                );
+            }
+            assert!(locate_from_trailer(&torn).is_none(), "trailer gone");
+            let (eh, eprefix) = locate_from_ember(&torn).expect("a middle Ember survives");
+            assert_eq!(eh.merkle, h.merkle);
+            assert_eq!(eprefix, prefix);
+            let (rh, rprefix, recovered) = locate_header(&torn).expect("locate via Ember");
+            assert!(recovered);
+            assert_eq!(rh.merkle, h.merkle);
+            assert_eq!(rprefix, prefix);
+            assert_eq!(crate::unseal(&torn, pass).unwrap(), msg, "pass={pass:?}");
+            let healed = crate::pieces::mend_bytes(&torn).unwrap();
+            assert_eq!(
+                healed, bytes,
+                "mend restores front, Keystones and trailer; pass={pass:?}"
+            );
+            assert_eq!(crate::unseal(&healed, pass).unwrap(), msg);
+        }
+    }
+
+    #[test]
+    fn every_header_copy_gone_fails_closed() {
+        let msg: Vec<u8> = (0..40_000u32).map(|i| (i * 17 % 253) as u8).collect();
+        let bytes = crate::seal(&msg, Mode::Seal, None, "none.bin", false).unwrap();
+        let h = read_header(&bytes).unwrap();
+        let prefix = body_prefix_file(&h, &bytes);
+        let stride = shard_stride(&h);
+        let mut torn = wipe_both_ends(&bytes);
+        for i in 0..h.n as usize {
+            let off = prefix + i * stride;
+            torn[off..off + 4].fill(0);
+        }
+        assert!(locate_header(&torn).is_err());
+        assert!(crate::unseal(&torn, None).is_err());
+        assert!(crate::pieces::mend_bytes(&torn).is_err());
+    }
+
     #[test]
     fn keystone_trailer_absent_old_style_still_opens() {
         let msg = b"old style without trailer still opens via front header xx";

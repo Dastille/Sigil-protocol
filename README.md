@@ -628,8 +628,11 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - Damage near the start of a file still costs more: the header region is used to
   find everything else. New seals also keep one spare header copy at the end
   (`SGKT` trailer) so a wiped front can still locate when Embers are gone too;
-  recovery still leans on Keystone / Ember / trailer, and hitting both ends at
-  once loses more margin than the same damage in the middle.
+  if the front header, every Keystone copy and the trailer are all wiped, the
+  header is still found from any surviving per-shard Ember copy, and the file
+  opens and mends as long as enough shards are intact. Only when every header
+  copy (front, Keystone, trailer and all Embers) is gone does it refuse; a second
+  copy can then still heal it with `sigil mend A.sg1 B.sg1`.
 - Encrypted files still reveal their ciphertext length **unless** sealed with
   `--pad bucket` or `--pad max` (then only the bucket or power-of-two size
   shows). Default is `--pad off` (no silent size growth). `--pad` needs
