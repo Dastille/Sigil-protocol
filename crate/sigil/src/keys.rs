@@ -154,15 +154,46 @@ impl Identity {
         write_secret_file(path, &buf)
     }
 
-    /// Load a plain `.sgk`, or a passkey-protected one (`SGKW`) by asking the authenticator.
+    /// Load a plain `.sgk`, a passkey-protected one (`SGKW`) by asking the authenticator, or a
+    /// passphrase-protected one (`SGKP`) by asking for the passphrase on the terminal (hidden).
+    /// With no terminal to ask on, an `SGKP` file fails closed; use [`Identity::load_with_pass`].
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_unlocking(path, None)
+    }
+
+    /// Like [`Identity::load`], but an `SGKP` file is unlocked with `pass` when it is given
+    /// (no prompt). `pass` is ignored for plain and passkey-protected files.
+    pub fn load_unlocking(path: &Path, pass: Option<&[u8]>) -> Result<Self> {
         let b =
             zeroize::Zeroizing::new(std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?);
         if crate::passkey::is_wrapped(&b) {
             return crate::passkey::unlock_bytes(&b)
                 .map_err(|e| Error::Msg(format!("{}: {e}", path.display())));
         }
+        if crate::passid::is_pass_protected(&b) {
+            let shown = path.display().to_string();
+            let r = match pass {
+                Some(p) => crate::passid::unlock(&b, p),
+                None => crate::passid::prompt_unlock(&b, &shown),
+            };
+            return r.map_err(|e| Error::Msg(format!("{shown}: {e}")));
+        }
         parse_identity(&b)
+    }
+
+    /// Load a passphrase-protected identity (`SGKP`) with `pass`. Any other kind of file is
+    /// refused. Wrong passphrase, damage, truncation or out-of-bounds Argon2id parameters
+    /// fail closed (no key is returned).
+    pub fn load_with_pass(path: &Path, pass: &[u8]) -> Result<Self> {
+        let b =
+            zeroize::Zeroizing::new(std::fs::read(path).map_err(|e| Error::Msg(e.to_string()))?);
+        crate::passid::unlock(&b, pass).map_err(|e| Error::Msg(format!("{}: {e}", path.display())))
+    }
+
+    /// Write this identity locked under `pass` (`SGKP`, Argon2id + AES-256-GCM), owner-only.
+    pub fn write_with_pass(&self, path: &Path, pass: &[u8]) -> Result<()> {
+        let buf = crate::passid::protect(self, pass)?;
+        write_secret_file(path, &buf)
     }
 
     /// Load with an explicit authenticator (tests, or callers that pick a device).
@@ -214,8 +245,8 @@ fn split_master(master: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
     Ok((x, e))
 }
 
-/// Secret key files are created owner-only (0600) on unix.
-pub(crate) fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
+/// Write a secret key file, created owner-only (0600) on unix.
+pub fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -301,6 +332,10 @@ fn parse_public(b: &[u8]) -> Result<PublicIdentity> {
     if crate::passkey::is_wrapped(b) {
         return Ok(crate::passkey::Wrapped::parse(b)?.public);
     }
+    // Passphrase-protected .sgk: same, no passphrase needed for the public half.
+    if crate::passid::is_pass_protected(b) {
+        return Ok(crate::passid::inspect(b)?.public);
+    }
     // .sgk secret → derive public
     if b.len() >= ID_SIZE && b[0..4] == ID_MAGIC {
         return Ok(parse_identity(b)?.public());
@@ -346,6 +381,25 @@ pub fn keygen_ecc(path: &Path, pub_out: Option<&Path>) -> Result<PublicIdentity>
         pk.write(p)?;
     } else {
         // default: path.pub
+        let mut dest = path.as_os_str().to_os_string();
+        dest.push(".pub");
+        pk.write(Path::new(&dest))?;
+    }
+    Ok(pk)
+}
+
+/// Like [`keygen_ecc`], but the secret identity is written locked under `pass` (`SGKP`).
+pub fn keygen_ecc_with_pass(
+    path: &Path,
+    pub_out: Option<&Path>,
+    pass: &[u8],
+) -> Result<PublicIdentity> {
+    let id = Identity::generate()?;
+    id.write_with_pass(path, pass)?;
+    let pk = id.public();
+    if let Some(p) = pub_out {
+        pk.write(p)?;
+    } else {
         let mut dest = path.as_os_str().to_os_string();
         dest.push(".pub");
         pk.write(Path::new(&dest))?;
@@ -414,13 +468,13 @@ fn encode_recipient_x25519(recip: &PublicIdentity, cek: &[u8; 32]) -> Result<Vec
 }
 
 /// Validate stored Argon2id parameters against RFC 9106 minimums and Sigil's DoS bounds.
-fn argon2_params_ok(m_kib: u32, t: u32, p: u32) -> Result<()> {
+pub(crate) fn argon2_params_ok(m_kib: u32, t: u32, p: u32) -> Result<()> {
     let bad = |why: &str| {
         Err(Error::Msg(format!(
             "Argon2id wrap parameters rejected: {why}"
         )))
     };
-    if t == 0 || p == 0 || m_kib < 8 * p {
+    if t == 0 || p == 0 || u64::from(m_kib) < 8 * u64::from(p) {
         return bad("below RFC 9106 minimums (t >= 1, p >= 1, m >= 8p KiB)");
     }
     if m_kib > ARGON2_MAX_M_KIB || t > ARGON2_MAX_T || p > ARGON2_MAX_P {
@@ -434,8 +488,8 @@ fn argon2_params_ok(m_kib: u32, t: u32, p: u32) -> Result<()> {
 
 /// Argon2id (v0x13) → 32-byte wrap key. Working memory is reserved fallibly (an error, not
 /// an abort, on a machine without it) and wiped afterwards, as in `pgp::argon2_derive`.
-fn argon2id_key(
-    pass: &str,
+pub(crate) fn argon2id_key(
+    pass: &[u8],
     salt: &[u8; 16],
     m_kib: u32,
     t: u32,
@@ -453,7 +507,7 @@ fn argon2id_key(
     blocks.resize(params.block_count(), Block::default());
     let mut key = Zeroizing::new([0u8; 32]);
     let res = Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into_with_memory(pass.as_bytes(), salt, key.as_mut(), &mut blocks);
+        .hash_password_into_with_memory(pass, salt, key.as_mut(), &mut blocks);
     blocks.iter_mut().for_each(|b| b.zeroize());
     res.map_err(|e| Error::Msg(format!("Argon2id failed: {e}")))?;
     Ok(key)
@@ -462,7 +516,7 @@ fn argon2id_key(
 fn encode_recipient_pass(pass: &str, cek: &[u8; 32]) -> Result<Vec<u8>> {
     let mut salt = [0u8; 16];
     getrandom::getrandom(&mut salt).map_err(|e| Error::Msg(e.to_string()))?;
-    let key = argon2id_key(pass, &salt, ARGON2_M_KIB, ARGON2_T, ARGON2_P)?;
+    let key = argon2id_key(pass.as_bytes(), &salt, ARGON2_M_KIB, ARGON2_T, ARGON2_P)?;
     let (nonce, tag, ct) = aes_wrap(&key, cek)?;
     if ct.len() != 32 {
         return Err(Error::Msg("unexpected CEK ciphertext length".into()));
@@ -791,7 +845,7 @@ pub fn unwrap_cek(
                 let ct = &r[56..88];
                 if let Some(p) = pass.filter(|s| !s.is_empty()) {
                     // Out-of-bounds parameters are an error, not a skip: fail closed.
-                    let key = argon2id_key(p, &salt, m_kib, t, p_lanes)?;
+                    let key = argon2id_key(p.as_bytes(), &salt, m_kib, t, p_lanes)?;
                     if let Ok(cek) = aes_unwrap(&key, &nonce, &tag, ct) {
                         if cek.len() == 32 {
                             let mut out = [0u8; 32];
@@ -842,6 +896,59 @@ mod tests {
         assert_eq!(back.pgp_fpr, Some([7u8; 20]));
         assert_eq!(back.public().x25519_pk, base.public().x25519_pk);
         assert_eq!(back.public().ed25519_pk, base.public().ed25519_pk);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pass_protected_identity_file_roundtrip_and_sgto() {
+        let dir = std::env::temp_dir().join(format!("sigil-idp-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("me.sgk");
+        let pub_path = dir.join("me.pub");
+        let pk = keygen_ecc_with_pass(&path, Some(&pub_path), b"open sesame").unwrap();
+        let b = std::fs::read(&path).unwrap();
+        assert_eq!(&b[0..4], b"SGKP");
+        // The plain secret bytes never hit the disk.
+        let id = Identity::load_with_pass(&path, b"open sesame").unwrap();
+        assert!(!b.windows(32).any(|w| w == id.master));
+        assert_eq!(id.public().x25519_pk, pk.x25519_pk);
+        assert_eq!(
+            Identity::load_unlocking(&path, Some(b"open sesame"))
+                .unwrap()
+                .master,
+            id.master
+        );
+        assert!(Identity::load_with_pass(&path, b"open sesam").is_err());
+        assert!(Identity::load_unlocking(&path, Some(b"nope")).is_err());
+        // Public half readable without the passphrase (for --to / --signer).
+        assert_eq!(PublicIdentity::load(&path).unwrap().x25519_pk, pk.x25519_pk);
+        assert_eq!(
+            resolve_recipient(path.to_str().unwrap())
+                .unwrap()
+                .ed25519_pk,
+            pk.ed25519_pk
+        );
+        // Encrypt-to works with the unlocked identity.
+        let cek = [5u8; 32];
+        let salt = [2u8; 16];
+        let sgto = build_sgto(&cek, std::slice::from_ref(&pk), None, &salt).unwrap();
+        assert_eq!(unwrap_cek(&sgto, &[id], None, &salt).unwrap(), cek);
+        // A plain file is refused by load_with_pass but still opens with load/load_unlocking.
+        let plain = dir.join("plain.sgk");
+        let p = Identity::generate().unwrap();
+        p.write(&plain).unwrap();
+        assert!(Identity::load_with_pass(&plain, b"x").is_err());
+        assert_eq!(Identity::load(&plain).unwrap().master, p.master);
+        assert_eq!(
+            Identity::load_unlocking(&plain, Some(b"x")).unwrap().master,
+            p.master
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

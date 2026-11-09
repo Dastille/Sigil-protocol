@@ -51,6 +51,7 @@ pub mod names;
 mod nest;
 mod open;
 mod packhead;
+pub mod passid;
 pub mod passkey;
 pub mod pgp;
 mod pieces;
@@ -88,7 +89,9 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
-pub use attest::{attest, keygen as attest_keygen, talisman_pass, verify_attestation};
+pub use attest::{
+    attest, attest_unlocking, keygen as attest_keygen, talisman_pass, verify_attestation,
+};
 pub use boot::{
     copy_sigil_binary, find_boot_mark, inject_initrd, install_hooks, mend_boot, mend_scan,
     prepare_boot, BootFind, BootOutcome,
@@ -122,8 +125,8 @@ pub use header::{
     KEYSTONE_TRAILER_SIZE, VERSION,
 };
 pub use keys::{
-    keygen_ecc, keygen_legacy, resolve_recipient, Identity, PublicIdentity, ID_MAGIC, PUB_MAGIC,
-    SGTO_MAGIC,
+    keygen_ecc, keygen_ecc_with_pass, keygen_legacy, resolve_recipient, write_secret_file,
+    Identity, PublicIdentity, ID_MAGIC, PUB_MAGIC, SGTO_MAGIC,
 };
 pub use kit::{
     is_kit_dir, mend as mend_kit, place as place_kit, PlaceReport, DEFAULT_DRIVES, KIT_MANIFEST,

@@ -13,11 +13,15 @@ pub fn keygen(path: &Path) -> Result<[u8; 32]> {
     Ok(SigningKey::from_bytes(&seed).verifying_key().to_bytes())
 }
 
-fn load_seed(path: &Path) -> Result<[u8; 32]> {
+fn load_seed(path: &Path, pass: Option<&[u8]>) -> Result<[u8; 32]> {
     let b = std::fs::read(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // Modern .sgk identity: attest with the Ed25519 half.
-    if b.len() >= 8 && (b[0..4] == *b"SGIK" || b[0..4] == crate::passkey::SGKW_MAGIC) {
-        let id = crate::keys::Identity::load(path)?;
+    if b.len() >= 8
+        && (b[0..4] == *b"SGIK"
+            || b[0..4] == crate::passkey::SGKW_MAGIC
+            || b[0..4] == crate::passid::SGKP_MAGIC)
+    {
+        let id = crate::keys::Identity::load_unlocking(path, pass)?;
         return Ok(id.ed25519_seed);
     }
     if b.len() < 32 {
@@ -30,8 +34,18 @@ fn load_seed(path: &Path) -> Result<[u8; 32]> {
     Ok(s)
 }
 
+/// Sign `mark` with `key` (raw 32-byte seed or any `.sgk`); writes `<mark>.sig`.
 pub fn attest(mark: &Path, key: &Path) -> Result<std::path::PathBuf> {
-    let seed = load_seed(key)?;
+    attest_unlocking(mark, key, None)
+}
+
+/// [`attest`], unlocking a passphrase-protected `key` (`SGKP`) with `pass` when given.
+pub fn attest_unlocking(
+    mark: &Path,
+    key: &Path,
+    pass: Option<&[u8]>,
+) -> Result<std::path::PathBuf> {
+    let seed = zeroize::Zeroizing::new(load_seed(key, pass)?);
     let sk = SigningKey::from_bytes(&seed);
     let hash = sha256(&std::fs::read(mark).map_err(|e| crate::Error::Msg(e.to_string()))?);
     let sig = sk.sign(&hash);

@@ -1,20 +1,19 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
-    add_to_constellation, attest, backend_by_name, copy_sigil_binary, deluge_pieces,
-    format_bakeoff_report, gather_pieces, hex32, inject_initrd, inscribe_dir_to,
-    inscribe_dir_to_names_visible, inscribe_path_to, inscribe_stars_dir_to, install_hooks,
-    is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
-    mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
-    place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
-    run_showing, scatter_pieces, seal_kn_mds_to_opts, sha256, sha256_path, talisman_pass,
-    tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys,
-    unseal_path_keys, unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex,
-    vault_format_recipients, vault_format_retention, vault_format_status, vault_format_versions,
-    vault_get_recipients, vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit,
-    vault_prune_with, vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status,
-    vault_track_ex, vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode,
-    Pad, SealOpts, VaultRetention, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE,
-    VESSEL,
+    add_to_constellation, backend_by_name, copy_sigil_binary, deluge_pieces, format_bakeoff_report,
+    gather_pieces, hex32, inject_initrd, inscribe_dir_to, inscribe_dir_to_names_visible,
+    inscribe_path_to, inscribe_stars_dir_to, install_hooks, is_constellation_input, is_dir_pack,
+    is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_kit, mend_scan,
+    overture_report, path_extract_keys, path_walk_keys, place_kit, prepare_boot, resolve_recipient,
+    run_bakeoff, run_mount_keys, run_open_keys, run_showing, scatter_pieces, seal_kn_mds_to_opts,
+    sha256, sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
+    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
+    vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
+    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
+    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
+    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
+    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, Pad, SealOpts, VaultRetention,
+    CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -395,6 +394,21 @@ use std::process::{Command, Stdio};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+    /// Passphrase for a passphrase-protected identity (an .sgk made with `keygen --pass`),
+    /// read from the first line of a file only you can read. Used wherever an identity is
+    /// opened (--identity, --unlock, --sign, sign --key, identity unprotect). Without it,
+    /// Sigil asks on the terminal (hidden), or refuses when there is no terminal.
+    #[arg(long = "identity-pass-file", value_name = "PATH", global = true, value_parser = parse_pass_file)]
+    identity_pass_file: Option<String>,
+}
+
+/// The `--identity-pass-file` passphrase, set once in `main` before any command runs.
+static ID_PASS: std::sync::OnceLock<zeroize::Zeroizing<String>> = std::sync::OnceLock::new();
+
+/// Open an identity file: plain, passkey (`SGKW`) or passphrase (`SGKP`; unlocked with
+/// `--identity-pass-file` if given, else a hidden prompt, else refused).
+fn load_identity(p: &Path) -> sigil::Result<Identity> {
+    Identity::load_unlocking(p, ID_PASS.get().map(|s| s.as_bytes()))
 }
 
 #[derive(Subcommand)]
@@ -834,6 +848,14 @@ enum Cmd {
         /// Touch-only passkey (skip PIN / user verification). Default requires UV.
         #[arg(long = "no-uv", requires = "passkey")]
         no_uv: bool,
+        /// Lock the new identity with a passphrase: `--pass -` asks twice on the terminal
+        /// (hidden). The plain secret is never written to disk. Open it later with the same
+        /// passphrase (asked on the terminal, or --identity-pass-file PATH in scripts).
+        #[arg(long, value_parser = PassParser(true), conflicts_with_all = ["legacy", "passkey"])]
+        pass: Option<String>,
+        /// Like --pass, but read the new passphrase from the first line of a file only you can read
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with_all = ["pass", "legacy", "passkey"], value_parser = parse_pass_file)]
+        pass_file: Option<String>,
     },
     /// Identity key-file tools: passkey protect / unprotect / backup keys / info.
     #[command(name = "identity")]
@@ -1090,7 +1112,8 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum IdentityCmd {
-    /// Wrap a plain .sgk (v1 or imported v2) under a FIDO2 passkey (SGKW key file).
+    /// Lock a plain .sgk (v1 or imported v2) under a FIDO2 passkey (SGKW key file, --passkey)
+    /// or a passphrase (SGKP key file, --pass - / --pass-file).
     Protect {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
         #[arg(long)]
@@ -1102,14 +1125,20 @@ enum IdentityCmd {
         /// Replace the input file (atomic rename). Delete other plain copies yourself.
         #[arg(long = "in-place", conflicts_with = "output")]
         in_place: bool,
-        /// Required: the protection method (only passkeys today)
-        #[arg(long, required = true)]
+        /// Protection method: a FIDO2 passkey (or give --pass / --pass-file instead)
+        #[arg(long, required_unless_present_any = ["pass", "pass_file"])]
         passkey: bool,
         #[arg(long = "rp-id", default_value = sigil::passkey::DEFAULT_RP_ID)]
         rp_id: String,
         /// Touch-only (no PIN / user verification)
-        #[arg(long = "no-uv")]
+        #[arg(long = "no-uv", conflicts_with_all = ["pass", "pass_file"])]
         no_uv: bool,
+        /// Protection method: a passphrase. `--pass -` asks twice on the terminal (hidden)
+        #[arg(long, value_parser = PassParser(true), conflicts_with = "passkey")]
+        pass: Option<String>,
+        /// Like --pass, but read the new passphrase from the first line of a file only you can read
+        #[arg(long = "pass-file", value_name = "PATH", conflicts_with_all = ["pass", "passkey"], value_parser = parse_pass_file)]
+        pass_file: Option<String>,
     },
     /// Add a backup passkey slot (unlock with an existing one, then register a new key).
     #[command(name = "add-passkey")]
@@ -1133,7 +1162,8 @@ enum IdentityCmd {
         #[arg(long)]
         slot: usize,
     },
-    /// Write a plain .sgk back out (unlocks with the passkey).
+    /// Write a plain .sgk back out (unlocks with the passkey, or the passphrase: asked on the
+    /// terminal, or --identity-pass-file PATH).
     Unprotect {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
         #[arg(long)]
@@ -2530,7 +2560,7 @@ fn pgp_passphrase(
 }
 
 fn load_identities(paths: &[PathBuf]) -> Result<Vec<Identity>, Box<dyn std::error::Error>> {
-    paths.iter().map(|p| Ok(Identity::load(p)?)).collect()
+    paths.iter().map(|p| Ok(load_identity(p)?)).collect()
 }
 
 fn load_recipients(
@@ -2985,7 +3015,10 @@ fn verify_cmd(
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    if let Some(p) = cli.identity_pass_file.take() {
+        let _ = ID_PASS.set(zeroize::Zeroizing::new(p));
+    }
     let jctx = json_ctx(&cli.cmd);
     let log_fail = log_json_fail_format(&cli.cmd);
     let piped_out = matches!(&cli.cmd, Cmd::Unseal { output, .. } if output.as_os_str() == "-");
@@ -4177,9 +4210,38 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             passkey,
             rp_id,
             no_uv,
+            pass,
+            pass_file,
             json: _,
         } => {
-            if passkey {
+            if let Some(pw) = pass.or(pass_file).map(zeroize::Zeroizing::new) {
+                let pk = sigil::keygen_ecc_with_pass(&output, pub_out.as_deref(), pw.as_bytes())?;
+                let pub_path = pub_out.unwrap_or_else(|| {
+                    let mut p = output.as_os_str().to_os_string();
+                    p.push(".pub");
+                    PathBuf::from(p)
+                });
+                json_extra(&format!(
+                    ",\"public\":{},\"x25519\":\"{}\",\"passkey\":false,\"passphrase\":true",
+                    jq(&pub_path.to_string_lossy()),
+                    hex32(&pk.x25519_pk)
+                ));
+                say!(
+                    "identity → {}  (passphrase-protected)  x25519 {}",
+                    output.display(),
+                    hex32(&pk.x25519_pk)
+                );
+                say!(
+                    "public → {}  (encrypt-to: --to {})",
+                    pub_path.display(),
+                    pub_path.display()
+                );
+                say!(
+                    "attest seed is inside .sgk; sign with --key {}",
+                    output.display()
+                );
+                say!("keep the passphrase safe: without it this identity cannot be opened (there is no reset)");
+            } else if passkey {
                 let id = Identity::generate()?;
                 let mut auth = sigil::passkey::default_authenticator()?;
                 let w = sigil::passkey::Wrapped::protect(&id, auth.as_mut(), &rp_id, !no_uv)?;
@@ -4246,6 +4308,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
                 say!(
                     "attest seed is inside .sgk; sign with --key {}",
+                    output.display()
+                );
+                eprintln!(
+                    "warning: {} is not protected: anyone who copies it can open what is sent to you and sign as you. \
+Use --pass - (passphrase) or --passkey next time; to protect this one: sigil identity protect --pass - --in-place {}",
+                    output.display(),
                     output.display()
                 );
             }
@@ -4327,7 +4395,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         Cmd::Sign { input, key, .. } => {
-            let dest = attest(&input, &key)?;
+            let dest = sigil::attest_unlocking(&input, &key, ID_PASS.get().map(|s| s.as_bytes()))?;
             json_extra(&format!(",\"attestation\":{}", jq(&dest.to_string_lossy())));
             say!("attestation → {}", dest.display());
         }
@@ -4657,10 +4725,15 @@ fn write_atomic_secret(
     dest: &Path,
     w: &sigil::passkey::Wrapped,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    write_atomic_secret_bytes(dest, &w.to_bytes())
+}
+
+/// Owner-only temp file beside `dest`, then rename over it.
+fn write_atomic_secret_bytes(dest: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let mut tmp = dest.as_os_str().to_os_string();
     tmp.push(".sigil-tmp");
     let tmp = PathBuf::from(tmp);
-    w.write(&tmp)?;
+    sigil::write_secret_file(&tmp, bytes)?;
     fs::rename(&tmp, dest)?;
     Ok(())
 }
@@ -4675,15 +4748,47 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
             passkey: _,
             rp_id,
             no_uv,
+            pass,
+            pass_file,
             json: _,
         } => {
-            let raw = fs::read(&input)?;
+            let raw = zeroize::Zeroizing::new(fs::read(&input)?);
             if is_wrapped(&raw) {
                 return Err(
                     "already passkey-protected; use `identity add-passkey` for a backup key".into(),
                 );
             }
+            if sigil::passid::is_pass_protected(&raw) {
+                return Err(
+                    "already passphrase-protected; run `sigil identity unprotect` first to change how it is locked"
+                        .into(),
+                );
+            }
             let id = Identity::load(&input)?;
+            if let Some(pw) = pass.or(pass_file).map(zeroize::Zeroizing::new) {
+                let bytes = sigil::passid::protect(&id, pw.as_bytes())?;
+                // Prove the new file opens (full unlock) before anything is replaced.
+                let back = sigil::passid::unlock(&bytes, pw.as_bytes())?;
+                if back.public().x25519_pk != id.public().x25519_pk {
+                    return Err(
+                        "protected copy did not open to the same identity; nothing was written"
+                            .into(),
+                    );
+                }
+                let dest = if in_place {
+                    input.clone()
+                } else {
+                    output.ok_or("give -o OUTPUT or --in-place")?
+                };
+                write_atomic_secret_bytes(&dest, &bytes)?;
+                json_extra(",\"protection\":\"passphrase\"");
+                say!("protected → {}  (passphrase, Argon2id)", dest.display());
+                if !in_place {
+                    say!("the plain copy {} still exists — delete it (shred -u) once you've tested the new file", input.display());
+                }
+                say!("keep the passphrase safe: without it this identity cannot be opened (there is no reset)");
+                return Ok(());
+            }
             let mut auth = default_authenticator()?;
             let w = Wrapped::protect(&id, auth.as_mut(), &rp_id, !no_uv)?;
             // Prove the new file opens before anything is replaced.
@@ -4747,7 +4852,7 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
             output,
             json: _,
         } => {
-            let id = Identity::load(&input)?;
+            let id = load_identity(&input)?;
             id.write(&output)?;
             say!(
                 "plain identity → {}  (owner-only; anyone with this file can open your seals)",
@@ -4763,6 +4868,26 @@ fn run_identity(cmd: IdentityCmd) -> Result<(), Box<dyn std::error::Error>> {
                     jq(&d)
                 ));
                 say_raw!("{d}");
+            } else if sigil::passid::is_pass_protected(&raw) {
+                let i = sigil::passid::inspect(&raw)?;
+                let kind = format!(
+                    "passphrase-protected identity (SGKP v{}, Argon2id m={} KiB t={} p={})",
+                    sigil::passid::SGKP_VERSION,
+                    i.kdf.m_kib,
+                    i.kdf.t,
+                    i.kdf.p
+                );
+                json_extra(&format!(
+                    ",\"kind\":\"passphrase-protected\",\"report\":{},\"x25519\":\"{}\",\"ed25519\":\"{}\"",
+                    jq(&kind),
+                    hex32(&i.public.x25519_pk),
+                    hex32(&i.public.ed25519_pk)
+                ));
+                say!(
+                    "{kind}\n  x25519 {}\n  ed25519 {}",
+                    hex32(&i.public.x25519_pk),
+                    hex32(&i.public.ed25519_pk)
+                );
             } else {
                 let pk = sigil::PublicIdentity::load(&input)?;
                 let kind = if raw.len() > 4 && raw[0..4] == sigil::ID_MAGIC {
@@ -5183,7 +5308,7 @@ fn parse_signer(spec: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
         if let Ok(pk) = sigil::PublicIdentity::load(p) {
             return Ok(pk.ed25519_pk);
         }
-        return Ok(Identity::load(p)?.public().ed25519_pk);
+        return Ok(load_identity(p)?.public().ed25519_pk);
     }
     let b = hex::decode(spec.trim())
         .map_err(|_| format!("--signer: not a file and not hex: {spec}"))?;
@@ -5237,7 +5362,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             json,
         } => {
             let pass = pass.or(pass_file);
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let mut pass = resolve_pass(pass, talisman)?;
             let mut recipients = load_recipients(&to)?;
             let keyed = pass.is_some() || !recipients.is_empty();
@@ -5308,7 +5433,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let unlock = load_identities(&unlock)?;
             let data = if input == "-" {
                 use std::io::Read;
@@ -5375,7 +5500,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let unlock = load_identities(&unlock)?;
             let r = seglog::add(
                 &path,
@@ -5489,7 +5614,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             json,
         } => {
             needs_output(json, &output)?;
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let c = seglog::make_card(&name, &children, id.as_ref())?;
             let text = c.render();
             if json {
@@ -5585,7 +5710,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let recipients = load_recipients(&to)?;
             let identities = load_identities(&identity)?;
-            let sign = sign.as_deref().map(Identity::load).transpose()?;
+            let sign = sign.as_deref().map(load_identity).transpose()?;
             let r = seglog::privatize(
                 &src,
                 &dest,
@@ -5638,7 +5763,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = resolve_pass(pass.or(pass_file), talisman)?;
             let recipients = load_recipients(&to)?;
             let unlock = load_identities(&unlock)?;
-            let identity = identity.as_deref().map(Identity::load).transpose()?;
+            let identity = identity.as_deref().map(load_identity).transpose()?;
             let r = seglog::epoch(
                 &old,
                 &new,
@@ -5730,7 +5855,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             json,
         } => {
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let changed = seglog::enable_pad(&path, id.as_slice())?;
             if json {
                 println!("{{\"format\":\"sigil-log-pad=1\",\"ok\":true,\"changed\":{changed}}}");
@@ -6057,7 +6182,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             unlock,
             json,
         } => {
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let rpass = resolve_pass(pass.or(pass_file), None)?;
             let runlock = load_identities(&unlock)?;
             let rkeys = seglog::ReasonKeys {
@@ -6115,7 +6240,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             seal_to,
             json,
         } => {
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let rpass = resolve_pass(pass.or(pass_file), None)?;
             let runlock = load_identities(&unlock)?;
             let rkeys = seglog::ReasonKeys {
@@ -6281,7 +6406,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             unlock,
             json,
         } => {
-            let id = identity.as_deref().map(Identity::load).transpose()?;
+            let id = identity.as_deref().map(load_identity).transpose()?;
             let pass = resolve_pass(pass.or(pass_file), None)?;
             let to = load_recipients(&to)?;
             let unlock = load_identities(&unlock)?;
@@ -6337,7 +6462,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             identity,
             json,
         } => {
-            let id = Identity::load(&identity)?;
+            let id = load_identity(&identity)?;
             let r = seglog::add_signer(&path, &id)?;
             for n in &r.notes {
                 eprintln!("note: {n}");
@@ -6370,7 +6495,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             new,
             json,
         } => {
-            let id = Identity::load(&identity)?;
+            let id = load_identity(&identity)?;
             let new = parse_signer(&new).map_err(|e| e.to_string().replace("--signer", "--new"))?;
             let r = seglog::rotate_signer(&path, &id, new)?;
             for n in &r.notes {

@@ -220,6 +220,25 @@ line (`ps`), and your shell may save it in history. See "Passphrases in scripts"
 public key, `--identity`, `--talisman` key file, passkeys) are described in
 `sigil seal --help` and [docs/START.md](docs/START.md); they are not shown here.
 
+Your identity key can be locked with a passphrase (Argon2id + AES-256-GCM; the plain secret
+is never written to disk):
+
+```
+$ sigil keygen --pass - -o me.sgk
+Passphrase:
+Same passphrase again:
+identity → me.sgk  (passphrase-protected)  x25519 …
+public → me.sgk.pub  (encrypt-to: --to me.sgk.pub)
+attest seed is inside .sgk; sign with --key me.sgk
+keep the passphrase safe: without it this identity cannot be opened (there is no reset)
+$ sigil unseal --identity me.sgk -o out.jpg secret.sg1        # asks for it (hidden)
+$ sigil unseal --identity me.sgk --identity-pass-file ~/.id-pass -o out.jpg secret.sg1
+```
+
+`--identity-pass-file PATH` follows the `--pass-file` rules and works wherever an identity is
+opened. `sigil identity protect --pass - me.sgk --in-place` locks an existing plain identity.
+Details and file layout: [docs/PASSPHRASE-IDENTITY.md](docs/PASSPHRASE-IDENTITY.md).
+
 ### Private labels
 
 Encrypted single files are written with a private label (header v3): the file
@@ -547,9 +566,11 @@ commit adds `skipped`, restore adds `mended`), `vault prune` (`kept`, `tip`, `re
 `out_bytes`). Output of helper programs started with `--rsync` / `--rclone` / `--wormhole` is
 not captured and may reach stdout.
 
-`keygen --json` also adds `public` (the `.pub` path), `x25519` (public hex) and `passkey`.
+`keygen --json` also adds `public` (the `.pub` path), `x25519` (public hex) and `passkey`
+(and `passphrase:true` with `--pass` / `--pass-file`).
 `identity info --json` adds `kind` plus public `x25519` / `ed25519` hex, or for a
-passkey-protected key `kind:"passkey-protected"` and `report` (slots; no wrapped bytes);
+passkey-protected key `kind:"passkey-protected"` and `report` (slots; no wrapped bytes), or for
+a passphrase-protected key `kind:"passphrase-protected"`, `report` and the public hex;
 `identity protect` / `add-passkey` / `remove-passkey` / `unprotect` and `boot prepare` /
 `mend` / `install` print `ok` only. `import-pgp --json` adds `fingerprint`, `encrypt_subkey`,
 `user_id`, `key_version`, `public`, `x25519` and `identity` (the written path, or null) — never
@@ -630,6 +651,12 @@ tampering. Release signing key (minisign): **TBD until key created**. No release
 See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 
 ## Known limitations
+
+- `sigil keygen -o me.sgk` with no `--pass` / `--passkey` still writes the secret identity
+  unprotected (owner-only file, but plain bytes) so existing scripts keep working; it prints a
+  warning. Use `--pass -` or `--passkey`. A passphrase-protected identity asks for its
+  passphrase on a terminal; in scripts give `--identity-pass-file PATH` (there is no
+  environment-variable option).
 
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
