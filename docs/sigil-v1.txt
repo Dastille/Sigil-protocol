@@ -92,6 +92,22 @@ The Vow is copied after each Ember so Geas still applies if the prefix is gone.
 Work packs (magic SGWK) concatenate sequential .sg1 stars for large payloads.
 The browser lab remains size-capped; the Rust CLI is not.
 
+IDENTITY KEY FILES (.sgk; outside the .sg1)
+  SGIK v1   plain native identity: "SGIK" | 1 | 0 0 0 | 32-byte master
+            (X25519 and Ed25519 keys are HKDF-SHA256 split from it)
+  SGIK v2   plain imported identity (OpenPGP): X25519 sk | Ed25519 seed | v4 fpr
+  SGKW v1   passkey-protected (FIDO2 hmac-secret / WebAuthn PRF) wrapper around
+            the exact SGIK bytes. Details: docs/PASSKEY.md.
+  SGKP v1   passphrase-protected wrapper around the exact SGIK bytes:
+            Argon2id v0x13 (RFC 9106; m/t/p and 16-byte salt stored, capped
+            before work as for SGTO v2) -> AES-256-GCM (NIST SP 800-38D),
+            random nonce, AAD = the whole 116-byte clear header (which also
+            carries both public keys). File is exactly 116 + sealed length.
+            Wrong passphrase, any changed byte, truncation or out-of-bounds
+            parameters fail closed. Details: docs/PASSPHRASE-IDENTITY.md.
+  Secret key files are written owner-only (0600). The public keys of SGKW
+  and SGKP files are readable without unlocking (for --to / --signer).
+
 DERIVED CARRIERS (no change to the .sg1 layout)
 Both carriers below are built from an existing .sg1 and rebuild a
 .sg1 of the same object, checked against its hash before output.
@@ -190,7 +206,8 @@ In scope (what is claimed)
      Wards and SGTO v1 passphrase wraps use PBKDF2-HMAC-SHA256 at a fixed
      80 000 iterations (below OWASP's 600 000 for that hash). They stay
      readable and are as weak as they always were. Re-seal them to
-     upgrade. No KDF saves a guessable passphrase.
+     upgrade. No KDF saves a guessable passphrase. Passphrase-protected
+     identity files (SGKP) use the same Argon2id defaults and caps.
 
 Out of scope (what is not claimed)
   Metadata confidentiality. FIXED FOR NEW ENCRYPTED FILES (header v3,

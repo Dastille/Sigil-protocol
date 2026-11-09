@@ -139,10 +139,16 @@ Guide: [SEGMENT-LOG.md](SEGMENT-LOG.md) ("Backing up a folder", "Private INDEX")
 ### Lock a Sigil to someone’s public key (encrypt-to)
 
 ```
-./sigil keygen -o me.sgk                 # also writes me.pub
+./sigil keygen --pass - -o me.sgk        # asks for a passphrase twice; also writes me.sgk.pub
 ./sigil inscribe --to alice.pub -o gift.sg1 movie.mkv
-./sigil de-scribe --identity me.sgk -o movie.mkv gift.sg1
+./sigil de-scribe --identity me.sgk -o movie.mkv gift.sg1   # asks for your passphrase
 ```
+
+`--pass -` locks your identity file with a passphrase, so a copy of the file alone
+opens nothing. In scripts use `--pass-file F` when making it and
+`--identity-pass-file F` when using it. Plain `./sigil keygen -o me.sgk` (no
+passphrase) still works but warns: anyone who copies that file can open what is
+sent to you. Guide: [PASSPHRASE-IDENTITY.md](PASSPHRASE-IDENTITY.md)
 
 A fingerprint printed by Sigil is just a **long ID number in code form** — you do not need to edit it by hand; copy-paste or compare with a friend.
 
