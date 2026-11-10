@@ -206,4 +206,172 @@ mod tests {
         assert!(err.to_string().contains("survives"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // ---- Frost Rune confidentiality: what one drive leaks (2026-11-10) ----
+    //
+    // A piece file carries the header (map + Ember) with the fold salt, and Seal uses
+    // systematic RS, so data pieces 0..k-1 are slices of the folded body. The fold is
+    // not a cipher: anyone with ONE drive can unfold its data pieces without any key.
+
+    fn noise_bytes(len: usize, seed: u8) -> Vec<u8> {
+        // SHA-256 counter stream: incompressible, deterministic.
+        let mut out = Vec::with_capacity(len + 32);
+        let mut i = 0u64;
+        while out.len() < len {
+            let mut block = vec![seed];
+            block.extend_from_slice(&i.to_le_bytes());
+            out.extend_from_slice(&crate::sha256(&block));
+            i += 1;
+        }
+        out.truncate(len);
+        out
+    }
+
+    /// Parse one .sgp piece file into (header, piece index, shard bytes) with no key.
+    fn read_piece_keyless(path: &Path) -> (Header, usize, Vec<u8>) {
+        let raw = fs::read(path).unwrap();
+        assert_eq!(&raw[0..4], b"SGPC");
+        let index = raw[5] as usize;
+        let map_len = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
+        let map = &raw[12..12 + map_len];
+        let (h, _, _) = locate_header(map).unwrap();
+        let at = 12 + map_len;
+        let body_len = u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()) as usize;
+        let body = &raw[at + 4..at + 4 + body_len];
+        let lead = if h.ember() {
+            crate::header::HEADER_SIZE
+        } else {
+            0
+        } + if h.vow() { crate::header::VOW_SIZE } else { 0 };
+        let sl = h.shard_len as usize;
+        (h, index, body[lead..lead + sl].to_vec())
+    }
+
+    /// Undo the fold for one data shard using only the salt from the piece's own header.
+    fn unfold_data_shard(h: &Header, index: usize, shard: &[u8]) -> Vec<u8> {
+        let sl = h.shard_len as usize;
+        let mut buf = vec![0u8; (index + 1) * sl];
+        buf[index * sl..].copy_from_slice(shard);
+        crate::chaos::unfold(&buf, &h.salt)[index * sl..].to_vec()
+    }
+
+    fn contains(hay: &[u8], needle: &[u8]) -> bool {
+        hay.windows(needle.len()).any(|w| w == needle)
+    }
+
+    fn drive_pieces(usb: &Path) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = fs::read_dir(usb)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().map(|x| x == "sgp").unwrap_or(false))
+            .collect();
+        v.sort();
+        v
+    }
+
+    // Two markers with no shared 3-byte run, so deflate finds nothing and stores the bytes.
+    const MARK0: &[u8] = b"Plaintext:alpha";
+    const MARK4: &[u8] = b"SECRET#4ZQV";
+
+    fn marked_payload() -> Vec<u8> {
+        // 64 KiB of incompressible bytes, marker in data piece 0 and data piece 4.
+        let mut data = noise_bytes(64 * 1024, 7);
+        data[100..100 + MARK0.len()].copy_from_slice(MARK0);
+        data[4 * 8192 + 100..4 * 8192 + 100 + MARK4.len()].copy_from_slice(MARK4);
+        data
+    }
+
+    #[test]
+    fn unencrypted_seal_piece_on_one_frost_drive_is_readable_without_key() {
+        let data = marked_payload();
+        let sg1 = seal(&data, Mode::Seal, None, "plain.bin", false).unwrap();
+        let dir = crate::staging::TempDir::create("sigil-kit-plainleak").unwrap();
+        let report = place(&sg1, dir.path(), 4).unwrap();
+        assert_eq!((report.k, report.n), (8, 16));
+        assert_eq!(report.name, "plain.bin", "plain header names the file");
+
+        // Only usb-0 is in the attacker's hands: pieces 0, 4, 8, 12.
+        let usb0 = dir.path().join("usb-0");
+        let mut seen = Vec::new();
+        for p in drive_pieces(&usb0) {
+            let raw = fs::read(&p).unwrap();
+            let (h, index, shard) = read_piece_keyless(&p);
+            assert_eq!(h.flags & 1, 0, "payload must be stored, not deflated");
+            // The literal bytes are folded, so a plain grep does not find them ...
+            assert!(!contains(&raw, MARK0) && !contains(&raw, MARK4));
+            if index < h.k as usize {
+                // ... but unfolding with the salt from the same file does.
+                let clear = unfold_data_shard(&h, index, &shard);
+                let m = if index == 0 { MARK0 } else { MARK4 };
+                assert!(contains(&clear, m), "piece {index} not readable");
+                let sl = h.shard_len as usize;
+                assert_eq!(&clear[..sl - 1], &data[index * sl..(index + 1) * sl - 1]);
+                seen.push(index);
+            }
+        }
+        assert_eq!(
+            seen,
+            vec![0, 4],
+            "one drive holds two data pieces in the clear"
+        );
+    }
+
+    #[test]
+    fn unencrypted_compressed_text_piece_is_readable_without_key() {
+        let mut text = String::new();
+        for i in 0..4000 {
+            text.push_str(&format!(
+                "line {i}: my bank PIN is not here but this sentence is\n"
+            ));
+        }
+        let sg1 = seal(text.as_bytes(), Mode::Seal, None, "notes.txt", false).unwrap();
+        let dir = crate::staging::TempDir::create("sigil-kit-plainleak-z").unwrap();
+        place(&sg1, dir.path(), 4).unwrap();
+        let p = dir.path().join("usb-0").join("piece-000.sgp");
+        let (h, index, shard) = read_piece_keyless(&p);
+        assert_eq!(index, 0);
+        assert_eq!(h.flags & 1, 1, "text should have been deflated");
+        let z = unfold_data_shard(&h, 0, &shard);
+        let mut out = Vec::new();
+        // The piece holds a prefix of the deflate stream; read what it gives.
+        let _ =
+            std::io::Read::read_to_end(&mut flate2::read::DeflateDecoder::new(&z[..]), &mut out);
+        assert!(
+            contains(
+                &out,
+                b"line 0: my bank PIN is not here but this sentence is"
+            ),
+            "inflated {} bytes, no text",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn passphrase_seal_piece_on_one_frost_drive_shows_no_plaintext() {
+        let data = marked_payload();
+        let sg1 = seal(
+            &data,
+            Mode::Seal,
+            Some("frost rune test pass"),
+            "plain.bin",
+            false,
+        )
+        .unwrap();
+        let dir = crate::staging::TempDir::create("sigil-kit-encleak").unwrap();
+        place(&sg1, dir.path(), 4).unwrap();
+        for usb in 0..4 {
+            for p in drive_pieces(&dir.path().join(format!("usb-{usb}"))) {
+                let raw = fs::read(&p).unwrap();
+                assert!(!contains(&raw, MARK0) && !contains(&raw, MARK4));
+                assert!(!contains(&raw, b"plain.bin"), "file name must not show");
+                let (h, index, shard) = read_piece_keyless(&p);
+                assert!(h.name.is_empty());
+                if index < h.k as usize {
+                    let clear = unfold_data_shard(&h, index, &shard);
+                    assert!(!contains(&clear, MARK0), "piece {index}");
+                    assert!(!contains(&clear, MARK4), "piece {index}");
+                }
+            }
+        }
+    }
 }

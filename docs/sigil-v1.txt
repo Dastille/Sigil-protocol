@@ -144,6 +144,13 @@ Frost Rune (sigil frost place / frost mend; alias frost-rune;
   the pieces in the folders that remain, with the same checks as
   sigil gather. The manifest is not authenticated; the rebuilt Sigil is
   still checked against its true name and length.
+  Unencrypted Seal pieces on Frost Rune drives are readable by anyone
+  holding one drive: Seal shards 0..k-1 are slices of the folded body,
+  every piece carries the fold salt, and the fold is not a cipher
+  (tests kit::tests::unencrypted_seal_piece_on_one_frost_drive_is_
+  readable_without_key and ..._compressed_text_piece_...). The plain
+  header and the KIT manifest also show the file name and true name.
+  Use encrypt-to (--to) or a passphrase before frost place.
   Details: docs/LRC-COLD-USB.md.
 
 Fire Rune is a reserved name for a future hot-storage counterpart.
@@ -190,6 +197,10 @@ In scope (what is claimed)
      when the front of the file is destroyed.
   P  With a Ward or encrypt-to wrap, payload content is protected by
      AES-256-GCM under a 256-bit key. The fold is not a cipher.
+     NOT claimed: confidentiality of an unencrypted Sigil or of its
+     pieces. One unencrypted Seal piece (.sgp), for example on one
+     Frost Rune drive, yields its slice of the payload without any key
+     (tested, see Frost Rune above).
   A  On encrypted Sigils the GCM tag rejects any change to the payload.
      On every Sigil the decoder checks the true name and length after
      decode. Parsers treat all input as hostile: malformed geometry,

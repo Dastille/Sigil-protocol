@@ -658,6 +658,14 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   passphrase on a terminal; in scripts give `--identity-pass-file PATH` (there is no
   environment-variable option).
 
+- Unencrypted Seal pieces on Frost Rune (cold) drives are readable by anyone holding one drive.
+  Each `.sgp` piece carries the header, and data pieces are slices of the payload under the fold,
+  which is not a cipher; with the default 4 drives, one drive holds 2 of the 8 data pieces of a
+  Seal (8,16). The plain header and the `KIT` manifest also show the file name and true name.
+  Use `--to` (encrypt-to) or a passphrase when sealing anything that goes on cold drives.
+  `sigil frost place` does not warn about this yet. Tested in `crate/sigil/src/kit.rs`
+  (`unencrypted_seal_piece_on_one_frost_drive_is_readable_without_key`,
+  `passphrase_seal_piece_on_one_frost_drive_shows_no_plaintext`).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
