@@ -245,7 +245,8 @@ fn split_master(master: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
     Ok((x, e))
 }
 
-/// Write a secret key file, created owner-only (0600) on unix.
+/// Write a secret key file, owner-only (0600) on unix: new files are created 0600 and an
+/// existing file is tightened to 0600 before the secret is written.
 pub fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
     use std::io::Write;
     let mut opts = std::fs::OpenOptions::new();
@@ -256,6 +257,14 @@ pub fn write_secret_file(path: &Path, buf: &[u8]) -> Result<()> {
         opts.mode(0o600);
     }
     let mut f = opts.open(path).map_err(|e| Error::Msg(e.to_string()))?;
+    // `mode` only applies when the file is created. An existing file keeps its old
+    // permissions, so tighten them before any secret byte is written.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| Error::Msg(e.to_string()))?;
+    }
     f.write_all(buf).map_err(|e| Error::Msg(e.to_string()))?;
     Ok(())
 }
