@@ -1,7 +1,7 @@
 //! Trial driver: damage models, sidecar file round trip, gate, aggregation.
 
 use crate::decoders::{self, DeltaCache, Input, Out, RatchetOpts};
-use crate::rs::{Code, K, N};
+use crate::rs::{Code, N, SEAL_K as K};
 use crate::sidecar::{Check, Mode, Sidecar, Spec};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -283,7 +283,7 @@ pub struct Agg {
 }
 
 impl Agg {
-    fn add(&mut self, o: &Agg) {
+    pub fn add(&mut self, o: &Agg) {
         self.trials += o.trials;
         self.ok += o.ok;
         self.false_accept += o.false_accept;
@@ -385,7 +385,7 @@ pub fn run_trial(
         if cache.contains_key(&spec) {
             continue;
         }
-        let sc = Sidecar::build(spec, &shards, root, name).ok_or("sidecar build")?;
+        let sc = Sidecar::build(spec, K, &shards, root, name).ok_or("sidecar build")?;
         let mut bytes = sc.to_bytes();
         if p.sidecar_rot && p.flips > 0 {
             let nflip =
@@ -479,6 +479,12 @@ fn wilson(ok: u64, n: u64) -> (f64, f64) {
 }
 
 pub fn run_cli(args: Vec<String>) -> Result<(), String> {
+    if args.first().map(String::as_str) == Some("real") {
+        return crate::real::run_real(args.into_iter().skip(1).collect());
+    }
+    if args.first().map(String::as_str) == Some("mend-one") {
+        return crate::real::mend_one(args.into_iter().skip(1).collect());
+    }
     let mut trials = 20usize;
     let mut threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let mut max_secs = 2400u64;
@@ -502,7 +508,7 @@ pub fn run_cli(args: Vec<String>) -> Result<(), String> {
             _ => return Err(format!("unknown argument {a}")),
         }
     }
-    let code = Code::new().ok_or("RS tables")?;
+    let code = Code::new(K).ok_or("RS tables")?;
     let pts: Vec<Point> = points()
         .into_iter()
         .filter(|p| {

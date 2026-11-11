@@ -5,5 +5,6 @@
 pub mod decoders;
 pub mod gf;
 pub mod harness;
+pub mod real;
 pub mod rs;
 pub mod sidecar;

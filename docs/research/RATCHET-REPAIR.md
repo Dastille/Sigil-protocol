@@ -227,6 +227,155 @@ hidden-error capacity, since ⌊9/2⌋ = 4, the same as today (computed). It als
 the "8 lost + flips" case unless that piece survives. 512 B CRC32 (0.8%) keeps most of
 the gain except at the heaviest damage. The 8-of-17 comparison was not measured.
 
+## 4b. Real data: the Instagram Sigil archive (Nov 11, 2026)
+
+**What was tested.** Real `.sg1` stars from `~/sigil-archives/instagram-kristyjessicacreative.sigil`
+on Parrot (real photos/videos). The original was only read: 36 stars were copied into a
+scratch folder and all work ran on the copy. The copy was deleted afterwards.
+
+- **The archive is Reflection 12-of-16, not Seal.** Its stars are stored as k=12, n=16
+  (6,331 with flags 0x65 and 104 with 0x64; none encrypted). 47 big stars use more pieces
+  (n from 18 up to 252). Those were left out because the harness is n=16 only.
+- **Sample (by size, out of 6,435 n=16 stars):** under 32 KB is 40.8% of the archive (8
+  picked); 32–256 KB is 27.9% (12); 256 KB–2 MB is 23.4% (8); 2–16 MB is 7.2% (6); over
+  16 MB is 0.7% (2). The 36 stars total 83.7 MB (3.6 KB to 22.9 MB).
+- **Two tracks:**
+  1. **Reflection 12/16 as stored.** These are the real bytes.
+  2. **Seal 8/16.** The same 36 real payloads were unsealed and re-sealed with
+     `sigil::seal(.., Mode::Seal, ..)` in memory. This track is directly comparable to the
+     random-data run in §4.
+- **Real checks (all done before any damage, on every star):**
+  - Each shard was found through its Ember map, and its stored CRC32 was checked.
+  - `sigil::merkle_root` over the shard hashes equals the header's root.
+  - The harness's RS twin reproduces every stored parity byte.
+  - `sigil::unseal` succeeds, and its output SHA-256 is the truth for this run.
+- **How a repair counts as a success:**
+  - **Today's repair** is the real library call behind `sigil mend --soft`
+    (`sigil::mend_bytes_ex(file, soft=true)`), run on the damaged file. It runs in a child
+    process with a **20 s limit**. Hitting the limit counts as a failure ("timeout").
+  - **Every other decoder** passes only if both of these hold for its proposal: (1) the real
+    Merkle binding of the re-encoded shards matches the header, and (2) `sigil::unseal`
+    (which does the true-name check) succeeds on the patched file.
+  - **False accept** means the gate passed but the shards or the unsealed bytes differ from
+    the original. Each sidecar was built from the real pieces and bound to the real root and
+    true name, then written to disk and read back.
+- **Damage (applied to shard bodies only):**
+  - Scattered bit flips, with error rates set to match the random run's flip counts (BER
+    6.1e-5 = 1,024 flips on a 2 MiB body; 9.8e-4 = 16,384; 3.9e-3 = 65,536).
+  - Bad 512-byte sectors.
+  - 4 KiB bursts.
+  - Lost pieces plus flips.
+  - "+rot": the sidecar file flipped at the same error rate.
+- **Lost pieces mean different things to the two sides.** For the real mend, a lost piece's
+  whole stride (Ember, shard and CRC) is zeroed. For the harness decoders it is simply
+  missing. When the harness decoders patch a file for the gate, they restore the Ember
+  headers from the copy and rebuild every shard from the decoded data.
+- **Runs.** Run 1 had a 40-min cap. Real mend on stars of about 10 MB was still running
+  after more than 40 minutes on a single trial, and results are only written at the end, so
+  run 1 was stopped with nothing saved. Run 2 was 930 s at nice 19 with 12 threads. Each
+  trial's result was written to disk as it finished. It produced 53–54 trials per damage
+  point, and every one of the 36 stars was used.
+
+**Results.** Success rate over 53–54 trials per row, with real-mend timeouts in brackets.
+**False accepts: 0 out of 13,527 decoder-trials.**
+
+| Damage | Real `mend --soft` | Harness model of today | Hard marks 64 | Ratchet 64 CRC32 | Ratchet 512 CRC32 | Chain-hybrid 64 |
+|---|---|---|---|---|---|---|
+| *Reflection 12/16 (as stored)* | | | | | | |
+| BER 6.1e-5 | 96% (2) | 96% | 85% | 100% | 100% | 100% |
+| BER 2.4e-4 | 78% (10) | 78% | 22% | 100% | 100% | 100% |
+| BER 9.8e-4 | 30% (14) | 30% | 2% | **100%** | 83% | 100% |
+| BER 1.9e-3 | 13% (14) | 13% | 0% | **100%** | 52% | 100% |
+| BER 3.9e-3 | 4% (14) | 4% | 0% | 50% | 20% | 50% |
+| 512 B sectors 2% | 74% (12) | 74% | 100% | 100% | 100% | 100% |
+| 512 B sectors 6.25% | 24% (14) | 24% | 70% | 70% | 70% | 70% |
+| 4 KiB bursts 6.25% | 67% (14) | 65% | 96% | 96% | 96% | 96% |
+| 4 lost + BER 1.5e-5 | 15% (14) | 15% | 15% | **100%** | 93% | 100% |
+| 4 lost + BER 1.2e-4 | 6% (14) | 6% | 6% | 69% | 24% | 69% |
+| 2 lost + BER 9.8e-4 | 0% (14) | 6% | 0% | **100%** | 22% | 100% |
+| BER 1.9e-3 + rot | 19% (14) | 19% | 19% | 19% | 19% | 19% |
+| 4 lost + 1.5e-5 + rot | 19% (14) | 19% | 19% | 35% | 54% | 30% |
+| *Seal 8/16 (same payloads)* | | | | | | |
+| BER 6.1e-5 | 100% (0) | 100% | 100% | 100% | 100% | 100% |
+| BER 9.8e-4 | 93% (4) | 93% | 15% | 100% | 100% | 100% |
+| BER 1.9e-3 | 78% (11) | 78% | 2% | 100% | 100% | 100% |
+| BER 3.9e-3 (≈ 65,536 flips) | 37% (14) | 37% | 0% | **93%** | 85% | 93% |
+| BER 5.9e-3 (≈ 98,304 flips) | 17% (14) | 17% | 0% | 89% | 43% | 89% |
+| 512 B sectors 12.5% | 26% (14) | 26% | 98% | 98% | 98% | 98% |
+| 4 KiB bursts 12.5% | 66% (14) | 66% | 100% | 100% | 100% | 100% |
+| 8 lost + BER 1.5e-5 (≈ 128 flips) | 15% (14) | 15% | 15% | **100%** | 91% | 100% |
+| 8 lost + BER 1.2e-4 (≈ 1,024 flips) | 2% (14) | 2% | 2% | 72% | 25% | 72% |
+| 4 lost + BER 1.3e-3 | 2% (14) | 19% | 4% | **100%** | 74% | 100% |
+| BER 3.9e-3 + rot | 30% (14) | 30% | 30% | 30% | 30% | 30% |
+| 8 lost + 1.5e-5 + rot | 21% (14) | 21% | 21% | 38% | 58% | 32% |
+
+Chain-pure 64 came within one trial of the hybrid in every row. On burst and sector damage
+it also hit the work cap on 1–4 trials and ran slower. Hint marks 64 scored the
+same as today, or a little better, except on sector and burst damage. All rows, timings and
+the per-trial CSV are in the receipt.
+
+**Sidecar overhead on real stars** (sum of sidecar bytes ÷ sum of star bytes, both tracks):
+64 B/CRC32 = 6.27%, 512 B/CRC32 = 0.79%, 4 KiB/CRC32 = 0.10%.
+
+**Runtime (Parrot, nice 19, shared with a game):**
+
+| Decoder | Mean per trial | Max per trial |
+|---|---|---|
+| Ratchet 64 | 0.1–0.85 s | 7.6 s (22.9 MB star) |
+| Harness model of today | 0.03–1.8 s | — |
+| Real `mend --soft` | 0.2–6.6 s | 20 s timeout, hit on about 14 of 54 trials (the largest stars, about 1.5 MB and up) whenever there was real damage |
+
+### Where real data differs from the random-data run
+
+1. **Today's repair looks better here than in the random run, but only because of small
+   stars.** In the random run every trial was a 2 MiB body. At the same error rate a 4 KB
+   star has about 1/500 as many columns, so it often gets through (for example Seal
+   BER 3.9e-3: 37% here, 0% in the random run). On real stars of about 256 KB and up,
+   today's repair still failed at moderate damage, the same as in the random run.
+2. **The archive's real code (Reflection 12/16) is weaker, so the ratchet gains more.**
+   Per column it can fix only 2 errors, or 4 erasures. At BER 9.8e-4 today's repair fixes
+   30%, while ratchet 64 fixes 100%, and 100% at 1.9e-3 as well. With 4 lost pieces
+   Reflection has no spare parity at all, so a single flip is fatal for today's repair and
+   for hard marks. The ratchet recovered 100% at about 4 flips per MB.
+3. **512 B cells are much weaker on real data than 64 B cells.** At high flip rates or with
+   lost pieces, 512 B fell to 20–25%, while 64 B stayed at 69–100%. In the random run the
+   gap was smaller.
+   - Reason: real shard lengths are not multiples of the cell size, and large stars have far
+     more cells than the 2 MiB test body. So at the same error rate more 512 B cells have
+     3 or more flips, which is beyond what 2-bit guessing can fix.
+   - Use 64 B (6.3% extra space) if the sidecar is meant for heavy bit rot. 512 B (0.8%)
+     only pays off for sector-style damage.
+4. **Real `mend --soft` takes much longer than its success rate suggests.** A stack trace
+   during run 1 showed every stuck thread inside
+   `sigil::rs::decode_soft → sigil::pieces::accept_folded`, which re-hashes all shards for
+   each candidate. On stars of about 10 MB with heavy damage, one call ran for more than
+   40 minutes. Its success count matched the harness model in 23 of 26 rows.
+   - In two lost-piece rows it did worse (0 vs 3 and 1 vs 10). Two possible causes, not
+     separated here: the timeouts, or the wiped-stride damage model.
+   - On Reflection 4 KiB bursts it did one trial better (36 vs 35). That supports the earlier
+   synthetic comparison. *Not measured:* how long it would take with no limit. This
+   was a performance finding about today's code, not a correctness one. It made 0 false
+   accepts.
+5. **A rotted sidecar falls back to today's result, as in the random run.**
+   - With flips only, the ratchet rows equal today's.
+   - With lost pieces, the rotted sidecar still helped a little (64 B: 35–38% vs 15–21%),
+     because the group CRCs leave the undamaged groups usable.
+   - A rotted sidecar never caused a false accept.
+6. **Bad sectors and bursts:** hard marks did as well as the ratchet here, the same as in
+   the random run. Real media layout did not change that.
+
+**Original archive untouched (verified):**
+
+| Check | Before | After |
+|---|---|---|
+| SHA-256 of all 6,469 files | identical | identical |
+| Sorted hash list (SHA-256) | `df7484b5…48c` | `df7484b5…48c` |
+| Size, mtime and mode of every file | — | identical |
+| HEAD root | `a08d8b98…8fff` | `a08d8b98…8fff` (unchanged) |
+| Archive folder mtime | 2026-11-10 10:59:51 ET | 2026-11-10 10:59:51 ET |
+
+Receipt: `/workspace/receipts/ratchet-ig-real-receipt-20261111.md` (box) with the raw tarball.
+
 ## 5. Threat-model note
 
 Per-slice CRC or SHA checks detect **faults** only. That is threat line F

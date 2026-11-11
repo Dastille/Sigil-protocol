@@ -1,6 +1,6 @@
 use ratchet_measure::decoders::{self, DeltaCache, Input, RatchetOpts};
 use ratchet_measure::harness::{root_of, Rng};
-use ratchet_measure::rs::{bw_column, Code, K, N};
+use ratchet_measure::rs::{bw_column, Code, N, SEAL_K as K};
 use ratchet_measure::sidecar::{self, Check, Mode, Sidecar, Spec};
 use sha2::{Digest, Sha256};
 
@@ -8,7 +8,7 @@ type Shards = Vec<Vec<u8>>;
 type Fixture = (Code, Shards, Shards, [u8; 32], [u8; 32]);
 
 fn setup(len: usize, seed: u64) -> Fixture {
-    let code = Code::new().expect("tables");
+    let code = Code::new(K).expect("tables");
     let mut rng = Rng::new(seed);
     let mut payload = vec![0u8; len * K];
     rng.fill(&mut payload);
@@ -41,7 +41,7 @@ fn bw_fixes_four_hidden_errors() {
     for i in [0, 3, 9, 15] {
         ys[i] ^= 0x5a;
     }
-    let cw = bw_column(&pos, &ys).expect("4 errors fit 2e <= 8");
+    let cw = bw_column(K, &pos, &ys).expect("4 errors fit 2e <= 8");
     for i in 0..N {
         assert_eq!(cw[i], shards[i][5]);
     }
@@ -56,7 +56,7 @@ fn sidecar_file_roundtrip_and_hostile_parse() {
             check: Check::Crc32,
             mode,
         };
-        let sc = Sidecar::build(spec, &shards, root, name).expect("build");
+        let sc = Sidecar::build(spec, K, &shards, root, name).expect("build");
         let bytes = sc.to_bytes();
         let dir = std::env::temp_dir().join(format!("rm-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
@@ -144,7 +144,7 @@ fn ratchet_passes_fifty_percent_with_bit_guess() {
         check: Check::Crc32,
         mode: Mode::Independent,
     };
-    let sc = Sidecar::build(spec, &shards, root, name).expect("build");
+    let sc = Sidecar::build(spec, K, &shards, root, name).expect("build");
     let opts = RatchetOpts {
         iterate: true,
         bits: 1,
@@ -183,7 +183,7 @@ fn ratchet_beats_unique_decoding_on_heavy_scatter() {
         check: Check::Crc32,
         mode: Mode::Independent,
     };
-    let sc = Sidecar::build(spec, &shards, root, name).expect("build");
+    let sc = Sidecar::build(spec, K, &shards, root, name).expect("build");
     let opts = RatchetOpts {
         iterate: true,
         bits: 0,
@@ -220,7 +220,7 @@ fn pure_chain_blocks_after_unrecoverable_slice_hybrid_does_not() {
         check: Check::Crc32,
         mode: Mode::Chained,
     };
-    let sc = Sidecar::build(spec, &shards, root, name).expect("build");
+    let sc = Sidecar::build(spec, K, &shards, root, name).expect("build");
     let pure = RatchetOpts {
         iterate: true,
         bits: 2,
@@ -245,4 +245,29 @@ fn pure_chain_blocks_after_unrecoverable_slice_hybrid_does_not() {
         data[3][64..128],
         "hybrid resumes from the stored check"
     );
+}
+
+#[test]
+fn real_parser_reads_sealed_files_and_reproduces_parity() {
+    use ratchet_measure::real;
+    use ratchet_measure::rs::Code;
+    static C8: std::sync::OnceLock<Option<Code>> = std::sync::OnceLock::new();
+    static C12: std::sync::OnceLock<Option<Code>> = std::sync::OnceLock::new();
+    let code_for = |k: usize| -> Option<&'static Code> {
+        match k {
+            8 => C8.get_or_init(|| Code::new(8)).as_ref(),
+            12 => C12.get_or_init(|| Code::new(12)).as_ref(),
+            _ => None,
+        }
+    };
+    let data: Vec<u8> = (0..70_001u32)
+        .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+        .collect();
+    for (mode, k) in [(sigil::Mode::Reflection, 12), (sigil::Mode::Seal, 8)] {
+        let f = sigil::seal(&data, mode, None, "t.bin", false).expect("seal");
+        let s = real::parse("t", f, &code_for).expect("parse");
+        assert_eq!(s.k, k);
+        assert_eq!(s.plain_len, data.len());
+        assert_eq!(s.shards.len(), 16);
+    }
 }

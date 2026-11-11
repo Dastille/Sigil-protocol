@@ -1,7 +1,7 @@
 //! Decoders under test. All of them only *propose* bytes; the harness gate
 //! (Merkle of re-encoded shards + SHA-256 true name) decides acceptance.
 
-use crate::rs::{column_repair, Code, K, N};
+use crate::rs::{column_repair, Code, N};
 use crate::sidecar::{self, Check, Mode, Sidecar};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -47,21 +47,23 @@ fn present(inp: &Input) -> Vec<usize> {
     (0..N).filter(|&i| inp.rx[i].is_some()).collect()
 }
 
-/// Today's hard path: at least K shards pass their whole-shard CRC.
+/// Today's hard path: at least kk shards pass their whole-shard CRC.
 fn hard_path(inp: &Input) -> Option<Vec<Vec<u8>>> {
+    let kk = inp.code.k;
     let good: Vec<usize> = (0..N)
         .filter(|&i| inp.crc_ok[i] && inp.rx[i].is_some())
         .collect();
-    if good.len() < K {
+    if good.len() < kk {
         return None;
     }
-    let rows: Vec<usize> = (0..K).collect();
+    let rows: Vec<usize> = (0..kk).collect();
     inp.code
-        .predict_rows(inp.rx, &good[..K], &rows, 0..inp.shard_len)
+        .predict_rows(inp.rx, &good[..kk], &rows, 0..inp.shard_len)
 }
 
 /// (a) current `mend --soft` v1: hard path, else byte-column Berlekamp–Welch.
 pub fn current(inp: &Input) -> Out {
+    let kk = inp.code.k;
     if let Some(d) = hard_path(inp) {
         return Out {
             data: Some(d),
@@ -72,7 +74,7 @@ pub fn current(inp: &Input) -> Out {
     let data =
         column_repair(inp.code, inp.rx, &live, 0..inp.shard_len).and_then(|(full, failed)| {
             if failed.is_empty() {
-                Some(full.into_iter().take(K).collect())
+                Some(full.into_iter().take(kk).collect())
             } else {
                 None
             }
@@ -93,6 +95,7 @@ fn indep_ok(sc: &Sidecar, i: usize, j: usize, cell: &[u8]) -> Option<bool> {
 /// (b) hard marks: cells whose check fails are erased; BW on the rest.
 /// (c) hints (`hint = true`): plain BW first per column, marks only for columns it can't fix.
 pub fn marks(inp: &Input, sc: Option<&Sidecar>, hint: bool) -> Out {
+    let kk = inp.code.k;
     let Some(sc) = sc else {
         return current(inp);
     };
@@ -104,9 +107,9 @@ pub fn marks(inp: &Input, sc: Option<&Sidecar>, hint: bool) -> Out {
     }
     let s = sc.spec.cell;
     let live_all = present(inp);
-    let mut data = vec![vec![0u8; inp.shard_len]; K];
+    let mut data = vec![vec![0u8; inp.shard_len]; kk];
     for j in 0..sc.blocks {
-        let range = j * s..(j + 1) * s;
+        let range = j * s..((j + 1) * s).min(inp.shard_len);
         let unmarked: Vec<usize> = live_all
             .iter()
             .copied()
@@ -129,7 +132,7 @@ pub fn marks(inp: &Input, sc: Option<&Sidecar>, hint: bool) -> Out {
                     .iter()
                     .map(|&i| inp.rx[i].as_ref().map_or(0, |b| b[abs]))
                     .collect();
-                let Some(cw) = crate::rs::bw_column(&unmarked, &ys) else {
+                let Some(cw) = crate::rs::bw_column(inp.code.k, &unmarked, &ys) else {
                     return Out::default();
                 };
                 for (r, row) in full.iter_mut().enumerate() {
@@ -320,7 +323,8 @@ fn trust_search(
     s: usize,
     work: &mut u64,
 ) -> Option<(Vec<Vec<u8>>, Vec<(usize, Vec<Vec<u8>>)>)> {
-    let r = K.checked_sub(trusted.len())?;
+    let kk = code.k;
+    let r = kk.checked_sub(trusted.len())?;
     let mut subsets = if n_choose(sus.len(), r) <= ENUM_CAP {
         combos(sus, r)
     } else {
@@ -358,8 +362,8 @@ fn trust_search(
                 for (q, &i) in pos.iter().enumerate() {
                     ys[q] = cells[i].as_ref().map_or(0, |cb| cb[x]);
                 }
-                *work += (pos.len() * pos.len() * K) as u64;
-                if let Some(cw) = crate::rs::bw_column(&pos, &ys) {
+                *work += (pos.len() * pos.len() * kk) as u64;
+                if let Some(cw) = crate::rs::bw_column(code.k, &pos, &ys) {
                     if trusted
                         .iter()
                         .all(|&i| cells[i].as_ref().map_or(0, |cb| cb[x]) == cw[i])
@@ -379,11 +383,11 @@ fn trust_search(
                 let mut acc = 0u8;
                 for (c, &b) in base.iter().enumerate() {
                     let y = cells[b].as_ref().map_or(0, |cb| cb[x]);
-                    acc ^= crate::gf::mul(p[pos * K + c], y);
+                    acc ^= crate::gf::mul(p[pos * kk + c], y);
                 }
                 v[a] = acc;
             }
-            *work += (u * K) as u64;
+            *work += (u * kk) as u64;
             let agree = sus
                 .iter()
                 .enumerate()
@@ -407,8 +411,8 @@ fn trust_search(
             for (q, &i) in pos.iter().enumerate() {
                 ys[q] = cells[i].as_ref().map_or(0, |cb| cb[x]);
             }
-            *work += (pos.len() * pos.len() * K) as u64;
-            if let Some(cw) = crate::rs::bw_column(&pos, &ys) {
+            *work += (pos.len() * pos.len() * kk) as u64;
+            if let Some(cw) = crate::rs::bw_column(code.k, &pos, &ys) {
                 if trusted
                     .iter()
                     .all(|&i| cells[i].as_ref().map_or(0, |cb| cb[x]) == cw[i])
@@ -439,6 +443,7 @@ fn trust_search(
 /// (block j = byte range [j·cell, (j+1)·cell) of every shard; columns in a block
 /// share one trust pattern). Chained sidecars are walked in block order.
 pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut DeltaCache) -> Out {
+    let kk = inp.code.k;
     let Some(sc) = sc else {
         return current(inp);
     };
@@ -453,11 +458,12 @@ pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut Delta
     let mut chain_prev: Vec<Option<u64>> = (0..N)
         .map(|i| Some(sidecar::chain_init(&spec, i, &sc.root)))
         .collect();
-    let mut data = vec![vec![0u8; inp.shard_len]; K];
+    let mut data = vec![vec![0u8; inp.shard_len]; kk];
     let mut work = 0u64;
     let all: Vec<usize> = (0..N).collect();
     for j in 0..sc.blocks {
-        let range: Range<usize> = j * s..(j + 1) * s;
+        let range: Range<usize> = j * s..((j + 1) * s).min(inp.shard_len);
+        let s = range.len();
         let mut cells: Vec<Option<Vec<u8>>> = inp
             .rx
             .iter()
@@ -509,8 +515,8 @@ pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut Delta
         let mut solved: Option<Vec<Vec<u8>>> = None;
         loop {
             let trusted: Vec<usize> = (0..N).filter(|&i| st[i] == 1).collect();
-            if trusted.len() >= K {
-                solved = inp.code.predict_rows(&cells, &trusted[..K], &all, 0..s);
+            if trusted.len() >= kk {
+                solved = inp.code.predict_rows(&cells, &trusted[..kk], &all, 0..s);
                 break;
             }
             let sus: Vec<usize> = (0..N).filter(|&i| st[i] >= 2).collect();
@@ -527,7 +533,7 @@ pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut Delta
                 st[i] = 1;
                 cells[i] = Some(c);
             };
-            if trusted.len() + sus.len() > K {
+            if trusted.len() + sus.len() > kk {
                 let Some((cand, amb)) =
                     trust_search(inp.code, &cells, &trusted, &sus, s, &mut work)
                 else {
@@ -614,8 +620,8 @@ pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut Delta
                 if !o.iterate {
                     // single pass: one final solve attempt after the pass
                     let t2: Vec<usize> = (0..N).filter(|&i| st[i] == 1).collect();
-                    if t2.len() >= K {
-                        solved = inp.code.predict_rows(&cells, &t2[..K], &all, 0..s);
+                    if t2.len() >= kk {
+                        solved = inp.code.predict_rows(&cells, &t2[..kk], &all, 0..s);
                     }
                 }
                 break;
@@ -639,7 +645,7 @@ pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut Delta
         };
         if chained {
             // Advance each shard's chain from the decoded cell, but only when that
-            // cell is known exact: block solved from >= K anchors, or cell verified.
+            // cell is known exact: block solved from >= kk anchors, or cell verified.
             for i in 0..N {
                 let known = was_solved || st[i] == 1;
                 chain_prev[i] = match prev[i] {
@@ -660,10 +666,11 @@ pub fn ratchet(inp: &Input, sc: Option<&Sidecar>, o: RatchetOpts, dc: &mut Delta
 }
 
 /// (e) No sidecar: unique BW, then exhaustive list decoding of failed columns
-/// (all K-subsets of present shards = the complete list at any radius, a superset
+/// (all kk-subsets of present shards = the complete list at any radius, a superset
 /// of what Guruswami–Sudan returns), accept the unique nearest codeword if it is
 /// within `radius` errors. Bounded at `max_cols` list-decoded columns.
 pub fn list_decode(inp: &Input, radius: usize, max_cols: usize) -> Out {
+    let kk = inp.code.k;
     if let Some(d) = hard_path(inp) {
         return Out {
             data: Some(d),
@@ -679,7 +686,7 @@ pub fn list_decode(inp: &Input, radius: usize, max_cols: usize) -> Out {
         out.budget_hit = true;
         return out;
     }
-    let subsets = combos(&live, K);
+    let subsets = combos(&live, kk);
     let mut mats = Vec::with_capacity(subsets.len());
     for sub in &subsets {
         let mask = sub.iter().fold(0u16, |m, &i| m | (1 << i));
@@ -701,7 +708,7 @@ pub fn list_decode(inp: &Input, radius: usize, max_cols: usize) -> Out {
             for &pos in &live {
                 let mut acc = 0u8;
                 for (c, &b) in base.iter().enumerate() {
-                    acc ^= crate::gf::mul(p[pos * K + c], y[b]);
+                    acc ^= crate::gf::mul(p[pos * kk + c], y[b]);
                 }
                 cw[pos] = acc;
             }
@@ -723,12 +730,12 @@ pub fn list_decode(inp: &Input, radius: usize, max_cols: usize) -> Out {
             }
             return out;
         }
-        // fill all rows: re-predict from K agreeing positions
+        // fill all rows: re-predict from kk agreeing positions
         let agree_pos: Vec<usize> = live
             .iter()
             .copied()
             .filter(|&i| b[i] == y[i])
-            .take(K)
+            .take(kk)
             .collect();
         let mask = agree_pos.iter().fold(0u16, |m, &i| m | (1 << i));
         let Some(p) = inp.code.pmat(mask) else {
@@ -737,11 +744,11 @@ pub fn list_decode(inp: &Input, radius: usize, max_cols: usize) -> Out {
         for (r, row) in full.iter_mut().enumerate() {
             let mut acc = 0u8;
             for (c, &bpos) in agree_pos.iter().enumerate() {
-                acc ^= crate::gf::mul(p[r * K + c], y[bpos]);
+                acc ^= crate::gf::mul(p[r * kk + c], y[bpos]);
             }
             row[x] = acc;
         }
     }
-    out.data = Some(full.into_iter().take(K).collect());
+    out.data = Some(full.into_iter().take(kk).collect());
     out
 }

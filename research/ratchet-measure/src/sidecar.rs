@@ -109,6 +109,7 @@ pub fn chain_init(spec: &Spec, i: usize, root: &[u8; 32]) -> u64 {
 pub struct Sidecar {
     pub spec: Spec,
     pub n: usize,
+    pub k: usize,
     pub shard_len: usize,
     pub blocks: usize,
     pub root: [u8; 32],
@@ -118,17 +119,24 @@ pub struct Sidecar {
 }
 
 impl Sidecar {
-    pub fn build(spec: Spec, shards: &[Vec<u8>], root: [u8; 32], name: [u8; 32]) -> Option<Self> {
+    pub fn build(
+        spec: Spec,
+        k: usize,
+        shards: &[Vec<u8>],
+        root: [u8; 32],
+        name: [u8; 32],
+    ) -> Option<Self> {
         let shard_len = shards.first()?.len();
-        if spec.cell == 0 || !shard_len.is_multiple_of(spec.cell) {
+        if spec.cell == 0 || shard_len == 0 {
             return None;
         }
-        let blocks = shard_len / spec.cell;
+        // last cell may be short
+        let blocks = shard_len.div_ceil(spec.cell);
         let mut entries = Vec::with_capacity(shards.len() * blocks);
         for (i, s) in shards.iter().enumerate() {
             let mut prev = chain_init(&spec, i, &root);
             for j in 0..blocks {
-                let cell = &s[j * spec.cell..(j + 1) * spec.cell];
+                let cell = &s[j * spec.cell..((j + 1) * spec.cell).min(shard_len)];
                 let p = match spec.mode {
                     Mode::Independent => prefix(&spec, i, j as u32, None),
                     Mode::Chained => prefix(&spec, i, j as u32, Some(prev)),
@@ -141,6 +149,7 @@ impl Sidecar {
         Some(Sidecar {
             spec,
             n: shards.len(),
+            k,
             shard_len,
             blocks,
             root,
@@ -169,7 +178,7 @@ impl Sidecar {
         out.push(0);
         out.extend_from_slice(&(self.spec.cell as u32).to_le_bytes());
         out.extend_from_slice(&(self.n as u16).to_le_bytes());
-        out.extend_from_slice(&(crate::rs::K as u16).to_le_bytes());
+        out.extend_from_slice(&(self.k as u16).to_le_bytes());
         out.extend_from_slice(&(self.shard_len as u32).to_le_bytes());
         out.extend_from_slice(&self.root);
         out.extend_from_slice(&self.name);
@@ -217,11 +226,7 @@ impl Sidecar {
         if !(16..=1 << 20).contains(&cell) || !cell.is_power_of_two() {
             return Err("cell size".into());
         }
-        if n != crate::rs::N
-            || k != crate::rs::K
-            || shard_len == 0
-            || !shard_len.is_multiple_of(cell)
-        {
+        if n != crate::rs::N || k == 0 || k >= n || shard_len == 0 {
             return Err("geometry".into());
         }
         let mut root = [0u8; 32];
@@ -231,7 +236,7 @@ impl Sidecar {
         if &root != expect_root || &name != expect_name {
             return Err("bound to a different Sigil".into());
         }
-        let blocks = shard_len / cell;
+        let blocks = shard_len.div_ceil(cell);
         let total = n.checked_mul(blocks).ok_or("overflow")?;
         let w = check.width();
         let groups = total.div_ceil(GROUP);
@@ -262,6 +267,7 @@ impl Sidecar {
         Ok(Sidecar {
             spec: Spec { cell, check, mode },
             n,
+            k,
             shard_len,
             blocks,
             root,

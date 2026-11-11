@@ -14,8 +14,9 @@ description = "Research harness: ratchet / damage-marking repair measurements fo
 crc32fast = "1"
 sha2 = "0.10"
 
-[dev-dependencies]
-# Cross-check only: our encoder must produce the same shard bytes as Sigil's.
+# Real-data mode (`ratchet-measure real`): parse real .sg1 files, run the real
+# `mend --soft` library path, real Merkle binding and real unseal/true-name gate.
+# Also the encoder cross-check in tests.
 sigil = { path = "../../crate/sigil" }
 
 [profile.release]

@@ -4,7 +4,9 @@
 use crate::gf;
 use std::ops::Range;
 
-pub const K: usize = 8;
+/// Seal's k (synthetic runs).
+pub const SEAL_K: usize = 8;
+/// All geometries measured here have n = 16.
 pub const N: usize = 16;
 
 pub fn x_of(i: usize) -> u8 {
@@ -25,6 +27,8 @@ fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
 
 /// Precomputed maps "values at any K positions -> all N values".
 pub struct Code {
+    /// Data shards (8 = Seal, 12 = Reflection).
+    pub k: usize,
     /// N×K systematic generator.
     g: Vec<u8>,
     /// mask -> index into `predict` (u32::MAX if popcount != K).
@@ -34,56 +38,59 @@ pub struct Code {
 }
 
 impl Code {
-    pub fn new() -> Option<Self> {
-        let xs: Vec<u8> = (0..K).map(x_of).collect();
-        let vinv = gf::invert(K, &power_matrix(&xs, K))?;
+    pub fn new(k: usize) -> Option<Self> {
+        if k == 0 || k >= N {
+            return None;
+        }
+        let xs: Vec<u8> = (0..k).map(x_of).collect();
+        let vinv = gf::invert(k, &power_matrix(&xs, k))?;
         let all: Vec<u8> = (0..N).map(x_of).collect();
-        let g = gf::matmul(&power_matrix(&all, K), &vinv, N, K, K);
+        let g = gf::matmul(&power_matrix(&all, k), &vinv, N, k, k);
         let mut idx = vec![u32::MAX; 1 << N];
         let mut predict = Vec::new();
         let mut count = 0u32;
         for mask in 0u32..(1 << N) {
-            if mask.count_ones() as usize != K {
+            if mask.count_ones() as usize != k {
                 continue;
             }
             let rows: Vec<usize> = (0..N).filter(|&i| mask & (1 << i) != 0).collect();
-            let mut gs = vec![0u8; K * K];
+            let mut gs = vec![0u8; k * k];
             for (r, &i) in rows.iter().enumerate() {
-                gs[r * K..(r + 1) * K].copy_from_slice(&g[i * K..(i + 1) * K]);
+                gs[r * k..(r + 1) * k].copy_from_slice(&g[i * k..(i + 1) * k]);
             }
-            let gsi = gf::invert(K, &gs)?;
-            predict.extend(gf::matmul(&g, &gsi, N, K, K));
+            let gsi = gf::invert(k, &gs)?;
+            predict.extend(gf::matmul(&g, &gsi, N, k, k));
             idx[mask as usize] = count;
             count += 1;
         }
-        Some(Code { g, idx, predict })
+        Some(Code { k, g, idx, predict })
     }
 
-    /// N×K matrix for the K positions in `mask` (sorted ascending order of inputs).
+    /// N×self.k matrix for the self.k positions in `mask` (sorted ascending order of inputs).
     pub fn pmat(&self, mask: u16) -> Option<&[u8]> {
         let i = *self.idx.get(mask as usize)?;
         if i == u32::MAX {
             return None;
         }
-        let s = i as usize * N * K;
-        self.predict.get(s..s + N * K)
+        let s = i as usize * N * self.k;
+        self.predict.get(s..s + N * self.k)
     }
 
-    /// Systematic encode of K equal-length data shards to N shards.
+    /// Systematic encode of self.k equal-length data shards to N shards.
     pub fn encode(&self, data: &[Vec<u8>]) -> Vec<Vec<u8>> {
         let len = data.first().map_or(0, |d| d.len());
         let mut out: Vec<Vec<u8>> = data.to_vec();
-        for r in K..N {
+        for r in self.k..N {
             let mut v = vec![0u8; len];
             for (c, d) in data.iter().enumerate() {
-                gf::mul_acc(self.g[r * K + c], d, &mut v);
+                gf::mul_acc(self.g[r * self.k + c], d, &mut v);
             }
             out.push(v);
         }
         out
     }
 
-    /// From the K shards in `base` (ascending), predict rows `rows` over `range`.
+    /// From the self.k shards in `base` (ascending), predict rows `rows` over `range`.
     pub fn predict_rows(
         &self,
         rx: &[Option<Vec<u8>>],
@@ -99,7 +106,7 @@ impl Code {
             let mut v = vec![0u8; len];
             for (c, &b) in base.iter().enumerate() {
                 let src = rx.get(b)?.as_ref()?.get(range.clone())?;
-                gf::mul_acc(p[r * K + c], src, &mut v);
+                gf::mul_acc(p[r * self.k + c], src, &mut v);
             }
             outs.push(v);
         }
@@ -200,13 +207,13 @@ fn berlekamp_welch(xs: &[u8], ys: &[u8], k: usize, e: usize) -> Option<Vec<u8>> 
 
 /// Unique decode of one column from symbols at `pos` (ascending shard indexes):
 /// full N-symbol codeword if at most `(pos.len()-K)/2` disagree.
-pub fn bw_column(pos: &[usize], ys: &[u8]) -> Option<[u8; N]> {
-    if pos.len() < K {
+pub fn bw_column(k: usize, pos: &[usize], ys: &[u8]) -> Option<[u8; N]> {
+    if pos.len() < k {
         return None;
     }
-    let budget = (pos.len() - K) / 2;
+    let budget = (pos.len() - k) / 2;
     let xs: Vec<u8> = pos.iter().map(|&i| x_of(i)).collect();
-    let poly = berlekamp_welch(&xs, ys, K, budget)?;
+    let poly = berlekamp_welch(&xs, ys, k, budget)?;
     let mut cw = [0u8; N];
     for (i, c) in cw.iter_mut().enumerate() {
         *c = gf::eval_poly(&poly, x_of(i));
@@ -227,17 +234,18 @@ pub fn column_repair(
     live: &[usize],
     range: Range<usize>,
 ) -> Option<(Vec<Vec<u8>>, Vec<usize>)> {
-    if live.len() < K {
+    let k = code.k;
+    if live.len() < k {
         return None;
     }
     let all: Vec<usize> = (0..N).collect();
-    let mut full = code.predict_rows(rx, &live[..K], &all, range.clone())?;
+    let mut full = code.predict_rows(rx, &live[..k], &all, range.clone())?;
     let mut failed = Vec::new();
     let start = range.start;
     let mut ys = vec![0u8; live.len()];
     for x in 0..range.len() {
         let abs = start + x;
-        let dirty = live[K..]
+        let dirty = live[k..]
             .iter()
             .any(|&r| rx[r].as_ref().is_none_or(|s| s[abs] != full[r][x]));
         if !dirty {
@@ -246,7 +254,7 @@ pub fn column_repair(
         for (t, &i) in live.iter().enumerate() {
             ys[t] = rx[i].as_ref().map_or(0, |s| s[abs]);
         }
-        match bw_column(live, &ys) {
+        match bw_column(k, live, &ys) {
             Some(cw) => {
                 for (r, row) in full.iter_mut().enumerate() {
                     row[x] = cw[r];
