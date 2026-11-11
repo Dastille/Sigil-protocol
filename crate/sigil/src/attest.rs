@@ -7,9 +7,10 @@ use std::path::Path;
 pub const SIG_MAGIC: [u8; 4] = *b"SGAT";
 
 pub fn keygen(path: &Path) -> Result<[u8; 32]> {
-    let mut seed = [0u8; 32];
-    getrandom::getrandom(&mut seed).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    std::fs::write(path, seed).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut seed = zeroize::Zeroizing::new([0u8; 32]);
+    getrandom::getrandom(&mut seed[..]).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    // The seed is a secret signing key: owner-only (0600 on Unix), never umask-dependent.
+    crate::keys::write_secret_file(path, &seed[..])?;
     Ok(SigningKey::from_bytes(&seed).verifying_key().to_bytes())
 }
 
@@ -93,4 +94,75 @@ pub fn talisman_pass(path: &Path) -> Result<String> {
         return Err(crate::Error::Msg("empty talisman".into()));
     }
     Ok(hex::encode(sha256(&b)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh unique directory under the OS temp dir (created with mode 0700 on Unix,
+    /// refusing to reuse an existing path).
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let mut r = [0u8; 8];
+        getrandom::getrandom(&mut r).unwrap();
+        let dir = std::env::temp_dir().join(format!("sigil-attest-{tag}-{}", hex::encode(r)));
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            b.mode(0o700);
+        }
+        b.create(&dir).unwrap();
+        dir
+    }
+
+    /// The raw attest seed is a secret signing key: it must never be group/world readable,
+    /// whatever the umask, and re-running keygen over an old 0644 file must tighten it.
+    #[cfg(unix)]
+    #[test]
+    fn legacy_seed_file_is_owner_only_even_over_old_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fresh_dir("perm");
+        let fresh = dir.join("fresh.key");
+        keygen(&fresh).unwrap();
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "new seed file must be 0600");
+
+        let old = dir.join("old.key");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).unwrap();
+        keygen(&old).unwrap();
+        let mode = std::fs::metadata(&old).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "overwritten seed file must be tightened to 0600"
+        );
+        assert_eq!(std::fs::read(&old).unwrap().len(), 32);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Sign then verify an arbitrary (non-.sg1) report file; any change to it fails.
+    #[test]
+    fn signed_report_roundtrip_and_tamper_fails() {
+        let dir = fresh_dir("rep");
+        let key = dir.join("box.key");
+        let pk = keygen(&key).unwrap();
+        let rep = dir.join("report.txt");
+        std::fs::write(
+            &rep,
+            b"scrub: 1 Sigil(s), 0 repaired, 0 uncorrectable, 1 clean\n",
+        )
+        .unwrap();
+        attest(&rep, &key).unwrap();
+        let ok = verify_attestation(&rep).unwrap();
+        assert_eq!(ok, format!("attestation: good  pubkey={}", hex::encode(pk)));
+        std::fs::write(
+            &rep,
+            b"scrub: 1 Sigil(s), 0 repaired, 0 uncorrectable, 9 clean\n",
+        )
+        .unwrap();
+        let bad = verify_attestation(&rep).unwrap();
+        assert!(bad.starts_with("attestation: FAILED"), "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

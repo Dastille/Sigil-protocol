@@ -666,6 +666,11 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   `sigil frost place` does not warn about this yet. Tested in `crate/sigil/src/kit.rs`
   (`unencrypted_seal_piece_on_one_frost_drive_is_readable_without_key`,
   `passphrase_seal_piece_on_one_frost_drive_shows_no_plaintext`).
+- `sigil doctor --scrub DIR` checks only `.sg1` files. Pointed at a Frost Rune drive folder
+  (`usb-*`, which holds `.sgp` pieces) it reports `0 Sigil(s) … 0 clean` and exits 0, so a
+  scheduled scrub of cold drives checks nothing while looking clean. Check cold drives with
+  `sigil frost mend` instead. `--scrub` also cannot be combined with `--json`. See
+  [docs/research/COLD-HOT-BOX.md](docs/research/COLD-HOT-BOX.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
