@@ -1,0 +1,24 @@
+[package]
+name = "ratchet-measure"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0"
+publish = false
+description = "Research harness: ratchet / damage-marking repair measurements for Sigil Seal (8-of-16). Not part of the sigil crate; no .sg1 format change."
+
+# Standalone: not a member of the repo workspace, so the sigil crate and its
+# lockfile are untouched.
+[workspace]
+
+[dependencies]
+crc32fast = "1"
+sha2 = "0.10"
+
+# Real-data mode (`ratchet-measure real`): parse real .sg1 files, run the real
+# `mend --soft` library path, real Merkle binding and real unseal/true-name gate.
+# Also the encoder cross-check in tests.
+sigil = { path = "../../crate/sigil" }
+
+[profile.release]
+opt-level = 3
+debug = false
