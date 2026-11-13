@@ -72,7 +72,7 @@ main `f44970b`, umask 0022).
 | Need | Today | Evidence |
 |---|---|---|
 | Check and mend without the key | Yes for `.sg1` files: `mend`, `scry`, `verify`, `doctor` work without the key on encrypted Sigils | `README.md:324`; scrub repaired a flipped bit: "REPAIRED (Merkle + true name checked)" |
-| Check Frost Rune pieces on a drive | **No.** `doctor --scrub frost/usb-0` printed "scrub: 0 Sigil(s) … 0 clean" and **exited 0**; `doctor frost` exited 3 ("nothing found") | receipt lines 17–24 |
+| Check Frost Rune pieces on a drive | **No.** `doctor --scrub frost/usb-0` printed "scrub: 0 Sigil(s) … 0 clean" and **exited 0**; `doctor frost` exited 3 ("nothing found") | receipt lines 17–24. Update 2026-11-13: scrub now fails closed here (lists the pieces as NOT CHECKED, exit 3); it still cannot check them |
 | Machine-readable scrub report | **No.** "the argument '--scrub' cannot be used with '--json'" (exit 2) | receipt lines 4–11 |
 | Sign a report | Yes: `sigil sign report --key box.sgk` writes `report.sig` (Ed25519 over SHA-256 of the file) | `crate/sigil/src/attest.rs`; receipt line 26 |
 | Verify a signed report (CLI) | **No.** `sigil verify report.json` tries to parse it as a Sigil: "failed to fill whole buffer", exit 1. The library function works on any file (new test `attest::tests::signed_report_roundtrip_and_tamper_fails`) | receipt lines 29–32 |
