@@ -147,7 +147,17 @@ Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default
 - `sigil doctor --scrub DIR` checks every `.sg1` in a folder, repairs flipped bits, and
   rewrites a Sigil only when the hash tree and file hash match. A Sigil it cannot fix is
   listed as UNCORRECTABLE and left byte-for-byte as it was (exit code 2). Run it on a
-  schedule so small damage is fixed before it piles up.
+  schedule so small damage is fixed before it piles up. It cannot check piece files
+  (`.sgp` from `sigil frost place` or `sigil scatter`): it lists them as NOT CHECKED, says
+  what to run instead, and exits 3 so a scheduled scrub of cold drives never looks clean.
+  `--scrub` cannot be combined with `--json` (refused with an error).
+
+```
+$ sigil doctor --scrub kit
+scrub: 0 Sigil(s), 0 repaired, 0 uncorrectable, 0 clean
+NOT CHECKED: 16 piece file(s) (.sgp). Scrub only checks .sg1 files, so these were not checked at all and may be damaged or missing.
+  kit: Frost Rune folder, 16 piece(s). Check it with: sigil frost mend kit -o check.sg1 && sigil verify check.sg1
+```
 
 `unseal` also works directly on a damaged file while enough pieces are live.
 When too many are gone it refuses rather than guessing:
@@ -666,10 +676,10 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   `sigil frost place` does not warn about this yet. Tested in `crate/sigil/src/kit.rs`
   (`unencrypted_seal_piece_on_one_frost_drive_is_readable_without_key`,
   `passphrase_seal_piece_on_one_frost_drive_shows_no_plaintext`).
-- `sigil doctor --scrub DIR` checks only `.sg1` files. Pointed at a Frost Rune drive folder
-  (`usb-*`, which holds `.sgp` pieces) it reports `0 Sigil(s) … 0 clean` and exits 0, so a
-  scheduled scrub of cold drives checks nothing while looking clean. Check cold drives with
-  `sigil frost mend` instead. `--scrub` also cannot be combined with `--json`. See
+- `sigil doctor --scrub DIR` checks only `.sg1` files. Frost Rune / scatter pieces (`.sgp`)
+  are not checked; scrub lists them as NOT CHECKED and exits 3 (fails closed). Check cold
+  drives with `sigil frost mend KIT -o check.sg1 && sigil verify check.sg1`. `--scrub`
+  cannot be combined with `--json` (refused). See
   [docs/research/COLD-HOT-BOX.md](docs/research/COLD-HOT-BOX.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is

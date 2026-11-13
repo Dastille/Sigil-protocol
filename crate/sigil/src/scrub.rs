@@ -6,6 +6,10 @@
 //! passes the Merkle binding and true-name checks and the result verifies fully
 //! healthy. Anything else is reported as uncorrectable and left byte-identical.
 //! Work packs and other files are skipped. Symlinks are not followed.
+//!
+//! Scrub fails closed on pieces it cannot check: `.sgp` files (Frost Rune drives from
+//! `sigil frost place`, or `sigil scatter` folders) are listed as NOT CHECKED and the
+//! exit code is 3, so a scheduled scrub of cold drives never looks clean by checking nothing.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +38,21 @@ pub enum ScrubOutcome {
 pub struct ScrubReport {
     /// Each file and its outcome.
     pub files: Vec<(PathBuf, ScrubOutcome)>,
+    /// Folders holding `.sgp` pieces that scrub could not check, with the piece count
+    /// in each, in path order. A folder with a `KIT` manifest (Frost Rune root) is listed
+    /// once for all pieces under it.
+    pub unchecked: Vec<UncheckedPieces>,
+}
+
+/// A folder of `.sgp` pieces that `--scrub` found but cannot check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UncheckedPieces {
+    /// The folder: a Frost Rune root (has `KIT`) or the folder the pieces sit in.
+    pub dir: PathBuf,
+    /// Number of `.sgp` files found there (recursively for a Frost Rune root).
+    pub pieces: usize,
+    /// True when `dir` holds a Frost Rune `KIT` manifest (`sigil frost place` output).
+    pub frost_root: bool,
 }
 
 impl ScrubReport {
@@ -52,10 +71,19 @@ impl ScrubReport {
         self.count(|o| matches!(o, ScrubOutcome::Uncorrectable(_)))
     }
 
-    /// CLI exit code: 0 all clean or repaired, 2 something uncorrectable.
+    /// Total `.sgp` pieces found that scrub could not check.
+    pub fn unchecked_pieces(&self) -> usize {
+        self.unchecked.iter().map(|u| u.pieces).sum()
+    }
+
+    /// CLI exit code: 0 all clean or repaired; 2 something uncorrectable (damage found
+    /// wins over the rest); 3 pieces found that scrub could not check (same meaning as
+    /// `sigil doctor` exit 3: the check could not be done).
     pub fn exit_code(&self) -> i32 {
         if self.uncorrectable() > 0 {
             2
+        } else if !self.unchecked.is_empty() {
+            3
         } else {
             0
         }
@@ -80,20 +108,76 @@ impl ScrubReport {
             self.uncorrectable(),
             self.count(|o| *o == ScrubOutcome::Clean)
         ));
+        if !self.unchecked.is_empty() {
+            s.push_str(&format!(
+                "NOT CHECKED: {} piece file(s) (.sgp). Scrub only checks .sg1 files, so these \
+                 were not checked at all and may be damaged or missing.\n",
+                self.unchecked_pieces()
+            ));
+            for u in &self.unchecked {
+                let d = u.dir.display();
+                if u.frost_root {
+                    s.push_str(&format!(
+                        "  {d}: Frost Rune folder, {} piece(s). Check it with: \
+                         sigil frost mend {d} -o check.sg1 && sigil verify check.sg1\n",
+                        u.pieces
+                    ));
+                } else {
+                    s.push_str(&format!(
+                        "  {d}: {} piece(s). If this is one Frost Rune drive, copy it back next \
+                         to the other usb-* folders and the KIT file and run `sigil frost mend` \
+                         on that folder; if it is a scatter folder, run: \
+                         sigil gather {d} -o check.sg1 && sigil verify check.sg1\n",
+                        u.pieces
+                    ));
+                }
+            }
+        }
         s
     }
 }
 
-fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+/// Walk `dir`: collect `.sg1` files into `out`, and count `.sgp` pieces per folder into
+/// `pieces`. Inside a Frost Rune root (`KIT` manifest) every piece is counted for the root.
+fn walk(
+    dir: &Path,
+    frost_root: Option<&Path>,
+    out: &mut Vec<PathBuf>,
+    pieces: &mut Vec<UncheckedPieces>,
+) -> Result<()> {
+    let here = match frost_root {
+        Some(r) => r.to_path_buf(),
+        None => dir.to_path_buf(),
+    };
+    let is_root = frost_root.is_none() && crate::kit::is_kit_dir(dir);
+    let root = if is_root { Some(dir) } else { frost_root };
     for e in fs::read_dir(dir).map_err(io)? {
         let e = e.map_err(io)?;
         let ft = e.file_type().map_err(io)?;
         let p = e.path();
+        let ext = p.extension().and_then(|x| x.to_str());
         if ft.is_dir() {
-            walk(&p, out)?;
-        } else if ft.is_file() && p.extension().and_then(|x| x.to_str()) == Some("sg1") {
+            walk(&p, root, out, pieces)?;
+        } else if ft.is_file() && ext == Some("sg1") {
             out.push(p);
+        } else if ft.is_file() && ext == Some("sgp") {
+            match pieces.iter_mut().find(|u| u.dir == here) {
+                Some(u) => u.pieces += 1,
+                None => pieces.push(UncheckedPieces {
+                    dir: here.clone(),
+                    pieces: 1,
+                    frost_root: root.is_some(),
+                }),
+            }
         }
+    }
+    if is_root && !pieces.iter().any(|u| u.dir == here) {
+        // A KIT manifest with no pieces left is still a cold folder scrub cannot check.
+        pieces.push(UncheckedPieces {
+            dir: here,
+            pieces: 0,
+            frost_root: true,
+        });
     }
     Ok(())
 }
@@ -140,12 +224,19 @@ pub fn scrub_file(path: &Path) -> Result<ScrubOutcome> {
     Ok(ScrubOutcome::Repaired)
 }
 
-/// Scrub every `.sg1` under `dir` (recursive, symlinks not followed).
+/// Scrub every `.sg1` under `dir` (recursive, symlinks not followed). `.sgp` pieces
+/// (Frost Rune / scatter) are not checked; they are listed in
+/// [`ScrubReport::unchecked`] and make [`ScrubReport::exit_code`] return 3.
 pub fn scrub_dir(dir: &Path) -> Result<ScrubReport> {
     let mut files = Vec::new();
-    walk(dir, &mut files)?;
+    let mut unchecked = Vec::new();
+    walk(dir, None, &mut files, &mut unchecked)?;
     files.sort();
-    let mut rep = ScrubReport::default();
+    unchecked.sort_by(|a, b| a.dir.cmp(&b.dir));
+    let mut rep = ScrubReport {
+        unchecked,
+        ..ScrubReport::default()
+    };
     for p in files {
         let o = scrub_file(&p)?;
         rep.files.push((p, o));
