@@ -239,10 +239,10 @@ Measured on a generated log (one 1 GiB file → a 1.33 GiB segment, plus 2,000 f
 | `log verify` (full) | peak private (anon) memory | peak RSS incl. mapped file | time |
 |---|---|---|---|
 | before | 10.3 GiB (ru_maxrss 10,588 MiB) | same | 181 s |
-| after | 3.8 MiB | 1.34 GiB (file pages, reclaimable) | 38–41 s |
+| after | 4.8 MiB | 1.34 GiB (file pages, reclaimable) | 38 s |
 
-`log verify --quick` went from 1,372 MiB / 1.4 s to 10.8 MiB / 0.25 s, and `log ls --pretty`
-uses 10.7 MiB / 0.01 s on the same log. `tests/cli_seglog_verify_memory.rs` checks the bound
+`log verify --quick` went from 1,372 MiB / 1.4 s to 9.2 MiB / 0.27 s (peak resident), and `log ls --pretty`
+uses 8.7 MiB / 0.02 s on the same log. `tests/cli_seglog_verify_memory.rs` checks the bound
 on an 80 MiB segment. With `--pass` / `--identity`, verify also opens each segment, which still
 holds that segment's plain bytes in memory (see STREAMING-DESIGN.md for chunked segments).
 
