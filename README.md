@@ -110,8 +110,10 @@ mended torn.sg1 → fixed.sg1 (live 16/16, need 12, merkle ok)
 Scattered bit flips (radiation, bit rot) spread over many pieces break every
 piece's checksum, so plain `unseal` and `mend` refuse. `sigil mend --soft` repairs
 them byte column by byte column (up to 2 wrong bytes per column in Reflection, 4
-in Seal, fewer when pieces are missing) and keeps the result only if the hash
-tree and file hash match. Measured on a 1 MB file: 1 024 flipped bits repaired in
+in Seal, fewer when pieces are missing; a wiped piece counts as missing, and a piece's
+own checksum can settle a few columns past that) and keeps the result only if the hash
+tree and file hash match. It checks the whole file once, not once per guess, so a 10 MB
+file that is too damaged is refused in about a second instead of after many minutes. Measured on a 1 MB file: 1 024 flipped bits repaired in
 10 of 10 trials (Reflection). Details and limits: [docs/research/DEEP-SPACE.md](docs/research/DEEP-SPACE.md).
 
 Two or more damaged copies of the same Sigil can be mended together: `mend`
@@ -717,6 +719,10 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
+- `sigil mend --soft` shows no progress or time estimate yet, and does not ask before a long
+  repair (planned: scan, estimate, then decide). It is bounded (a work cap plus at most
+  2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
+  damage past the per-column Reed–Solomon limit is still refused. See [docs/SOFT-RS.md](docs/SOFT-RS.md).
 - Damage near the start of a file still costs more: the header region is used to
   find everything else. New seals also keep one spare header copy at the end
   (`SGKT` trailer) so a wiped front can still locate when Embers are gone too;

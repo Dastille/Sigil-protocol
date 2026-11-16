@@ -376,12 +376,32 @@ pub fn mend_bytes(file: &[u8]) -> Result<Vec<u8>> {
     mend_bytes_ex(file, false).map(|(bytes, _)| bytes)
 }
 
-/// Soft-capable mend. When `soft`, falls back after hard CRC-kill fails to
-/// per-column errors-and-erasures repair ([`rs::decode_column_errors`], which
-/// fixes scattered bit flips), then graded Soft shards + GMD-lite. Every path
-/// is accepted only if the Merkle binding (and true name when not encrypted)
-/// match. Returns `(mark, used_soft_salvage)`.
+/// Soft-capable mend. When `soft`, falls back after hard CRC-kill fails to the
+/// easy-first column repair in [`crate::soft_ratchet`] (clean columns, then
+/// Berlekamp–Welch, then confirmed erasure guesses, then per-shard CRC matching, then a
+/// best guess), with no full-file check per guess. The result is checked **once**
+/// (Merkle binding of every re-encoded shard, plus the true name when not encrypted);
+/// only if that fails are the old shard-order GMD-lite candidates tried, at most
+/// 2(n−k)+1 more checks. Returns `(mark, used_soft_salvage)`.
 pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
+    let mut stats = SoftMendStats::default();
+    mend_bytes_stats(file, soft, &mut stats)
+}
+
+/// Work done by one [`mend_bytes_ex`] call (for tests and benchmarks).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SoftMendStats {
+    /// Full-file checks run (re-encode all shards + Merkle + true name).
+    pub gate_calls: usize,
+    /// What the column repair did, when it ran.
+    pub ratchet: Option<crate::soft_ratchet::RatchetReport>,
+}
+
+pub(crate) fn mend_bytes_stats(
+    file: &[u8],
+    soft: bool,
+    stats: &mut SoftMendStats,
+) -> Result<(Vec<u8>, bool)> {
     if file.len() >= 4 && &file[0..4] == b"SGWK" {
         return Err(crate::Error::Msg(
             "this is a work pack of many Sigils; use `sigil mend` on the file (work::mend_pack_path)".into(),
@@ -416,31 +436,34 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
             .enumerate()
             .filter_map(|(i, s)| s.as_ref().map(|b| (i, b.clone())))
             .collect();
-        match rs::decode_indexed(&parts, k, h.folded_len as usize, h.version >= 2) {
-            Ok(payload) if accept_folded(&h, &payload) => {
-                let shards: Vec<Vec<u8>> = (0..n)
-                    .map(|i| rs::encode_shard_index(&payload, k, i, h.version >= 2))
-                    .collect::<Result<_>>()?;
-                return Ok((
-                    assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
-                    false,
-                ));
-            }
-            Ok(_) if !soft => {
-                return Err(crate::Error::Msg(
-                    "hard mend failed true-name/Merkle check (try --soft)".into(),
-                ));
+        let decoded = rs::decode_indexed(&parts, k, h.folded_len as usize, h.version >= 2);
+        drop(parts);
+        match decoded {
+            Ok(payload) => {
+                stats.gate_calls += 1;
+                if let Some(shards) = checked_shards(&h, &payload) {
+                    return Ok((
+                        assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
+                        false,
+                    ));
+                }
+                if !soft {
+                    return Err(crate::Error::Msg(
+                        "hard mend failed true-name/Merkle check (try --soft)".into(),
+                    ));
+                }
             }
             Err(e) if !soft => return Err(e),
-            _ => {}
+            Err(_) => {}
         }
     } else if !soft {
         return Err(crate::Error::Msg(format!(
             "need {k} live shards to mend, have {live_count}"
         )));
     }
+    drop(live);
 
-    // Soft path: keep CRC-failed bodies, stripe GMD-lite, gate on true-name/Merkle.
+    // Soft path: keep CRC-failed bodies; repair column by column, easy first.
     let graded = header::gather_graded_shards(file, &h, prefix);
     let present = graded.iter().filter(|g| g.is_present()).count();
     if present < k {
@@ -448,62 +471,135 @@ pub fn mend_bytes_ex(file: &[u8], soft: bool) -> Result<(Vec<u8>, bool)> {
             "soft mend needs {k} shards with some data, have {present} (hard live {live_count})"
         )));
     }
-    // Column repair first: decode every byte column on its own (errors and
-    // erasures), so scattered bit flips cost a symbol each, not a whole shard.
-    // Same acceptance gate as every other path (Merkle binding + true name).
     let systematic = h.version >= 2;
-    let bodies: Vec<(usize, Vec<u8>)> = graded
+    let ratchet_parts: Vec<crate::soft_ratchet::RatchetPart<'_>> = graded
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| g.body().map(|b| (i, b.to_vec())))
+        .filter_map(|(i, g)| match g {
+            GradedShard::Hard(b) => Some(crate::soft_ratchet::RatchetPart {
+                index: i,
+                body: b,
+                hard: true,
+                stored_crc: None,
+            }),
+            GradedShard::Soft(b, crc) => Some(crate::soft_ratchet::RatchetPart {
+                index: i,
+                body: b,
+                hard: false,
+                stored_crc: Some(*crc),
+            }),
+            GradedShard::Missing => None,
+        })
         .collect();
-    if let Ok((payload, _rep)) = rs::decode_column_errors(
-        &bodies,
+    if let Ok((payload, rep)) = crate::soft_ratchet::decode(
+        &ratchet_parts,
         k,
         h.shard_len as usize,
         h.folded_len as usize,
         systematic,
     ) {
-        if accept_folded(&h, &payload) {
-            let shards: Vec<Vec<u8>> = (0..n)
-                .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
-                .collect::<Result<_>>()?;
+        stats.ratchet = Some(rep);
+        stats.gate_calls += 1;
+        if let Some(shards) = checked_shards(&h, &payload) {
             return Ok((
                 assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
                 true,
             ));
         }
     }
-    drop(bodies);
+    drop(ratchet_parts);
 
+    // Bounded fallback: the old shard-order GMD-lite candidates (≤ 2(n−k)+1 checks).
     let parts: Vec<rs::SoftPart> = graded
-        .iter()
+        .into_iter()
         .enumerate()
         .filter_map(|(i, g)| match g {
-            GradedShard::Hard(b) => Some(rs::SoftPart {
+            GradedShard::Hard(body) => Some(rs::SoftPart {
                 index: i,
-                body: b.clone(),
+                body,
                 hard: true,
             }),
-            GradedShard::Soft(b) => Some(rs::SoftPart {
+            GradedShard::Soft(body, _) => Some(rs::SoftPart {
                 index: i,
-                body: b.clone(),
+                body,
                 hard: false,
             }),
             GradedShard::Missing => None,
         })
         .collect();
-
-    let payload = rs::decode_soft(&parts, k, n, h.folded_len as usize, systematic, |p| {
-        accept_folded(&h, p)
+    let mut accepted: Option<Vec<Vec<u8>>> = None;
+    let gates = &mut stats.gate_calls;
+    rs::decode_soft_gmd(&parts, k, n, h.folded_len as usize, systematic, |p| {
+        *gates += 1;
+        accepted = checked_shards(&h, p);
+        accepted.is_some()
     })?;
-    let shards: Vec<Vec<u8>> = (0..n)
-        .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
-        .collect::<Result<_>>()?;
+    let shards = accepted.ok_or_else(|| {
+        crate::Error::Msg("soft mend could not reconstruct a true-name match".into())
+    })?;
     Ok((
         assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
         true,
     ))
+}
+
+/// The pre-ratchet soft path (column repair, then the full GMD + stripe×pair search with a
+/// full-file check per candidate). Test oracle only; returns the result and gate calls.
+#[cfg(test)]
+pub(crate) fn mend_soft_legacy(file: &[u8]) -> (Result<Vec<u8>>, usize) {
+    let mut gates = 0usize;
+    let run = |gates: &mut usize| -> Result<Vec<u8>> {
+        let (h, prefix, _) = locate_header(file)?;
+        let n = h.n as usize;
+        let k = h.k as usize;
+        let vow = vow_from_prefix(file, &h, prefix);
+        let sgto = sgto_from_prefix(file, &h);
+        let systematic = h.version >= 2;
+        let graded = header::gather_graded_shards(file, &h, prefix);
+        let bodies: Vec<(usize, Vec<u8>)> = graded
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| g.body().map(|b| (i, b.to_vec())))
+            .collect();
+        if let Ok((payload, _)) = rs::decode_column_errors(
+            &bodies,
+            k,
+            h.shard_len as usize,
+            h.folded_len as usize,
+            systematic,
+        ) {
+            *gates += 1;
+            if let Some(shards) = checked_shards(&h, &payload) {
+                return Ok(assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()));
+            }
+        }
+        let parts: Vec<rs::SoftPart> = graded
+            .iter()
+            .enumerate()
+            .filter_map(|(i, g)| match g {
+                GradedShard::Hard(b) => Some(rs::SoftPart {
+                    index: i,
+                    body: b.clone(),
+                    hard: true,
+                }),
+                GradedShard::Soft(b, _) => Some(rs::SoftPart {
+                    index: i,
+                    body: b.clone(),
+                    hard: false,
+                }),
+                GradedShard::Missing => None,
+            })
+            .collect();
+        let payload = rs::decode_soft(&parts, k, n, h.folded_len as usize, systematic, |p| {
+            *gates += 1;
+            accept_folded(&h, p)
+        })?;
+        let shards =
+            checked_shards(&h, &payload).ok_or_else(|| crate::Error::Msg("legacy: gate".into()))?;
+        Ok(assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()))
+    };
+    let r = run(&mut gates);
+    (r, gates)
 }
 
 /// What a multi-copy mend found: how many good shards each copy held and how many
@@ -635,14 +731,11 @@ pub fn mend_copies(copies: &[&[u8]]) -> Result<CopiesMend> {
             .filter_map(|(i, s)| s.map(|b| (i, b)))
             .collect();
         let payload = rs::decode_indexed(&parts, k, h.folded_len as usize, systematic)?;
-        if !accept_folded(&h, &payload) {
-            return Err(crate::Error::Msg(
+        checked_shards(&h, &payload).ok_or_else(|| {
+            crate::Error::Msg(
                 "pooled shards fail the true-name/Merkle check; refusing to write a result".into(),
-            ));
-        }
-        (0..n)
-            .map(|i| rs::encode_shard_index(&payload, k, i, systematic))
-            .collect::<Result<_>>()?
+            )
+        })?
     };
     Ok(CopiesMend {
         bytes: assemble_mark(&h, &shards, vow.as_deref(), sgto.as_deref()),
@@ -654,39 +747,42 @@ pub fn mend_copies(copies: &[&[u8]]) -> Result<CopiesMend> {
     })
 }
 
+#[cfg(test)]
 fn accept_folded(h: &Header, payload: &[u8]) -> bool {
+    checked_shards(h, payload).is_some()
+}
+
+/// The full-file gate: re-encode every shard of `payload` (one encode pass), and return
+/// the shards only if their Merkle root matches the header and, when not encrypted, the
+/// unfolded plaintext has the header's length and SHA-256 (true name). Fails closed.
+fn checked_shards(h: &Header, payload: &[u8]) -> Option<Vec<Vec<u8>>> {
     if payload.len() != h.folded_len as usize {
-        return false;
+        return None;
     }
     let systematic = h.version >= 2;
     let n = h.n as usize;
     let k = h.k as usize;
     // A shape that cannot be re-encoded is not accepted (fail closed).
-    let Ok(shards) = (0..n)
-        .map(|i| rs::encode_shard_index(payload, k, i, systematic))
-        .collect::<Result<Vec<Vec<u8>>>>()
-    else {
-        return false;
-    };
+    let shards = rs::encode_shards_ex(payload, k, n, systematic).ok()?;
+    if shards.len() != n {
+        return None;
+    }
     let leaves: Vec<[u8; 32]> = shards.iter().map(|s| sha256(s)).collect();
     if merkle::merkle_root(&leaves) != h.merkle {
-        return false;
+        return None;
     }
     if !h.encrypted() {
         let unfolded = crate::chaos::unfold(payload, &h.salt);
         let plain = if h.compressed() {
-            match inflate_local(&unfolded) {
-                Ok(p) => p,
-                Err(_) => return false,
-            }
+            inflate_local(&unfolded).ok()?
         } else {
             unfolded
         };
         if plain.len() != h.orig_len as usize || sha256(&plain) != h.digest {
-            return false;
+            return None;
         }
     }
-    true
+    Some(shards)
 }
 
 fn inflate_local(data: &[u8]) -> Result<Vec<u8>> {

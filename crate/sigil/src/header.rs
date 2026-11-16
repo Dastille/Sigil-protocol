@@ -176,16 +176,20 @@ pub fn shard_stride(h: &Header) -> usize {
 /// Soft-RS grading: CRC-good (Hard), present-but-CRC-fail (Soft), or absent.
 #[derive(Clone, Debug)]
 pub enum GradedShard {
+    /// Body whose stored CRC-32 matches.
     Hard(Vec<u8>),
-    Soft(Vec<u8>),
+    /// Body whose stored CRC-32 (the second field, as read) does not match.
+    Soft(Vec<u8>, u32),
+    /// Not found in the file.
     Missing,
 }
 
 impl GradedShard {
     /// The shard bytes as read (CRC-good or not); `None` when the shard is missing.
+    #[allow(dead_code)]
     pub fn body(&self) -> Option<&[u8]> {
         match self {
-            GradedShard::Hard(b) | GradedShard::Soft(b) => Some(b),
+            GradedShard::Hard(b) | GradedShard::Soft(b, _) => Some(b),
             GradedShard::Missing => None,
         }
     }
@@ -202,7 +206,7 @@ fn grade_shard(shard: Vec<u8>, crc: u32) -> GradedShard {
     if crc32fast::hash(&shard) == crc {
         GradedShard::Hard(shard)
     } else {
-        GradedShard::Soft(shard)
+        GradedShard::Soft(shard, crc)
     }
 }
 

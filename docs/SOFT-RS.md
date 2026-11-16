@@ -34,6 +34,48 @@ or a chewed CRC trailer discards an otherwise intact body.
   CRC count), and a header rebuilt from an Ember no longer keeps that Ember's slot number
   in the entropy word.
 
+## v2: easy-first column repair (November 2026, decoder only)
+`sigil mend --soft` used to try candidate after candidate (every soft-shard pair × every
+4 KiB stripe) and re-encode, re-hash and Merkle-check the **whole file for each one**. On a
+10 MB star with heavy damage that ran for 16+ minutes (box) and 40+ minutes (Parrot, shared
+with other trials), then failed anyway. It now works column by column, easiest first, and
+locks in each settled column (`crate/sigil/src/soft_ratchet.rs`):
+
+1. **Clean columns**: one matrix pass; a column where every present byte agrees is locked.
+2. **Wiped / garbage shards**: a sample of dirty columns shows which soft shards are wrong
+   almost everywhere; those are treated as missing (erasures), so they do not use up every
+   column's error budget.
+3. **Berlekamp–Welch** (errors-and-erasures) on each dirty column; CRC-good shards are
+   trusted and never changed.
+4. **Erasure guesses** for still-stuck columns, fewest erasures first and most suspicious
+   shards first. A guess locks only when **two** spare bytes confirm it and no other guess
+   of the same size gives a different answer.
+5. **Per-shard CRC ratchet**: a soft shard whose stored CRC-32 now matches is right
+   everywhere, so it becomes trusted; repeat 4 with fewer unknowns.
+6. **CRC match for the last few columns** (up to 64): CRC-32 is linear, so each candidate
+   fix's effect on every shard's CRC is one table lookup; a meet-in-the-middle search keyed
+   on three reliable shards picks the combination that makes the stored CRCs match. It must
+   win clearly (2+ more matching shards than any other) and explain every shard except wiped
+   ones and at most one rotten trailer.
+7. Anything left gets a best guess (most reliable `k` bytes).
+
+Then the result is checked **once** (re-encode all shards, Merkle root, and the true name
+when not encrypted). Only if that fails are the old shard-order GMD-lite candidates tried
+(at most 2(n−k)+1 more checks; the old stripe×pair search is gone). Steps 3–4 run on up to
+8 CPU threads (std only; no GPU). Same acceptance gate as before: a wrong guess can only make
+the repair fail, never return wrong bytes. No byte layout change.
+
+Measured (box, release build; harness `mend_soft_timing` in `crate/sigil/src/mend_soft_tests.rs`,
+numbers in the PR): Reflection 12/16, 10 MB, 2 wiped shards + BER 1e-3 (the R1 hang class):
+old 963 s then refused, new under 1 s (0.6–0.8 s) then refused (10 full checks). Where the old search
+finished with a result, the new path returns the same bytes (test
+`mend_soft_matches_old_path_on_damage_corpus`).
+
+Still open (later R1 slices): a scan → estimate → decide prompt before long repairs,
+racing regions across threads with cancel, GPU, and joint CRC solving for more than a few
+dozen stuck columns. Heavy scattered damage past the per-column Reed–Solomon limit still
+needs the stripe sidecar (`docs/research/RATCHET-REPAIR.md`, PR #101).
+
 ## Damage-adaptive preview
 - Missing clean: hard RS erasure
 - Present dirty: soft RS/GMD (`--soft`)
