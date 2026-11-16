@@ -720,9 +720,12 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
 - `sigil mend --soft` shows no progress or time estimate yet, and does not ask before a long
-  repair (planned: scan, estimate, then decide). It is bounded (a work cap plus at most
+  repair. Plain `sigil mend` also does not yet fall back to soft repair on its own, and still
+  requires `-o`. The planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): easy repair by
+  default, then a wait screen (scan, estimate, then decide), then threads, a GPU option, and
+  joint solving for more stuck columns. Soft repair is bounded (a work cap plus at most
   2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
-  damage past the per-column Reed–Solomon limit is still refused. See [docs/SOFT-RS.md](docs/SOFT-RS.md).
+  damage past the per-column Reed–Solomon limit is still refused.
 - Damage near the start of a file still costs more: the header region is used to
   find everything else. New seals also keep one spare header copy at the end
   (`SGKT` trailer) so a wiped front can still locate when Embers are gone too;

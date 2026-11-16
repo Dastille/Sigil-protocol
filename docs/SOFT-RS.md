@@ -71,10 +71,22 @@ old 963 s then refused, new under 1 s (0.6–0.8 s) then refused (10 full checks
 finished with a result, the new path returns the same bytes (test
 `mend_soft_matches_old_path_on_damage_corpus`).
 
-Still open (later R1 slices): a scan → estimate → decide prompt before long repairs,
-racing regions across threads with cancel, GPU, and joint CRC solving for more than a few
-dozen stuck columns. Heavy scattered damage past the per-column Reed–Solomon limit still
-needs the stripe sidecar (`docs/research/RATCHET-REPAIR.md`, PR #101).
+Still open (R1 slices, in this order; none of this is in the tool yet):
+
+1. Easy repair by default (Tuesday 17 November 2026 weekday slice). Plain `sigil mend` will
+   try the fast hard repair first, then fall back to soft repair on its own. Soft repair will
+   still only keep a result that passes the Merkle and true-name check. The `--soft` flag will
+   keep working. If `-o` is omitted, the tool will pick a path next to the input and will never
+   overwrite the input. Messages will be plain English and will suggest full, copyable commands.
+   The doctor hint will include the full command too.
+2. Wait screen (Wednesday–Thursday 18–19 November 2026; one roadmap item, estimated at two
+   weekday slices — that size is a guess). After a short scan, the tool will estimate how long
+   the repair will take. Short repairs will just run. Long repairs will ask first, then show
+   progress and a way to Stop. The time cut-offs come from the 11 November 2026 wait-UX notes.
+3. Then: racing regions across threads, with a way to cancel.
+4. Then: a GPU option, with a CPU path that must still work.
+5. Then: joint solving for more than 64 stuck columns. Heavy scattered damage past the
+   per-column Reed–Solomon limit will still need the stripe sidecar (PR #101).
 
 ## Damage-adaptive preview
 - Missing clean: hard RS erasure
