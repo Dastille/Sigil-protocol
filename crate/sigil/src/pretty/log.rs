@@ -71,7 +71,7 @@ pub fn group(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -201,17 +201,17 @@ pub fn render_log_page(p: &LogPage, st: &Style) -> String {
         ),
     };
     match &p.health {
-        Some(Health::Healthy) => add(
-            "STATUS",
-            "healthy",
-            st.paint("32", "healthy"),
-        ),
+        Some(Health::Healthy) => add("STATUS", "healthy", st.paint("32", "healthy")),
         Some(Health::NeedsRepair(what)) => {
             add("STATUS", "needs repair", st.paint("33", "needs repair"));
             add("", what, st.dim(what));
         }
         Some(Health::NotRecoverable(why)) => {
-            add("STATUS", "not recoverable", st.paint("31", "not recoverable"));
+            add(
+                "STATUS",
+                "not recoverable",
+                st.paint("31", "not recoverable"),
+            );
             add("", why, st.dim(why));
         }
         None => {
@@ -255,10 +255,7 @@ pub fn render_log_page(p: &LogPage, st: &Style) -> String {
         ));
     }
     if l.tombstoned_segments > 0 {
-        segs.push_str(&format!(
-            "{sep}{} deleted",
-            group(l.tombstoned_segments)
-        ));
+        segs.push_str(&format!("{sep}{} deleted", group(l.tombstoned_segments)));
     }
     add("SEGMENTS", &segs, segs.clone());
 
@@ -476,8 +473,15 @@ pub fn log_page(path: &std::path::Path, o: &PageOpts<'_>) -> crate::Result<LogPa
         signer: head.and_then(|h| h.signer).or(l.log.signer),
         private_index: l.log.privindex.then(|| l.log.index_readable()),
         segment_keys: l.log.segkeys,
-        health: Some(health_from_findings(&rep.findings, &path.display().to_string())),
-        depth: if o.deep { CheckDepth::Deep } else { CheckDepth::Fast },
+        health: Some(health_from_findings(
+            &rep.findings,
+            &path.display().to_string(),
+        )),
+        depth: if o.deep {
+            CheckDepth::Deep
+        } else {
+            CheckDepth::Fast
+        },
         checked,
         entries: l.entries.len(),
         root: head.map(|h| (h.seq, h.root)),
@@ -586,7 +590,10 @@ mod tests {
         assert!(s.contains("  p29.jpg"), "{s}");
         assert!(s.contains("RECENT 2 (newest first, UTC)"), "{s}");
         let r = s.find("RECENT").unwrap_or(0);
-        assert!(s[r..].find("README.txt") < s[r..].find("metadata/inventory.json"), "{s}");
+        assert!(
+            s[r..].find("README.txt") < s[r..].find("metadata/inventory.json"),
+            "{s}"
+        );
         assert!(s.is_ascii(), "SIGIL_ASCII: {s}");
     }
 
@@ -613,7 +620,10 @@ mod tests {
         p.excluded_kept = Some(4);
         p.private_index = Some(false);
         let s = render_log_page(&p, &UNI);
-        assert!(s.contains("1 live file · 1 tombstoned · 4 excluded-kept"), "{s}");
+        assert!(
+            s.contains("1 live file · 1 tombstoned · 4 excluded-kept"),
+            "{s}"
+        );
         assert!(s.contains("(unnamed segments)"), "{s}");
         assert!(s.contains("3 segments  3.0 KiB"), "{s}");
         assert!(s.contains("2 entries sealed (private index"), "{s}");

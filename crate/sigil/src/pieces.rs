@@ -860,3 +860,254 @@ mod scan_tests {
         );
     }
 }
+
+/// Outcome of [`canonical_check`] on a seal whose every shard is present and CRC-good and whose
+/// Merkle root matches.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Canon {
+    /// The file is byte for byte what `mend` would write.
+    Same,
+    /// The file is that, minus a trailing Keystone spare (an older layout, not damage).
+    TrailerOnly,
+    /// Some redundant copy or framing byte differs (data still intact; `mend` rewrites it).
+    Differs,
+}
+
+/// Columns re-encoded per step by [`canonical_check`]: k + 1 buffers of this size at most.
+const CANON_STEP: usize = 1 << 20;
+
+/// Bounded-memory equivalent of `mend_bytes(file) == file` for a healthy systematic seal
+/// (format v2+): the same verdict `doctor`'s health check reached by mending a full copy, but
+/// computed from borrowed shard slices a megabyte of columns at a time, so the extra memory
+/// does not grow with the file.
+///
+/// It proves what the mend path proved: the shards re-encode from their own payload exactly
+/// (data padding zero, parity matches column by column), the payload's true name (size and
+/// SHA-256 of the unfolded, inflated plain bytes) matches the header when not encrypted, and the
+/// file is the canonical layout of those shards. `None`: not a case this handles (Glyph-free
+/// non-systematic v1 seals, work packs, a missing shard); the caller then uses the full mend
+/// path. `Some(Err)` is exactly the cases where the mend path failed (fail closed).
+pub(crate) fn canonical_check(file: &[u8]) -> Option<Result<Canon>> {
+    if file.len() >= 4 && &file[0..4] == b"SGWK" {
+        return None;
+    }
+    let (h, prefix, _) = locate_header(file).ok()?;
+    if let Err(e) = header::ensure_single_seal(file, &h, prefix) {
+        return Some(Err(e));
+    }
+    let n = h.n as usize;
+    let k = h.k as usize;
+    let live: Vec<&[u8]> = header::gather_live_shard_refs(file, &h, prefix)
+        .into_iter()
+        .collect::<Option<Vec<&[u8]>>>()?;
+    if live.len() != n || k == 0 || k > n {
+        return None;
+    }
+    if h.mode() != crate::Mode::Glyph {
+        if h.version < 2 {
+            return None;
+        }
+        if let Err(e) = reencodes_exactly(&h, &live) {
+            return Some(Err(e));
+        }
+    }
+    Some(Ok(compare_layout(file, &h, prefix, &live)))
+}
+
+fn hard_fail() -> crate::Error {
+    crate::Error::Msg("hard mend failed true-name/Merkle check (try --soft)".into())
+}
+
+/// The shards are what re-encoding their own payload gives, and (unencrypted) the payload
+/// unfolds and inflates to the plain bytes the header names.
+fn reencodes_exactly(h: &Header, live: &[&[u8]]) -> Result<()> {
+    let k = h.k as usize;
+    let n = h.n as usize;
+    let sl = h.shard_len as usize;
+    let folded = h.folded_len as usize;
+    // the shard length a re-encode of `folded` payload bytes would use
+    if folded.div_ceil(k).max(1) != sl || live.iter().any(|s| s.len() != sl) {
+        return Err(hard_fail());
+    }
+    // data shards hold the payload, zero-padded past `folded`
+    for (i, s) in live.iter().take(k).enumerate() {
+        let start = (i * sl).min(folded);
+        let used = folded.saturating_sub(start).min(sl);
+        if s[used..].iter().any(|b| *b != 0) {
+            return Err(hard_fail());
+        }
+    }
+    // parity shards match a re-encode, column slice by column slice
+    let mut out = vec![0u8; CANON_STEP.min(sl)];
+    let mut a = 0;
+    while a < sl {
+        let b = (a + CANON_STEP).min(sl);
+        let cols: Vec<&[u8]> = live.iter().take(k).map(|s| &s[a..b]).collect();
+        let buf = &mut out[..b - a];
+        for (j, s) in live.iter().enumerate().skip(k).take(n - k) {
+            rs::encode_columns(&cols, j, true, buf)?;
+            if buf[..] != s[a..b] {
+                return Err(hard_fail());
+            }
+        }
+        a = b;
+    }
+    if !h.encrypted() {
+        true_name_matches(h, live, folded)?;
+    }
+    Ok(())
+}
+
+/// Reads the folded payload (the data shards in order, cut at `folded`) a piece at a time.
+struct PayloadReader<'a> {
+    shards: &'a [&'a [u8]],
+    left: usize,
+    shard: usize,
+    off: usize,
+    unfold: crate::chaos::Unfolder,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl std::io::Read for PayloadReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos == self.buf.len() {
+            if self.left == 0 {
+                return Ok(0);
+            }
+            let Some(s) = self.shards.get(self.shard) else {
+                return Ok(0);
+            };
+            // even-sized pieces keep the unfold's byte pairs whole
+            let take = (s.len() - self.off).min(self.left).min(CANON_STEP);
+            let take = if take < self.left && !take.is_multiple_of(2) {
+                take - 1
+            } else {
+                take
+            };
+            if take == 0 {
+                // a 1-byte remainder at a shard edge: join it with the next shard's first byte
+                let mut pair = vec![s[self.off]];
+                let next = self.shards.get(self.shard + 1).and_then(|n| n.first());
+                if let Some(nb) = next {
+                    pair.push(*nb);
+                }
+                let used = pair.len().min(self.left);
+                self.unfold.feed(&pair[..used], &mut self.buf);
+                self.left -= used;
+                self.shard += 1;
+                self.off = used - 1;
+            } else {
+                self.unfold
+                    .feed(&s[self.off..self.off + take], &mut self.buf);
+                self.left -= take;
+                self.off += take;
+                if self.off == s.len() {
+                    self.shard += 1;
+                    self.off = 0;
+                }
+            }
+            self.pos = 0;
+        }
+        let m = (self.buf.len() - self.pos).min(out.len());
+        out[..m].copy_from_slice(&self.buf[self.pos..self.pos + m]);
+        self.pos += m;
+        Ok(m)
+    }
+}
+
+fn true_name_matches(h: &Header, live: &[&[u8]], folded: usize) -> Result<()> {
+    use sha2::Digest;
+    use std::io::Read;
+    let k = h.k as usize;
+    let data = &live[..k.min(live.len())];
+    let mut src = PayloadReader {
+        shards: data,
+        left: folded,
+        shard: 0,
+        off: 0,
+        unfold: crate::chaos::Unfolder::new(&h.salt),
+        buf: Vec::new(),
+        pos: 0,
+    };
+    let mut hasher = sha2::Sha256::new();
+    let mut total = 0u64;
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut pump = |r: &mut dyn Read| -> Result<()> {
+        loop {
+            let got = r.read(&mut chunk).map_err(|_| hard_fail())?;
+            if got == 0 {
+                return Ok(());
+            }
+            hasher.update(&chunk[..got]);
+            total += got as u64;
+        }
+    };
+    if h.compressed() {
+        pump(&mut flate2::read::DeflateDecoder::new(&mut src))?;
+    } else {
+        pump(&mut src)?;
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    if total != h.orig_len || digest != h.digest {
+        return Err(hard_fail());
+    }
+    Ok(())
+}
+
+/// Walk the canonical layout (what `assemble_mark` writes) against `file` without building it.
+fn compare_layout(file: &[u8], h: &Header, prefix: usize, shards: &[&[u8]]) -> Canon {
+    let vow = vow_from_prefix(file, h, prefix);
+    let sgto = sgto_from_prefix(file, h);
+    let hdr = write_header(h);
+    let mut pos = 0usize;
+    let same = |piece: &[u8], pos: &mut usize| -> bool {
+        let ok = file.get(*pos..*pos + piece.len()) == Some(piece);
+        *pos += piece.len();
+        ok
+    };
+    let lead = if h.keystone() {
+        header::wrap_keystone(&hdr)
+    } else {
+        hdr.clone()
+    };
+    if !same(&lead, &mut pos) {
+        return Canon::Differs;
+    }
+    if let Some(s) = &sgto {
+        if !same(s, &mut pos) {
+            return Canon::Differs;
+        }
+    }
+    if let Some(v) = &vow {
+        if !same(v, &mut pos) {
+            return Canon::Differs;
+        }
+    }
+    for (i, s) in shards.iter().enumerate() {
+        if h.ember() && !same(&write_ember(&hdr, i as u8), &mut pos) {
+            return Canon::Differs;
+        }
+        if let Some(v) = &vow {
+            if !same(v, &mut pos) {
+                return Canon::Differs;
+            }
+        }
+        if !same(s, &mut pos) || !same(&crc32fast::hash(s).to_le_bytes(), &mut pos) {
+            return Canon::Differs;
+        }
+    }
+    if h.keystone() {
+        if pos == file.len() {
+            return Canon::TrailerOnly;
+        }
+        if !same(&header::write_keystone_trailer(&hdr), &mut pos) {
+            return Canon::Differs;
+        }
+    }
+    if pos == file.len() {
+        Canon::Same
+    } else {
+        Canon::Differs
+    }
+}

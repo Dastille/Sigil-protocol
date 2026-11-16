@@ -158,9 +158,7 @@ pub fn check_fast(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     let entries = loaded.index.entries;
     rep.entries = entries.len();
     rep.format = log.format;
-    rep.segments = (1..=entries.len() as u64)
-        .filter(|s| st.is_seg(*s))
-        .count();
+    rep.segments = (1..=entries.len() as u64).filter(|s| st.is_seg(*s)).count();
     rep.deleted = st.deleted_count();
     rep.tombstones = st.tomb_count();
     rep.compactions = st.compact_count();

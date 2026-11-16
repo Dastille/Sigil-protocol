@@ -248,6 +248,13 @@ fn trailer_only_upgrade(bytes: &[u8], healed: &[u8]) -> bool {
 }
 
 pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
+    health_bytes_with(bytes, true)
+}
+
+/// [`health_bytes`]; `bounded` lets the last step (are the redundant copies intact?) use
+/// [`crate::pieces::canonical_check`], which reaches the same verdict as mending a full copy
+/// without holding several copies of the file in memory. `false` is the reference path.
+pub(crate) fn health_bytes_with(bytes: &[u8], bounded: bool) -> Health {
     match crate::verify(bytes) {
         Err(e) => Health::Damaged(format!("not readable as a Sigil: {e}")),
         Ok((h, merkle_ok, live, k, recovered)) => {
@@ -271,6 +278,19 @@ pub(crate) fn health_bytes(bytes: &[u8]) -> Health {
                 // Every shard has one good copy, but Reflection / Seal keep redundant embers: if
                 // the repaired form differs byte-for-byte, some copy has rotted (still safe today).
                 // A healthy pre-trailer seal whose mend only appends an SGKT spare is not damage.
+                if bounded {
+                    use crate::pieces::Canon;
+                    match crate::pieces::canonical_check(bytes) {
+                        Some(Ok(Canon::Same | Canon::TrailerOnly)) => return Health::Ok,
+                        Some(Ok(Canon::Differs)) => {
+                            return Health::Mendable(
+                                "redundant shard copies are damaged (data still intact)".into(),
+                            )
+                        }
+                        Some(Err(e)) => return Health::Damaged(format!("repair pass failed: {e}")),
+                        None => {}
+                    }
+                }
                 match crate::mend_bytes(bytes) {
                     Ok(healed) if healed != bytes => {
                         if trailer_only_upgrade(bytes, &healed) {
@@ -985,6 +1005,76 @@ fn walk_sg1(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The bounded health check (borrowed shards, column-sliced re-encode, streamed true name,
+    /// layout walk) reaches exactly the verdict of the reference path that mends a full copy.
+    #[test]
+    fn bounded_health_matches_reference() {
+        use crate::Mode;
+        fn same(a: &Health, b: &Health) -> bool {
+            matches!(
+                (a, b),
+                (Health::Ok, Health::Ok)
+                    | (Health::Mendable(_), Health::Mendable(_))
+                    | (Health::Damaged(_), Health::Damaged(_))
+            )
+        }
+        let mut cases: Vec<(String, Vec<u8>)> = Vec::new();
+        let noise = |n: usize, seed: u32| -> Vec<u8> {
+            (0..n as u32)
+                .map(|i| (i.wrapping_add(seed).wrapping_mul(2654435761) >> 13) as u8)
+                .collect()
+        };
+        for mode in [Mode::Glyph, Mode::Reflection, Mode::Seal] {
+            for pass in [None, Some("pw")] {
+                for (tag, data) in [
+                    ("text", b"hello sigil ".repeat(5000)),
+                    ("noise-odd", noise(123_457, 1)),
+                    ("noise-big", noise(3 << 20, 2)),
+                    ("tiny", b"x".to_vec()),
+                ] {
+                    let Ok(b) = crate::seal(&data, mode, pass, "t.bin", false) else {
+                        continue;
+                    };
+                    let name = format!("{mode:?}/{pass:?}/{tag}");
+                    // damage one byte in the middle of every 7th KiB of the second half: hits
+                    // redundant copies / shard bodies / CRCs depending on the layout
+                    let mut torn = b.clone();
+                    let mid = torn.len() / 2;
+                    torn[mid] ^= 0x40;
+                    cases.push((format!("{name}/flip-mid"), torn));
+                    let mut tail = b.clone();
+                    tail.truncate(b.len().saturating_sub(crate::header::KEYSTONE_TRAILER_SIZE));
+                    cases.push((format!("{name}/no-trailer"), tail));
+                    let mut extra = b.clone();
+                    extra.extend_from_slice(b"junk");
+                    cases.push((format!("{name}/trailing-junk"), extra));
+                    cases.push((name, b));
+                }
+            }
+        }
+        let mut bounded_used = 0;
+        for (name, b) in &cases {
+            let fast = health_bytes_with(b, true);
+            let slow = health_bytes_with(b, false);
+            assert!(
+                same(&fast, &slow),
+                "{name}: bounded {fast:?} vs reference {slow:?}"
+            );
+            if crate::pieces::canonical_check(b).is_some() {
+                bounded_used += 1;
+            }
+        }
+        assert!(
+            bounded_used > 20,
+            "the bounded path ran on {bounded_used} cases"
+        );
+        assert!(
+            matches!(health_bytes(&cases[3].1), Health::Ok),
+            "{}",
+            cases[3].0
+        );
+    }
     use super::*;
 
     #[test]

@@ -3023,6 +3023,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "memmap2",
  "ocb3",
  "pbkdf2",
  "raptorq",

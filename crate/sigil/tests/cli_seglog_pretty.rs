@@ -36,7 +36,11 @@ fn ok(dir: &Path, args: &[&str]) -> String {
 
 fn fails(dir: &Path, args: &[&str]) -> String {
     let o = run_env(dir, args, &[]);
-    assert!(!o.status.success(), "expected failure {args:?}: {}", text(&o));
+    assert!(
+        !o.status.success(),
+        "expected failure {args:?}: {}",
+        text(&o)
+    );
     text(&o)
 }
 
@@ -50,7 +54,11 @@ fn put(d: &Path, rel: &str, body: &[u8]) {
 fn photo_log(tag: &str) -> common::Scratch {
     let d = common::scratch(tag);
     for i in 0..15 {
-        put(&d, &format!("posts/p{i:02}.jpg"), &vec![b'a' + i as u8; 1000 + i]);
+        put(
+            &d,
+            &format!("posts/p{i:02}.jpg"),
+            &vec![b'a' + i as u8; 1000 + i],
+        );
     }
     put(&d, "metadata/inventory.json", b"{}");
     put(&d, "README.txt", b"read me");
@@ -85,7 +93,10 @@ fn pretty_page_layout_and_counts() {
     assert!(pos("STATUS    healthy") < pos("FILES     17 live files · 0 tombstoned"));
     assert!(pos("FILES") < pos("SIZE"));
     assert!(pos("SEGMENTS  17 entries") < pos("posts/"));
-    assert!(s.contains("fast check: chain, HEAD, 17 segments present"), "{s}");
+    assert!(
+        s.contains("fast check: chain, HEAD, 17 segments present"),
+        "{s}"
+    );
     assert!(s.contains("deep check NOT run"), "{s}");
     // big folder collapsed, small folder listed in full
     assert!(s.contains("15 files  14.8 KiB"), "{s}");
@@ -100,12 +111,26 @@ fn pretty_page_layout_and_counts() {
     assert!(p.contains(&format!("ROOT      {root}")), "{p}");
 
     // expand one folder, recent additions, deep check
-    let e = ok(&d, &["log", "ls", "ev", "--pretty", "--expand", "posts", "--recent", "2", "--deep"]);
-    assert!(e.contains("    p00.jpg") && e.contains("    p14.jpg"), "{e}");
+    let e = ok(
+        &d,
+        &[
+            "log", "ls", "ev", "--pretty", "--expand", "posts", "--recent", "2", "--deep",
+        ],
+    );
+    assert!(
+        e.contains("    p00.jpg") && e.contains("    p14.jpg"),
+        "{e}"
+    );
     assert!(e.contains("RECENT 2 (newest first, UTC)"), "{e}");
-    assert!(e.contains("deep check: 17 segments read bit for bit"), "{e}");
+    assert!(
+        e.contains("deep check: 17 segments read bit for bit"),
+        "{e}"
+    );
     assert!(!e.contains("deep check NOT run"), "{e}");
-    assert!(fails(&d, &["log", "ls", "ev", "--pretty", "--expand", "nope"]).contains("no folder \"nope\""));
+    assert!(
+        fails(&d, &["log", "ls", "ev", "--pretty", "--expand", "nope"])
+            .contains("no folder \"nope\"")
+    );
     // options need --pretty; plain listing unchanged
     fails(&d, &["log", "ls", "ev", "--deep"]);
     assert!(ok(&d, &["log", "ls", "ev"]).contains("seq  time (UTC)"));
@@ -115,15 +140,40 @@ fn pretty_page_layout_and_counts() {
 fn pretty_tombstoned_unnamed_and_excluded() {
     let d = photo_log("lp-tomb");
     fs::write(d.join("blob.bin"), b"no name").expect("w");
-    ok(&d, &["log", "append", "ev", "blob.bin", "--identity", "me.sgk"]);
+    ok(
+        &d,
+        &["log", "append", "ev", "blob.bin", "--identity", "me.sgk"],
+    );
     let s = seq_of(&d, "README.txt");
-    ok(&d, &["log", "tombstone", "ev", "--seq", &s, "--identity", "me.sgk", "--reason", "t"]);
-    let p = ok(&d, &["log", "ls", "ev", "--pretty", "--exclude", "metadata/"]);
-    assert!(p.contains("FILES     16 live files · 1 tombstoned · 1 excluded-kept"), "{p}");
+    ok(
+        &d,
+        &[
+            "log",
+            "tombstone",
+            "ev",
+            "--seq",
+            &s,
+            "--identity",
+            "me.sgk",
+            "--reason",
+            "t",
+        ],
+    );
+    let p = ok(
+        &d,
+        &["log", "ls", "ev", "--pretty", "--exclude", "metadata/"],
+    );
+    assert!(
+        p.contains("FILES     16 live files · 1 tombstoned · 1 excluded-kept"),
+        "{p}"
+    );
     assert!(p.contains("(unnamed segments)"), "{p}");
     assert!(p.contains("1 segment  7 B"), "{p}");
     assert!(p.contains("19 entries · 1 deleted"), "{p}");
-    assert!(!p.contains("README.txt"), "tombstoned file not in the inventory\n{p}");
+    assert!(
+        !p.contains("README.txt"),
+        "tombstoned file not in the inventory\n{p}"
+    );
 }
 
 #[test]
@@ -142,20 +192,38 @@ fn pretty_private_index_sealed_and_opened() {
     let d = common::scratch("lp-priv");
     put(&d, "a/one.txt", b"one");
     put(&d, "two.txt", b"two");
-    ok(&d, &["log", "init", "ev", "--private-index", "--pass", "pw"]);
+    ok(
+        &d,
+        &["log", "init", "ev", "--private-index", "--pass", "pw"],
+    );
     ok(&d, &["log", "add", "ev", "src", "--pass", "pw"]);
     let sealed = ok(&d, &["log", "ls", "ev", "--pretty"]);
     assert!(sealed.contains("private index (sealed)"), "{sealed}");
-    assert!(sealed.contains("2 entries sealed (private index"), "{sealed}");
-    assert!(sealed.contains("names sealed (give --pass / --identity)"), "{sealed}");
+    assert!(
+        sealed.contains("2 entries sealed (private index"),
+        "{sealed}"
+    );
+    assert!(
+        sealed.contains("names sealed (give --pass / --identity)"),
+        "{sealed}"
+    );
     assert!(!sealed.contains("one.txt"), "{sealed}");
     let open = ok(&d, &["log", "ls", "ev", "--pretty", "--pass", "pw"]);
     assert!(open.contains("private index (opened)"), "{open}");
     assert!(open.contains("FILES     2 live files"), "{open}");
-    assert!(open.contains("one.txt") && open.contains("two.txt"), "{open}");
+    assert!(
+        open.contains("one.txt") && open.contains("two.txt"),
+        "{open}"
+    );
     // by name: sealed without the key, found with it
     assert!(fails(&d, &["log", "read", "ev", "--name", "two.txt"]).contains("sealed"));
-    assert_eq!(ok(&d, &["log", "read", "ev", "--name", "two.txt", "--pass", "pw"]), "two");
+    assert_eq!(
+        ok(
+            &d,
+            &["log", "read", "ev", "--name", "two.txt", "--pass", "pw"]
+        ),
+        "two"
+    );
 }
 
 #[test]
@@ -167,7 +235,10 @@ fn pretty_color_honours_no_color() {
     assert!(!plain.stdout.contains(&0x1b), "NO_COLOR: no escapes");
     let forced = run_env(&d, &args, &[("CLICOLOR_FORCE", "1")]);
     let f = String::from_utf8_lossy(&forced.stdout);
-    assert!(f.contains("\x1b[38;5;179mLOG"), "gold labels when forced: {f}");
+    assert!(
+        f.contains("\x1b[38;5;179mLOG"),
+        "gold labels when forced: {f}"
+    );
     let ascii = run_env(&d, &args, &[("SIGIL_ASCII", "1")]);
     assert!(ascii.stdout.is_ascii(), "SIGIL_ASCII=1: plain ASCII");
 }
@@ -198,41 +269,115 @@ fn pretty_reports_missing_segment() {
 fn read_by_name() {
     let d = photo_log("lp-name");
     // found: full path, ./path and a unique bare name
-    assert_eq!(ok(&d, &["log", "read", "ev", "--name", "README.txt"]), "read me");
-    assert_eq!(ok(&d, &["log", "read", "ev", "--name", "./metadata/inventory.json"]), "{}");
-    assert_eq!(ok(&d, &["log", "read", "ev", "--name", "inventory.json"]), "{}");
-    ok(&d, &["log", "read", "ev", "--name", "posts/p03.jpg", "-o", "out.jpg"]);
+    assert_eq!(
+        ok(&d, &["log", "read", "ev", "--name", "README.txt"]),
+        "read me"
+    );
+    assert_eq!(
+        ok(
+            &d,
+            &["log", "read", "ev", "--name", "./metadata/inventory.json"]
+        ),
+        "{}"
+    );
+    assert_eq!(
+        ok(&d, &["log", "read", "ev", "--name", "inventory.json"]),
+        "{}"
+    );
+    ok(
+        &d,
+        &[
+            "log",
+            "read",
+            "ev",
+            "--name",
+            "posts/p03.jpg",
+            "-o",
+            "out.jpg",
+        ],
+    );
     assert_eq!(fs::read(d.join("out.jpg")).expect("out"), vec![b'd'; 1003]);
     // newest version wins
     put(&d, "README.txt", b"read me v2");
     ok(&d, &["log", "add", "ev", "src", "--identity", "me.sgk"]);
-    assert_eq!(ok(&d, &["log", "read", "ev", "--name", "README.txt"]), "read me v2");
+    assert_eq!(
+        ok(&d, &["log", "read", "ev", "--name", "README.txt"]),
+        "read me v2"
+    );
     // missing
-    assert!(fails(&d, &["log", "read", "ev", "--name", "nope.jpg"]).contains("no file named \"nope.jpg\""));
+    assert!(fails(&d, &["log", "read", "ev", "--name", "nope.jpg"])
+        .contains("no file named \"nope.jpg\""));
     // ambiguous
     put(&d, "old/inventory.json", b"[]");
     ok(&d, &["log", "add", "ev", "src", "--identity", "me.sgk"]);
     let amb = fails(&d, &["log", "read", "ev", "--name", "inventory.json"]);
-    assert!(amb.contains("ambiguous") && amb.contains("metadata/inventory.json") && amb.contains("old/inventory.json"), "{amb}");
+    assert!(
+        amb.contains("ambiguous")
+            && amb.contains("metadata/inventory.json")
+            && amb.contains("old/inventory.json"),
+        "{amb}"
+    );
     // tombstoned: the newest version deleted → the older live one, with a note
     let v2 = seq_of(&d, "README.txt");
     let idx = fs::read_to_string(d.join("ev.sigil/INDEX")).expect("INDEX");
     let newest = idx
         .lines()
+        .rev()
         .filter(|l| l.contains("path=README.txt "))
-        .filter_map(|l| l.split_whitespace().next()?.strip_prefix("seq=").map(String::from))
-        .last()
+        .filter_map(|l| {
+            l.split_whitespace()
+                .next()?
+                .strip_prefix("seq=")
+                .map(String::from)
+        })
+        .next()
         .expect("newest");
     assert_ne!(v2, newest);
-    ok(&d, &["log", "tombstone", "ev", "--seq", &newest, "--identity", "me.sgk", "--reason", "bad"]);
+    ok(
+        &d,
+        &[
+            "log",
+            "tombstone",
+            "ev",
+            "--seq",
+            &newest,
+            "--identity",
+            "me.sgk",
+            "--reason",
+            "bad",
+        ],
+    );
     let o = run_env(&d, &["log", "read", "ev", "--name", "README.txt"], &[]);
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(o.stdout, b"read me");
-    assert!(text(&o).contains("was deleted; reading the newest live one"), "{}", text(&o));
+    assert!(
+        text(&o).contains("was deleted; reading the newest live one"),
+        "{}",
+        text(&o)
+    );
     // every version tombstoned → refused
-    ok(&d, &["log", "tombstone", "ev", "--seq", &v2, "--identity", "me.sgk", "--reason", "gone"]);
+    ok(
+        &d,
+        &[
+            "log",
+            "tombstone",
+            "ev",
+            "--seq",
+            &v2,
+            "--identity",
+            "me.sgk",
+            "--reason",
+            "gone",
+        ],
+    );
     let t = fails(&d, &["log", "read", "ev", "--name", "README.txt"]);
-    assert!(t.contains("deleted by tombstone") && t.contains("no live version"), "{t}");
+    assert!(
+        t.contains("deleted by tombstone") && t.contains("no live version"),
+        "{t}"
+    );
     // --name is one file: not with --seq / ranges
-    fails(&d, &["log", "read", "ev", "--name", "README.txt", "--seq", "1"]);
+    fails(
+        &d,
+        &["log", "read", "ev", "--name", "README.txt", "--seq", "1"],
+    );
 }
