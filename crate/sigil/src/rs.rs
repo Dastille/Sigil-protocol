@@ -11,12 +11,12 @@ use crate::Error;
 // identical to the old per-column solve, which lives on in `rs_ref` as an oracle.
 
 /// Evaluation point for shard `index` (wraps exactly like the original code).
-fn x_of(index: usize) -> u8 {
+pub(crate) fn x_of(index: usize) -> u8 {
     (index + 1) as u8
 }
 
 /// Row-major `rows × k` power matrix: E[i][j] = x_i^j (so E·coeffs = evaluations).
-fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
+pub(crate) fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
     let mut m = vec![0u8; xs.len() * k];
     for (i, &x) in xs.iter().enumerate() {
         let mut p = 1u8;
@@ -34,7 +34,7 @@ fn power_matrix(xs: &[u8], k: usize) -> Vec<u8> {
 /// Decoders pass points from `pick_live`, which dedups and drops indexes > 254; encoders
 /// pass `x_of(0..k)`, distinct for k <= 255. Repeated points (or k > 255, where `x_of`
 /// wraps) are refused with an error instead of a panic.
-fn vandermonde_inverse(xs: &[u8]) -> Result<Vec<u8>, Error> {
+pub(crate) fn vandermonde_inverse(xs: &[u8]) -> Result<Vec<u8>, Error> {
     let k = xs.len();
     gf::invert_matrix(k, &power_matrix(xs, k)).ok_or_else(|| {
         Error::Msg(format!(
@@ -118,7 +118,7 @@ fn split_padded(payload: &[u8], k: usize) -> (usize, Vec<Vec<u8>>) {
     (shard_len, data)
 }
 
-fn encode_shards_ex(
+pub(crate) fn encode_shards_ex(
     payload: &[u8],
     k: usize,
     n: usize,
@@ -304,6 +304,7 @@ pub fn unstripe(shards: &[Option<Vec<u8>>], payload_len: usize) -> Result<Vec<u8
 // errors; missing shards are erasures. Nothing on disk changes.
 
 /// What [`decode_column_errors`] had to fix.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ColumnRepair {
     /// Byte columns whose symbols were not one consistent codeword.
@@ -363,7 +364,7 @@ fn solve_any(rows: usize, cols: usize, a: &mut [u8], rhs: &mut [u8]) -> Option<V
 /// Berlekamp–Welch for one column: the polynomial of degree < k (coefficients,
 /// low first) within `e` symbol errors of `(xs, ys)`, if one exists.
 /// Needs `xs.len() >= k + 2e` and distinct non-zero points.
-fn berlekamp_welch(xs: &[u8], ys: &[u8], k: usize, e: usize) -> Option<Vec<u8>> {
+pub(crate) fn berlekamp_welch(xs: &[u8], ys: &[u8], k: usize, e: usize) -> Option<Vec<u8>> {
     let p = xs.len();
     if k == 0 || p < k + 2 * e {
         return None;
@@ -422,7 +423,10 @@ fn berlekamp_welch(xs: &[u8], ys: &[u8], k: usize, e: usize) -> Option<Vec<u8>> 
 /// The returned payload is **not** verified here. A column with more errors
 /// than the budget can decode to a different codeword, so callers must accept
 /// it only after the Merkle binding (and true name, when not encrypted) match,
-/// exactly like [`decode_soft`].
+/// exactly like [`decode_soft`]. Production `mend --soft` uses the easy-first
+/// [`crate::soft_ratchet`] (which runs this same pass without failing on the first
+/// stuck column); this stays as a reference for tests.
+#[cfg(test)]
 pub fn decode_column_errors(
     parts: &[(usize, Vec<u8>)],
     k: usize,
@@ -632,15 +636,11 @@ fn soft_stripe_count(parts: &[SoftPart]) -> usize {
     }
 }
 
-/// Soft-decision RS (GMD-lite): prefer CRC-hard shards; salvage Soft bodies with
-/// stripe-level erasures. Caller must gate acceptance (Merkle / true-name).
-///
-/// Attempts:
-/// 1. Hard-only erasure decode
-/// 2. Include soft shards; if accept fails, flip ≤ (n−k) lowest-reliability soft
-///    shards (by index) to full erasure and retry
-/// 3. Stripe GMD: flip ≤ (n−k) lowest-reliability soft stripes to erasure and retry
-pub fn decode_soft<F>(
+/// The old shard-order GMD-lite candidates, kept as a bounded fallback after the
+/// easy-first [`crate::soft_ratchet`] repair: erase the τ lowest-index soft shards
+/// (τ = 0..=n−k), then erase the first 1..=n−k soft stripes. At most 2(n−k)+1 candidates,
+/// each passed to `accept` (the caller's Merkle / true-name gate).
+pub fn decode_soft_gmd<F>(
     parts: &[SoftPart],
     k: usize,
     n: usize,
@@ -653,27 +653,6 @@ where
 {
     let hard_n = parts.iter().filter(|p| p.hard).count();
     let soft_n = parts.iter().filter(|p| !p.hard).count();
-    let present = parts.len();
-    if present < k {
-        return Err(Error::Msg(format!(
-            "need {k} present shards for soft mend, have {present}"
-        )));
-    }
-
-    // 1) Hard-only
-    if hard_n >= k {
-        let hard: Vec<(usize, Vec<u8>)> = parts
-            .iter()
-            .filter(|p| p.hard)
-            .map(|p| (p.index, p.body.clone()))
-            .collect();
-        if let Ok(payload) = decode_indexed(&hard, k, payload_len, systematic) {
-            if accept(&payload) {
-                return Ok(payload);
-            }
-        }
-    }
-
     if hard_n + soft_n < k {
         return Err(Error::Msg(format!(
             "soft mend: need {k} shards with some data, have {}",
@@ -731,6 +710,59 @@ where
         }
     }
 
+    Err(Error::Msg(
+        "soft mend could not reconstruct a true-name match".into(),
+    ))
+}
+
+/// Pre-ratchet `mend --soft` search, kept only as a test oracle (it is what made
+/// `mend --soft` take 40+ minutes on large damaged files: every stripe×shard-pair
+/// candidate re-ran the full-file gate).
+///
+/// Attempts:
+/// 1. Hard-only erasure decode
+/// 2. [`decode_soft_gmd`]
+/// 3. Erase one soft shard entirely + one stripe of another, for every pair and stripe
+#[cfg(test)]
+pub fn decode_soft<F>(
+    parts: &[SoftPart],
+    k: usize,
+    n: usize,
+    payload_len: usize,
+    systematic: bool,
+    mut accept: F,
+) -> Result<Vec<u8>, Error>
+where
+    F: FnMut(&[u8]) -> bool,
+{
+    let hard_n = parts.iter().filter(|p| p.hard).count();
+    let present = parts.len();
+    if present < k {
+        return Err(Error::Msg(format!(
+            "need {k} present shards for soft mend, have {present}"
+        )));
+    }
+    if hard_n >= k {
+        let hard: Vec<(usize, Vec<u8>)> = parts
+            .iter()
+            .filter(|p| p.hard)
+            .map(|p| (p.index, p.body.clone()))
+            .collect();
+        if let Ok(payload) = decode_indexed(&hard, k, payload_len, systematic) {
+            if accept(&payload) {
+                return Ok(payload);
+            }
+        }
+    }
+    match decode_soft_gmd(parts, k, n, payload_len, systematic, &mut accept) {
+        Ok(p) => return Ok(p),
+        Err(e) if parts.len() < k => return Err(e),
+        Err(_) => {}
+    }
+    let parity = n.saturating_sub(k);
+    let mut soft_idx: Vec<usize> = parts.iter().filter(|p| !p.hard).map(|p| p.index).collect();
+    soft_idx.sort_unstable();
+    let n_stripes = soft_stripe_count(parts);
     // Bounded combo: erase one soft shard entirely + one extra stripe from another
     if soft_idx.len() >= 2 && parity >= 2 {
         for (a_i, &a) in soft_idx.iter().enumerate() {
