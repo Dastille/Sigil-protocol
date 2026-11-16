@@ -1599,8 +1599,25 @@ enum LogCmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
         /// Machine-readable listing on stdout (format `sigil-log-ls=1`)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "pretty")]
         json: bool,
+        /// Human summary for archivists: identity, condition (fast check), extent, live files
+        /// by folder (big folders collapsed), current root. Color on a terminal (NO_COLOR off;
+        /// CLICOLOR_FORCE=1 forces); SIGIL_ASCII=1 for plain ASCII rules.
+        #[arg(long)]
+        pretty: bool,
+        /// With --pretty: run the full bit-level check (`sigil log verify`) instead of the fast one
+        #[arg(long, requires = "pretty")]
+        deep: bool,
+        /// With --pretty: list this folder in full (repeatable), e.g. --expand posts
+        #[arg(long, value_name = "FOLDER", requires = "pretty")]
+        expand: Vec<String>,
+        /// With --pretty: also list the N most recently added live files
+        #[arg(long, value_name = "N", requires = "pretty")]
+        recent: Option<usize>,
+        /// With --pretty: count live files these `log add --exclude` patterns match (excluded-kept)
+        #[arg(long = "exclude", value_name = "PATTERN", requires = "pretty")]
+        exclude: Vec<String>,
     },
     /// Write segment bytes (checked against the INDEX) to stdout or -o. Default: all, in order.
     Read {
@@ -1612,6 +1629,11 @@ enum LogCmd {
         /// One segment
         #[arg(long, conflicts_with_all = ["from", "to"])]
         seq: Option<u64>,
+        /// One file by its stored name (path inside the backed-up folder, e.g. posts/a.jpg, or a
+        /// bare file name when only one folder has it): its newest live version. Refuses an
+        /// ambiguous, unknown or deleted name.
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["seq", "from", "to", "strict"])]
+        name: Option<String>,
         /// First segment (1-based, inclusive)
         #[arg(long)]
         from: Option<u64>,
@@ -4544,6 +4566,20 @@ Use --pass - (passphrase) or --passkey next time; to protect this one: sigil ide
                 .into());
             }
             if !input.is_file() && sigil::seglog::is_log(&input) {
+                if pretty {
+                    use std::io::IsTerminal;
+                    let style = sigil::pretty::Style::from_env(std::io::stdout().is_terminal());
+                    let page = sigil::pretty::log::log_page(
+                        &input,
+                        &sigil::pretty::log::PageOpts {
+                            pass: pass.as_deref(),
+                            identities: &identities,
+                            ..Default::default()
+                        },
+                    )?;
+                    println!("{}", sigil::pretty::log::render_log_page(&page, &style));
+                    return Ok(());
+                }
                 print!("{}", sigil::seglog::list(&input)?.render());
                 return Ok(());
             }
@@ -5534,10 +5570,32 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
             json,
+            pretty,
+            deep,
+            expand,
+            recent,
+            exclude,
         } => {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
+            if pretty {
+                use std::io::IsTerminal;
+                let style = sigil::pretty::Style::from_env(std::io::stdout().is_terminal());
+                let page = sigil::pretty::log::log_page(
+                    &path,
+                    &sigil::pretty::log::PageOpts {
+                        pass: pass.as_deref(),
+                        identities: &identities,
+                        deep,
+                        expand,
+                        recent: recent.unwrap_or(0),
+                        exclude,
+                    },
+                )?;
+                println!("{}", sigil::pretty::log::render_log_page(&page, &style));
+                return Ok(());
+            }
             let l = seglog::list_with(&path, pass.as_deref(), &identities)?;
             print!("{}", if json { l.to_json() } else { l.render() })
         }
@@ -5996,6 +6054,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
         LogCmd::Read {
             path,
             seq,
+            name,
             from,
             to,
             output,
@@ -6010,6 +6069,21 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
+            // --name: find the newest live version of that stored path, then read it like --seq
+            let seq = match &name {
+                Some(n) => {
+                    let l = seglog::list_with(&path, pass.as_deref(), &identities)?;
+                    let (s, found, note) = seglog::resolve_name(&l, n)?;
+                    if let Some(note) = note {
+                        eprintln!("note: {note}");
+                    }
+                    if output.is_some() {
+                        eprintln!("reading {found} (segment {s})");
+                    }
+                    Some(s)
+                }
+                None => seq,
+            };
             // one INDEX parse for --seq (read_range checks the bounds); the count only for a range
             let (a, b) = match (seq, to) {
                 (Some(s), _) => (s, s),

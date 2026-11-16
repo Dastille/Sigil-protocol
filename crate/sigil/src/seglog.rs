@@ -1583,6 +1583,7 @@ mod consistency;
 mod epoch;
 mod exclude;
 mod keyring;
+mod overview;
 mod private;
 mod privatize;
 mod proof;
@@ -1601,6 +1602,7 @@ pub use epoch::*;
 pub use exclude::{parse_ignore_file, ExcludePattern, Excluder, IGNORE_FILE};
 use keyring::RingCache;
 pub use keyring::{shard_of as keyring_shard_of, shard_path as keyring_shard_path};
+pub use overview::{check_fast, excluded_kept, live_files, resolve_name, LiveFile, LiveSet};
 pub use private::{EntryKey, Hidden, IXKEY_FILE};
 pub use privatize::*;
 pub use proof::*;
@@ -3214,6 +3216,45 @@ fn load(log: &Log, opts: &CheckOpts<'_>) -> Loaded {
     }
 }
 
+/// A segment file's bytes for checking: read into memory when small, memory-mapped when big,
+/// so a multi-gigabyte segment is paged in from the file (and can be dropped by the kernel)
+/// instead of being copied into the process.
+enum SegBytes {
+    Owned(Vec<u8>),
+    Mapped(memmap2::Mmap),
+}
+
+/// Segments at least this big are mapped rather than read.
+const MAP_AT: u64 = 64 << 20;
+
+impl SegBytes {
+    fn open(p: &Path) -> std::io::Result<SegBytes> {
+        let f = fs::File::open(p)?;
+        if f.metadata()?.len() < MAP_AT {
+            let mut v = Vec::new();
+            std::io::Read::read_to_end(&mut &f, &mut v)?;
+            return Ok(SegBytes::Owned(v));
+        }
+        // SAFETY: segment files are never modified in place: sigil writes each one to a temp
+        // file and renames it into place, and `log mend` / `compact` / `gc` replace or remove
+        // files by rename / unlink, which leaves this mapping on the old, unchanged inode. Only
+        // an outside process truncating the file under us could invalidate the mapping; that
+        // ends the check with SIGBUS (a crash, never a silent pass).
+        let m = unsafe { memmap2::Mmap::map(&f)? };
+        Ok(SegBytes::Mapped(m))
+    }
+}
+
+impl std::ops::Deref for SegBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            SegBytes::Owned(v) => v,
+            SegBytes::Mapped(m) => m,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CheckReport {
     pub findings: Vec<Finding>,
@@ -3408,7 +3449,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
                 Some("sigil log compact --apply rewrites it without them"),
             ));
         }
-        let bytes = match fs::read(&p) {
+        let bytes = match SegBytes::open(&p) {
             Ok(b) => b,
             Err(_) => {
                 rep.findings.push(fnd(

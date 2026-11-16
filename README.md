@@ -368,6 +368,39 @@ result: healthy
 
 `log ls`, `log read`, `log prove`, `log tombstone`, `log compact` and more:
 `sigil log --help` and [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md).
+
+**See what a log holds at a glance** (`log ls --pretty`, also `sigil path LOG --pretty`):
+identity, condition, extent, live files by folder (big folders on one line), current root.
+The default condition is a fast check (INDEX chain, signed HEAD, every segment file present;
+no segment bytes read) and the page says so; `--deep` runs the full `log verify`.
+
+```
+$ sigil log ls backup --pretty --exclude .tools-venv/
+  /home/me/backup.sigil
+  ──────────────────────────────────────────────────────────────────────────
+  LOG       backup.sigil
+  FORMAT    segment log, format 1
+  SIGNED    yes, by key b9d4186edf156b96
+  STATUS    healthy
+            fast check: chain, HEAD, 6,765 segments present
+            deep check NOT run (add --deep, or sigil log verify)
+  FILES     4,240 live files · 0 tombstoned · 2,423 excluded-kept
+  ...
+  posts/                                              3,952 files  12.1 GiB
+  ROOT      fed422e8ae762c028bc2c95fa6870bc907766799200a1908f7dae743a19c8d25
+$ sigil log ls backup --pretty --expand posts --recent 5   # list one folder; newest 5 files
+$ sigil log read backup --name posts/photo.jpg -o photo.jpg  # one file by its stored name
+```
+
+`--exclude` counts live files that `log add --exclude` would keep without updating
+("excluded-kept"). `log read --name` takes the path inside the backed-up folder (or a bare
+file name when only one folder has it) and reads its newest live version; an unknown,
+ambiguous or deleted name is refused. Color only on a terminal; `NO_COLOR` turns it off,
+`SIGIL_ASCII=1` gives plain ASCII rules.
+
+`log verify` checks a big segment without copying it into memory (it is memory-mapped, and the
+redundancy check runs a megabyte at a time): private memory stays a few MiB whatever the
+segment size. Measured numbers: [docs/SEGMENT-LOG.md](docs/SEGMENT-LOG.md#verify-memory).
 The log INDEX records each entry's path, size and SHA-256. A log created with
 no key (as above) keeps them in the clear, and `log init` says so.
 

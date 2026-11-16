@@ -222,6 +222,48 @@ With `--pass` / `--identity` it also **unseals** each segment and compares plain
 the INDEX (`segment-content`, `segment-unseal`). Exit codes match `sigil doctor`: 0 healthy, 1 warnings,
 2 problems, 3 not a log. `read` runs the INDEX/HEAD checks first and refuses on any error.
 
+### Verify memory
+
+`verify` reads each segment once. A segment of 64 MiB or more is memory-mapped instead of
+copied (segment files are never rewritten in place, so the mapping stays valid); shards are
+checked as borrowed slices; and the last step, "are the redundant copies intact", is proved
+without building a mended copy: the parity is re-encoded a megabyte of byte columns at a time
+and compared, the payload's true name is re-derived by a streamed unfold → inflate → SHA-256,
+and the file is walked against the canonical layout. The verdict is the same as before (a unit
+test runs both paths over sealed, torn, trailer-less and padded files in every mode and
+requires identical results); a v1 (non-systematic) seal still takes the old in-memory path.
+
+Measured on a generated log (one 1 GiB file → a 1.33 GiB segment, plus 2,000 files of
+0.1–0.9 MB; 2.6 GB on disk), release build, 15 GiB box:
+
+| `log verify` (full) | peak private (anon) memory | peak RSS incl. mapped file | time |
+|---|---|---|---|
+| before | 10.3 GiB (ru_maxrss 10,588 MiB) | same | 181 s |
+| after | 4.8 MiB | 1.34 GiB (file pages, reclaimable) | 38 s |
+
+`log verify --quick` went from 1,372 MiB / 1.4 s to 9.2 MiB / 0.27 s (peak resident), and `log ls --pretty`
+uses 8.7 MiB / 0.02 s on the same log. `tests/cli_seglog_verify_memory.rs` checks the bound
+on an 80 MiB segment. With `--pass` / `--identity`, verify also opens each segment, which still
+holds that segment's plain bytes in memory (see STREAMING-DESIGN.md for chunked segments).
+
+### Archivist page (`log ls --pretty`) and reading by name (`log read --name`)
+
+`log ls --pretty` (and `path LOG --pretty`) prints, in order: identity (name, format, signed
+and the signer key's first 16 hex digits), condition (healthy / needs repair / not
+recoverable, with which check ran), extent (live files, tombstoned, excluded-kept with
+`--exclude`, total live size, entries), the live files by folder (folders of more than 12
+files on one line; `--expand FOLDER` lists one, `--recent N` the newest N), and the HEAD root.
+"Live" means the newest version of each `log add` path that no tombstone deleted; segments
+without a name (`log append`, `adopt`) are one "(unnamed segments)" line; a private INDEX
+opened without the key shows its entries as sealed. The fast check never reads segment bytes;
+a missing segment shows as not recoverable. `--deep` uses the full `verify` check.
+
+`log read --name PATH` reads the newest live version of a stored path (exact path first, else
+a unique path ending in `/PATH`). It refuses an unknown name, a name several paths end in (it
+lists them), a path whose every version was deleted, and names sealed in a private INDEX
+without the key. When the newest version was deleted it reads the newest live one and says so.
+Tests: `tests/cli_seglog_pretty.rs`.
+
 ### `mend`
 
 `sigil log mend` heals every repairable segment **in place** (atomic replace) using the ordinary

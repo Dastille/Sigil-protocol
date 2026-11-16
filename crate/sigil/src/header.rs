@@ -275,18 +275,29 @@ pub fn gather_graded_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Grade
 }
 
 /// Walk the file for Ember maps. A deleted byte only kills that piece; later pieces stay findable.
+/// Owned copies of [`gather_live_shard_refs`] (same shards, same choice of copy).
 pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<Vec<u8>>> {
+    gather_live_shard_refs(file, h, prefix)
+        .into_iter()
+        .map(|s| s.map(<[u8]>::to_vec))
+        .collect()
+}
+
+/// The CRC-good body of every shard slot, borrowed from `file` (no copies): the first good Ember
+/// copy per slot, else the copy at its stride position. Memory use is one small entry per Ember
+/// found, whatever the file size.
+pub fn gather_live_shard_refs<'a>(
+    file: &'a [u8],
+    h: &Header,
+    prefix: usize,
+) -> Vec<Option<&'a [u8]>> {
     let n = h.n as usize;
     let sl = h.shard_len as usize;
     let lead = if h.ember() { HEADER_SIZE } else { 0 } + if h.vow() { VOW_SIZE } else { 0 };
     let stride = shard_stride(h);
-    let mut live = vec![None; n];
+    let mut live: Vec<Option<&'a [u8]>> = vec![None; n];
     if h.ember() {
-        struct Hit {
-            slot: usize,
-            shard: Vec<u8>,
-        }
-        let mut hits: Vec<Hit> = Vec::new();
+        let mut hits: Vec<(usize, &'a [u8])> = Vec::new();
         let mut i = 0usize;
         while i + HEADER_SIZE <= file.len() {
             if file[i..i + 4] != MAGIC_EMBER {
@@ -298,10 +309,11 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
                     let slot = (eh.entropy_milli >> 24) as usize;
                     let off = i + lead;
                     // `get` + `try_from` is the bounds check: no CRC word, no shard.
-                    if let Some(crc) = le_u32_at(file, off + sl) {
-                        let shard = file[off..off + sl].to_vec();
-                        if crc32fast::hash(&shard) == crc {
-                            hits.push(Hit { slot, shard });
+                    if let (Some(crc), Some(shard)) =
+                        (le_u32_at(file, off + sl), file.get(off..off + sl))
+                    {
+                        if crc32fast::hash(shard) == crc {
+                            hits.push((slot, shard));
                         }
                     }
                     i += HEADER_SIZE;
@@ -310,12 +322,12 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
             }
         }
         let unique: std::collections::BTreeSet<usize> =
-            hits.iter().map(|h| h.slot).filter(|s| *s < n).collect();
+            hits.iter().map(|h| h.0).filter(|s| *s < n).collect();
         let use_order = unique.len() < 2;
-        for (order, hit) in hits.into_iter().enumerate() {
-            let slot = if use_order { order } else { hit.slot };
+        for (order, (hslot, shard)) in hits.into_iter().enumerate() {
+            let slot = if use_order { order } else { hslot };
             if slot < n && live[slot].is_none() {
-                live[slot] = Some(hit.shard);
+                live[slot] = Some(shard);
             }
         }
     }
@@ -332,11 +344,11 @@ pub fn gather_live_shards(file: &[u8], h: &Header, prefix: usize) -> Vec<Option<
         if off + sl + 4 > body.len() {
             continue;
         }
-        let shard = body[off..off + sl].to_vec();
+        let shard = &body[off..off + sl];
         let Some(crc) = le_u32_at(body, off + sl) else {
             continue;
         };
-        if crc32fast::hash(&shard) == crc {
+        if crc32fast::hash(shard) == crc {
             *slot = Some(shard);
         }
     }

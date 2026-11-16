@@ -178,6 +178,28 @@ pub fn encode_shard_index(
     Ok(shard)
 }
 
+/// Re-encode shard `index` for the byte columns `cols` only, from the `k` data shards' same
+/// columns (`data[i]` is data shard `i` restricted to `cols`, padding included). Same result as
+/// the matching columns of [`encode_shard_index`] on the whole payload, since every column is
+/// coded on its own; lets a checker re-encode a big seal a slice at a time.
+pub fn encode_columns(
+    data: &[&[u8]],
+    index: usize,
+    systematic: bool,
+    out: &mut [u8],
+) -> Result<(), Error> {
+    let k = data.len();
+    if systematic && index < k {
+        if let Some(d) = data.get(index) {
+            out.copy_from_slice(d);
+        }
+        return Ok(());
+    }
+    let m = encode_matrix(k, &[index], systematic)?;
+    gf::matrix_apply(&m, data, &mut [out]);
+    Ok(())
+}
+
 /// First k distinct usable evaluation points, as (x, position in `idx`).
 fn pick_live(idx: impl Iterator<Item = usize>, k: usize) -> (Vec<u8>, Vec<usize>) {
     let mut xs = Vec::with_capacity(k);

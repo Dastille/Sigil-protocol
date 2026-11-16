@@ -1088,14 +1088,12 @@ pub fn unseal_repair_keys(
 
 pub fn verify(file: &[u8]) -> Result<(Header, bool, usize, usize, bool)> {
     let (h, prefix, recovered) = locate_header(file)?;
-    let live_s = header::gather_live_shards(file, &h, prefix);
+    // borrowed slices: checking a seal never copies its shards
+    let live_s = header::gather_live_shard_refs(file, &h, prefix);
     let live = live_s.iter().filter(|s| s.is_some()).count();
     let all_ok = live == h.n as usize;
     let merkle_ok = if all_ok {
-        let leaves: Vec<[u8; 32]> = live_s
-            .iter()
-            .filter_map(|s| s.as_ref().map(|b| sha256(b)))
-            .collect();
+        let leaves: Vec<[u8; 32]> = live_s.iter().filter_map(|s| s.map(sha256)).collect();
         merkle::merkle_root(&leaves) == h.merkle
     } else {
         false

@@ -6,6 +6,8 @@
 //! Scry verdict the caller already computed, or from the outer file's SHA-256 that
 //! `sigil path` hashes anyway.
 
+pub mod log;
+
 use crate::nest::{NestKind, PathView};
 use std::collections::BTreeMap;
 

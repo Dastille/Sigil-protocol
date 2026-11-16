@@ -49,6 +49,8 @@ rfd = { version = "0.17", optional = true }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
 ocb3 = "0.1"
 eax = "0.5"
+# Map big segment files for checking instead of copying them into memory (already in the tree via fuser).
+memmap2 = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 fuser = "0.18"
