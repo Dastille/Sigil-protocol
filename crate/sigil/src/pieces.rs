@@ -958,15 +958,42 @@ fn reencodes_exactly(h: &Header, live: &[&[u8]]) -> Result<()> {
     Ok(())
 }
 
-/// Reads the folded payload (the data shards in order, cut at `folded`) a piece at a time.
+/// Reads the folded payload (the data shards in order, cut at `folded`) a piece at a time,
+/// unfolded. Pieces are [`CANON_STEP`] bytes (even, so the unfold's byte pairs stay whole);
+/// only the last may be shorter.
 struct PayloadReader<'a> {
     shards: &'a [&'a [u8]],
     left: usize,
     shard: usize,
     off: usize,
     unfold: crate::chaos::Unfolder,
+    raw: Vec<u8>,
     buf: Vec<u8>,
     pos: usize,
+}
+
+impl PayloadReader<'_> {
+    fn refill(&mut self) -> std::io::Result<()> {
+        self.raw.clear();
+        while self.raw.len() < CANON_STEP && self.left > 0 {
+            let Some(s) = self.shards.get(self.shard) else {
+                return Err(std::io::Error::other("payload runs past the data shards"));
+            };
+            let t = (s.len() - self.off)
+                .min(self.left)
+                .min(CANON_STEP - self.raw.len());
+            self.raw.extend_from_slice(&s[self.off..self.off + t]);
+            self.off += t;
+            self.left -= t;
+            if self.off == s.len() {
+                self.shard += 1;
+                self.off = 0;
+            }
+        }
+        self.unfold.feed(&self.raw, &mut self.buf);
+        self.pos = 0;
+        Ok(())
+    }
 }
 
 impl std::io::Read for PayloadReader<'_> {
@@ -975,39 +1002,7 @@ impl std::io::Read for PayloadReader<'_> {
             if self.left == 0 {
                 return Ok(0);
             }
-            let Some(s) = self.shards.get(self.shard) else {
-                return Ok(0);
-            };
-            // even-sized pieces keep the unfold's byte pairs whole
-            let take = (s.len() - self.off).min(self.left).min(CANON_STEP);
-            let take = if take < self.left && !take.is_multiple_of(2) {
-                take - 1
-            } else {
-                take
-            };
-            if take == 0 {
-                // a 1-byte remainder at a shard edge: join it with the next shard's first byte
-                let mut pair = vec![s[self.off]];
-                let next = self.shards.get(self.shard + 1).and_then(|n| n.first());
-                if let Some(nb) = next {
-                    pair.push(*nb);
-                }
-                let used = pair.len().min(self.left);
-                self.unfold.feed(&pair[..used], &mut self.buf);
-                self.left -= used;
-                self.shard += 1;
-                self.off = used - 1;
-            } else {
-                self.unfold
-                    .feed(&s[self.off..self.off + take], &mut self.buf);
-                self.left -= take;
-                self.off += take;
-                if self.off == s.len() {
-                    self.shard += 1;
-                    self.off = 0;
-                }
-            }
-            self.pos = 0;
+            self.refill()?;
         }
         let m = (self.buf.len() - self.pos).min(out.len());
         out[..m].copy_from_slice(&self.buf[self.pos..self.pos + m]);
@@ -1027,6 +1022,7 @@ fn true_name_matches(h: &Header, live: &[&[u8]], folded: usize) -> Result<()> {
         shard: 0,
         off: 0,
         unfold: crate::chaos::Unfolder::new(&h.salt),
+        raw: Vec::new(),
         buf: Vec::new(),
         pos: 0,
     };

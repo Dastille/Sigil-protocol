@@ -1032,6 +1032,12 @@ mod tests {
                     ("noise-odd", noise(123_457, 1)),
                     ("noise-big", noise(3 << 20, 2)),
                     ("tiny", b"x".to_vec()),
+                    ("n2", noise(2, 3)),
+                    ("n13", noise(13, 4)),
+                    ("n25", noise(25, 5)),
+                    ("n97", noise(97, 6)),
+                    ("n1001", noise(1001, 7)),
+                    ("t33", b"ab".repeat(33)),
                 ] {
                     let Ok(b) = crate::seal(&data, mode, pass, "t.bin", false) else {
                         continue;
