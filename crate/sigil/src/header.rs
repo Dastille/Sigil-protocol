@@ -27,6 +27,17 @@ pub const FLAG_KEYSTONE: u8 = 1 << 5;
 pub const FLAG_EMBER: u8 = 1 << 6;
 pub const FLAG_VOW: u8 = 1 << 7;
 pub const VOW_SIZE: usize = 128;
+/// Tail spare of the key wrap: `SGTS` | version | 3 zero bytes | the exact SGTO v3 block.
+const MAGIC_SGTO_SPARE: [u8; 4] = *b"SGTS";
+/// Version byte of the `SGTS` spare.
+pub const SGTO_SPARE_VERSION: u8 = 1;
+/// Bytes in front of the SGTO copy inside an `SGTS` spare.
+pub const SGTO_SPARE_HEAD: usize = 8;
+/// Largest SGTO block: header, 255 records of at most 1 + 100 bytes, CRC.
+const SGTO_MAX_LEN: usize = 8 + 255 * 101 + 4;
+/// How far from the end of a file a reader looks for the `SGTS` spare: the largest spare, the
+/// Keystone trailer, and the same 1 KiB of slack the trailer search allows.
+const SGTO_SPARE_REACH: usize = SGTO_SPARE_HEAD + SGTO_MAX_LEN + KEYSTONE_TRAILER_SIZE + 1024;
 
 #[derive(Clone, Debug)]
 pub struct Header {
@@ -374,15 +385,135 @@ pub fn body_prefix(h: &Header) -> usize {
 }
 
 /// Body prefix including an optional SGTO companion block (magic `SGTO` after keystone).
+///
+/// When the front SGTO block is damaged, the length of its tail spare (same bytes, so same
+/// length) keeps the shard offsets right.
 pub fn body_prefix_file(h: &Header, file: &[u8]) -> usize {
     let maps = maps_len(h);
-    let sgto = crate::keys::sgto_len_at(file, maps);
+    let sgto = match crate::keys::sgto_len_at(file, maps) {
+        0 => find_sgto_spare(h, file)
+            .map(<[u8]>::len)
+            .or_else(|| merge_sgto_copies(h, file).map(|b| b.len()))
+            .unwrap_or(0),
+        n => n,
+    };
     maps + sgto + if h.vow() { VOW_SIZE } else { 0 }
 }
 
-/// Slice of SGTO bytes after the keystone maps, if present.
-pub fn sgto_slice<'a>(h: &Header, file: &'a [u8]) -> Option<&'a [u8]> {
+/// The key wrap (SGTO block) of a seal: the front copy after the Keystone maps when its CRC
+/// checks, otherwise the `SGTS` tail spare that SGTO v3 seals carry. Never both: a CRC-good
+/// front copy is used as is, so a wrong key costs one KDF run, not two.
+///
+/// When both copies are damaged in different bytes, [`merge_sgto_copies`] rebuilds the block
+/// from the two. Any result must pass the block CRC here and then the AES-GCM checks of the
+/// wrap records and of the body, so a bad merge can only fail, never open.
+pub fn sgto_slice<'a>(h: &Header, file: &'a [u8]) -> Option<std::borrow::Cow<'a, [u8]>> {
     crate::keys::read_sgto_at(file, maps_len(h))
+        .or_else(|| find_sgto_spare(h, file))
+        .map(std::borrow::Cow::Borrowed)
+        .or_else(|| merge_sgto_copies(h, file).map(std::borrow::Cow::Owned))
+}
+
+/// At most this many bytes may differ between the two key-wrap copies for a merge
+/// (2^12 = 4096 CRC32 checks of a ~100-byte block, well under a millisecond).
+const SGTO_MERGE_MAX_DIFF: usize = 12;
+
+/// Rebuild an SGTO v3 block when the front copy and the tail spare are both damaged, but not
+/// in the same bytes. The spare is expected right before the Keystone trailer (or at the end
+/// of the file when the trailer is gone). For each byte where the copies disagree, one of
+/// them is right; every mix is tried until one passes the block CRC and is SGTO v3.
+fn merge_sgto_copies(h: &Header, file: &[u8]) -> Option<Vec<u8>> {
+    if !h.encrypted() || !h.private_label() {
+        return None;
+    }
+    let front = maps_len(h);
+    let mut lens: Vec<usize> = Vec::new();
+    lens.extend(crate::keys::sgto_shape_len_at(file, front));
+    let tails = [
+        file.len().checked_sub(KEYSTONE_TRAILER_SIZE),
+        Some(file.len()),
+    ];
+    for tail in tails.iter().flatten() {
+        // The spare's own copy of the shape, for every length it could have.
+        let lo = tail.saturating_sub(SGTO_SPARE_HEAD + SGTO_MAX_LEN);
+        for s in lo..tail.saturating_sub(SGTO_SPARE_HEAD + 12) {
+            if let Some(l) = crate::keys::sgto_shape_len_at(file, s + SGTO_SPARE_HEAD) {
+                if s + SGTO_SPARE_HEAD + l == *tail && !lens.contains(&l) {
+                    lens.push(l);
+                }
+            }
+        }
+    }
+    for &len in &lens {
+        let a = file.get(front..front.checked_add(len)?)?;
+        for tail in tails.iter().flatten() {
+            let Some(b_off) = tail.checked_sub(len) else {
+                continue;
+            };
+            if b_off < front + len + SGTO_SPARE_HEAD {
+                continue;
+            }
+            let Some(b) = file.get(b_off..*tail) else {
+                continue;
+            };
+            let diff: Vec<usize> = (0..len).filter(|&i| a[i] != b[i]).collect();
+            if diff.is_empty() || diff.len() > SGTO_MERGE_MAX_DIFF {
+                continue;
+            }
+            let mut cand = a.to_vec();
+            for mask in 0u32..(1u32 << diff.len()) {
+                for (bit, &i) in diff.iter().enumerate() {
+                    cand[i] = if mask & (1 << bit) != 0 { b[i] } else { a[i] };
+                }
+                if crate::keys::read_sgto_at(&cand, 0).is_some_and(|x| x.len() == len)
+                    && crate::keys::sgto_is_spared(&cand)
+                {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The `SGTS` spare for `sgto` when it is an SGTO v3 block (see
+/// [`crate::keys::SGTO_VERSION_SPARED`]); `None` for older blocks, whose seals keep their
+/// original layout. Writers put it right after the last shard, before the Keystone trailer.
+pub fn write_sgto_spare(sgto: Option<&[u8]>) -> Option<Vec<u8>> {
+    let block = sgto.filter(|b| crate::keys::sgto_is_spared(b))?;
+    let mut out = Vec::with_capacity(SGTO_SPARE_HEAD + block.len());
+    out.extend_from_slice(&MAGIC_SGTO_SPARE);
+    out.push(SGTO_SPARE_VERSION);
+    out.extend_from_slice(&[0, 0, 0]);
+    out.extend_from_slice(block);
+    Some(out)
+}
+
+/// Length of a CRC-good `SGTS` spare that starts exactly at `off`, or 0.
+pub fn sgto_spare_len_at(file: &[u8], off: usize) -> usize {
+    spare_block_at(file, off).map_or(0, |b| SGTO_SPARE_HEAD + b.len())
+}
+
+fn spare_block_at(file: &[u8], off: usize) -> Option<&[u8]> {
+    let head = file.get(off..off.checked_add(SGTO_SPARE_HEAD)?)?;
+    if head[0..4] != MAGIC_SGTO_SPARE || head[4] != SGTO_SPARE_VERSION {
+        return None;
+    }
+    let block = crate::keys::read_sgto_at(file, off + SGTO_SPARE_HEAD)?;
+    crate::keys::sgto_is_spared(block).then_some(block)
+}
+
+/// The SGTO block inside the last CRC-good `SGTS` spare within [`SGTO_SPARE_REACH`] bytes of
+/// the end of an encrypted private-label seal. Plain and older seals are never searched.
+fn find_sgto_spare<'a>(h: &Header, file: &'a [u8]) -> Option<&'a [u8]> {
+    // Spares are written only with SGTO v3, which only private-label (v3) seals carry.
+    if !h.encrypted() || !h.private_label() || file.len() < SGTO_SPARE_HEAD {
+        return None;
+    }
+    let lo = file.len().saturating_sub(SGTO_SPARE_REACH);
+    (lo..=file.len() - SGTO_SPARE_HEAD)
+        .rev()
+        .find_map(|i| spare_block_at(file, i))
 }
 
 pub fn write_vow(covenant: &str, geas: &[[u8; 32]]) -> Vec<u8> {
@@ -619,7 +750,9 @@ fn locate_from_trailer(file: &[u8]) -> Option<(Header, usize)> {
 /// pack whose head is damaged and whose other stars are missing; returning it
 /// would hand back one 4 MiB chunk as if it were the whole file.
 pub fn ensure_single_seal(file: &[u8], h: &Header, prefix: usize) -> Result<()> {
-    let end = prefix.saturating_add((h.n as usize).saturating_mul(shard_stride(h)));
+    let body_end = prefix.saturating_add((h.n as usize).saturating_mul(shard_stride(h)));
+    // The key-wrap spare (`SGTS`) right after the shards belongs to this seal.
+    let end = body_end.saturating_add(sgto_spare_len_at(file, body_end));
     let lone_star = || {
         if framed_as_pack_star(file, end) {
             return Err(Error::Msg(

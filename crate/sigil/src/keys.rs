@@ -30,6 +30,12 @@ pub const SGTO_VERSION: u8 = 1;
 /// SGTO v2: same layout as v1, written when the block carries a [`KIND_PASS_ARGON2ID`]
 /// record. Readers accept v1 and v2; builds that only know v1 refuse v2 blocks (fail closed).
 pub const SGTO_VERSION_ARGON2: u8 = 2;
+/// SGTO v3: same record layout as v1/v2. Written by `.sg1` seals since November 2026; it also
+/// says the seal keeps a spare copy of this exact block near its end (`SGTS`, see
+/// `header::write_sgto_spare`). Builds that know only v1/v2 refuse a v3 block (fail closed), so
+/// an older tool cannot rewrite such a seal and leave a stale spare behind. Segment-log key
+/// wraps (outside `.sg1`) keep v1/v2.
+pub const SGTO_VERSION_SPARED: u8 = 3;
 
 const ID_HEADER: usize = 8; // magic + ver + flags + pad
 const PUB_SIZE: usize = ID_HEADER + 32 + 32;
@@ -696,7 +702,7 @@ pub fn read_sgto_at(file: &[u8], off: usize) -> Option<&[u8]> {
     if file[off..off + 4] != SGTO_MAGIC {
         return None;
     }
-    if !(SGTO_VERSION..=SGTO_VERSION_ARGON2).contains(&file[off + 4]) {
+    if !(SGTO_VERSION..=SGTO_VERSION_SPARED).contains(&file[off + 4]) {
         return None;
     }
     let count = file[off + 5] as usize;
@@ -741,6 +747,44 @@ pub fn read_sgto_at(file: &[u8], off: usize) -> Option<&[u8]> {
     Some(&file[off..i + 4])
 }
 
+/// The same SGTO block re-labelled as v3 ([`SGTO_VERSION_SPARED`]) with a fresh CRC: the form
+/// new `.sg1` seals write at the front and again as the tail spare. Records are unchanged byte
+/// for byte. Errors on anything that is not one whole, CRC-good SGTO block.
+pub fn mark_spared(block: &[u8]) -> Result<Vec<u8>> {
+    let whole = read_sgto_at(block, 0)
+        .filter(|b| b.len() == block.len())
+        .ok_or_else(|| Error::Msg("damaged SGTO block".into()))?;
+    let body_end = whole.len() - 4;
+    let mut out = whole[..body_end].to_vec();
+    out[4] = SGTO_VERSION_SPARED;
+    let crc = crc32fast::hash(&out);
+    out.extend_from_slice(&crc.to_le_bytes());
+    Ok(out)
+}
+
+/// Length (CRC included) that the record count and kind bytes at `off` describe, without
+/// checking magic, version or CRC. Lets a reader line up two damaged copies of one block.
+pub fn sgto_shape_len_at(file: &[u8], off: usize) -> Option<usize> {
+    let count = *file.get(off.checked_add(5)?)? as usize;
+    let mut i = off.checked_add(SGTO_HEADER)?;
+    for _ in 0..count {
+        i += 1 + match *file.get(i)? {
+            KIND_X25519 => RECIPIENT_REC,
+            KIND_PASS => 12 + 16 + 32,
+            KIND_PASS_ARGON2ID => PASS_ARGON2_REC,
+            _ => return None,
+        };
+    }
+    let len = i + 4 - off;
+    (i + 4 <= file.len()).then_some(len)
+}
+
+/// True when `block` is an SGTO v3 block, i.e. its seal also stores a tail spare of it.
+pub fn sgto_is_spared(block: &[u8]) -> bool {
+    block.len() > 4 && block[0..4] == SGTO_MAGIC && block[4] == SGTO_VERSION_SPARED
+}
+
+/// Length of the CRC-good SGTO block at `off`, or 0 when there is none.
 pub fn sgto_len_at(file: &[u8], off: usize) -> usize {
     read_sgto_at(file, off).map(|b| b.len()).unwrap_or(0)
 }

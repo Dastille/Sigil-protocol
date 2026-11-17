@@ -106,10 +106,11 @@ fn encrypted_folder_hides_names_and_round_trips() {
     assert!(d.join("one/private-sub/tax-return-2025.pdf").is_file());
     assert!(!d.join("one/visible-name-a.txt").exists());
 
-    // Keyless mend heals a torn body and keeps the names hidden.
+    // Keyless mend heals a torn body and keeps the names hidden. 400 bytes is more than one
+    // Ember copy (160), so the run always reaches shard data wherever the layout puts it.
     let mut torn = raw.clone();
     let at = 17 + (raw.len() - 17) / 2;
-    for b in &mut torn[at..at + 64] {
+    for b in &mut torn[at..at + 400] {
         *b ^= 0xA5;
     }
     std::fs::write(d.join("torn.sg1"), &torn).unwrap();

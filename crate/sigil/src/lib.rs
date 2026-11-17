@@ -47,6 +47,10 @@ pub(crate) fn human_line(s: &str) {
         println!("{s}");
     }
 }
+#[cfg(test)]
+mod keywrap_measure;
+#[cfg(test)]
+mod keywrap_spare_tests;
 pub mod mend_out;
 #[cfg(test)]
 mod mend_soft_tests;
@@ -617,7 +621,8 @@ pub fn seal_kn_mds_to_opts(
     let entropy_milli = (shannon(data) * 1000.0).round() as u32;
     let mut cek = zeroize::Zeroizing::new([0u8; 32]);
     getrandom(&mut cek[..]);
-    let sgto_block = keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?;
+    // SGTO v3: the same wrap block is written twice, after the Keystone and as a tail spare.
+    let sgto_block = keys::mark_spared(&keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?)?;
     let fp_key = privacy::fingerprint_key(&cek, &salt, &opts.fingerprint)?;
     let keyed = privacy::keyed_fingerprint(&fp_key, data)?;
     let mut meta = privacy::SealMeta {
@@ -699,7 +704,7 @@ pub fn seal_kn_mds_to_opts(
     ))
 }
 
-/// Keystone + optional SGTO + optional vow + ember-framed shards.
+/// Keystone + optional SGTO + optional vow + ember-framed shards (+ SGTS spare + SGKT trailer).
 fn assemble(
     hdr: &[u8],
     sgto: Option<&[u8]>,
@@ -728,6 +733,11 @@ fn assemble(
         }
         out.extend_from_slice(s);
         out.extend_from_slice(&crc32fast::hash(s).to_le_bytes());
+    }
+    // Key-wrap spare (SGTS) for SGTO v3 blocks: far from the front copy, so one burst
+    // cannot take both.
+    if let Some(spare) = header::write_sgto_spare(sgto) {
+        out.extend_from_slice(&spare);
     }
     // Trailing Keystone spare (SGKT): header copy after the seal body (SGIL elided).
     out.extend_from_slice(&header::write_keystone_trailer(hdr));
@@ -882,7 +892,7 @@ pub fn keyed_fingerprint_matches(
     }
     let block = header::sgto_slice(&h, file)
         .ok_or_else(|| Error::Msg("v3 seal has no key wrap (SGTO)".into()))?;
-    let cek = keys::unwrap_cek(block, identities, pass.filter(|s| !s.is_empty()), &h.salt)?;
+    let cek = keys::unwrap_cek(&block, identities, pass.filter(|s| !s.is_empty()), &h.salt)?;
     let fk = privacy::fingerprint_key(&cek, &h.salt, &privacy::FingerprintKey::PerFile)?;
     let fp = privacy::keyed_fingerprint(&fk, data)?;
     Ok(subtle_eq(&fp, &h.digest))
@@ -952,7 +962,7 @@ fn unseal_meta(
         let sgto = header::sgto_slice(&h, file);
         let key = if let Some(block) = sgto {
             // Encrypt-to (and optional passphrase wrap in SGTO).
-            match keys::unwrap_cek(block, identities, pass.filter(|s| !s.is_empty()), &h.salt) {
+            match keys::unwrap_cek(&block, identities, pass.filter(|s| !s.is_empty()), &h.salt) {
                 Ok(cek) => cek,
                 Err(e) => {
                     if identities.is_empty() && p.is_empty() {
@@ -963,7 +973,7 @@ fn unseal_meta(
             }
         } else if h.private_label() {
             return Err(Error::Msg(
-                "v3 seal has no key wrap (SGTO) left; past repair".into(),
+                "v3 seal has no key wrap (SGTO) left (front copy and any tail spare are damaged); past repair".into(),
             ));
         } else {
             // Legacy passphrase Ward.
@@ -2412,7 +2422,9 @@ mod kdf_tests {
         let f = seal(&data, Mode::Seal, Some(PASS), "a2", false).unwrap();
         let (off, len) = sgto_span(&f);
         assert!(len > 0, "passphrase seal must carry an SGTO block");
-        assert_eq!(f[off + 4], keys::SGTO_VERSION_ARGON2);
+        // New .sg1 seals write SGTO v3 (v2 records + a tail spare); the record kind below,
+        // not the block version, is what selects Argon2id.
+        assert_eq!(f[off + 4], keys::SGTO_VERSION_SPARED);
         let rec = off + 8;
         assert_eq!(f[rec], 3, "KIND_PASS_ARGON2ID");
         let u = |o: usize| u32::from_le_bytes(f[rec + o..rec + o + 4].try_into().unwrap());

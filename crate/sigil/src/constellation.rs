@@ -481,7 +481,10 @@ fn card_is_encrypt_to(path: &Path) -> bool {
         .ok()
         .and_then(|data| {
             let (h, _, _) = locate_header(&data).ok()?;
-            Some(crate::header::sgto_slice(&h, &data).is_some_and(crate::keys::sgto_has_recipients))
+            Some(
+                crate::header::sgto_slice(&h, &data)
+                    .is_some_and(|b| crate::keys::sgto_has_recipients(&b)),
+            )
         })
         .unwrap_or(false)
 }
@@ -496,7 +499,8 @@ fn unseal_card(data: &[u8], pass: Option<&str>, identities: &[Identity]) -> Resu
         if said.contains("--identity") {
             e
         } else if identities.is_empty()
-            && crate::header::sgto_slice(&h, data).is_some_and(crate::keys::sgto_has_recipients)
+            && crate::header::sgto_slice(&h, data)
+                .is_some_and(|b| crate::keys::sgto_has_recipients(&b))
         {
             err(format!(
                 "{e} (this constellation's card is encrypt-to; pass --identity <key.sgk>)"

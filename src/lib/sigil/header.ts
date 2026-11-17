@@ -23,7 +23,7 @@ import {
   VERSION,
   PRIVATE_VERSION,
 } from "./types";
-import { readSgtoAt, type SgtoBlock } from "./sgto";
+import { findSgtoSpare, readSgtoAt, type SgtoBlock } from "./sgto";
 
 function u64le(n: number): Uint8Array {
   const b = new Uint8Array(8);
@@ -188,7 +188,8 @@ export function bodyPrefix(header: Sg1Header): number {
 /** Where the maps end, the SGTO block (if any), the Vow and the first piece sit, from `base`. */
 function frontLayout(file: Uint8Array, header: Sg1Header, base: number) {
   const mapsEnd = base + mapsLen(header);
-  const sgto = readSgtoAt(file, mapsEnd);
+  // A damaged front key wrap falls back to the tail spare (same bytes, same length).
+  const sgto = readSgtoAt(file, mapsEnd) ?? (header.encrypted ? findSgtoSpare(file) : null);
   const vowAt = mapsEnd + (sgto?.bytes.length ?? 0);
   const vow = header.vow ? readVow(file, vowAt) : null;
   return { sgto, vow, prefix: vowAt + (header.vow ? VOW_SIZE : 0) };

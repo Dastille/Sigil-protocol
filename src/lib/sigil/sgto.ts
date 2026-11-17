@@ -19,8 +19,37 @@ const SGTO_HEADER = 8;
 const FLAG_HAS_PASS_WRAP = 1;
 
 /** Versions this reader accepts (same set as the Rust reader). Unknown versions fail closed. */
-export const SGTO_VERSIONS: ReadonlySet<number> = new Set([1, 2]);
+export const SGTO_VERSIONS: ReadonlySet<number> = new Set([1, 2, 3]);
 export const SGTO_VERSION_ARGON2 = 2;
+/** v3: same records; the Rust seal also keeps a tail spare ("SGTS") of the block. */
+export const SGTO_VERSION_SPARED = 3;
+
+const SGTS_MAGIC = [0x53, 0x47, 0x54, 0x53]; // SGTS
+const SGTS_HEAD = 8;
+/** Same search window as the Rust reader: largest SGTO block + spare head + SGKT trailer + 1 KiB. */
+const SGTS_REACH = SGTS_HEAD + (8 + 255 * 101 + 4) + 165 + 1024;
+
+/**
+ * The SGTO v3 block inside the last CRC-good "SGTS" spare near the end of `file`, or `null`.
+ * Layout: "SGTS" | 1 | 0 0 0 | SGTO v3 block. Used only when the front copy is damaged.
+ */
+export function findSgtoSpare(file: Uint8Array): SgtoBlock | null {
+  const lo = Math.max(0, file.length - SGTS_REACH);
+  for (let i = file.length - SGTS_HEAD; i >= lo; i--) {
+    if (
+      file[i] !== SGTS_MAGIC[0] ||
+      file[i + 1] !== SGTS_MAGIC[1] ||
+      file[i + 2] !== SGTS_MAGIC[2] ||
+      file[i + 3] !== SGTS_MAGIC[3] ||
+      file[i + 4] !== 1
+    ) {
+      continue;
+    }
+    const b = readSgtoAt(file, i + SGTS_HEAD);
+    if (b && b.version === SGTO_VERSION_SPARED) return b;
+  }
+  return null;
+}
 
 export const KIND_X25519 = 1;
 export const KIND_PASS_PBKDF2 = 2;

@@ -768,7 +768,7 @@ fn seal_is_encrypt_to(raw: &[u8]) -> bool {
         return false;
     }
     match crate::header::sgto_slice(&h, raw) {
-        Some(b) => crate::keys::sgto_has_recipients(b),
+        Some(b) => crate::keys::sgto_has_recipients(&b),
         None => false,
     }
 }

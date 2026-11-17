@@ -452,9 +452,10 @@ in rare cases, RFC 6330 §5.8).
   still refuses (by design; proposal 2).
 - Damage outside shard bodies is handled separately: the front header (four
   copies plus the Embers), the SGTO key block of encrypted Sigils, and work-pack
-  heads. Heavy damage to the SGTO block of an encrypted Sigil makes it unopenable
-  even when every shard is repaired. **UNVERIFIED** at what rate this happens; not
-  measured.
+  heads. Damage to the SGTO block of an encrypted Sigil written before 17 November
+  2026 (one copy) makes it unopenable even when every shard is repaired. Measured
+  since (docs/KEYWRAP-SPARE.md): 908 of 7 200 whole-file damage trials were lost only
+  to the key wrap; with the SGTO v3 spare + merge, 9.
 - Glyph mode has no parity and gains nothing.
 - At large n (254 shards) column repair is slow (§5.4). A hostile file can make
   `mend --soft` spend roughly (shard length × per-column solve) time before it

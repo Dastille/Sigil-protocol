@@ -752,6 +752,14 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   opens and mends as long as enough shards are intact. Only when every header
   copy (front, Keystone, trailer and all Embers) is gone does it refuse; a second
   copy can then still heal it with `sigil mend A.sg1 B.sg1`.
+- Encrypted files written before 17 November 2026 keep their key wrap (the ~100-byte `SGTO`
+  block that unlocks the content key) in one copy: one damaged byte there makes the file
+  unopenable even when all data is intact, and `sigil mend` refuses it. New encrypted files
+  store it twice, far apart (SGTO v3 + `SGTS` spare, 109–121 bytes more per file), and open
+  and mend when either copy survives or the two can be merged; re-seal older encrypted files
+  to get this. Builds from before that date cannot open the new encrypted files (they refuse
+  them; nothing wrong is written). The web lab still writes the one-copy layout. Numbers and
+  tests: [docs/KEYWRAP-SPARE.md](docs/KEYWRAP-SPARE.md) (`crate/sigil/src/keywrap_spare_tests.rs`).
 - Encrypted files still reveal their ciphertext length **unless** sealed with
   `--pad bucket` or `--pad max` (then only the bucket or power-of-two size
   shows). Default is `--pad off` (no silent size growth). `--pad` needs
