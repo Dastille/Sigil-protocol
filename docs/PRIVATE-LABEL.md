@@ -80,7 +80,9 @@ after unlock.
 Plain Sigils stay v2. Every existing file (v0–v2, packs, folder packs,
 constellations, logs) opens as before; fixtures in `tests/fixtures/enc-v2/`.
 Readers refuse a v3 label on an unencrypted Sigil, a v3 Sigil without SGTO, a
-nonzero outer entropy slot, and any label edit.
+nonzero outer entropy slot, and any label edit. Since 17 November 2026 the SGTO block of a
+new v3 Sigil is stored twice (SGTO v3 + `SGTS` spare at the end; docs/KEYWRAP-SPARE.md);
+builds before that refuse those files.
 
 ## Still leaks
 

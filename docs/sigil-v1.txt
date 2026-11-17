@@ -17,8 +17,11 @@ A .sg1 packs a payload into n shards (default 16; the CLI may increase n).
   true name  SHA-256 of the original plaintext
   binding    Merkle root of shard hashes
   Ward       optional AES-256-GCM. New passphrase seals: random content key
-             wrapped with Argon2id (parameters stored, SGTO v2). Legacy Wards:
-             key = PBKDF2-HMAC-SHA256, 80 000 iterations (read-only)
+             wrapped with Argon2id (parameters stored, SGTO v2 records). Legacy
+             Wards: key = PBKDF2-HMAC-SHA256, 80 000 iterations (read-only)
+  Key wrap   SGTO block (passphrase and/or encrypt-to wraps of the content
+             key). New encrypted seals (SGTO v3, November 2026) store it
+             twice: after the Keystone and as an SGTS spare after the body
   Keystone   three extra copies of the 160-byte header after the primary;
              new seals also append one trailing spare (SGKT) after the body
   Ember      SGEM-tagged header copy at the start of each shard
@@ -77,8 +80,21 @@ HEADER (160 bytes)
 112-127 original file name (UTF-8, padded; empty on v3)
 128-159 binding
 160-639 Keystone (three copies)
-640-767 Vow slab if FLAG_VOW
+640-    SGTO key wrap if present (encrypted seals; found by magic, no flag):
+        SGTO | version (1, 2, or 3) | count | flags | 0 | records | CRC32
+then    Vow slab (128) if FLAG_VOW
 then    n × (Ember SGEM 160 [+ Vow] + shard + CRC32 of shard)
+then    key-wrap spare (SGTO v3 only): SGTS | version=1 | 0 0 0 | the exact
+        SGTO block from the front (same bytes, so same length). Readers use
+        the front copy when its CRC32 checks, else the spare, else a
+        byte-by-byte merge of the two (at most 12 differing bytes, each
+        tried both ways until the block CRC32 checks). Any copy or merge
+        must then pass the AES-GCM tag of its wrap record and of the body.
+        SGTO v3 records are laid out exactly as v1/v2; the version byte
+        says the spare exists. Builds that know only v1/v2 refuse v3
+        (fail closed), so they cannot rewrite the front and leave a stale
+        spare. Cost: wrap length + 8 bytes (109 B passphrase-only, 121 B
+        one recipient, +101 B per further recipient). docs/KEYWRAP-SPARE.md
 then    Keystone trailer (new seals): SGKT | version=1 | 160-byte header copy
         (primary header with SGIL stored as four zero bytes so a scan does
          not see a second seal; locate restores SGIL and uses it when the
@@ -174,7 +190,8 @@ Adversaries
   P  passive holder of a copy without the key (cloud host, courier,
      finder of a lost USB stick). Reads every byte, changes nothing.
   A  active tamperer without the key: edits bytes, swaps whole Sigils,
-     crafts hostile headers, piece files, packs and SGTO blocks.
+     crafts hostile headers, piece files, packs and SGTO blocks (front
+     copy or SGTS spare).
   G  offline guesser: runs the passphrase KDF on candidate passphrases.
   K  anyone holding the passphrase or identity key: full access, by
      definition out of scope.
@@ -195,6 +212,15 @@ In scope (what is claimed)
      docs/research/DEEP-SPACE.md. Keystone (front copies and the trailing
      SGKT spare on new seals) and Ember copies keep the header findable
      when the front of the file is destroyed.
+     Key wrap: on encrypted seals written with SGTO v3 (November 2026)
+     the SGTO block is stored twice, far apart (front and SGTS spare at
+     the end), and two damaged copies are merged byte by byte. Measured
+     (whole-file damage, docs/KEYWRAP-SPARE.md): files lost ONLY because
+     the key wrap was hit fell from 908 of 7 200 trials to 9; one burst
+     (512 B, 4 KiB or 10% of the file) no longer loses any (156 before).
+     Encrypted seals written before (SGTO v1/v2, one copy) keep the old weakness:
+     one damaged byte in their ~100-byte key wrap makes them unopenable
+     even when every shard is fine. Re-seal them to upgrade.
   P  With a Ward or encrypt-to wrap, payload content is protected by
      AES-256-GCM under a 256-bit key. The fold is not a cipher.
      NOT claimed: confidentiality of an unencrypted Sigil or of its

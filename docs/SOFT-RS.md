@@ -88,6 +88,9 @@ R1 slices, in this order:
    bags and work packs get the same fallback; several copies at once stay hard-only.
    Also: an encrypted private-label (v3) Sigil whose key wrap (SGTO) is damaged is now
    refused by mend instead of being "repaired" into a copy that could never be opened.
+   Since 17 November 2026 new encrypted seals keep a second copy of the key wrap at the end
+   (SGTO v3 + `SGTS` spare, docs/KEYWRAP-SPARE.md), so mend rebuilds them exactly; only
+   files whose two copies are both unreadable (or older one-copy files) are refused.
    Tests: `crate/sigil/tests/cli_mend_default.rs`.
 2. Wait screen (Wednesday–Thursday 18–19 November 2026; one roadmap item, estimated at two
    weekday slices — that size is a guess). After a short scan, the tool will estimate how long

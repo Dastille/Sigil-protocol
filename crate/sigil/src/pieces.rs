@@ -340,6 +340,10 @@ fn assemble_mark(
         let body = pack_stride(&hdr, h, s, i as u8, vow);
         out.extend_from_slice(&body);
     }
+    // An SGTO v3 seal gets both key-wrap copies back, whichever one survived.
+    if let Some(spare) = header::write_sgto_spare(sgto) {
+        out.extend_from_slice(&spare);
+    }
     if h.keystone() {
         out.extend_from_slice(&header::write_keystone_trailer(&hdr));
     }
@@ -347,7 +351,7 @@ fn assemble_mark(
 }
 
 fn sgto_from_prefix(file: &[u8], h: &Header) -> Option<Vec<u8>> {
-    header::sgto_slice(h, file).map(|s| s.to_vec())
+    header::sgto_slice(h, file).map(std::borrow::Cow::into_owned)
 }
 
 fn vow_from_prefix(file: &[u8], h: &Header, prefix: usize) -> Option<Vec<u8>> {
@@ -417,7 +421,7 @@ pub(crate) fn mend_bytes_stats(
     // it could never be unsealed, so do not write one and call it repaired.
     if h.encrypted() && h.private_label() && sgto.is_none() {
         return Err(crate::Error::Msg(
-            "the key wrap (SGTO) of this encrypted Sigil is damaged, so a rebuilt copy could not be opened".into(),
+            "the key wrap (SGTO) of this encrypted Sigil is damaged (front copy and any tail spare), so a rebuilt copy could not be opened".into(),
         ));
     }
 
@@ -1193,6 +1197,11 @@ fn compare_layout(file: &[u8], h: &Header, prefix: usize, shards: &[&[u8]]) -> C
             }
         }
         if !same(s, &mut pos) || !same(&crc32fast::hash(s).to_le_bytes(), &mut pos) {
+            return Canon::Differs;
+        }
+    }
+    if let Some(spare) = header::write_sgto_spare(sgto.as_deref()) {
+        if !same(&spare, &mut pos) {
             return Canon::Differs;
         }
     }

@@ -284,7 +284,7 @@ pub(crate) fn health_bytes_with(bytes: &[u8], bounded: bool) -> Health {
                         Some(Ok(Canon::Same | Canon::TrailerOnly)) => return Health::Ok,
                         Some(Ok(Canon::Differs)) => {
                             return Health::Mendable(
-                                "redundant shard copies are damaged (data still intact)".into(),
+                                "redundant copies (shard or key-wrap spares) are damaged (data still intact)".into(),
                             )
                         }
                         Some(Err(e)) => return Health::Damaged(format!("repair pass failed: {e}")),
@@ -297,7 +297,7 @@ pub(crate) fn health_bytes_with(bytes: &[u8], bounded: bool) -> Health {
                             Health::Ok
                         } else {
                             Health::Mendable(
-                                "redundant shard copies are damaged (data still intact)".into(),
+                                "redundant copies (shard or key-wrap spares) are damaged (data still intact)".into(),
                             )
                         }
                     }

@@ -130,7 +130,7 @@ test("Argon2id parameters above the Rust caps are rejected before hashing", asyn
   }
 });
 
-test("lab writes what Rust main writes: SGTO v2, one Argon2id record, OWASP params", async () => {
+test("lab writes SGTO v2 (one Argon2id record, OWASP params; Rust writes the same records as v3 + a spare)", async () => {
   const msg = new TextEncoder().encode("lab round trip ".repeat(64));
   const s = await seal({
     data: msg,
@@ -294,4 +294,32 @@ test("lab encrypted seals use the private label (v3) and fail closed on label ed
   }
   await assert.rejects(unseal(t, PASS));
   await assert.rejects(unseal(s.bytes, "wrong horse"));
+});
+
+test("key wrap stored twice (SGTO v3 + SGTS spare): opens with either copy, refuses with neither", async () => {
+  const f = fx("keywrap-v1/pass-reflection.sg1");
+  const [off, len] = sgtoSpan(f);
+  assert.equal(f[off + 4], 3, "SGTO v3 at the front");
+  assert.deepEqual((await unseal(f, PASS)).data, PLAIN2);
+  // Spare: "SGTS" | 1 | 0 0 0 | the same block, right before the 165-byte Keystone trailer.
+  const spare = f.length - 165 - len - 8;
+  assert.deepEqual(
+    [...f.subarray(spare, spare + 4)].map((c) => String.fromCharCode(c)).join(""),
+    "SGTS",
+  );
+  assert.deepEqual(f.subarray(spare + 8, spare + 8 + len), f.subarray(off, off + len));
+  const front = new Uint8Array(f);
+  front.fill(0, off, off + len);
+  assert.deepEqual((await unseal(front, PASS)).data, PLAIN2, "front wiped: spare opens");
+  await assert.rejects(unseal(front, "wrong horse"));
+  const both = new Uint8Array(front);
+  both.fill(0, spare, spare + 8 + len);
+  await assert.rejects(unseal(both, PASS), /no key wrap/);
+});
+
+test("files with one key-wrap copy (before SGTO v3) still open", async () => {
+  const f = fx("keywrap-v0/pass-reflection.sg1");
+  const [off] = sgtoSpan(f);
+  assert.equal(f[off + 4], SGTO_VERSION_ARGON2);
+  assert.deepEqual((await unseal(f, PASS)).data, PLAIN2);
 });
