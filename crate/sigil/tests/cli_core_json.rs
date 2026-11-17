@@ -62,7 +62,8 @@ fn scry_and_mend_as_json() {
     );
     assert!(j.contains("\"kind\":\"mark\",\"live\":16,\"n\":16,\"need\":12,\"merkle\":true,\"soft_salvage\":false"), "{j}");
     assert_eq!(fs::read(d.join("fixed.sg1")).unwrap(), full);
-    let j = json(&d, &["mend", "torn.sg1", "-o", "x.sg1", "--json"], 1);
+    // Too damaged for the quick and the deeper repair: exit 2 like scry's NOT recoverable.
+    let j = json(&d, &["mend", "torn.sg1", "-o", "x.sg1", "--json"], 2);
     assert!(j.starts_with("{\"ok\":false,\"cmd\":\"mend\""), "{j}");
     assert!(!d.join("x.sg1").exists());
 }

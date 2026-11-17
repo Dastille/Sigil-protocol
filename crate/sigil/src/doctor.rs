@@ -419,7 +419,10 @@ fn push_health(rep: &mut DoctorReport, subject: &str, path: &Path, mend_target: 
             "bit-rot",
             subject,
             format!("{m} — repairable"),
-            Some(format!("sigil mend {mend_target} -o healed.sg1, then replace the damaged file (doctor does not rewrite your data)")),
+            Some(format!(
+                "{} (writes a repaired copy next to it; doctor does not rewrite your data)",
+                crate::mend_out::mend_command(Path::new(mend_target))
+            )),
         )),
         Health::Damaged(m) => rep.findings.push(f(
             Severity::Error,

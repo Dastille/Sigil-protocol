@@ -47,6 +47,7 @@ pub(crate) fn human_line(s: &str) {
         println!("{s}");
     }
 }
+pub mod mend_out;
 #[cfg(test)]
 mod mend_soft_tests;
 pub mod names;

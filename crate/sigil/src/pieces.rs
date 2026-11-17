@@ -413,6 +413,13 @@ pub(crate) fn mend_bytes_stats(
     let k = h.k as usize;
     let vow = vow_from_prefix(file, &h, prefix);
     let sgto = sgto_from_prefix(file, &h);
+    // A private-label (v3) seal opens only through its key wrap; a copy rebuilt without
+    // it could never be unsealed, so do not write one and call it repaired.
+    if h.encrypted() && h.private_label() && sgto.is_none() {
+        return Err(crate::Error::Msg(
+            "the key wrap (SGTO) of this encrypted Sigil is damaged, so a rebuilt copy could not be opened".into(),
+        ));
+    }
 
     if h.mode() == crate::Mode::Glyph {
         let live = header::gather_live_shards(file, &h, prefix);
@@ -449,7 +456,7 @@ pub(crate) fn mend_bytes_stats(
                 }
                 if !soft {
                     return Err(crate::Error::Msg(
-                        "hard mend failed true-name/Merkle check (try --soft)".into(),
+                        "quick repair failed the true-name/Merkle check".into(),
                     ));
                 }
             }

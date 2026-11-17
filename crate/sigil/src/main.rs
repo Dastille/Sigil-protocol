@@ -363,7 +363,7 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
         } => Some(("vault versions", None)),
         Cmd::Mend {
             json: true, output, ..
-        } => Some(("mend", Some(output.clone()))),
+        } => Some(("mend", output.clone())),
         Cmd::Scatter {
             json: true, output, ..
         } => Some(("scatter", Some(output.clone()))),
@@ -706,7 +706,10 @@ enum Cmd {
         #[arg(long, conflicts_with = "report")]
         json: bool,
     },
-    /// Rebuild a healthy .sg1 from live shards in a torn Sigil (no passphrase). Alias: repair.
+    /// Repair a damaged Sigil into a new healthy copy (no passphrase). Alias: repair.
+    /// Plain `sigil mend damaged.sg1` tries the quick repair first, then the deeper repair for
+    /// bit rot, and writes `damaged.mended.sg1` next to it (never over the input or an existing
+    /// file). A result is kept only if it passes the Merkle and true-name check.
     /// A large-file work pack (SGWK) heals every torn chunk star in one go; -o may be the input. An atlas bag (.sga) gets every repairable star healed into a new bag.
     /// Several damaged copies of one Sigil (`sigil mend A.sg1 B.sg1 -o fixed.sg1`) are pooled: the good shards from every copy are combined.
     #[command(visible_alias = "repair")]
@@ -716,16 +719,23 @@ enum Cmd {
         /// INPUT's; copies of different Sigils are refused
         #[arg(value_name = "MORE_COPIES")]
         more: Vec<PathBuf>,
+        /// Where to write the repaired copy. Default: next to INPUT as `<name>.mended.<ext>`
+        /// (`-2`, `-3`, … added if that name is taken); never the input, never an existing file
         #[arg(short, long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
         #[arg(long)]
         json: bool,
         /// Salvage CRC-failed (bit-rotten) shard bodies: per-column Reed-Solomon error
         /// correction (scattered bit flips), then soft-RS / GMD-lite. Output is kept only if
-        /// the Merkle binding and true name match
+        /// the Merkle binding and true name match. Plain `mend` already does this when the
+        /// quick repair fails; `--soft` stays for scripts
         #[arg(long)]
         soft: bool,
+        /// Only try the quick repair (whole shards that pass their CRC); skip the deeper
+        /// bit-rot repair that plain `mend` falls back to
+        #[arg(long, conflicts_with = "soft")]
+        hard_only: bool,
     },
     /// Copy an existing Sigil with rsync, rclone, and/or wormhole.
     #[command(visible_alias = "send")]
@@ -2843,11 +2853,22 @@ fn gather_partial(
 /// `,"status":{...}` for `scry` / `verify --json` (schema 1; additive next to `report`).
 /// Make the human report agree with `status.health`: when Scry's text reads fine but the
 /// doctor check found something to mend, say so (the JSON `report` gets the same line).
-fn agree_report(text: String, st: Option<&sigil::status::ScryStatus>) -> String {
+/// `target` is the path `sigil mend` takes, so the hint is a full copyable command.
+fn agree_report(
+    text: String,
+    st: Option<&sigil::status::ScryStatus>,
+    target: Option<&Path>,
+) -> String {
     match st {
         Some(st) if st.verdict == sigil::status::Verdict::NeedsRepair => {
             let why = st.repair.as_deref().unwrap_or("damage found");
-            format!("{text}\nneeds repair: {why} (run `sigil mend`)")
+            match target {
+                Some(t) => format!(
+                    "{text}\nneeds repair: {why} (run: {})",
+                    sigil::mend_out::mend_command(t)
+                ),
+                None => format!("{text}\nneeds repair: {why} (run `sigil mend`)"),
+            }
         }
         _ => text,
     }
@@ -2918,7 +2939,7 @@ fn verify_cmd(
         } else {
             sigil::status::scry_status_constellation(&input, key.as_deref(), &ids).ok()
         };
-        let text = agree_report(text, st.as_ref());
+        let text = agree_report(text, st.as_ref(), None);
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
         if let (true, Some(st)) = (json_on(), &st) {
@@ -2932,7 +2953,7 @@ fn verify_cmd(
         let identities = load_identities(&identity)?;
         let (text, bad) = sigil::scry_dir_checked(&input, pass.as_deref(), &[], &identities)?;
         let st = sigil::status::scry_status_path(&input)?;
-        let text = agree_report(text, Some(&st));
+        let text = agree_report(text, Some(&st), Some(&input));
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
         if json_on() {
@@ -2944,7 +2965,7 @@ fn verify_cmd(
     } else {
         let (text, bad) = sigil::scry_path_checked(&input)?;
         let st = sigil::status::scry_status_path(&input)?;
-        let text = agree_report(text, Some(&st));
+        let text = agree_report(text, Some(&st), Some(&input));
         say!("{text}");
         json_extra(&format!(",\"report\":{}", jq(&text)));
         if json_on() {
@@ -3037,10 +3058,102 @@ fn verify_cmd(
     Ok(())
 }
 
+/// `sigil mend` was run without `-o`: the output name was picked by
+/// [`sigil::mend_out::default_mend_output`] and must not replace a file that appears meanwhile.
+static MEND_DEFAULT_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The mend output path: `-o` as given, else a fresh name next to `input`.
+fn mend_output(
+    input: &Path,
+    output: Option<PathBuf>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    match output {
+        Some(o) => Ok(o),
+        None => Ok(sigil::mend_out::default_mend_output(input)?),
+    }
+}
+
+/// Move a finished `.mend-part` into place. With an explicit `-o` this renames as before;
+/// with a picked default name it refuses to replace a file that appeared since the name was
+/// chosen (hard link first, so the check and the move are one step where the disk allows).
+fn persist_mend(tmp: &Path, out: &Path) -> std::io::Result<()> {
+    if !MEND_DEFAULT_OUT.load(std::sync::atomic::Ordering::Relaxed) {
+        return fs::rename(tmp, out);
+    }
+    let taken = || {
+        let _ = fs::remove_file(tmp);
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "{} appeared while repairing, so nothing was written over it; run the same command again to pick a new name",
+                out.display()
+            ),
+        )
+    };
+    match fs::hard_link(tmp, out) {
+        Ok(()) => fs::remove_file(tmp),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(taken()),
+        // Some disks (FAT USB sticks) have no hard links: check, then rename.
+        Err(_) if fs::symlink_metadata(out).is_ok() => Err(taken()),
+        Err(_) => fs::rename(tmp, out),
+    }
+}
+
+/// Plain-English lines after a successful single-file `sigil mend`.
+fn mend_guidance(out: &Path, deeper_used: bool, auto: bool, encrypted: bool) {
+    if deeper_used && auto {
+        if encrypted {
+            say!("The quick repair was not enough, so Sigil used the deeper repair for bit rot. The result passed the Merkle check; the true name is checked when you unseal it with your key.");
+        } else {
+            say!("The quick repair was not enough, so Sigil used the deeper repair for bit rot. The result passed the full check (Merkle root and true name).");
+        }
+    }
+    if MEND_DEFAULT_OUT.load(std::sync::atomic::Ordering::Relaxed) {
+        say!(
+            "Your repaired copy is {} (no -o given, so Sigil picked a new name next to the original). The damaged file was left as it is.",
+            out.display()
+        );
+    }
+    say!(
+        "To double-check the repaired copy: sigil verify {}",
+        sigil::mend_out::shell_word(&out.display().to_string())
+    );
+}
+
+/// Error for a single-file mend that found no verified repair. Says nothing was written
+/// and gives the next full commands to try; contains "too damaged" (exit 2).
+fn mend_failed(input: &Path, why: &str, tried_deeper: bool) -> String {
+    let inp = sigil::mend_out::shell_word(&input.display().to_string());
+    let mut msg = format!(
+        "could not repair {}: too damaged to rebuild from this copy ({why}). Nothing was written.",
+        input.display()
+    );
+    if !tried_deeper {
+        msg.push_str(&format!(
+            "\nTry the deeper repair too (drop --hard-only):\n  sigil mend {inp}"
+        ));
+    }
+    msg.push_str(&format!(
+        "\nIf you have another copy of this Sigil (a backup, a USB stick), give both and Sigil will combine their good parts:\n  sigil mend {inp} other-copy.sg1"
+    ));
+    msg
+}
+
 fn main() {
     let mut cli = Cli::parse();
     if let Some(p) = cli.identity_pass_file.take() {
         let _ = ID_PASS.set(zeroize::Zeroizing::new(p));
+    }
+    // Plain `sigil mend` without -o: pick a fresh name next to the input before the JSON
+    // context is built, so `--json` reports the real output path. (On failure the mend arm
+    // repeats the call and reports the error.)
+    if let Cmd::Mend { input, output, .. } = &mut cli.cmd {
+        if output.is_none() {
+            if let Ok(p) = sigil::mend_out::default_mend_output(input) {
+                *output = Some(p);
+                MEND_DEFAULT_OUT.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
     let jctx = json_ctx(&cli.cmd);
     let log_fail = log_json_fail_format(&cli.cmd);
@@ -3484,15 +3597,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         || sigil::is_work_pack(&input)
                     {
                         return Err(
-                            "--repair is for a plain .sg1 only (use `sigil mend --soft` for packs)"
-                                .into(),
+                            "--repair is for a plain .sg1 only (use `sigil mend` for packs)".into(),
                         );
                     }
                     let data = fs::read(&input)?;
                     let (plain, repaired) =
                         sigil::unseal_repair_keys(&data, pass, &companions, &identities)?;
                     if repaired {
-                        eprintln!("warning: --repair corrected damage in memory (Merkle + true name checked); the Sigil on disk is still damaged — run `sigil mend --soft` to keep a healthy copy");
+                        eprintln!("warning: --repair corrected damage in memory (Merkle + true name checked); the Sigil on disk is still damaged — to keep a healthy copy, run: {}", sigil::mend_out::mend_command(&input));
                     }
                     let mut tmp = output.as_os_str().to_os_string();
                     tmp.push(".unseal-part");
@@ -3953,6 +4065,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             soft,
             ..
         } if !more.is_empty() => {
+            let output = mend_output(&input, output)?;
             if soft {
                 return Err(
                     "--soft works on one copy at a time; mend several copies without --soft".into(),
@@ -3981,7 +4094,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             tmp.push(".mend-part");
             let tmp = PathBuf::from(tmp);
             fs::write(&tmp, &rep.bytes)?;
-            fs::rename(&tmp, &output)?;
+            persist_mend(&tmp, &output)?;
             let (h, merkle_ok, live, k, _) = sigil::verify(&rep.bytes)?;
             let per: Vec<String> = rep.live_per_copy.iter().map(|c| c.to_string()).collect();
             json_extra(&format!(
@@ -4011,9 +4124,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             soft,
+            hard_only,
             ..
         } if sigil::is_atlas_file(&input) => {
-            let mended = sigil::mend_atlas(&input, &output, soft)?;
+            let output = mend_output(&input, output)?;
+            let mended = sigil::mend_atlas(&input, &output, soft || !hard_only)?;
             json_extra(&format!(
                 ",\"kind\":\"atlas\",\"mended\":[{}]",
                 mended.iter().map(|n| jq(n)).collect::<Vec<_>>().join(",")
@@ -4035,6 +4150,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Mend { input, output, .. } if sigil::is_sealed_dir_pack(&input) => {
+            let output = mend_output(&input, output)?;
             json_extra(",\"kind\":\"sealed-folder-pack\"");
             say!("{}", sigil::mend_sealed_dir(&input, &output)?);
         }
@@ -4042,44 +4158,57 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             soft,
+            hard_only,
             ..
         } if sigil::is_plain_dir_pack(&input) => {
+            let output = mend_output(&input, output)?;
             json_extra(",\"kind\":\"folder-pack\"");
-            say!("{}", sigil::mend_plain_dir(&input, &output, soft)?);
+            say!(
+                "{}",
+                sigil::mend_plain_dir(&input, &output, soft || !hard_only)?
+            );
         }
         Cmd::Mend {
             input,
             output,
             soft,
+            hard_only,
             ..
         } if sigil::is_work_pack(&input) => {
-            mend_pack_report(&input, &output, soft)?;
+            let output = mend_output(&input, output)?;
+            mend_pack_report(&input, &output, soft || !hard_only)?;
         }
         Cmd::Mend {
             input,
             output,
             soft,
+            hard_only,
             ..
         } => {
+            let output = mend_output(&input, output)?;
+            // Easy by default: quick (hard) repair first, then the deeper soft repair on
+            // its own. Both keep a result only if the Merkle root and true name match.
+            let auto_soft = !soft && !hard_only;
+            let try_soft = soft || auto_soft;
             let data = fs::read(&input)?;
-            let (healed, used_soft) = match mend_bytes_ex(&data, soft) {
+            let (healed, used_soft) = match mend_bytes_ex(&data, try_soft) {
                 Ok(v) => v,
                 // A large-file pack whose head (even its magic) is damaged looks like
                 // several seals back to back; rebuild the head when that is unambiguous.
                 Err(e) => {
                     drop(data);
                     if sigil::is_damaged_work_pack(&input) {
-                        mend_pack_report(&input, &output, soft)?;
+                        mend_pack_report(&input, &output, try_soft)?;
                         return Ok(());
                     }
-                    return Err(e.into());
+                    return Err(mend_failed(&input, &e.to_string(), try_soft).into());
                 }
             };
             let mut tmp = output.as_os_str().to_os_string();
             tmp.push(".mend-part");
             let tmp = PathBuf::from(tmp);
             fs::write(&tmp, &healed)?;
-            fs::rename(&tmp, &output)?;
+            persist_mend(&tmp, &output)?;
             let (h, merkle_ok, live, k, _) = sigil::verify(&healed)?;
             json_extra(&format!(
                 ",\"kind\":\"mark\",\"live\":{live},\"n\":{},\"need\":{k},\"merkle\":{merkle_ok},\"soft_salvage\":{used_soft}",
@@ -4093,6 +4222,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 ok = if merkle_ok { "ok" } else { "open" },
                 soft_note = if used_soft { ", soft salvage" } else { "" }
             );
+            mend_guidance(&output, used_soft, auto_soft, h.encrypted());
         }
         Cmd::Dispatch {
             input,
@@ -7068,7 +7198,7 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 sigil::status::scry_status_constellation(&sky, pass.as_deref(), &identities).ok()
             };
-            let text = agree_report(text, st.as_ref());
+            let text = agree_report(text, st.as_ref(), None);
             if let (true, Some(st)) = (json, &st) {
                 json_extra(&format!(",\"report\":{}", jq(&text)));
                 json_extra(&status_json(st));

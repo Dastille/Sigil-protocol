@@ -1003,9 +1003,9 @@ pub fn scry_dir_checked(
         None if torn.is_empty() => (text, None),
         None => (
             format!(
-                "{text}\nneeds mend: {} (damaged but repairable, like merkle=open on one file; run `sigil mend {} -o fixed.sg1`)",
+                "{text}\nneeds mend: {} (damaged but repairable, like merkle=open on one file; run: {})",
                 torn.join(", "),
-                input.display()
+                crate::mend_out::mend_command(input)
             ),
             None,
         ),

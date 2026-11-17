@@ -192,9 +192,7 @@ fn healthy(bytes: &[u8]) -> bool {
 pub fn scrub_file(path: &Path) -> Result<ScrubOutcome> {
     let data = fs::read(path).map_err(io)?;
     if data.starts_with(&crate::work::WORK_MAGIC) {
-        return Ok(ScrubOutcome::Skipped(
-            "work pack (use `sigil mend --soft`)".into(),
-        ));
+        return Ok(ScrubOutcome::Skipped("work pack (use `sigil mend`)".into()));
     }
     if crate::verify(&data).is_err() {
         // No header we can read: mend may still find one; otherwise uncorrectable.
