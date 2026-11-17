@@ -69,7 +69,7 @@ fn mend_work_pack_cli() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Scattered bit flips in every shard: plain unseal and plain mend refuse,
+/// Scattered bit flips in every shard: plain unseal and `mend --hard-only` refuse,
 /// `mend --soft` repairs them column by column and the unseal is exact.
 #[test]
 fn mend_soft_cli_repairs_scattered_bit_flips() {
@@ -96,9 +96,11 @@ fn mend_soft_cli_repairs_scattered_bit_flips() {
         .status
         .success());
     assert!(!dir.join("o1.bin").exists());
-    assert!(!sigil(&dir, &["mend", "-o", "m0.sg1", "t.sg1"])
-        .status
-        .success());
+    assert!(
+        !sigil(&dir, &["mend", "--hard-only", "-o", "m0.sg1", "t.sg1"])
+            .status
+            .success()
+    );
     let out = sigil(&dir, &["mend", "--soft", "-o", "m.sg1", "t.sg1"]);
     assert!(
         out.status.success(),

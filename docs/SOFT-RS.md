@@ -12,7 +12,8 @@ or a chewed CRC trailer discards an otherwise intact body.
   soft shards (then soft stripes) to erasure and retries
 - Accept only if Merkle of re-encoded shards matches the header; when not Warded,
   plaintext SHA-256 (true-name) must match too
-- Opt-in: `sigil mend --soft torn.sg1 -o healed.sg1` (hard path first, soft fallback)
+- Opt-in: `sigil mend --soft torn.sg1 -o healed.sg1` (hard path first, soft fallback);
+  since November 2026 plain `sigil mend` does the same by default (`--hard-only` to skip)
 - Glyph unchanged (all-or-nothing; `--soft` does not relax it)
 - Non-goals: Keystone/Ember byte change; replace RaptorQ; Ward substitute
 
@@ -27,7 +28,8 @@ or a chewed CRC trailer discards an otherwise intact body.
   (2·errors + erasures ≤ n − k per column). Any column past that budget fails the call.
 - Accepted only through the same gate: Merkle binding of the re-encoded shards, plus the
   true name when not encrypted. Then the old GMD-lite path runs as before.
-- No byte layout change. Old Sigils benefit as-is. Plain `unseal` and plain `mend` are unchanged.
+- No byte layout change. Old Sigils benefit as-is. Plain `unseal` is unchanged (plain `mend`
+  uses this path by default since November 2026).
 - Measured numbers and limits: `docs/research/DEEP-SPACE.md`.
 - Also fixed while measuring: when every front header copy is gone and bit rot leaves no
   CRC-good shard, the body offset is chosen by where surviving Embers sit (tie-break after
@@ -71,14 +73,22 @@ old 963 s then refused, new under 1 s (0.6–0.8 s) then refused (10 full checks
 finished with a result, the new path returns the same bytes (test
 `mend_soft_matches_old_path_on_damage_corpus`).
 
-Still open (R1 slices, in this order; none of this is in the tool yet):
+R1 slices, in this order:
 
-1. Easy repair by default (Tuesday 17 November 2026 weekday slice). Plain `sigil mend` will
-   try the fast hard repair first, then fall back to soft repair on its own. Soft repair will
-   still only keep a result that passes the Merkle and true-name check. The `--soft` flag will
-   keep working. If `-o` is omitted, the tool will pick a path next to the input and will never
-   overwrite the input. Messages will be plain English and will suggest full, copyable commands.
-   The doctor hint will include the full command too.
+1. **Done (17 November 2026): easy repair by default.** Plain `sigil mend` tries the fast
+   hard repair first, then falls back to soft repair on its own (same code path as `--soft`,
+   so the same acceptance gate: Merkle root of the re-encoded shards, plus the true name when
+   not encrypted). It says in plain words when the deeper repair was used. `--soft` keeps
+   working; `--hard-only` skips the fallback. If `-o` is omitted the output goes next to the
+   input as `<stem>.mended.<ext>` (`-2`, `-3`, … when taken; `crate/sigil/src/mend_out.rs`);
+   it is never the input and never an existing file (a name that appears during the repair
+   is not replaced either). When nothing passes the check, mend writes nothing, exits 2 and
+   prints full copyable next commands (`--hard-only` dropped; another copy pooled). The
+   `doctor` and `scry` hints print the full `sigil mend <file>` command. Folder packs, atlas
+   bags and work packs get the same fallback; several copies at once stay hard-only.
+   Also: an encrypted private-label (v3) Sigil whose key wrap (SGTO) is damaged is now
+   refused by mend instead of being "repaired" into a copy that could never be opened.
+   Tests: `crate/sigil/tests/cli_mend_default.rs`.
 2. Wait screen (Wednesday–Thursday 18–19 November 2026; one roadmap item, estimated at two
    weekday slices — that size is a guess). After a short scan, the tool will estimate how long
    the repair will take. Short repairs will just run. Long repairs will ask first, then show

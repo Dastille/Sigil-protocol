@@ -103,12 +103,26 @@ After overwriting 200 KB in the middle of `photo.sg1`:
 ```
 $ sigil scry torn.sg1
 ok  v2  live=14/16 need=12 merkle=open keystone=intact ...
-$ sigil mend torn.sg1 -o fixed.sg1
-mended torn.sg1 → fixed.sg1 (live 16/16, need 12, merkle ok)
+$ sigil mend torn.sg1
+mended torn.sg1 → torn.mended.sg1 (live 16/16, need 12, merkle ok)
+Your repaired copy is torn.mended.sg1 (no -o given, so Sigil picked a new name next to the original). The damaged file was left as it is.
+To double-check the repaired copy: sigil verify torn.mended.sg1
 ```
 
+Without `-o`, the repaired copy goes next to the original as `<name>.mended.<ext>`
+(`torn.mended.sg1`); if that name is taken, `torn.mended-2.sg1`, `-3`, and so on. It never
+writes over the original or over a file that already exists. `-o fixed.sg1` still picks
+the name yourself.
+
+Plain `mend` tries the quick repair first (rebuild from the pieces whose checksums still
+pass). If that is not enough it moves on, by itself, to the deeper repair for bit rot below
+and says so. Either way the result is kept only if the hash tree (and, when not encrypted,
+the file hash) match; otherwise it writes nothing, exits 2 and prints the next command to
+try. `--hard-only` skips the deeper repair; `--soft` still works as before.
+
 Scattered bit flips (radiation, bit rot) spread over many pieces break every
-piece's checksum, so plain `unseal` and `mend` refuse. `sigil mend --soft` repairs
+piece's checksum, so plain `unseal` and the quick repair refuse. The deeper repair (plain
+`sigil mend`, or `sigil mend --soft`) repairs
 them byte column by byte column (up to 2 wrong bytes per column in Reflection, 4
 in Seal, fewer when pieces are missing; a wiped piece counts as missing, and a piece's
 own checksum can settle a few columns past that) and keeps the result only if the hash
@@ -122,7 +136,9 @@ one at the end) and neither can be mended alone:
 
 ```
 $ sigil mend copy1.sg1 -o fixed.sg1
-need 12 live shards to mend, have 11
+could not repair copy1.sg1: too damaged to rebuild from this copy (soft mend could not reconstruct a true-name match). Nothing was written.
+If you have another copy of this Sigil (a backup, a USB stick), give both and Sigil will combine their good parts:
+  sigil mend copy1.sg1 other-copy.sg1
 $ sigil mend copy1.sg1 copy2.sg1 -o fixed.sg1
 mended 2 copies → fixed.sg1 (good shards per copy: copy1.sg1 (11/16), copy2.sg1 (11/16); pooled 16/16, need 12; now live 16/16, merkle ok)
 ```
@@ -719,11 +735,13 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
-- `sigil mend --soft` shows no progress or time estimate yet, and does not ask before a long
-  repair. Plain `sigil mend` also does not yet fall back to soft repair on its own, and still
-  requires `-o`. The planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): easy repair by
-  default, then a wait screen (scan, estimate, then decide), then threads, a GPU option, and
-  joint solving for more stuck columns. Soft repair is bounded (a work cap plus at most
+- `sigil mend` (and `--soft`) shows no progress or time estimate yet, and does not ask before
+  a long repair. Plain `sigil mend` now falls back to soft repair on its own and picks an output
+  name when `-o` is left out (done 17 November 2026). The rest of the planned order is in
+  [docs/SOFT-RS.md](docs/SOFT-RS.md): a wait screen (scan, estimate, then decide), then
+  threads, a GPU option, and joint solving for more stuck columns. An explicit `-o` that names
+  an existing file still replaces it (after the repair has passed its check), as before.
+  When several copies are given, the deeper repair is not used (one copy at a time). Soft repair is bounded (a work cap plus at most
   2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
   damage past the per-column Reed–Solomon limit is still refused.
 - Damage near the start of a file still costs more: the header region is used to
