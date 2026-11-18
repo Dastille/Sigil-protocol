@@ -96,6 +96,12 @@ R1 slices, in this order:
    weekday slices — that size is a guess). After a short scan, the tool will estimate how long
    the repair will take. Short repairs will just run. Long repairs will ask first, then show
    progress and a way to Stop. The time cut-offs come from the 11 November 2026 wait-UX notes.
+   First half done 18 November 2026: `mend --scan` (look only), the damage kind (clean,
+   truncated, one region, scattered, mixed) and repair path (quick, deeper, deeper-hard,
+   not enough), a padded time estimate, plain `mend` telling the scan from 10 s, and
+   `--max-secs` for unattended jobs (exit 4, nothing written). See docs/MEND-SCAN.md.
+   Still to do: progress, asking before long repairs (over ~2 minutes), Stop, and live
+   re-estimates.
 3. Then: racing regions across threads, with a way to cancel.
 4. Then: a GPU option, with a CPU path that must still work.
 5. Then: joint solving for more than 64 stuck columns. Heavy scattered damage past the
