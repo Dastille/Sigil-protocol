@@ -65,6 +65,7 @@ mod pieces;
 pub mod pretty;
 pub mod privacy;
 pub mod readdata;
+pub mod repair_scan;
 mod rs;
 mod rs_ref;
 pub mod scrub;

@@ -362,6 +362,11 @@ fn json_ctx(cmd: &Cmd) -> Option<(&'static str, Option<PathBuf>)> {
             cmd: VaultCmd::Versions { json: true, .. },
         } => Some(("vault versions", None)),
         Cmd::Mend {
+            json: true,
+            scan: true,
+            ..
+        } => Some(("mend", None)),
+        Cmd::Mend {
             json: true, output, ..
         } => Some(("mend", output.clone())),
         Cmd::Scatter {
@@ -736,6 +741,14 @@ enum Cmd {
         /// bit-rot repair that plain `mend` falls back to
         #[arg(long, conflicts_with = "soft")]
         hard_only: bool,
+        /// Only look: report the kind of damage, which repair it needs and a rough time
+        /// estimate, then stop. Writes nothing
+        #[arg(long, conflicts_with_all = ["output", "max_secs"])]
+        scan: bool,
+        /// For scripts and scheduled jobs: scan first, and if the padded time estimate is
+        /// over SECS, write nothing and exit 4 ("repair skipped") instead of repairing
+        #[arg(long, value_name = "SECS")]
+        max_secs: Option<u64>,
     },
     /// Copy an existing Sigil with rsync, rclone, and/or wormhole.
     #[command(visible_alias = "send")]
@@ -3099,6 +3112,29 @@ fn persist_mend(tmp: &Path, out: &Path) -> std::io::Result<()> {
     }
 }
 
+/// From this padded estimate on, plain `mend` tells the person what it found before it
+/// starts (wait-UX notes, 11 Nov 2026: show progress and a rough time from ~10 s).
+const MEND_TELL_SECS: f64 = 10.0;
+
+/// `--max-secs`: refuse (exit 4, nothing written) when the padded estimate is over `limit`.
+fn mend_time_gate(
+    input: &Path,
+    rep: &sigil::repair_scan::RepairScan,
+    limit: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if rep.est_secs <= limit as f64 {
+        return Ok(());
+    }
+    json_extra(",\"skipped\":true");
+    Err(format!(
+        "{}\nrepair skipped: the padded estimate ({:.1} seconds) is over --max-secs {limit}. Nothing was written. To repair it anyway:\n  sigil mend {}",
+        rep.describe(),
+        rep.est_secs,
+        sigil::mend_out::shell_word(&input.display().to_string())
+    )
+    .into())
+}
+
 /// Plain-English lines after a successful single-file `sigil mend`.
 fn mend_guidance(out: &Path, deeper_used: bool, auto: bool, encrypted: bool) {
     if deeper_used && auto {
@@ -3147,7 +3183,13 @@ fn main() {
     // Plain `sigil mend` without -o: pick a fresh name next to the input before the JSON
     // context is built, so `--json` reports the real output path. (On failure the mend arm
     // repeats the call and reports the error.)
-    if let Cmd::Mend { input, output, .. } = &mut cli.cmd {
+    if let Cmd::Mend {
+        input,
+        output,
+        scan: false,
+        ..
+    } = &mut cli.cmd
+    {
         if output.is_none() {
             if let Ok(p) = sigil::mend_out::default_mend_output(input) {
                 *output = Some(p);
@@ -3224,6 +3266,8 @@ fn not_recoverable(why: &str) -> String {
 fn classify_exit(msg: &str) -> i32 {
     if msg.contains("no boot Sigil") {
         3
+    } else if msg.contains("repair skipped:") {
+        4
     } else if msg.contains("too damaged")
         || msg.contains("will not guess")
         || msg.contains("work pack incomplete")
@@ -4061,6 +4105,45 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::Mend {
             input,
             more,
+            scan: true,
+            ..
+        } => {
+            if !more.is_empty() {
+                return Err("--scan looks at one copy at a time".into());
+            }
+            let rep = sigil::repair_scan::scan_path(&input).map_err(|e| {
+                format!(
+                    "could not scan {}: {e}. Plain `sigil mend {}` may still be able to repair it.",
+                    input.display(),
+                    sigil::mend_out::shell_word(&input.display().to_string())
+                )
+            })?;
+            json_extra(&format!(",\"scan\":{}", rep.json()));
+            say!("{}", rep.describe());
+            if !matches!(rep.path, sigil::repair_scan::RepairPath::NotNeeded) {
+                say!(
+                    "Nothing was written. To repair it: sigil mend {}",
+                    sigil::mend_out::shell_word(&input.display().to_string())
+                );
+            }
+        }
+        Cmd::Mend {
+            input,
+            more,
+            max_secs: Some(_),
+            ..
+        } if !more.is_empty()
+            || sigil::is_atlas_file(&input)
+            || sigil::is_sealed_dir_pack(&input)
+            || sigil::is_plain_dir_pack(&input) =>
+        {
+            return Err(
+                "--max-secs works on one single Sigil or large-file pack at a time (not several copies, folder packs or atlas bags)".into(),
+            );
+        }
+        Cmd::Mend {
+            input,
+            more,
             output,
             soft,
             ..
@@ -4173,9 +4256,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             soft,
             hard_only,
+            max_secs,
             ..
         } if sigil::is_work_pack(&input) => {
             let output = mend_output(&input, output)?;
+            if let Some(limit) = max_secs {
+                // A pack whose framing will not parse skips the scan; mend decides.
+                if let Ok(rep) = sigil::repair_scan::scan_path(&input) {
+                    mend_time_gate(&input, &rep, limit)?;
+                }
+            }
             mend_pack_report(&input, &output, soft || !hard_only)?;
         }
         Cmd::Mend {
@@ -4183,6 +4273,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             output,
             soft,
             hard_only,
+            max_secs,
             ..
         } => {
             let output = mend_output(&input, output)?;
@@ -4191,6 +4282,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let auto_soft = !soft && !hard_only;
             let try_soft = soft || auto_soft;
             let data = fs::read(&input)?;
+            // Scan → estimate → decide. A scan error is not a verdict: mend still tries.
+            if let Ok(rep) = sigil::repair_scan::scan_bytes(&data) {
+                json_extra(&format!(",\"scan\":{}", rep.json()));
+                if let Some(limit) = max_secs {
+                    mend_time_gate(&input, &rep, limit)?;
+                }
+                if rep.est_secs >= MEND_TELL_SECS {
+                    say!(
+                        "{}\nWorking on it now. Nothing is written until the result passes the full check, and Ctrl-C stops without touching the original.",
+                        rep.describe()
+                    );
+                }
+            }
             let (healed, used_soft) = match mend_bytes_ex(&data, try_soft) {
                 Ok(v) => v,
                 // A large-file pack whose head (even its magic) is damaged looks like

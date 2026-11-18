@@ -114,6 +114,24 @@ Without `-o`, the repaired copy goes next to the original as `<name>.mended.<ext
 writes over the original or over a file that already exists. `-o fixed.sg1` still picks
 the name yourself.
 
+To look before repairing, `sigil mend --scan` says what kind of damage it found, which
+repair it needs and a rough time, and writes nothing:
+
+```
+$ sigil mend --scan torn.sg1
+Scan: one damaged stretch (a wiped or unreadable area). Shards: 14 good, 2 damaged, 0 missing.
+Repair: the quick repair should be enough.
+Estimated time: under 10 seconds on a computer like the one this was measured on (a rough guess, padded high).
+Nothing was written. To repair it: sigil mend torn.sg1
+```
+
+The scan is a hint, not a verdict: `mend` still makes the final call and still keeps a
+result only if it passes the full check. Scripts and scheduled jobs can add
+`--max-secs SECS`: when the padded estimate is longer, `mend` writes nothing and exits 4
+("repair skipped") so the job can report it instead of running for hours. Plain `mend`
+prints the scan before it starts when the estimate is 10 seconds or more. The time model
+and its measurements are in [docs/MEND-SCAN.md](docs/MEND-SCAN.md).
+
 Plain `mend` tries the quick repair first (rebuild from the pieces whose checksums still
 pass). If that is not enough it moves on, by itself, to the deeper repair for bit rot below
 and says so. Either way the result is kept only if the hash tree (and, when not encrypted,
@@ -649,6 +667,7 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 | 1 | error or refused (bad key, missing file, empty stdin, wrong option combo) |
 | 2 | too damaged to restore, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
 | 3 | no boot Sigil found |
+| 4 | `mend --max-secs`: repair skipped because the estimate was too long; nothing written |
 
 `doctor` keeps its own documented codes.
 
@@ -735,11 +754,14 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
-- `sigil mend` (and `--soft`) shows no progress or time estimate yet, and does not ask before
-  a long repair. Plain `sigil mend` now falls back to soft repair on its own and picks an output
-  name when `-o` is left out (done 17 November 2026). The rest of the planned order is in
-  [docs/SOFT-RS.md](docs/SOFT-RS.md): a wait screen (scan, estimate, then decide), then
-  threads, a GPU option, and joint solving for more stuck columns. An explicit `-o` that names
+- `sigil mend` (and `--soft`) shows no progress bar yet, has no Stop button other than
+  Ctrl-C, and does not ask before a long repair. Since 18 November 2026 it scans first
+  (`--scan`, `--max-secs`; plain `mend` prints the scan when the estimate is 10 s or more on a
+  single Sigil). Large-file packs are scanned only with `--scan` / `--max-secs`, and a pack
+  whose framing is damaged cannot be scanned (plain `mend` still tries). Time estimates are a
+  throughput model measured on one 8-core machine and are unverified elsewhere. The rest of
+  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): progress and asking before long
+  repairs, then threads, a GPU option, and joint solving for more stuck columns. An explicit `-o` that names
   an existing file still replaces it (after the repair has passed its check), as before.
   When several copies are given, the deeper repair is not used (one copy at a time). Soft repair is bounded (a work cap plus at most
   2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
