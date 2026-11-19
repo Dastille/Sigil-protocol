@@ -475,6 +475,7 @@ pub(crate) fn mend_bytes_stats(
     drop(live);
 
     // Soft path: keep CRC-failed bodies; repair column by column, easy first.
+    crate::repair_ctl::check()?;
     let graded = header::gather_graded_shards(file, &h, prefix);
     let present = graded.iter().filter(|g| g.is_present()).count();
     if present < k {
@@ -519,6 +520,8 @@ pub(crate) fn mend_bytes_stats(
         }
     }
     drop(ratchet_parts);
+    // A stopped column repair is an error above; do not fall back as if it had failed.
+    crate::repair_ctl::check()?;
 
     // Bounded fallback: the old shard-order GMD-lite candidates (≤ 2(n−k)+1 checks).
     let parts: Vec<rs::SoftPart> = graded
@@ -541,10 +544,15 @@ pub(crate) fn mend_bytes_stats(
     let mut accepted: Option<Vec<Vec<u8>>> = None;
     let gates = &mut stats.gate_calls;
     rs::decode_soft_gmd(&parts, k, n, h.folded_len as usize, systematic, |p| {
+        // Ctrl-C: end the search with nothing accepted (reported as stopped below).
+        if crate::repair_ctl::stop_requested() {
+            return true;
+        }
         *gates += 1;
         accepted = checked_shards(&h, p);
         accepted.is_some()
     })?;
+    crate::repair_ctl::check()?;
     let shards = accepted.ok_or_else(|| {
         crate::Error::Msg("soft mend could not reconstruct a true-name match".into())
     })?;

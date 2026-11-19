@@ -77,10 +77,54 @@ wait-UX notes ask. Measurement script: `/workspace/sigil-1118-scan/rates.py` and
   nothing and exit 4 with "repair skipped"; `--json` adds `"skipped":true`. Several copies,
   folder packs and atlas bags are refused with `--max-secs` (exit 1).
 
+## Second half (19 November 2026): progress, ask, Stop
+
+Code: `crate/sigil/src/repair_ctl.rs` (stop flag, progress counters, the ask/skip rule,
+the question, the progress line); CLI wiring in `main.rs` (`mend_wait_gate`,
+`mend_stop_gate`, `RepairWatch`, `install_stop_handler`). Tests: `repair_ctl::tests` (3),
+`crate/sigil/tests/cli_mend_wait.rs` (4, two on a pseudo-terminal via util-linux `script`)
+and `crate/sigil/tests/lib_repair_stop.rs` (1). No file-format change.
+
+Rule, single Sigil, no `--max-secs` (with `--max-secs` the old rule stays: over SECS → exit 4):
+
+| who is there | estimate | what happens |
+|---|---|---|
+| terminal (stdin and stderr), not `--json` | ≤ 120 s | just run (scan shown from 10 s) |
+| terminal | > 120 s | scan shown, then `Keep going? [y/N]`; only `y`/`yes` starts; anything else, Enter or end of input: exit 4, nothing written |
+| nobody (no terminal, or `--json`) | ≤ 900 s | just run, never ask |
+| nobody | > 900 s | exit 4 ("repair skipped"), nothing written, `--json` adds `"skipped":true` |
+| `--yes` / `-y` | any | run without asking |
+
+The 120 s ask point and the 900 s unattended budget are the wait-UX notes' defaults (§2.1 E
+and G; reasoned defaults, not lab results). They can be changed with
+`SIGIL_MEND_ASK_SECS` and `SIGIL_MEND_UNATTENDED_SECS` (the "Settings" in §4 of the notes);
+a value that is not a whole number is refused (exit 1, nothing written). Scans that say
+"no damage" or "probably too damaged" never ask: there is no slow work to start.
+
+Progress: when stderr is a terminal, a thread redraws one line on stderr every second once
+the repair has run 5 seconds ("Repairing… 40 seconds so far, about 2 minutes left. Ctrl-C
+stops safely."; a large-file pack adds "3 of 40 parts done"). Past the estimate it says
+"Taking longer than first thought; still working" instead of a wrong number. The line is
+cleared before the result is printed. Not shown when stderr is not a terminal.
+
+Stop: on Unix a SIGINT handler (via `libc`, already in the dependency tree through `fuser`;
+no new crate in `Cargo.lock`, `cargo audit` unchanged) sets a flag and prints "Stopping
+safely…". The deeper repair checks it before every column it works on (`par_map`), every
+ratchet round and the fallback search; the pack repair checks it before every chunk star and
+before the rename. After the repair returns, the CLI checks the flag before writing, so a
+stop always ends with "repair stopped: … Nothing was written", exit 130, and no output or
+`.mend-part` file. A second Ctrl-C quits at once (`_exit(130)`). The handler is installed
+only after any question, so Ctrl-C at the question still quits straight away.
+
 ## Limitations
 
-- No progress bar, no question before long repairs, no Stop besides Ctrl-C, no live
-  re-estimate yet (second half of step 2).
+- No live re-estimate; the question comes before the repair starts (the notes ask for it
+  after the quick part) and has no "finish tonight" option; the relative "4× a normal read"
+  test from the notes is not used (so it asks at least as often as the notes would).
+- Ctrl-C does not interrupt the quick repair or the final full check (they are short and
+  run to the end; nothing is written afterwards). On Windows there is no handler: Ctrl-C
+  ends the process (nothing is written before the check; a `.mend-part` may stay if it
+  lands during the final write).
 - Large-file packs are scanned only with `--scan` / `--max-secs`; plain `mend` does not
   scan them first (it would read the pack twice). Merging the scan into the repair pass
   with progress is part of the second half.

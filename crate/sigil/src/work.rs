@@ -1031,6 +1031,9 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
         let mut soft_used = false;
         let mut guards_restored = 0u32;
         for (i, &(start, len)) in l.stars.iter().enumerate() {
+            // Ctrl-C: stop between stars; the error path below removes the temp file.
+            crate::repair_ctl::check()?;
+            crate::repair_ctl::set_progress(i as u64, l.stars.len() as u64);
             let i = i as u32;
             let mut star = vec![0u8; len as usize];
             src.read_at(start, &mut star)?;
@@ -1069,6 +1072,8 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
         }
         w.flush().map_err(io)?;
         w.get_ref().sync_all().map_err(io)?;
+        crate::repair_ctl::check()?;
+        crate::repair_ctl::set_progress(l.stars.len() as u64, l.stars.len() as u64);
         Ok(PackMendReport {
             stars: n,
             mended,
