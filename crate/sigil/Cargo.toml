@@ -54,3 +54,5 @@ memmap2 = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 fuser = "0.18"
+# Ctrl-C (SIGINT) handler for `sigil mend` so a stop is clean; already in the tree via fuser.
+libc = "0.2"

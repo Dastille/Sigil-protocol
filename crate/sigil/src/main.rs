@@ -749,6 +749,11 @@ enum Cmd {
         /// over SECS, write nothing and exit 4 ("repair skipped") instead of repairing
         #[arg(long, value_name = "SECS")]
         max_secs: Option<u64>,
+        /// Start even a long repair without asking first (plain `mend` asks on a terminal
+        /// when the estimate is over about 2 minutes, and skips with exit 4 when nobody can
+        /// be asked and the estimate is over 15 minutes)
+        #[arg(short = 'y', long, conflicts_with = "scan")]
+        yes: bool,
     },
     /// Copy an existing Sigil with rsync, rclone, and/or wormhole.
     #[command(visible_alias = "send")]
@@ -3135,6 +3140,156 @@ fn mend_time_gate(
     .into())
 }
 
+/// Plain `mend` without `--max-secs`: ask on a terminal before a repair over the ask point
+/// (`SIGIL_MEND_ASK_SECS`, default 120); with nobody to ask (no terminal, or `--json`),
+/// skip with exit 4 past the unattended budget (`SIGIL_MEND_UNATTENDED_SECS`, default 900).
+/// `--yes` starts without asking. Returns `true` when the person was asked and said yes.
+fn mend_wait_gate(
+    input: &Path,
+    rep: &sigil::repair_scan::RepairScan,
+    yes: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use sigil::repair_ctl::{decide, secs_setting, WaitDecision};
+    if matches!(
+        rep.path,
+        sigil::repair_scan::RepairPath::NotNeeded | sigil::repair_scan::RepairPath::NotEnough
+    ) {
+        // Nothing slow to start: "not enough" is refused quickly by mend itself.
+        return Ok(false);
+    }
+    let ask_secs = secs_setting("SIGIL_MEND_ASK_SECS", sigil::repair_ctl::ASK_SECS)?;
+    let budget = secs_setting(
+        "SIGIL_MEND_UNATTENDED_SECS",
+        sigil::repair_ctl::UNATTENDED_SECS,
+    )?;
+    let interactive = can_prompt() && !JSON_MODE.load(std::sync::atomic::Ordering::Relaxed);
+    let again = format!(
+        "  sigil mend --yes {}",
+        sigil::mend_out::shell_word(&input.display().to_string())
+    );
+    match decide(rep.est_secs, interactive, yes, ask_secs, budget) {
+        WaitDecision::Go => Ok(false),
+        WaitDecision::Ask => {
+            eprintln!("{}", rep.describe());
+            let words = sigil::repair_scan::coarse_time(rep.est_secs);
+            let ok = sigil::repair_ctl::ask_keep_going(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stderr(),
+                &words,
+            );
+            if ok {
+                return Ok(true);
+            }
+            json_extra(",\"skipped\":true");
+            Err(format!(
+                "repair skipped: you chose not to start it now. Nothing was written; {} is unchanged. To repair it later without this question:\n{again}",
+                input.display()
+            )
+            .into())
+        }
+        WaitDecision::Skip => {
+            json_extra(",\"skipped\":true");
+            Err(format!(
+                "{}\nrepair skipped: there is no one at a terminal to ask, and the padded estimate ({:.1} seconds) is over the {budget}-second limit for unattended runs (SIGIL_MEND_UNATTENDED_SECS). Nothing was written. To repair it anyway:\n{again}",
+                rep.describe(),
+                rep.est_secs
+            )
+            .into())
+        }
+    }
+}
+
+/// After a repair returns: if Ctrl-C was pressed, report "stopped" (exit 130) and write
+/// nothing, whatever the repair produced.
+fn mend_stop_gate(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !sigil::repair_ctl::stop_requested() {
+        return Ok(());
+    }
+    json_extra(",\"stopped\":true");
+    Err(format!(
+        "{} you pressed Ctrl-C. Nothing was written; {} is unchanged. Run the same command again to start over.",
+        sigil::repair_ctl::STOPPED,
+        input.display()
+    )
+    .into())
+}
+
+/// Ctrl-C handling and the progress line while a repair runs. Ctrl-C once asks the repair
+/// to stop at its next check (nothing is written); twice quits at once.
+struct RepairWatch {
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl RepairWatch {
+    /// Install the Ctrl-C handler and, when stderr is a terminal, start a thread that
+    /// shows a progress line once the repair has run for 5 seconds (short repairs stay
+    /// quiet). `est` is the padded scan estimate in seconds, if there is one.
+    fn start(est: Option<f64>) -> Self {
+        use std::io::IsTerminal;
+        install_stop_handler();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread = std::io::stderr().is_terminal().then(|| {
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let t0 = std::time::Instant::now();
+                let mut shown = false;
+                let mut last = 0u64;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let el = t0.elapsed().as_secs_f64();
+                    let tick = el as u64;
+                    if el < 5.0 || tick == last || sigil::repair_ctl::stop_requested() {
+                        continue;
+                    }
+                    last = tick;
+                    shown = true;
+                    let line =
+                        sigil::repair_ctl::progress_line(el, est, sigil::repair_ctl::progress());
+                    eprint!("\r\x1b[2K{line}");
+                }
+                if shown {
+                    eprint!("\r\x1b[2K");
+                }
+            })
+        });
+        RepairWatch { done, thread }
+    }
+}
+
+impl Drop for RepairWatch {
+    fn drop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// First Ctrl-C: ask the repair to stop safely. Second: quit at once (exit 130).
+#[cfg(unix)]
+fn install_stop_handler() {
+    extern "C" fn on_int(_sig: libc::c_int) {
+        if sigil::repair_ctl::request_stop() {
+            // SAFETY: `_exit` is async-signal-safe and takes no pointers.
+            unsafe { libc::_exit(130) };
+        }
+        let msg = b"\nStopping safely... nothing will be written. (Ctrl-C again quits at once.)\n";
+        // SAFETY: `write` is async-signal-safe; `msg` is a valid static buffer of that length.
+        let _ = unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
+    }
+    // SAFETY: the handler only does an atomic swap and async-signal-safe calls (`write`,
+    // `_exit`); `signal` with a valid `extern "C"` function pointer has no other preconditions.
+    unsafe {
+        libc::signal(libc::SIGINT, on_int as *const () as libc::sighandler_t);
+    }
+}
+
+/// Not Unix: Ctrl-C keeps its default (the process ends). A repair still writes nothing
+/// until its result has passed the full check.
+#[cfg(not(unix))]
+fn install_stop_handler() {}
+
 /// Plain-English lines after a successful single-file `sigil mend`.
 fn mend_guidance(out: &Path, deeper_used: bool, auto: bool, encrypted: bool) {
     if deeper_used && auto {
@@ -3268,6 +3423,8 @@ fn classify_exit(msg: &str) -> i32 {
         3
     } else if msg.contains("repair skipped:") {
         4
+    } else if msg.contains(sigil::repair_ctl::STOPPED) {
+        130
     } else if msg.contains("too damaged")
         || msg.contains("will not guess")
         || msg.contains("work pack incomplete")
@@ -4266,7 +4423,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     mend_time_gate(&input, &rep, limit)?;
                 }
             }
-            mend_pack_report(&input, &output, soft || !hard_only)?;
+            let watch = RepairWatch::start(None);
+            let result = mend_pack_report(&input, &output, soft || !hard_only);
+            drop(watch);
+            mend_stop_gate(&input)?;
+            result?;
         }
         Cmd::Mend {
             input,
@@ -4274,6 +4435,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             soft,
             hard_only,
             max_secs,
+            yes,
             ..
         } => {
             let output = mend_output(&input, output)?;
@@ -4282,20 +4444,34 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let auto_soft = !soft && !hard_only;
             let try_soft = soft || auto_soft;
             let data = fs::read(&input)?;
+            let mut est = None;
             // Scan → estimate → decide. A scan error is not a verdict: mend still tries.
             if let Ok(rep) = sigil::repair_scan::scan_bytes(&data) {
                 json_extra(&format!(",\"scan\":{}", rep.json()));
-                if let Some(limit) = max_secs {
-                    mend_time_gate(&input, &rep, limit)?;
-                }
-                if rep.est_secs >= MEND_TELL_SECS {
+                let asked = match max_secs {
+                    Some(limit) => {
+                        mend_time_gate(&input, &rep, limit)?;
+                        false
+                    }
+                    None => mend_wait_gate(&input, &rep, yes)?,
+                };
+                // From here Ctrl-C stops safely (after any question, so it still quits there).
+                install_stop_handler();
+                if asked {
+                    say!("Working on it now. Ctrl-C stops without touching the original.");
+                } else if rep.est_secs >= MEND_TELL_SECS {
                     say!(
                         "{}\nWorking on it now. Nothing is written until the result passes the full check, and Ctrl-C stops without touching the original.",
                         rep.describe()
                     );
                 }
+                est = Some(rep.est_secs);
             }
-            let (healed, used_soft) = match mend_bytes_ex(&data, try_soft) {
+            let watch = RepairWatch::start(est);
+            let result = mend_bytes_ex(&data, try_soft);
+            drop(watch);
+            mend_stop_gate(&input)?;
+            let (healed, used_soft) = match result {
                 Ok(v) => v,
                 // A large-file pack whose head (even its magic) is damaged looks like
                 // several seals back to back; rebuild the head when that is unambiguous.

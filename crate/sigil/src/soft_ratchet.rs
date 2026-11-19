@@ -193,6 +193,7 @@ pub fn decode(
     // 3 + 4: erasure guesses, then promote soft shards whose stored CRC now matches to
     // trusted, and go again with fewer unknowns — until nothing more settles.
     loop {
+        crate::repair_ctl::check()?;
         if stuck.is_empty() {
             break;
         }
@@ -308,6 +309,7 @@ pub fn decode(
     }
 
     // 4b + 5: joint CRC match for the few columns still stuck, then best guesses.
+    crate::repair_ctl::check()?;
     if !stuck.is_empty() {
         let soft: Vec<usize> = (0..p).filter(|&t| !rows[t].hard).collect();
         let dead = dead_rows(&soft, &errs, observed);
@@ -953,26 +955,41 @@ fn worker_count(items: usize) -> usize {
 
 /// `items.map(f)` on up to 8 std threads; same output, in order, whatever the thread count.
 fn par_map<T: Send, F: Fn(usize) -> T + Sync>(items: &[usize], f: F) -> Result<Vec<T>, Error> {
+    // Every item first checks for a stop request (Ctrl-C); a stopped map is an error, so a
+    // short result is never used as a whole one.
+    let run = |c: &[usize]| -> Vec<T> {
+        c.iter()
+            .map_while(|&j| (!crate::repair_ctl::stop_requested()).then(|| f(j)))
+            .collect()
+    };
     let threads = worker_count(items.len());
-    if threads <= 1 {
-        return Ok(items.iter().map(|&j| f(j)).collect());
+    let out =
+        if threads <= 1 {
+            run(items)
+        } else {
+            let chunk = items.len().div_ceil(threads);
+            std::thread::scope(|s| {
+                let run = &run;
+                let handles: Vec<_> = items
+                    .chunks(chunk)
+                    .map(|c| s.spawn(move || run(c)))
+                    .collect();
+                let mut out = Vec::with_capacity(items.len());
+                for h in handles {
+                    out.extend(h.join().map_err(|_| {
+                        Error::Msg("soft repair worker stopped unexpectedly".into())
+                    })?);
+                }
+                Ok::<_, Error>(out)
+            })?
+        };
+    crate::repair_ctl::check()?;
+    if out.len() != items.len() {
+        return Err(Error::Msg(
+            "soft repair: a worker returned too few results".into(),
+        ));
     }
-    let chunk = items.len().div_ceil(threads);
-    std::thread::scope(|s| {
-        let f = &f;
-        let handles: Vec<_> = items
-            .chunks(chunk)
-            .map(|c| s.spawn(move || c.iter().map(|&j| f(j)).collect::<Vec<T>>()))
-            .collect();
-        let mut out = Vec::with_capacity(items.len());
-        for h in handles {
-            out.extend(
-                h.join()
-                    .map_err(|_| Error::Msg("soft repair worker stopped unexpectedly".into()))?,
-            );
-        }
-        Ok(out)
-    })
+    Ok(out)
 }
 
 #[cfg(test)]

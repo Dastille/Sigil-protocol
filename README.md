@@ -132,6 +132,32 @@ result only if it passes the full check. Scripts and scheduled jobs can add
 prints the scan before it starts when the estimate is 10 seconds or more. The time model
 and its measurements are in [docs/MEND-SCAN.md](docs/MEND-SCAN.md).
 
+Long repairs (since 19 November 2026):
+
+- On a terminal, after 5 seconds a one-line progress note shows on stderr (time so far,
+  rough time left, chunks done for a large-file pack). Short repairs stay quiet.
+- On a terminal, if the estimate is over about 2 minutes, `mend` asks first. Only `y`
+  starts; Enter or anything else writes nothing and exits 4. `--yes` (`-y`) skips the
+  question.
+- With nobody to ask (no terminal, or `--json`) and no `--max-secs`, a repair estimated
+  over 15 minutes is skipped (exit 4, nothing written); `--yes` runs it anyway.
+- Ctrl-C stops a running repair safely: nothing is written, the original is unchanged,
+  exit 130. Ctrl-C twice quits at once.
+
+```
+$ sigil mend huge.sg1
+Scan: scattered small errors (bit rot). ...
+Estimated time: about 5 minutes on a computer like the one this was measured on (a rough guess, padded high).
+This repair may take about 5 minutes (a rough guess, padded high).
+Your file is safe either way: nothing is written until the result passes the full check.
+Keep going? [y/N] y
+Working on it now. Ctrl-C stops without touching the original.
+Repairing… 40 seconds so far, about 5 minutes left. Ctrl-C stops safely.
+```
+
+The 2-minute and 15-minute points can be changed with `SIGIL_MEND_ASK_SECS` and
+`SIGIL_MEND_UNATTENDED_SECS` (whole seconds). See [docs/MEND-SCAN.md](docs/MEND-SCAN.md).
+
 Plain `mend` tries the quick repair first (rebuild from the pieces whose checksums still
 pass). If that is not enough it moves on, by itself, to the deeper repair for bit rot below
 and says so. Either way the result is kept only if the hash tree (and, when not encrypted,
@@ -667,7 +693,8 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 | 1 | error or refused (bad key, missing file, empty stdin, wrong option combo) |
 | 2 | too damaged to restore, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
 | 3 | no boot Sigil found |
-| 4 | `mend --max-secs`: repair skipped because the estimate was too long; nothing written |
+| 4 | `mend`: repair skipped — the estimate was over `--max-secs`, over the 15-minute unattended limit with nobody to ask, or you answered no; nothing written |
+| 130 | `mend`: stopped with Ctrl-C; nothing written |
 
 `doctor` keeps its own documented codes.
 
@@ -754,14 +781,23 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
   `--pass-file /dev/stdin` for that). Only `unseal` asks on its own when a key is
   missing. (`--pass VALUE`, `--seal-pass VALUE` and `--ward PATH=PASSWORD` on the command line are refused.)
-- `sigil mend` (and `--soft`) shows no progress bar yet, has no Stop button other than
-  Ctrl-C, and does not ask before a long repair. Since 18 November 2026 it scans first
-  (`--scan`, `--max-secs`; plain `mend` prints the scan when the estimate is 10 s or more on a
-  single Sigil). Large-file packs are scanned only with `--scan` / `--max-secs`, and a pack
-  whose framing is damaged cannot be scanned (plain `mend` still tries). Time estimates are a
-  throughput model measured on one 8-core machine and are unverified elsewhere. The rest of
-  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): progress and asking before long
-  repairs, then threads, a GPU option, and joint solving for more stuck columns. An explicit `-o` that names
+- `sigil mend` scans first (since 18 November 2026) and, since 19 November 2026, shows a
+  progress line on a terminal, asks before repairs estimated over about 2 minutes, skips
+  (exit 4) unattended repairs estimated over 15 minutes, and stops cleanly on Ctrl-C (exit
+  130, nothing written). Limits: the ask and the unattended skip work only on a single
+  Sigil (a large-file pack is not scanned by plain `mend`, so it is never asked about or
+  skipped unless `--max-secs` is given; folder packs, atlas bags and several copies are not
+  scanned at all). The question comes before any repair starts (not after the quick part)
+  and offers only yes/no (no "finish tonight" option yet). The progress line is time-based
+  for a single Sigil (no percentage) and the estimate is not re-measured while it runs.
+  Ctrl-C is checked between columns and chunks of the deeper repair; the quick repair and the
+  final check are not interruptible (a stop waits for them, then writes nothing). On Windows,
+  Ctrl-C ends the process the default way (still nothing written before the full check).
+  A second Ctrl-C during the last instant of writing can leave a `*.mend-part` temp file
+  (never the output name). A pack whose framing is damaged cannot be scanned (plain `mend`
+  still tries). Time estimates are a throughput model measured on one 8-core machine and are
+  unverified elsewhere. The rest of
+  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): threads, a GPU option, and joint solving for more stuck columns. An explicit `-o` that names
   an existing file still replaces it (after the repair has passed its check), as before.
   When several copies are given, the deeper repair is not used (one copy at a time). Soft repair is bounded (a work cap plus at most
   2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
