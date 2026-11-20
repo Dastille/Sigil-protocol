@@ -212,6 +212,9 @@ Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default
   schedule so small damage is fixed before it piles up. It cannot check piece files
   (`.sgp` from `sigil frost place` or `sigil scatter`): it lists them as NOT CHECKED, says
   what to run instead, and exits 3 so a scheduled scrub of cold drives never looks clean.
+  A wrong path, a file instead of a folder, or a folder with no `.sg1` Sigils in it also
+  exits 3 with a plain message (`no Sigil files found in DIR, nothing was checked`), so a
+  scrub that checked nothing never reports success.
   `--scrub` cannot be combined with `--json` (refused with an error).
 
 ```

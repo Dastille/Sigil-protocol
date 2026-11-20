@@ -1001,6 +1001,8 @@ enum Cmd {
         /// and rewrite a Sigil only when Merkle + true name pass; uncorrectable Sigils are
         /// reported and left byte-identical. Exit 2 if any are uncorrectable. Frost Rune /
         /// scatter pieces (.sgp) cannot be checked: they are listed as NOT CHECKED, exit 3.
+        /// A missing path, a file instead of a folder, or a folder with no .sg1 Sigils to
+        /// check also exits 3 ("nothing was checked"), never 0.
         #[arg(long, conflicts_with_all = ["json", "fix", "quick"])]
         scrub: bool,
         /// Passphrase of a warded constellation card
