@@ -10,6 +10,9 @@
 //! Scrub fails closed on pieces it cannot check: `.sgp` files (Frost Rune drives from
 //! `sigil frost place`, or `sigil scatter` folders) are listed as NOT CHECKED and the
 //! exit code is 3, so a scheduled scrub of cold drives never looks clean by checking nothing.
+//! The same holds for a folder where nothing could be checked at all (empty, or no `.sg1`
+//! files other than skipped work packs): it says so and exits 3. A path that does not exist
+//! or is not a folder is an error (the CLI exits 3, "could not check").
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,6 +39,8 @@ pub enum ScrubOutcome {
 /// Result of scrubbing a folder: one entry per `.sg1` file, in path order.
 #[derive(Debug, Default, Clone)]
 pub struct ScrubReport {
+    /// The folder that was scrubbed.
+    pub dir: PathBuf,
     /// Each file and its outcome.
     pub files: Vec<(PathBuf, ScrubOutcome)>,
     /// Folders holding `.sgp` pieces that scrub could not check, with the piece count
@@ -71,6 +76,17 @@ impl ScrubReport {
         self.count(|o| matches!(o, ScrubOutcome::Uncorrectable(_)))
     }
 
+    /// Sigils actually checked (clean, repaired or uncorrectable; skipped files excluded).
+    pub fn checked(&self) -> usize {
+        self.count(|o| !matches!(o, ScrubOutcome::Skipped(_)))
+    }
+
+    /// True when scrub checked nothing and found no pieces to list: an empty folder, a
+    /// folder with no `.sg1` files, or only skipped files. Fails closed (exit 3).
+    pub fn nothing_checked(&self) -> bool {
+        self.checked() == 0 && self.unchecked.is_empty()
+    }
+
     /// Total `.sgp` pieces found that scrub could not check.
     pub fn unchecked_pieces(&self) -> usize {
         self.unchecked.iter().map(|u| u.pieces).sum()
@@ -78,11 +94,12 @@ impl ScrubReport {
 
     /// CLI exit code: 0 all clean or repaired; 2 something uncorrectable (damage found
     /// wins over the rest); 3 pieces found that scrub could not check (same meaning as
-    /// `sigil doctor` exit 3: the check could not be done).
+    /// `sigil doctor` exit 3: the check could not be done), or nothing was checked at all
+    /// (see [`ScrubReport::nothing_checked`]).
     pub fn exit_code(&self) -> i32 {
         if self.uncorrectable() > 0 {
             2
-        } else if !self.unchecked.is_empty() {
+        } else if !self.unchecked.is_empty() || self.nothing_checked() {
             3
         } else {
             0
@@ -108,6 +125,20 @@ impl ScrubReport {
             self.uncorrectable(),
             self.count(|o| *o == ScrubOutcome::Clean)
         ));
+        if self.nothing_checked() {
+            let d = self.dir.display();
+            if self.files.is_empty() {
+                s.push_str(&format!(
+                    "no Sigil files found in {d}, nothing was checked \
+                     (scrub checks .sg1 files in a folder and its subfolders)\n"
+                ));
+            } else {
+                s.push_str(&format!(
+                    "no Sigil files were checked in {d} ({} skipped), nothing was checked\n",
+                    self.files.len()
+                ));
+            }
+        }
         if !self.unchecked.is_empty() {
             s.push_str(&format!(
                 "NOT CHECKED: {} piece file(s) (.sgp). Scrub only checks .sg1 files, so these \
@@ -225,13 +256,37 @@ pub fn scrub_file(path: &Path) -> Result<ScrubOutcome> {
 /// Scrub every `.sg1` under `dir` (recursive, symlinks not followed). `.sgp` pieces
 /// (Frost Rune / scatter) are not checked; they are listed in
 /// [`ScrubReport::unchecked`] and make [`ScrubReport::exit_code`] return 3.
+///
+/// Errors with a plain message when `dir` does not exist or is not a folder.
 pub fn scrub_dir(dir: &Path) -> Result<ScrubReport> {
+    let d = dir.display();
+    match fs::metadata(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(crate::Error::Msg(format!(
+                "no such folder: {d} (check the path; scrub needs a folder of .sg1 Sigils), \
+                 nothing was checked"
+            )));
+        }
+        Err(e) => {
+            return Err(crate::Error::Msg(format!(
+                "cannot read {d}: {e}, nothing was checked"
+            )));
+        }
+        Ok(m) if !m.is_dir() => {
+            return Err(crate::Error::Msg(format!(
+                "{d} is not a folder; scrub checks a folder of .sg1 Sigils \
+                 (for one file use `sigil verify` or `sigil mend`), nothing was checked"
+            )));
+        }
+        Ok(_) => {}
+    }
     let mut files = Vec::new();
     let mut unchecked = Vec::new();
     walk(dir, None, &mut files, &mut unchecked)?;
     files.sort();
     unchecked.sort_by(|a, b| a.dir.cmp(&b.dir));
     let mut rep = ScrubReport {
+        dir: dir.to_path_buf(),
         unchecked,
         ..ScrubReport::default()
     };
@@ -240,4 +295,38 @@ pub fn scrub_dir(dir: &Path) -> Result<ScrubReport> {
         rep.files.push((p, o));
     }
     Ok(rep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_skipped_files_means_nothing_checked_exit_3() {
+        let rep = ScrubReport {
+            dir: PathBuf::from("packs"),
+            files: vec![(
+                PathBuf::from("packs/w.sg1"),
+                ScrubOutcome::Skipped("work pack (use `sigil mend`)".into()),
+            )],
+            unchecked: Vec::new(),
+        };
+        assert!(rep.nothing_checked());
+        assert_eq!(rep.exit_code(), 3);
+        assert!(rep
+            .render()
+            .contains("no Sigil files were checked in packs (1 skipped), nothing was checked"));
+    }
+
+    #[test]
+    fn one_clean_file_is_checked_exit_0() {
+        let rep = ScrubReport {
+            dir: PathBuf::from("d"),
+            files: vec![(PathBuf::from("d/a.sg1"), ScrubOutcome::Clean)],
+            unchecked: Vec::new(),
+        };
+        assert!(!rep.nothing_checked());
+        assert_eq!(rep.exit_code(), 0);
+        assert!(!rep.render().contains("nothing was checked"));
+    }
 }

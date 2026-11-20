@@ -202,7 +202,9 @@ buffer is zeroized on drop. Tests:
 
 1. **Fail-closed scrub** (small, safe-by-default fix): `doctor --scrub` on a folder
    with no `.sg1` files, or with Frost Rune pieces it does not read, must not exit
-   0. Exit 3 ("could not check"), matching `doctor`.
+   0. Exit 3 ("could not check"), matching `doctor`. DONE: pieces since 2026-11-13;
+   empty folder, no `.sg1` files, missing path and file-instead-of-folder since
+   2026-11-20 (`tests/cli_doctor_scrub_empty.rs`).
 2. **`doctor --scrub --json`** with the per-archive and not-checked fields above.
 3. **Scrub Frost Rune drives**: read `.sgp` pieces per `usb-*` folder, check each
    piece's CRC, and report per drive; mend only when enough pieces are present.
