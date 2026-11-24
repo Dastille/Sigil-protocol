@@ -1139,7 +1139,31 @@ fn shannon(data: &[u8]) -> f64 {
     h
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_RANDOM_SEED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Tests only: make salts, nonces and keys drawn on this thread come from a fixed
+/// sequence (`Some(seed)`) so a test's sealed bytes, and every count measured on them,
+/// are the same on every run; `None` goes back to the system source.
+#[cfg(test)]
+pub(crate) fn set_test_random_seed(seed: Option<u64>) {
+    TEST_RANDOM_SEED.with(|c| c.set(seed));
+}
+
 fn getrandom(buf: &mut [u8]) {
+    #[cfg(test)]
+    if let Some(mut x) = TEST_RANDOM_SEED.with(|c| c.get()) {
+        for b in buf.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *b = x as u8;
+        }
+        TEST_RANDOM_SEED.with(|c| c.set(Some(x | 1)));
+        return;
+    }
     // Prefer getrandom if present; fall back to /dev/urandom.
     if let Ok(f) = std::fs::File::open("/dev/urandom") {
         use std::io::Read as _;

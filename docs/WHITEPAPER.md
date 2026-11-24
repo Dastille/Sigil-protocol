@@ -166,8 +166,12 @@ Welch and Berlekamp, 1986). The implementation (`crate/sigil/src/soft_ratchet.rs
 easiest-first: it locks clean columns in one matrix pass; treats shards that are wrong
 almost everywhere as erasures; decodes the remaining columns; promotes a soft shard to
 trusted once its stored CRC-32 matches; tries bounded erasure guesses for stuck columns,
-locking a guess only when two spare symbols confirm it; and uses the linearity of CRC-32 to
-settle up to 64 last columns. The whole result then passes the acceptance gate once. Only if
+locking a guess only when two spare symbols confirm it; settles runs of neighbouring stuck
+columns together, because a bad sector damages one shard over many neighbouring columns
+(one shared erasure guess must fit every column of the window: collaborative decoding of
+interleaved Reed–Solomon codes, Bleichenbacher, Kiayias and Yung, 2003), and decides again,
+from its neighbours, any settled column that looks miscorrected (after anchor decoding,
+Häger and Pfister, 2018); and uses the linearity of CRC-32 to settle up to 64 last columns. The whole result then passes the acceptance gate once. Only if
 that fails are at most 2(*n* − *k*) + 1 older shard-order candidates tried, each through the
 gate. Column work and candidates run on up to 8 threads; the output is the same bytes for
 any thread count. This is "soft" in the sense of using CRC-failed shards and reliability

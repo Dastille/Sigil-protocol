@@ -21,6 +21,10 @@
 //!    that makes the stored CRCs match is chosen.
 //! 5. **Best guess.** Anything left takes the most reliable `k` symbols.
 //!
+//! Between steps 3 and 4, runs of neighbouring stuck columns are settled together, because a
+//! bad sector damages one shard over many neighbouring columns, and settled columns that
+//! look miscorrected are decided again from their neighbours ([`joint`]).
+//!
 //! The result is **not** verified here. Exactly like before, the caller accepts it only
 //! after re-encoding every shard once and matching the header's Merkle root (and the true
 //! name when not encrypted); a wrong guess can only make the repair fail, never return
@@ -30,6 +34,30 @@
 use crate::gf;
 use crate::rs;
 use crate::Error;
+
+mod joint;
+
+#[cfg(test)]
+thread_local! {
+    static JOINT_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Tests only: turn the [`joint`] steps off (or back on) for repairs on this thread, to
+/// compare against the per-column ratchet alone.
+#[cfg(test)]
+pub(crate) fn set_joint_for_tests(on: bool) {
+    JOINT_OFF.with(|c| c.set(!on));
+}
+
+#[cfg(test)]
+fn joint_enabled() -> bool {
+    !JOINT_OFF.with(|c| c.get())
+}
+
+#[cfg(not(test))]
+fn joint_enabled() -> bool {
+    true
+}
 
 /// One present shard for [`decode`].
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +93,19 @@ pub struct RatchetReport {
     pub guess_work: u64,
     /// The erasure-guess step stopped early because it reached its work budget.
     pub budget_hit: bool,
+    /// Columns settled together with their neighbours (a neighbour guess or a joint window
+    /// confirmed on every column of the run).
+    pub joint_columns: usize,
+    /// Settled columns that looked miscorrected and were replaced by a confirmed
+    /// neighbour-guided fix.
+    pub hunt_columns: usize,
+    /// Symbol steps spent on the neighbour steps, building their erasure guesses included
+    /// (own budget, the same size as the erasure-guess budget).
+    pub joint_work: u64,
+    /// Erasure guesses the neighbour steps built (window guesses included).
+    pub joint_patterns: usize,
+    /// Largest guess cache the neighbour guess or the hunt held, in bytes (fixed cap).
+    pub joint_cache_peak: usize,
 }
 
 /// Erasure guesses tried per stuck column, at most.
@@ -165,9 +206,15 @@ pub(crate) fn decode_threads(
     // 1 + 2: clean columns, then Berlekamp–Welch on the dirty ones. Shards that are wrong
     // in most columns (a wiped or garbage shard) are found first from a sample and treated
     // as missing, so they do not use up the error budget of every column.
+    let mut read: Option<joint::ReadCols> = None;
     let stuck = if p > k {
         let dirty = dirty_columns(&rows, k, shard_len)?;
         rep.clean_columns = shard_len - dirty.len();
+        if joint_enabled() {
+            // As-read bytes of the columns repair may change, so the neighbour steps can
+            // see which shards each fix changed.
+            read = joint::ReadCols::new(&rows, &dirty);
+        }
         let step = dirty.len().div_ceil(LEARN_SAMPLE * 4).max(1);
         let sample: Vec<usize> = dirty.iter().step_by(step).copied().collect();
         let sfix = bw_columns(&rows, &sample, &[], k, threads)?;
@@ -212,6 +259,8 @@ pub(crate) fn decode_threads(
     let budget = GUESS_BUDGET_BASE
         .saturating_add(GUESS_BUDGET_PER_SYMBOL.saturating_mul((p * shard_len) as u64));
     let mut learned = false;
+    // Shared by every guess the neighbour guess and the hunt build (see [`joint`]).
+    let mut build_left = joint::BUILD_BUDGET;
 
     // 3 + 4: erasure guesses, then promote soft shards whose stored CRC now matches to
     // trusted, and go again with fewer unknowns — until nothing more settles.
@@ -316,6 +365,56 @@ pub(crate) fn decode_threads(
             }
             stuck = still;
         }
+        // 3b: neighbouring stuck columns together (see [`joint`]). Up to p − k − 1 bad
+        // shards per region, one spare symbol per column, confirmed across the run.
+        if let Some(read) = read.as_ref() {
+            if !stuck.is_empty() && p > k + 1 && !soft.is_empty() && rep.joint_work < budget {
+                crate::repair_ctl::check()?;
+                let max_erase = (p - k - 1).min(soft.len());
+                // Window guesses are built up front; their cost counts against the budget
+                // and caps how many are built.
+                let each = joint::build_cost(p, k);
+                let afford = (budget.saturating_sub(rep.joint_work) / each) as usize;
+                let cap = joint::pattern_cap(p, k).min(afford);
+                rep.budget_hit |= cap < joint::pattern_cap(p, k);
+                let pats = patterns(
+                    &rows,
+                    &soft,
+                    &[],
+                    &errs,
+                    observed,
+                    k,
+                    1,
+                    max_erase,
+                    cap.max(1),
+                    true,
+                )?;
+                rep.joint_work = rep
+                    .joint_work
+                    .saturating_add(each.saturating_mul(pats.len() as u64));
+                rep.joint_patterns += pats.len();
+                let near = joint::neighbour_windows(&rows, read, &stuck, k, &mut build_left)?;
+                rep.joint_work = rep.joint_work.saturating_add(near.work);
+                rep.budget_hit |= near.budget_hit;
+                rep.joint_patterns += near.built;
+                rep.joint_cache_peak = rep.joint_cache_peak.max(near.cache_bytes);
+                for (j, col) in near.fixed {
+                    write_column(&mut rows, j, &col, &mut errs);
+                    rep.joint_columns += 1;
+                    observed += 1;
+                }
+                let left = budget.saturating_sub(rep.joint_work);
+                let win = joint::joint_windows(&rows, &pats, &near.still, threads, left)?;
+                rep.joint_work = rep.joint_work.saturating_add(win.work);
+                rep.budget_hit |= win.budget_hit;
+                for (j, col) in win.fixed {
+                    write_column(&mut rows, j, &col, &mut errs);
+                    rep.joint_columns += 1;
+                    observed += 1;
+                }
+                stuck = win.still;
+            }
+        }
         // Ratchet across shards: a soft shard whose stored CRC-32 now matches is right in
         // every column (including the stuck ones), so it becomes trusted.
         let mut promoted = false;
@@ -330,6 +429,19 @@ pub(crate) fn decode_threads(
             break;
         }
     }
+
+    // 3c: miscorrection hunt (see [`joint`]): a settled column that changed a shard
+    // neither neighbour changed is decided again from its neighbours' guess.
+    if let Some(read) = read.as_ref() {
+        let left = budget.saturating_sub(rep.joint_work);
+        let h = joint::hunt(&mut rows, read, &stuck, k, &mut errs, left, &mut build_left)?;
+        rep.joint_work = rep.joint_work.saturating_add(h.work);
+        rep.joint_patterns += h.built;
+        rep.joint_cache_peak = rep.joint_cache_peak.max(h.cache_bytes);
+        rep.hunt_columns += h.replaced;
+        rep.budget_hit |= h.budget_hit;
+    }
+    drop(read);
 
     // 4b + 5: joint CRC match for the few columns still stuck, then best guesses.
     crate::repair_ctl::check()?;
@@ -515,6 +627,25 @@ impl Pattern {
     fn fill(&self, rows: &[Row], j: usize) -> Vec<u8> {
         let b: Vec<u8> = self.basis.iter().map(|&t| rows[t].body[j]).collect();
         (0..rows.len()).map(|t| self.symbol(t, &b)).collect()
+    }
+
+    /// [`Pattern::check`] on a stand-alone column (one symbol per row).
+    fn check_col(&self, col: &[u8]) -> (bool, u64) {
+        let b: Vec<u8> = self.basis.iter().map(|&t| col[t]).collect();
+        let mut work = 0u64;
+        for &t in &self.checks {
+            work += self.k as u64;
+            if self.symbol(t, &b) != col[t] {
+                return (false, work);
+            }
+        }
+        (true, work)
+    }
+
+    /// [`Pattern::fill`] on a stand-alone column (one symbol per row).
+    fn fill_col(&self, col: &[u8]) -> Vec<u8> {
+        let b: Vec<u8> = self.basis.iter().map(|&t| col[t]).collect();
+        (0..col.len()).map(|t| self.symbol(t, &b)).collect()
     }
 }
 
@@ -1119,6 +1250,251 @@ mod tests {
         // Bad geometry is an error, not a panic.
         assert!(decode(&p, 0, 3000, payload.len(), true).is_err());
         assert!(decode(&p, 12, 0, payload.len(), true).is_err());
+    }
+
+    /// Bad-sector-like bursts: six regions of 400 columns, each on three shards, so every
+    /// shard fails its CRC and each damaged column has one bad shard more than a single
+    /// column can settle on Reflection 12/16 (two erasures plus two checks). Joint windows
+    /// settle them from one spare symbol per column, confirmed across the window; the
+    /// per-column ratchet alone cannot. Same answer on one thread.
+    #[test]
+    fn joint_window_settles_bursts_beyond_one_column() {
+        let (payload, shards) = fixture();
+        let mut torn = shards.clone();
+        let regions: [(usize, [usize; 3]); 6] = [
+            (0, [0, 1, 2]),
+            (500, [3, 4, 5]),
+            (1000, [6, 7, 8]),
+            (1500, [9, 10, 11]),
+            (2000, [12, 13, 14]),
+            (2500, [15, 0, 1]),
+        ];
+        for (start, bad) in regions {
+            for (n, &row) in bad.iter().enumerate() {
+                for (j, b) in torn[row].iter_mut().enumerate().skip(start).take(400) {
+                    *b ^= (j as u8).wrapping_mul(29).wrapping_add(n as u8 * 71) | 1;
+                }
+            }
+        }
+        let p = parts(&torn, &shards, &[]);
+        set_joint_for_tests(false);
+        let off = decode(&p, 12, 3000, payload.len(), true);
+        set_joint_for_tests(true);
+        let (off, off_rep) = off.unwrap();
+        assert_ne!(
+            off, payload,
+            "per-column alone should not settle this: {off_rep:?}"
+        );
+        assert_eq!(off_rep.joint_columns + off_rep.hunt_columns, 0);
+        let (got, rep) = decode(&p, 12, 3000, payload.len(), true).unwrap();
+        assert_eq!(got, payload, "{rep:?}");
+        assert!(rep.joint_columns > 0, "{rep:?}");
+        let one = decode_threads(&p, 12, 3000, payload.len(), true, 1).unwrap();
+        assert_eq!(one.0, got);
+        assert_eq!(one.1, rep);
+    }
+
+    /// A trusted (CRC-good) shard is never changed by the neighbour steps either, even when
+    /// it is in fact wrong inside a burst; the result is then wrong and the caller's gate
+    /// refuses it.
+    #[test]
+    fn joint_steps_never_change_a_trusted_shard() {
+        let (payload, shards) = fixture();
+        let mut torn = shards.clone();
+        for row in [2usize, 5, 9] {
+            for (j, b) in torn[row].iter_mut().enumerate().skip(700).take(300) {
+                *b ^= (j as u8) | 1;
+            }
+        }
+        for (j, b) in torn[4].iter_mut().enumerate().skip(100).take(300) {
+            *b ^= (j as u8) | 0x10;
+        }
+        let p = parts(&torn, &shards, &[5]);
+        let (got, _) = decode(&p, 12, 3000, payload.len(), true).unwrap();
+        let enc = rs::encode_shards(&got, 12, 16).unwrap();
+        assert_eq!(enc[5], torn[5]);
+        assert_ne!(got, payload);
+    }
+
+    /// More than 32 shards: shard sets are 256-bit, so bursts on shards past index 31
+    /// settle as well (k = 30 of n = 36; five bad shards per burst, one more than a single
+    /// column can settle; undamaged shards are CRC-good, as in a real file).
+    #[test]
+    fn joint_window_works_past_32_shards() {
+        let mut x = 0x0036_1124_u64;
+        let payload: Vec<u8> = (0..30 * 900)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let shards = rs::encode_shards(&payload, 30, 36).unwrap();
+        let mut torn = shards.clone();
+        let regions: [(usize, [usize; 5]); 3] = [
+            (0, [31, 32, 33, 34, 35]),
+            (300, [0, 1, 2, 33, 34]),
+            (600, [0, 1, 31, 32, 35]),
+        ];
+        for (start, bad) in regions {
+            for (n, &row) in bad.iter().enumerate() {
+                for (j, b) in torn[row].iter_mut().enumerate().skip(start).take(200) {
+                    *b ^= (j as u8)
+                        .wrapping_mul(13)
+                        .wrapping_add((n as u8).wrapping_mul(37))
+                        | 1;
+                }
+            }
+        }
+        let soft = [0usize, 1, 2, 31, 32, 33, 34, 35];
+        let hard: Vec<usize> = (0..36).filter(|t| !soft.contains(t)).collect();
+        let p = parts(&torn, &shards, &hard);
+        set_joint_for_tests(false);
+        let off = decode(&p, 30, 900, payload.len(), true);
+        set_joint_for_tests(true);
+        let (off, off_rep) = off.unwrap();
+        assert_ne!(
+            off, payload,
+            "per-column alone should not settle this: {off_rep:?}"
+        );
+        let (got, rep) = decode(&p, 30, 900, payload.len(), true).unwrap();
+        assert_eq!(got, payload, "{rep:?}");
+        assert!(rep.joint_columns > 0, "{rep:?}");
+    }
+
+    /// Scattered symbol errors on a wide geometry: Berlekamp–Welch settles every column,
+    /// each with different wrong rows, so neighbour sets almost never repeat. Returns the
+    /// decode result with the (g) steps on or off, and the time taken.
+    #[allow(clippy::needless_range_loop)] // rows vary per error; columns index them
+    fn wide_scattered(
+        n: usize,
+        k: usize,
+        sl: usize,
+        errs: usize,
+        joint: bool,
+    ) -> (bool, RatchetReport, std::time::Duration) {
+        let mut x = 0x5eed_u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let payload: Vec<u8> = (0..k * sl).map(|_| next() as u8).collect();
+        let shards = rs::encode_shards(&payload, k, n).unwrap();
+        let mut torn = shards.clone();
+        for j in 0..sl {
+            for _ in 0..errs {
+                let t = (next() % n as u64) as usize;
+                torn[t][j] ^= (next() as u8) | 1;
+            }
+        }
+        let p = parts(&torn, &shards, &[]);
+        set_joint_for_tests(joint);
+        let t0 = std::time::Instant::now();
+        let r = decode_threads(&p, k, sl, payload.len(), true, 8);
+        let dt = t0.elapsed();
+        set_joint_for_tests(true);
+        let (got, rep) = r.unwrap();
+        (got == payload, rep, dt)
+    }
+
+    /// Cost harness (not run by default): `cargo test --release -p sigil --lib
+    /// wide_scattered_cost -- --ignored --nocapture`; geometry via `SIGIL_WIDE`
+    /// (`n,k,columns,errors-per-column[,0|1]`, default `254,190,4000,2`).
+    #[test]
+    #[ignore]
+    fn wide_scattered_cost() {
+        let v: Vec<usize> = std::env::var("SIGIL_WIDE")
+            .unwrap_or_else(|_| "254,190,4000,2".into())
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        let (n, k, sl, e) = (v[0], v[1], v[2], v[3]);
+        // Optional fifth field: 0 = (g) off only, 1 = (g) on only.
+        let modes: Vec<bool> = match v.get(4) {
+            Some(&m) => vec![m == 1],
+            None => vec![false, true],
+        };
+        for joint in modes {
+            let (ok, rep, dt) = wide_scattered(n, k, sl, e, joint);
+            eprintln!(
+                "WIDE n={n} k={k} cols={sl} errs={e} joint={joint}: {dt:?} right={ok} {rep:?}"
+            );
+        }
+    }
+
+    /// Scattered damage on 254 and 64 shards: the neighbour steps stop after a fixed build
+    /// spend with nothing to show, hold a fixed-size cache, return the same bytes as the
+    /// per-column ratchet alone, and give the same report on 1 and 8 threads (deterministic
+    /// measures; the timed check is `wide_scattered_time_ratio`).
+    #[test]
+    #[allow(clippy::needless_range_loop)] // rows vary per error; columns index them
+    fn joint_steps_bounded_on_wide_scattered_damage() {
+        for (n, k, sl, e) in [(254usize, 190usize, 400usize, 2usize), (64, 48, 3000, 4)] {
+            let (off_ok, off, _) = wide_scattered(n, k, sl, e, false);
+            let (on_ok, on, _) = wide_scattered(n, k, sl, e, true);
+            assert!(off_ok && on_ok, "n={n}: {off:?} {on:?}");
+            let each = joint::build_cost(n, k);
+            // At most one guess past the dry-run spend.
+            let most = (joint::DRY_BUILD_WORK / each) as usize + 1;
+            assert!(
+                on.joint_patterns <= most,
+                "n={n}: {} > {most} {on:?}",
+                on.joint_patterns
+            );
+            assert!(on.joint_cache_peak <= joint::CACHE_BYTES, "{on:?}");
+            assert!(
+                on.joint_work <= joint::DRY_BUILD_WORK + each + (n * sl) as u64 * 8,
+                "{on:?}"
+            );
+            assert_eq!(on.hunt_columns, 0, "{on:?}");
+        }
+        // Same report on any thread count.
+        let mut x = 0x5eed_u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let (n, k, sl) = (64usize, 48usize, 2000usize);
+        let payload: Vec<u8> = (0..k * sl).map(|_| next() as u8).collect();
+        let shards = rs::encode_shards(&payload, k, n).unwrap();
+        let mut torn = shards.clone();
+        for j in 0..sl {
+            for _ in 0..4 {
+                let t = (next() % n as u64) as usize;
+                torn[t][j] ^= (next() as u8) | 1;
+            }
+        }
+        let p = parts(&torn, &shards, &[]);
+        let one = decode_threads(&p, k, sl, payload.len(), true, 1).unwrap();
+        let eight = decode_threads(&p, k, sl, payload.len(), true, 8).unwrap();
+        assert_eq!(one, eight);
+    }
+
+    /// Timed check (not run by default; release build): `cargo test --release -p sigil
+    /// --lib wide_scattered_time_ratio -- --ignored --nocapture`. Scattered damage on 254
+    /// and 64 shards takes at most 1.2× the time of the per-column ratchet alone (best of
+    /// three runs each).
+    #[test]
+    #[ignore]
+    fn wide_scattered_time_ratio() {
+        for (n, k, sl, e) in [(254usize, 190usize, 4000usize, 2usize), (64, 48, 80_000, 4)] {
+            let best = |joint: bool| {
+                (0..3)
+                    .map(|_| wide_scattered(n, k, sl, e, joint).2)
+                    .min()
+                    .unwrap()
+            };
+            let off = best(false);
+            let on = best(true);
+            let ratio = on.as_secs_f64() / off.as_secs_f64();
+            eprintln!("TIME n={n} k={k} cols={sl}: off {off:?} on {on:?} ratio {ratio:.3}");
+            assert!(ratio <= 1.2, "n={n}: {ratio:.3}");
+        }
     }
 
     #[test]

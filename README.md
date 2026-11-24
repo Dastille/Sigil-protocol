@@ -894,7 +894,7 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   (never the output name). A pack whose framing is damaged cannot be scanned (plain `mend`
   still tries). Time estimates are a throughput model measured on one 8-core machine and are
   unverified elsewhere. The rest of
-  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): a GPU option, and joint solving for more stuck columns (racing across CPU threads with a shared stop is done; it makes repair faster, not able to fix more). An explicit `-o` that names
+  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): a GPU option, and a CRC search for damaged regions with no spare symbol left (racing across CPU threads with a shared stop is done; it makes repair faster, not able to fix more). Since 24 November 2026 the deeper repair also settles neighbouring damaged columns together, which repairs more files with many scattered bad sectors (test `mend_joint_windows_repair_scattered_sectors_main_loses`, fixed seeds: 23 → 41 of 54 cases; never a wrong file); it does not help heavy scattered bit rot. An explicit `-o` that names
   an existing file still replaces it (after the repair has passed its check), as before.
   When several copies are given, the deeper repair is not used (one copy at a time). Soft repair is bounded (a work cap plus at most
   2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
