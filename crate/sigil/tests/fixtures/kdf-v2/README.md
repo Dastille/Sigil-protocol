@@ -1,6 +1,6 @@
 # kdf-v2 fixtures (Argon2id passphrase wraps, SGTO version 2)
 
-Written by the Rust CLI on `main` @ `18e30d0` (`cargo build --release`), from `plain.txt`.
+Written by the Rust CLI on `main` as of 19 October 2026 (`cargo build --release`), from `plain.txt`.
 Passphrase for every file: `correct horse battery`. Used by the web lab tests
 (`src/lib/sigil/sgto.test.ts`) to prove the lab opens what Rust writes.
 

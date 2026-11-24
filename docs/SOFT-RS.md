@@ -125,7 +125,7 @@ R1 slices, in this order:
      (now also 1 and 3 threads per case). The single final check is unchanged, so a wrong
      guess can still only fail, never return wrong bytes.
    - Measured (box, 8 cores, release, `mend_soft_timing`, one run each, before = the main
-     build of 20 November 2026, after = 8 threads; receipts `sigil-1122-race-baseline-b3cdb92.txt` and
+     build of 20 November 2026, after = 8 threads; receipts: the 22 November race-baseline receipt and
      `sigil-1122-race-after.txt` in the run's receipts folder). 10 MB: Reflection 2 lost +
      BER 1e-5 repaired 1.012 s → 0.599 s; Seal 4 lost + BER 1e-5 repaired 0.955 s → 0.629 s;
      refusals (beyond repair) 0.687 → 0.503 s, 0.371 → 0.142 s, 1.032 → 0.514 s. 1 MiB:
