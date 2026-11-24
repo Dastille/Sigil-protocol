@@ -5,11 +5,13 @@
 //!
 //! Text files are scanned line by line. PDFs are scanned through `pdftotext`
 //! (poppler-utils); if it is missing the check fails and says so, unless
-//! `SIGIL_PRIVACY_SKIP_PDF=1` is set, which skips PDFs with a printed warning.
+//! `SIGIL_PRIVACY_SKIP_PDF=1` is set, which skips PDFs with a warning written
+//! straight to stderr (so `cargo test` shows it even when the test passes).
 //! JPEG and PNG files are scanned in their metadata segments (EXIF, XMP, ICC,
-//! comments, text chunks), not their pixel data.
+//! comments, text chunks, including compressed zTXt/iTXt), not their pixel data.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Default)]
@@ -130,6 +132,12 @@ fn mask_allowed(line: &str, rules: &Rules) -> String {
 
 fn scan_text(label: &str, text: &str, rules: &Rules, hits: &mut Vec<String>) {
     for (n, raw) in text.lines().enumerate() {
+        // A climb (`..`) right after the placeholder must not hide behind the allowed placeholder.
+        for a in &rules.allow {
+            if a.ends_with('/') && raw.contains(&format!("{a}..")) {
+                hits.push(format!("{label}:{}: path climbs out of {a:?}", n + 1));
+            }
+        }
         let masked = mask_allowed(raw, rules);
         let line = masked.as_str();
         for term in &rules.deny {
@@ -199,7 +207,12 @@ fn scan_bytes(p: &Path, label: &str, bytes: Vec<u8>, rules: &Rules, hits: &mut V
 /// PDF text through `pdftotext`. Fails closed when the tool is missing.
 fn scan_pdf(p: &Path, label: &str, rules: &Rules, hits: &mut Vec<String>) {
     if std::env::var("SIGIL_PRIVACY_SKIP_PDF").as_deref() == Ok("1") {
-        eprintln!("privacy check: WARNING: SIGIL_PRIVACY_SKIP_PDF=1, not scanning {label}");
+        // Written to the real stderr, not through `eprintln!`, which the test
+        // harness captures and hides for a passing test.
+        let _ = writeln!(
+            std::io::stderr(),
+            "privacy check: WARNING: SIGIL_PRIVACY_SKIP_PDF=1, not scanning {label}"
+        );
         return;
     }
     match std::process::Command::new("pdftotext")
@@ -292,12 +305,43 @@ fn png_metadata(b: &[u8]) -> Vec<u8> {
         let kind = &b[i + 4..i + 8];
         let end = (i + 8 + len).min(b.len());
         if kind != b"IDAT" {
-            out.extend_from_slice(&b[i + 8..end]);
+            let data = &b[(i + 8).min(end)..end];
+            out.extend_from_slice(data);
             out.push(0);
+            if let Some(text) = png_compressed_text(kind, data) {
+                out.extend_from_slice(&text);
+                out.push(0);
+            }
         }
         i = end + 4;
     }
     out
+}
+
+/// Inflated text of a zTXt chunk, or of an iTXt chunk with its compression flag set.
+fn png_compressed_text(kind: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    let key_end = data.iter().position(|&c| c == 0)?;
+    let rest = &data[key_end + 1..];
+    let compressed = match kind {
+        b"zTXt" => rest.get(1..)?,
+        b"iTXt" => {
+            if *rest.first()? != 1 {
+                return None;
+            }
+            let after = rest.get(2..)?;
+            let lang_end = after.iter().position(|&c| c == 0)?;
+            let after = &after[lang_end + 1..];
+            let tr_end = after.iter().position(|&c| c == 0)?;
+            &after[tr_end + 1..]
+        }
+        _ => return None,
+    };
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(compressed)
+        .take(16 << 20)
+        .read_to_end(&mut out)
+        .ok()?;
+    Some(out)
 }
 
 fn scan_path(p: &Path, root: &Path, rules: &Rules, hits: &mut Vec<String>) {
@@ -374,6 +418,10 @@ fn planted_file_is_caught_and_clean_file_passes() {
                 format!("Example /home/me/x; real copy at {home}x\n"),
             ),
             ("mixed-ws.md", format!("Example /home/me/x and {ws}x\n")),
+            (
+                "climb.md",
+                format!("Archive at /home/me/{}/someone/x\n", ".."),
+            ),
         ],
         &rules,
     );
@@ -390,6 +438,48 @@ fn planted_file_is_caught_and_clean_file_passes() {
         hits.iter().any(|h| h.starts_with("mixed-ws.md:1:")),
         "{hits:?}"
     );
+    assert!(
+        hits.iter().any(|h| h.starts_with("climb.md:1:")),
+        "{hits:?}"
+    );
+}
+
+fn png_with(kind: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    png.extend_from_slice(kind);
+    png.extend_from_slice(data);
+    png.extend_from_slice(&[0, 0, 0, 0]); // CRC is not checked
+    png
+}
+
+#[test]
+fn compressed_png_text_is_scanned() {
+    let rules = tracked_rules();
+    let home = ["/ho", "me/someone/"].concat();
+    let deflate = |t: &str| {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(t.as_bytes()).unwrap();
+        e.finish().unwrap()
+    };
+    let mut z = b"Comment\0\0".to_vec();
+    z.extend_from_slice(&deflate(&format!("saved from {home}pic.png")));
+    let mut it = b"Comment\0\x01\0en\0\0".to_vec();
+    it.extend_from_slice(&deflate(&format!("saved from {home}pic.png")));
+    let mut clean = b"Comment\0\0".to_vec();
+    clean.extend_from_slice(&deflate("made with a drawing program"));
+    let dir = std::env::temp_dir().join(format!("sigil-privacy-png-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("z.png"), png_with(b"zTXt", &z)).unwrap();
+    fs::write(dir.join("i.png"), png_with(b"iTXt", &it)).unwrap();
+    fs::write(dir.join("clean.png"), png_with(b"zTXt", &clean)).unwrap();
+    let mut hits = Vec::new();
+    walk(&dir, &dir, &rules, &mut hits);
+    fs::remove_dir_all(&dir).unwrap();
+    assert!(hits.iter().any(|h| h.starts_with("z.png:")), "{hits:?}");
+    assert!(hits.iter().any(|h| h.starts_with("i.png:")), "{hits:?}");
+    assert!(!hits.iter().any(|h| h.starts_with("clean.png")), "{hits:?}");
 }
 
 #[test]
