@@ -54,6 +54,10 @@ locks in each settled column (`crate/sigil/src/soft_ratchet.rs`):
    of the same size gives a different answer.
 5. **Per-shard CRC ratchet**: a soft shard whose stored CRC-32 now matches is right
    everywhere, so it becomes trusted; repeat 4 with fewer unknowns.
+   Since 24 November 2026 (roadmap item (g), item 3g below) two neighbour steps run here:
+   between 4 and 5, runs of stuck columns are settled together (neighbour guess, then
+   joint windows), and after the 4–5 loop settled columns that look miscorrected are
+   decided again from their neighbours.
 6. **CRC match for the last few columns** (up to 64): CRC-32 is linear, so each candidate
    fix's effect on every shard's CRC is one table lookup; a meet-in-the-middle search keyed
    on three reliable shards picks the combination that makes the stored CRCs match. It must
@@ -162,9 +166,79 @@ R1 slices, in this order:
      race is worth trying again only if a second method starts winning real cases (for
      example joint solving, step 5), and then as "try the cheap one first, start the
      other after a short head start", not a split from the start.
+3g. **Done (24 November 2026): neighbour steps for bad-sector damage** (roadmap item (g);
+   `crate/sigil/src/soft_ratchet/joint.rs`; decoder only, no `.sg1` change, so every
+   existing Sigil benefits without re-sealing).
+   - Why: a bad disk sector or flash page ruins one run of bytes, and that run lands on the
+     **same shard over thousands of neighbouring columns**. Columns were settled one at a
+     time, as if they knew nothing about each other.
+   - **Neighbour guess.** A run of stuck columns tries the soft shards its two settled
+     neighbours were changed on, confirmed on every column of the run (at least 4 spare
+     symbols in total).
+   - **Joint windows** (collaborative decoding of interleaved Reed–Solomon codes;
+     Bleichenbacher, Kiayias and Yung, ICALP 2003, doi:10.1007/3-540-45061-0_9; Schmidt,
+     Sidorenko and Bossert, IEEE Trans. Inf. Theory 55(7), 2009,
+     doi:10.1109/TIT.2009.2021308). Stuck columns at most 8 apart form a window (up to 256
+     columns). The smallest set of soft shards (up to n − k − 1, one more than one column
+     can check alone) whose erasure makes **every** column of the window a codeword, with
+     at least 4 spare symbols across the window, settles it. Two different sets of that
+     size: refused. None: the window is halved, down to 4 columns.
+   - **Miscorrection hunt** (anchor decoding; Häger and Pfister, IEEE Trans. Commun. 66(7),
+     2018, doi:10.1109/TCOMM.2018.2816073). A settled column that changed a shard neither
+     neighbour changed was probably decoded to a wrong codeword. It is decided again with
+     its neighbours' shards erased, on the bytes as read; the new fix replaces the old one
+     only if it checks and changes no CRC-verified shard (an eager version broke existing
+     tests, so replace-only-if-confirmed is required).
+   - Limits: the window search, the neighbour guess and the hunt are charged to their own
+     work budget (the same size as the erasure-guess budget), and so is building their
+     erasure guesses (about k³ + p·k² steps each). All guess building in one repair shares
+     a further cap of 2^28 steps, guess caches hold at most 16 MiB, and a neighbour step that
+     has spent 2^24 build steps without settling or replacing anything stops (scattered
+     damage, where neighbour sets never repeat). That is about 4,000 guesses at 16 shards,
+     so default seals are not limited by it, and one guess at 254 shards. The steps stop on
+     Ctrl-C, give the same bytes and report on any thread count, and keep one copy of the
+     as-read dirty columns (skipped above 1 GiB, which is today's behaviour). Shard sets are
+     256-bit, so the steps work past 32 shards (test at 36). For wide shard counts fewer
+     guesses are built, so the gain there is smaller and has not been measured.
+   - Cost on wide shard counts (scattered symbol errors that Berlekamp–Welch settles, so
+     (g) has nothing to add; test `wide_scattered_time_ratio`, release build, best of 3,
+     8 threads): 254 shards × 4,000 columns 8.53 s without the steps, 8.76 s with them
+     (1.03×); 64 shards × 80,000 columns 2.50 s → 2.72 s (1.09×). Peak memory of the test
+     process (single runs, test build): 11 → 11 MB and 36 → 40 MB. Before these limits the
+     same inputs took 7.6–10 s → 85 s and 2.2–2.7 s → 27–29 s, with 200–330 MB.
+     `joint_steps_bounded_on_wide_scattered_damage` checks the limits deterministically
+     (guesses built, cache bytes, work, same bytes as without the steps, same report on 1
+     and 8 threads).
+   - The single final gate is unchanged: a wrong window guess can only make repair fail,
+     never return wrong bytes. No key is needed or used, so it adds no decryption oracle.
+   - Tests (`crate/sigil/src/mend_soft_tests.rs`, `soft_ratchet.rs`):
+     `mend_joint_windows_repair_scattered_sectors_main_loses` (zero-filled and garbage
+     4 KiB sectors and zero-filled 512 B sectors anywhere in the file, Reflection 600 KB and
+     Seal 300 KB, fixed salt and damage seeds: per-column alone 23 of 54, with (g) 41 of 54,
+     asserted; never loses a case the per-column ratchet repairs; every success has the
+     original's SHA-256 and unseals to the original; same bytes on 1 and 8 threads),
+     `mend_joint_windows_encrypted_sectors_and_wrong_key`, `mend_joint_windows_fail_closed`
+     (past the limit, sectors plus bit flips, cut tails, a forged Merkle binding),
+     `joint_window_settles_bursts_beyond_one_column`,
+     `joint_steps_never_change_a_trusted_shard`, `joint_window_works_past_32_shards`,
+     `joint_steps_bounded_on_wide_scattered_damage`. Damage corpus
+     (`mend_soft_matches_old_path_on_damage_corpus`, fixed salt, asserted): old search 18,
+     per-column ratchet alone 36, with (g) 39 of 60.
+   - Measured on realistic damage (release builds; copies of 8 real encrypted Reflection
+     segments, 40 KB–40 MB; damage mix from field studies of disks and SSDs:
+     Bairavasundaram et al., SIGMETRICS 2007 and FAST 2008; Schroeder et al., FAST 2016).
+     Shipped code, 264 damaged copies: weighted by that mix, 86.9% saved → 90.4%; many
+     scattered bad sectors 69.8% → 80.2%; 19 more files saved, 0 lost, 0 wrong outputs;
+     1.04× total time; slowest single repair 3.1 s (40 MB). The same 264 cases gave the
+     same outcome before and after the limits above. An earlier prototype run on 1,968
+     copies gave 86.8% → 89.8% and 69.5% → 81.7% at about 1.08× time. Light damage (one
+     sector, truncation) was already 100%, and heavy bit rot is not helped: there is no
+     shared position to use.
 4. Then: a GPU option, with a CPU path that must still work.
-5. Then: joint solving for more than 64 stuck columns. Heavy scattered damage past the
-   per-column Reed–Solomon limit will still need the stripe sidecar (PR #101).
+5. Then: window-level CRC search (each window with exactly n − k bad shards and no spare
+   symbol settled by the shard CRCs), after its false-match bound is worked out. Heavy
+   scattered bit flips past the per-column Reed–Solomon limit will still need the stripe
+   sidecar (research branch `research/ratchet-measure`).
 
 ## Damage-adaptive preview
 - Missing clean: hard RS erasure

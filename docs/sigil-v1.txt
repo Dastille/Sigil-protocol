@@ -189,7 +189,10 @@ name and length. A wrong guess may therefore only cause a refusal.
             Berlekamp-Welch within 2*errors + erasures <= n - k per column,
             easiest columns first, wiped-looking shards treated as
             erasures, a soft shard whose stored CRC32 then matches promoted
-            to trusted, bounded erasure guesses and a CRC-guided search for
+            to trusted, bounded erasure guesses, runs of neighbouring stuck
+            columns settled together under one shared erasure guess (joint
+            windows; settled columns that look miscorrected are decided
+            again from their neighbours), and a CRC-guided search for
             the last stuck columns (at most 64). The result is checked once
             against the gate above; only if that fails are at most
             2(n-k)+1 shard-order fallback candidates tried, each through the
