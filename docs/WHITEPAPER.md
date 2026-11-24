@@ -3,7 +3,7 @@
 **White paper · Version 1.0 · 23 November 2026 · Final**
 
 Sigil project (github.com/Dastille/Sigil-protocol). Describes the reference implementation
-`crate/sigil` at commit `8f03b46` plus the documentation update of 23 November 2026, and
+`crate/sigil` as built on 23 November 2026 plus the documentation update of 23 November 2026, and
 the release public key published 24 November 2026.
 Format specification: `docs/sigil-v1.txt` (Apache-2.0). Program: AGPL-3.0-or-later.
 
@@ -254,7 +254,7 @@ Table 1. Size of one 2 270 725-byte JPEG photograph after sealing (23 Nov 2026).
 | Seal | 8 of 16 | 4 526 933 | 1.99 |
 
 Source: `sigil-1123-docs-captures/cap-01-start.txt` and `docs/wiki/Getting-started.md`
-(build `8f03b46`). The key-wrap spare adds 109 bytes (passphrase) or 121 bytes (one
+(main build of 23 November 2026). The key-wrap spare adds 109 bytes (passphrase) or 121 bytes (one
 recipient) per encrypted file (`docs/KEYWRAP-SPARE.md`).
 
 <div style="page-break-before: always"></div>
@@ -287,7 +287,7 @@ wrong bytes. Source: `docs/research/DEEP-SPACE.md` §5.2.
 
 ### 5.4 Repair time and capability (easy-first, threads)
 
-Table 3. Deeper repair, release build, 8-core build box. "Before" in rows 2–3 is main at `b3cdb92` (column work already split into 8 fixed chunks); "after" adds the shared-counter thread race of 22 November 2026.
+Table 3. Deeper repair, release build, 8-core build box. "Before" in rows 2–3 is the main build of 20 November 2026 (column work already split into 8 fixed chunks); "after" adds the shared-counter thread race of 22 November 2026.
 
 | Case (10 MB file) | Before | After | Source |
 |---|---:|---:|---|

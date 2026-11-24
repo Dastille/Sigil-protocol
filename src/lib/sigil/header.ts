@@ -167,7 +167,7 @@ export type HeaderFix = {
   slot: number;
   recovered: boolean;
   source: "primary" | "keystone" | "ember";
-  /** Key-wrap block after the Keystone (encrypted seals since PR #44, and encrypt-to). */
+  /** Key-wrap block after the Keystone (encrypted seals since the key-wrap change, and encrypt-to). */
   sgto: SgtoBlock | null;
 };
 

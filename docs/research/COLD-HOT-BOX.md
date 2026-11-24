@@ -67,7 +67,7 @@ report path. They protect different things (sections 6 and 7).
 ## 4. What today's Sigil already gives (tested 2026-11-11)
 
 Receipt: `sigil-1111-box-experiments.txt` in the maintainers' receipts (release build of
-main `f44970b`, umask 0022).
+main as of 10 November 2026, umask 0022).
 
 | Need | Today | Evidence |
 |---|---|---|
@@ -185,7 +185,7 @@ built or measured here.
 
 ## 9. Fix shipped with this note: legacy signing seed was world-readable
 
-Reproduced on main `f44970b` with umask 0022: `sigil keygen --legacy -o leg2.key`
+Reproduced on main as of 10 November 2026 with umask 0022: `sigil keygen --legacy -o leg2.key`
 created `leg2.key` with mode **644** while `sigil keygen -o box.sgk` created mode
 600 (receipt lines 33–40). The legacy seed is a raw Ed25519 signing key (also usable
 as a Talisman), so any local user could copy it and sign as its owner.

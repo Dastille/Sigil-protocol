@@ -1,6 +1,6 @@
 # keywrap-v0 fixtures (one key-wrap copy: private label v3 + SGTO v1/v2, no `SGTS` spare)
 
-Written by the Rust CLI on `main` @ `13eee34` (PR #107, `cargo build --release`), from
+Written by the Rust CLI on `main` as of 17 November 2026 (`cargo build --release`), from
 `../kdf-v2/plain.txt`, before the key wrap got a tail spare (SGTO v3). Used by
 `src/keywrap_spare_tests.rs` to prove that files written before the change open and mend
 exactly as before (no spare is added to them).
