@@ -2467,7 +2467,7 @@ mod kdf_tests {
     #[test]
     fn old_files_keep_opening() {
         let plain = fixture("plain.bin");
-        // Legacy Ward: PBKDF2-HMAC-SHA256 80k, no SGTO (written by main @ c88d682).
+        // Legacy Ward: PBKDF2-HMAC-SHA256 80k, no SGTO (written by the main build of 16 October 2026).
         let ward = fixture("ward-pbkdf2-80k.sg1");
         assert_eq!(sgto_span(&ward).1, 0);
         assert_eq!(unseal(&ward, Some(PASS)).unwrap(), plain);

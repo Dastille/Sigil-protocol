@@ -292,7 +292,7 @@ Table 3. Deeper repair, release build, 8-core build box. "Before" in rows 2–3 
 | Case (10 MB file) | Before | After | Source |
 |---|---:|---:|---|
 | Reflection, 2 wiped shards + bit-error rate 10⁻³ (refused) | 963.4 s | 0.6–0.8 s | `sigil-1116-mend-soft-timing-and-cli-compare.md`; `docs/SOFT-RS.md` |
-| Reflection, 2 lost + 10⁻⁵ (repaired); before vs after the thread race (8 threads) | 1.012 s | 0.599 s | `sigil-1122-race-baseline-b3cdb92.txt`, `sigil-1122-race-after.txt` |
+| Reflection, 2 lost + 10⁻⁵ (repaired); before vs after the thread race (8 threads) | 1.012 s | 0.599 s | the 22 November race-baseline receipt, `sigil-1122-race-after.txt` |
 | Seal, 4 lost + 10⁻⁵ (repaired); before vs after the thread race (8 threads) | 0.955 s | 0.629 s | same |
 | Same two repairs, after, limited to 1 thread | — | 2.71 s / 2.52 s | `sigil-1122-race-after.txt` |
 

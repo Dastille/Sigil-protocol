@@ -495,10 +495,10 @@ works out how many spares to send for a given amount of expected loss.
 
 `origin/main` (23 October 2026) and this branch, same script, 10 trials, 1 000 000-byte file.
 
-`origin/main` of 23 October 2026 (the binary reports its own short commit id):
+`origin/main` of 23 October 2026 (the binary reports its own short commit id, shown here as `…`):
 
 ```
-sigil: sigil 1.0.0 (commit 7b6aab6)
+sigil: sigil 1.0.0 (commit …)
 file: 1000000 random bytes, trials per case: 10
 
 | mode | damage | direct | mended | refused | WRONG | median ms (ok path) |
@@ -562,7 +562,7 @@ file: 1000000 random bytes, trials per case: 10
 This branch (built from the uncommitted working tree on top of that main, so it reports the same id with `-dirty`; same code as the PR commit):
 
 ```
-sigil: sigil 1.0.0 (commit 7b6aab6-dirty)
+sigil: sigil 1.0.0 (commit …-dirty)
 file: 1000000 random bytes, trials per case: 10
 
 | mode | damage | direct | mended | refused | WRONG | median ms (ok path) |
