@@ -1,0 +1,8 @@
+[workspace]
+members = ["crate/sigil"]
+resolver = "2"
+
+# RS/GF loops are ~20x slower unoptimized; keep debug assertions + overflow checks
+# but optimize test builds so multi-MiB WORK-pack tests stay fast (locally and in CI).
+[profile.test]
+opt-level = 2

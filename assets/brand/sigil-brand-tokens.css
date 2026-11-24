@@ -1,0 +1,13 @@
+/* Sigil brand — locked 2026-08-22 */
+:root {
+  --sigil-bg: #07160f;          /* very dark emerald */
+  --sigil-bg-elevated: #0c2418;
+  --sigil-gold: #c29965;        /* sampled from mark */
+  --sigil-gold-bright: #d4b07a;
+  --sigil-fg: #e8dcc8;
+  --sigil-muted: #8a9a88;
+}
+body, .app-shell {
+  background: var(--sigil-bg);
+  color: var(--sigil-fg);
+}

@@ -1,0 +1,44 @@
+# Sigil breakthrough map
+
+Frozen v1 layout: `docs/sigil-v1.txt`. Tooling below is **v1.x** (no byte-layout break) unless marked **v2**.
+
+Lab: https://dove-bloom-star-island.grok.me
+
+## Already shipped in this crate
+
+- **Keystone + Ember** — smashed or wiped front header still locates; live shards stay findable. New seals also keep a trailing `SGKT` Keystone spare after the body so a wiped front can locate even when Embers are gone.
+- **Honest repair budget** — Reflection ~25%, Seal ~50%; Glyph is all-or-nothing.
+- **Ward** — AES-256-GCM; chaos fold is obfuscation only.
+- **True name + Merkle** — SHA-256 of plaintext; Merkle binds the classic `n` shards.
+- **Scatter / Gather** — piece folders (`.sgp`); any `k` distinct pieces rebuild a healthy `.sg1`.
+- **Deluge** — extra indexed RS rain past `n` (index ≤ 254); mixed lanes for coupon collection.
+- **RaptorQ Channel** — `--channel` / `.mana` packets via `deluge_fountain` / `gather_fountain` (no 255 ceiling).
+- **Mend** (writes a new copy; without `-o` it is `torn.mended.sg1` next to the input since 17 November 2026) — `sigil mend torn.sg1 -o healed.sg1` (alias `repair`): locate header → gather live shards → decode ≥`k` → re-encode classic `0..n-1` → rewrite full Sigil (keystone / ember / vow). No passphrase; stays in the folded domain. Glyph errors if any shard is missing.
+- **Multi-copy mend** — `sigil mend A.sg1 B.sg1 -o healed.sg1`: pool CRC-good shards by index across copies of one Sigil (copies with an unreadable front still contribute, located with another copy's header); refuse differing headers, conflicting CRC-good shards at the same index, or a result that fails Merkle / true name. Single-file Sigils only; no `--soft`.
+- **Soft-decision RS** — first opt-in as `sigil mend --soft`; since 17 November 2026 plain `sigil mend` falls back to it on its own (`--hard-only` skips it): when Hard CRC-kill leaves too few shards, keep Soft (CRC-failed) bodies, repair byte column by byte column (easy-first, docs/SOFT-RS.md), accept only on Merkle / true-name. Not a Ward or RaptorQ substitute; no layout break.
+- **Cauchy MDS bake-off** — `MdsBackend` + `sigil bench-mds`; Cauchy opt-in (`--mds cauchy`) after measured encode/decode win; Vandermonde remains default. See `docs/CAUCHY-BAKEOFF.md`.
+- **Frost Rune (Option A)** — `sigil frost place` / `sigil frost mend`: round-robin Seal shards across N USB dirs; one drive loss stays in Seal budget. No Azure LRC codec yet. See `docs/LRC-COLD-USB.md`.
+
+## Gaps still open
+
+1. **Whole-file RAM** — seal/unseal/mend still load the Sigil; multi-GB media needs streaming.
+2. **Deflate-only** — already-compressed video barely shrinks; entropy flag unused for codec choice.
+3. **Constellation productization** — card / atlas / Geas exist in code paths but are not the archive product yet.
+4. **Show / range serve** — work-pack `show` exists; Jellyfin-grade streaming UX still maturing.
+
+## Next leaps (recommended order)
+
+1. ~~Scatter / gather / deluge / RaptorQ~~ — done.
+2. ~~In-place `mend`~~ — done (this branch).
+3. **Streaming / chunked Inscribe** — unblocks movie libraries without whole-file RAM.
+4. **zstd + passthrough codec flag (v2)** — media → none; dumps → zstd; keep deflate for v1.
+5. **Constellation index + Geas productization** — `.sga` atlas workflows (Frost Rune Option A placement shipped).
+6. Optional: cross-star heal, Argon2id Ward, CDC stars.
+
+## Math notes
+
+- Vandermonde RS over GF(256) is in `rs.rs` / `gf.rs` (systematic v2). Matrix-once + SIMD slices since 2026-10 (same bytes, ~100–5000× faster): see `docs/RS-FAST.md`.
+- Cauchy RS opt-in in `mds.rs` (systematic coding matrix); not the wire default.
+- Indexed RS rain and RaptorQ are **already** the Channel/regeneration tools — not a future invention on this branch.
+- Order must stay: compress → fold → Ward (never encrypt then compress).
+- Prove same true name from: full `.sg1` | any `k` shards + Ember | piece folder gather | Channel gather | mend rewrite.

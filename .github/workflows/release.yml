@@ -1,0 +1,78 @@
+# NOTE: These workflows are manual-only (workflow_dispatch): they never run on push,
+# pull_request, tags, or schedule, so they cannot auto-fail and spam notifications
+# (free plan billing). Local checks (see README.md) remain the merge gate.
+# Tag-based auto-release is disabled: release by dispatching this workflow manually.
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: sigil-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: sigil-windows-x86_64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: sigil-macos-arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: crate/sigil
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: musl tools
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: pack unix
+        if: matrix.os != 'windows-latest'
+        run: |
+          BIN=../../target/${{ matrix.target }}/release/sigil
+          cp "$BIN" ${{ matrix.artifact }}
+          tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+      - name: pack windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Copy-Item ../../target/${{ matrix.target }}/release/sigil.exe ${{ matrix.artifact }}
+          Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ${{ matrix.artifact }}.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            crate/sigil/${{ matrix.artifact }}.tar.gz
+            crate/sigil/${{ matrix.artifact }}.zip
+            crate/sigil/${{ matrix.artifact }}
+
+  # RELEASE-SIGNING-DESIGN.md §6 step 1: one checksum list over every uploaded artefact.
+  # No secret and no signing here: the key holder signs SHA256SUMS offline with minisign
+  # after the release and uploads SHA256SUMS.minisig by hand.
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: download artefacts and write SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" --dir dist
+          bash scripts/make-sha256sums.sh dist
+          cat dist/SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SHA256SUMS
