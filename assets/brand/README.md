@@ -5,8 +5,8 @@
 Sigil's official logo is the **OG tree logo**: a thin gold tree of life (branches up, roots down)
 inside a circle, over spaced `S I G I L` serif capitals, on dark green.
 
-The files in `original/` are copied byte-for-byte from the old repo
-[Dastille/dove-bloom-star-island](https://github.com/Dastille/dove-bloom-star-island). They are raster
+The files in `original/` are copied byte-for-byte from the old
+repo dove-bloom-star-island, which is private (the commit ids below refer to it). They are raster
 JPEGs; there is no vector master yet.
 
 | File | Size | Source path (old repo) | Commit(s) |

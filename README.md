@@ -797,7 +797,7 @@ npm run selftest
 ```
 
 The lab's web UI (pages, components, hosting) is still in
-[dove-bloom-star-island](https://github.com/Dastille/dove-bloom-star-island) and
+dove-bloom-star-island (a private repository) and
 was not moved here.
 
 ## Tests and CI
@@ -964,4 +964,4 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 Code before October 2026, and the commit history before 24 November 2026, are kept in a
 private archive repository; this repository starts from a single clean commit. The code
 was originally imported from `crate/sigil` and related paths of dove-bloom-star-island
-(main at `40e649a`).
+(a private repository; its main branch as of 21 October 2026).

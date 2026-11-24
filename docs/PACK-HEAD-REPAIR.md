@@ -84,7 +84,7 @@ that star's 8-byte length:
 **Additive, same layout.** The pack head, the framing and the facet list are
 exactly as before; only each star's framed length grows by the guard. A single
 seal tolerates trailing bytes, so binaries from before guards open, verify,
-range-read and mend new packs unchanged (checked with the `d2f5307` binary on a
+range-read and mend new packs unchanged (checked with the main build of 16 October 2026 on a
 64 MiB pack: unseal, `--from-mb`/`--to-mb`, scry, mend of a clean pack
 (byte-identical) and of a pack with 3 torn stars). An old binary's mend drops
 the guard of each star it heals; the new reader still opens that file (it checks
@@ -114,7 +114,7 @@ head copy must follow it.
 
 Per star: 83 bytes + one copy of the head (26 bytes + the name). With the default
 4 MiB chunks (`seal`, `--mode reflection` and `--mode seal`, random data), old
-`d2f5307` binary vs this one:
+main build of 16 October 2026 vs this one:
 
 | File | Mode | Before | After | Added | Overhead |
 |---|---|---:|---:|---:|---:|
