@@ -18,14 +18,15 @@
 #   deny <term>          case-insensitive substring; whole word when the term
 #                        starts or ends with a letter or digit
 #   allow <text>         this exact text (case-sensitive) is exempt; the rest
-#                        of the line is still scanned
+#                        of the line is still scanned; an allowed text ending
+#                        in "/" followed by ".." still fails
 #   allow-file <path>    repo-relative path that is not scanned
 # Built-in rule: a UUID-shaped id on a line that mentions "machine" fails.
 #
 # PDFs are scanned through `pdftotext` (poppler-utils). If it is missing the
 # check fails and says so; SIGIL_PRIVACY_SKIP_PDF=1 skips PDFs with a warning.
 # JPEG and PNG files are scanned in their metadata (EXIF, XMP, comments, text
-# chunks). Rebuild docs/WHITEPAPER.pdf with scripts/build-whitepaper-pdf.py
+# chunks, compressed zTXt/iTXt inflated first). Rebuild docs/WHITEPAPER.pdf with scripts/build-whitepaper-pdf.py
 # whenever docs/WHITEPAPER.md changes.
 
 # Real home folders. Use the placeholder `/home/me/` in examples.
