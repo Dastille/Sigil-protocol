@@ -1296,7 +1296,12 @@ mod tests {
         );
         assert_eq!(off_rep.joint_columns + off_rep.hunt_columns, 0);
         let (got, rep) = decode(&p, 12, 3000, payload.len(), true).unwrap();
-        assert_eq!(got, payload, "{rep:?}");
+        // Three-row bursts leave one spare symbol at the burst edges, so the two-check
+        // hunt rule ([`joint::MIN_HUNT_CHECKS`]) no longer fixes the edge columns there:
+        // the result is wrong and the caller's gate refuses it (with one check this
+        // decoded exactly). This is the recovery the rule costs.
+        assert_ne!(got, payload, "{rep:?}");
+        assert_eq!(rep.hunt_columns, 0, "{rep:?}");
         assert!(rep.joint_columns > 0, "{rep:?}");
         let one = decode_threads(&p, 12, 3000, payload.len(), true, 1).unwrap();
         assert_eq!(one.0, got);

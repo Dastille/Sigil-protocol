@@ -359,7 +359,8 @@ const CORPUS_COUNTS: (usize, usize, usize, usize) = (18, 36, 39, 60);
 
 /// `(per-column alone, with (g), cases)` for
 /// `mend_joint_windows_repair_scattered_sectors_main_loses`.
-const SECTOR_COUNTS: (usize, usize, usize) = (23, 41, 54);
+// With the two-check hunt rule (MIN_HUNT_CHECKS = 2) this is 38; with one check it was 41.
+const SECTOR_COUNTS: (usize, usize, usize) = (23, 38, 54);
 
 /// Mend `torn` with the per-column ratchet alone (`false`) or with the (g) neighbour steps.
 fn mend_with_joint(torn: &[u8], joint: bool, threads: usize) -> (Result<Vec<u8>>, SoftMendStats) {
@@ -518,6 +519,7 @@ fn mend_joint_windows_fail_closed() {
 /// Every success is the original file; everything else is an error.
 #[test]
 fn mend_hunt_two_checks_fail_closed() {
+    let (mut ok, mut refused) = (0usize, 0usize);
     for (mode, size, counts) in [
         (Mode::Reflection, 200_000usize, [6usize, 10, 14]),
         (Mode::Seal, 120_000, [10, 16, 24]),
@@ -527,27 +529,35 @@ fn mend_hunt_two_checks_fail_closed() {
         let want = sha(&bytes);
         for &count in &counts {
             for seed in 1..=3u64 {
-                let mut torn = damage_sectors(
-                    &bytes,
+                // Stray bit flips first (they need the intact header), then the sectors.
+                let base = if seed == 3 {
+                    damage(&bytes, &[], 3e-6, 950 + count as u64)
+                } else {
+                    bytes.clone()
+                };
+                let torn = damage_sectors(
+                    &base,
                     4096,
                     count,
                     seed % 2 == 0,
                     900 + seed * 7 + count as u64,
                 );
-                if seed == 3 {
-                    torn = damage(&torn, &[], 3e-6, 950 + count as u64);
-                }
-                let (r, _) = mend_with_joint(&torn, true, 4);
-                if let Ok(b) = r {
-                    assert_eq!(
-                        sha(&b),
-                        want,
-                        "{mode:?} {count} sectors seed {seed}: wrong bytes"
-                    );
+                match mend_with_joint(&torn, true, 4).0 {
+                    Ok(b) => {
+                        assert_eq!(
+                            sha(&b),
+                            want,
+                            "{mode:?} {count} sectors seed {seed}: wrong bytes"
+                        );
+                        ok += 1;
+                    }
+                    Err(_) => refused += 1,
                 }
             }
         }
     }
+    // Both outcomes occur, so the check above is not vacuous.
+    assert!(ok > 0 && refused > 0, "ok {ok}, refused {refused}");
 }
 
 /// Byte offsets of the Merkle root in every copy of the 160-byte header in the file

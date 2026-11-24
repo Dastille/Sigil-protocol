@@ -187,8 +187,11 @@ R1 slices, in this order:
      2018, doi:10.1109/TCOMM.2018.2816073). A settled column that changed a shard neither
      neighbour changed was probably decoded to a wrong codeword. It is decided again with
      its neighbours' shards erased, on the bytes as read; the new fix replaces the old one
-     only if it checks and changes no CRC-verified shard (an eager version broke existing
-     tests, so replace-only-if-confirmed is required).
+     only if at least two independent spare symbols confirm it (`MIN_HUNT_CHECKS`) and it
+     changes no CRC-verified shard (an eager version broke existing tests, so
+     replace-only-if-confirmed is required). Measured cost of the two-check rule against
+     one check: 41 → 38 of 54 in the test below, and 15 fewer real-segment repairs out of
+     264 with no file gained (no wrong file either way).
    - Limits: the window search, the neighbour guess and the hunt are charged to their own
      work budget (the same size as the erasure-guess budget), and so is building their
      erasure guesses (about k³ + p·k² steps each). All guess building in one repair shares
@@ -214,7 +217,7 @@ R1 slices, in this order:
    - Tests (`crate/sigil/src/mend_soft_tests.rs`, `soft_ratchet.rs`):
      `mend_joint_windows_repair_scattered_sectors_main_loses` (zero-filled and garbage
      4 KiB sectors and zero-filled 512 B sectors anywhere in the file, Reflection 600 KB and
-     Seal 300 KB, fixed salt and damage seeds: per-column alone 23 of 54, with (g) 41 of 54,
+     Seal 300 KB, fixed salt and damage seeds: per-column alone 23 of 54, with (g) 38 of 54 (41 before the two-check hunt rule),
      asserted; never loses a case the per-column ratchet repairs; every success has the
      original's SHA-256 and unseals to the original; same bytes on 1 and 8 threads),
      `mend_joint_windows_encrypted_sectors_and_wrong_key`, `mend_joint_windows_fail_closed`
