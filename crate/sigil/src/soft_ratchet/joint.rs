@@ -19,7 +19,8 @@
 //!    66(7), 2018). Inside a damaged region a settled column that changed a shard neither
 //!    neighbour changed was probably decoded to a wrong codeword. It is decided again with
 //!    its neighbours' erasure set on the bytes as read, and the new fix replaces the old
-//!    one only if it checks and changes no CRC-verified shard.
+//!    one only if it is confirmed by at least [`MIN_HUNT_CHECKS`] independent spare
+//!    symbols and changes no CRC-verified shard.
 //!
 //! None of this is trusted on its own. Exactly like the rest of the ratchet, the caller
 //! accepts the result only after re-encoding every shard and matching the header's Merkle
@@ -49,6 +50,10 @@ const WMIN: usize = 4;
 const MIN_SPARE: usize = 4;
 /// Stuck columns at most this far apart go in the same window.
 const MAX_GAP: usize = 8;
+/// Independent spare symbols (rows outside the erased set and the rebuild basis) that
+/// must confirm a hunt fix before it may replace a settled column. With one, a wrong
+/// rebuild passes by chance about once in 256 columns.
+pub(super) const MIN_HUNT_CHECKS: usize = 2;
 /// Columns between Ctrl-C checks in the hunt.
 const HUNT_CHECK_EVERY: usize = 4096;
 /// Symbol steps one repair may spend building erasure guesses for the neighbour steps and
@@ -501,8 +506,9 @@ pub(super) struct Hunt {
 /// Step 3 (bounded: guesses are built from a shared build budget into a capped cache, and
 /// the hunt stops once it has spent [`DRY_BUILD_WORK`] on builds without replacing
 /// anything): re-decide settled columns that changed a shard neither neighbour changed, and
-/// keep the new fix only if it checks on the bytes as read, differs from the old one and
-/// changes no trusted (CRC-verified) shard.
+/// keep the new fix only if it checks on the bytes as read with at least `min_checks`
+/// spare symbols, differs from the old one and changes no trusted (CRC-verified) shard.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn hunt(
     rows: &mut [Row],
     read: &ReadCols,
@@ -511,7 +517,9 @@ pub(super) fn hunt(
     errs: &mut [u64],
     budget: u64,
     build_left: &mut u64,
+    min_checks: usize,
 ) -> Result<Hunt, Error> {
+    let p = rows.len();
     let mut stuck = stuck.to_vec();
     stuck.sort_unstable();
     let mut cache = PatternCache::new(rows, k);
@@ -546,6 +554,11 @@ pub(super) fn hunt(
         }
         let around = left.union(right);
         if around.is_empty() || m.minus(around).is_empty() {
+            continue;
+        }
+        // Too few rows left to confirm the fix independently: leave the column as settled
+        // (decided before building anything, so it costs no budget).
+        if around.rows(p).len() + k + min_checks.max(1) > p {
             continue;
         }
         if out.work.saturating_add(cache.work) >= budget
@@ -619,6 +632,128 @@ mod tests {
         assert!(pattern_cap(70, 60) < 2000);
         assert_eq!(pattern_cap(255, 254), 16);
         assert_eq!(pattern_cap(0, 0), MAX_JOINT_PATTERNS);
+    }
+
+    /// Three columns of a 12-of-16 code: column 11 is "settled" with row 15 changed (a
+    /// stand-in for a miscorrection), its neighbours changed `left` and `right`. The read
+    /// bytes of column 11 are the truth with errors on the neighbours' rows, so erasing
+    /// those rows rebuilds the truth. Returns (rows after the hunt, truth, replaced).
+    fn hunt_case(
+        left: &[usize],
+        right: &[usize],
+        tamper: impl Fn(&mut Vec<Row>, &[u8]),
+        min_checks: usize,
+    ) -> (Vec<Row>, Vec<Vec<u8>>, usize) {
+        let payload: Vec<u8> = (0..12 * 32u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 9) as u8)
+            .collect();
+        let shards = rs::encode_shards(&payload, 12, 16).unwrap();
+        let mk = |b: &Vec<Vec<u8>>| -> Vec<Row> {
+            b.iter()
+                .enumerate()
+                .map(|(i, body)| Row {
+                    x: rs::x_of(i),
+                    hard: false,
+                    crc: None,
+                    body: body.clone(),
+                })
+                .collect()
+        };
+        let mut read_rows = mk(&shards);
+        for &t in left {
+            read_rows[t].body[10] ^= 0x11;
+        }
+        for &t in right {
+            read_rows[t].body[12] ^= 0x22;
+        }
+        for &t in left.iter().chain(right) {
+            read_rows[t].body[11] ^= 0x33;
+        }
+        let xs: Vec<u8> = read_rows.iter().map(|r| r.x).collect();
+        tamper(&mut read_rows, &xs);
+        let read = ReadCols::new(&read_rows, &[10, 11, 12]).unwrap();
+        let mut rows = mk(&shards);
+        rows[15].body[11] ^= 0x5a;
+        let mut errs = vec![0u64; 16];
+        let mut build_left = BUILD_BUDGET;
+        let h = hunt(
+            &mut rows,
+            &read,
+            &[],
+            12,
+            &mut errs,
+            u64::MAX,
+            &mut build_left,
+            min_checks,
+        )
+        .unwrap();
+        (rows, shards, h.replaced)
+    }
+
+    fn col(rows: &[Row], j: usize) -> Vec<u8> {
+        rows.iter().map(|r| r.body[j]).collect()
+    }
+
+    fn truth_col(shards: &[Vec<u8>], j: usize) -> Vec<u8> {
+        shards.iter().map(|s| s[j]).collect()
+    }
+
+    #[test]
+    fn hunt_replaces_only_with_two_spare_confirmations() {
+        // Two erased rows leave 16 - 12 - 2 = 2 spare symbols: the fix is confirmed twice
+        // and replaces the wrong column with the truth.
+        let (rows, truth, n) = hunt_case(&[3], &[7], |_, _| {}, MIN_HUNT_CHECKS);
+        assert_eq!(n, 1);
+        assert_eq!(col(&rows, 11), truth_col(&truth, 11));
+        // Three erased rows leave one spare symbol: the old rule (one check) replaced it,
+        // the two-check rule leaves the settled column alone.
+        let (rows, truth, n) = hunt_case(&[3, 4], &[7], |_, _| {}, 1);
+        assert_eq!(n, 1);
+        assert_eq!(col(&rows, 11), truth_col(&truth, 11));
+        let (rows, truth, n) = hunt_case(&[3, 4], &[7], |_, _| {}, MIN_HUNT_CHECKS);
+        assert_eq!(n, 0);
+        let mut want = truth_col(&truth, 11);
+        want[15] ^= 0x5a;
+        assert_eq!(col(&rows, 11), want, "column must stay exactly as settled");
+    }
+
+    /// A tampered read that fools a single check: a basis symbol is changed and the one
+    /// spare row is forged to match the wrong rebuild. With one check the hunt writes that
+    /// wrong column; with two it is never reached. With two spare rows and only one of
+    /// them forged, the check fails and nothing is replaced.
+    #[test]
+    fn hunt_two_checks_resist_a_forged_spare_symbol() {
+        let forge = |erased: Vec<usize>, forge_rows: usize| {
+            move |rr: &mut Vec<Row>, xs: &[u8]| {
+                let power = rs::power_matrix(xs, 12);
+                let q = make_pattern(xs, &power, &erased, 12, 0.0).unwrap();
+                rr[q.basis[0]].body[11] ^= 0x77;
+                let c: Vec<u8> = rr.iter().map(|r| r.body[11]).collect();
+                let w = q.fill_col(&c);
+                for &t in q.checks.iter().take(forge_rows) {
+                    rr[t].body[11] = w[t];
+                }
+            }
+        };
+        // One spare row, forged: one check is fooled.
+        let (rows, truth, n) = hunt_case(&[3, 4], &[7], forge(vec![3, 4, 7], 1), 1);
+        assert_eq!(n, 1);
+        assert_ne!(
+            col(&rows, 11),
+            truth_col(&truth, 11),
+            "one check accepts the forgery"
+        );
+        let (rows, truth, n) = hunt_case(&[3, 4], &[7], forge(vec![3, 4, 7], 1), MIN_HUNT_CHECKS);
+        assert_eq!(n, 0);
+        let mut want = truth_col(&truth, 11);
+        want[15] ^= 0x5a;
+        assert_eq!(col(&rows, 11), want);
+        // Two spare rows, one forged: the other catches it.
+        let (rows, truth, n) = hunt_case(&[3], &[7], forge(vec![3, 7], 1), MIN_HUNT_CHECKS);
+        assert_eq!(n, 0);
+        let mut want = truth_col(&truth, 11);
+        want[15] ^= 0x5a;
+        assert_eq!(col(&rows, 11), want);
     }
 
     #[test]

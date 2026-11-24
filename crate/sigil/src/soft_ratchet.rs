@@ -434,7 +434,16 @@ pub(crate) fn decode_threads(
     // neither neighbour changed is decided again from its neighbours' guess.
     if let Some(read) = read.as_ref() {
         let left = budget.saturating_sub(rep.joint_work);
-        let h = joint::hunt(&mut rows, read, &stuck, k, &mut errs, left, &mut build_left)?;
+        let h = joint::hunt(
+            &mut rows,
+            read,
+            &stuck,
+            k,
+            &mut errs,
+            left,
+            &mut build_left,
+            joint::MIN_HUNT_CHECKS,
+        )?;
         rep.joint_work = rep.joint_work.saturating_add(h.work);
         rep.joint_patterns += h.built;
         rep.joint_cache_peak = rep.joint_cache_peak.max(h.cache_bytes);

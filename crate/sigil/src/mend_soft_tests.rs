@@ -513,6 +513,43 @@ fn mend_joint_windows_fail_closed() {
     }
 }
 
+/// The two-check hunt rule never turns damage into other bytes: sector damage near and
+/// past the limit, with and without stray bit flips, in both modes, encrypted or not.
+/// Every success is the original file; everything else is an error.
+#[test]
+fn mend_hunt_two_checks_fail_closed() {
+    for (mode, size, counts) in [
+        (Mode::Reflection, 200_000usize, [6usize, 10, 14]),
+        (Mode::Seal, 120_000, [10, 16, 24]),
+    ] {
+        let msg = noise(size, 0x2c4e + size as u64);
+        let bytes = seal(&msg, mode, None, "h.bin", false).unwrap();
+        let want = sha(&bytes);
+        for &count in &counts {
+            for seed in 1..=3u64 {
+                let mut torn = damage_sectors(
+                    &bytes,
+                    4096,
+                    count,
+                    seed % 2 == 0,
+                    900 + seed * 7 + count as u64,
+                );
+                if seed == 3 {
+                    torn = damage(&torn, &[], 3e-6, 950 + count as u64);
+                }
+                let (r, _) = mend_with_joint(&torn, true, 4);
+                if let Ok(b) = r {
+                    assert_eq!(
+                        sha(&b),
+                        want,
+                        "{mode:?} {count} sectors seed {seed}: wrong bytes"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Byte offsets of the Merkle root in every copy of the 160-byte header in the file
 /// (front copy and Keystone copies; located by matching the front copy's root bytes).
 fn merkle_root_offset(bytes: &[u8]) -> Vec<usize> {
