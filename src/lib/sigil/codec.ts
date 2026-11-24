@@ -392,7 +392,7 @@ export async function unseal(
       folded = open;
       privCek = cek;
     } else if (sgto) {
-      // Since PR #44 (and for encrypt-to): the SGTO block wraps a random content key.
+      // Since the key-wrap change (and for encrypt-to): the SGTO block wraps a random content key.
       // Rust uses the passphrase as typed here; only the legacy Ward trims it.
       const cek = await unwrapCekWithPass(sgto, passphrase ?? "", header.salt);
       const open = await aesGcmOpen(cek, header.nonce, folded, header.tag);

@@ -1,6 +1,6 @@
 # Archives and the signed log
 
-*Version 1.0, 23 November 2026. Output captured from Sigil built from commit `8f03b46`.*
+*Version 1.0, 23 November 2026. Output captured from Sigil built from the main branch on 23 November 2026.*
 
 A **segment log** is an archive that only grows. Each time you back up a folder, Sigil
 wraps every new or changed file as its own Sigil (a **segment**) and adds a line to the

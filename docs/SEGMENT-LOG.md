@@ -1590,7 +1590,7 @@ Reed–Solomon code.
 
 ## Epoch rollover (`sigil log epoch OLD NEW`, `log=10`)
 
-Status: **shipped 2026-11-08** (INDEX prune Option A, decided 2026-11-02; spec PR #97,
+Status: **shipped 2026-11-08** (INDEX prune Option A, decided 2026-11-02; spec merged 2026-11-08,
 implementation in `crate/sigil/src/seglog/epoch.rs`). Design and the decision record:
 [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md). Every behaviour below is covered by the unit tests in
 `seglog/epoch.rs` and `tests/cli_seglog_epoch.rs` (named in "Tests" at the end of this section).
@@ -1747,7 +1747,7 @@ append after, `check-epoch` with and without archive, epoch of an epoch),
 `encrypted_archive_needs_a_wrap_and_private_flags_carry_over`. `tests/cli_seglog_epoch.rs`: the
 commands end to end on a `log add` backup (restore latest, `--at` at / before the cut, `log add`
 after, `--card-out`, tampered card, missing archive, JSON). Older-binary refusal (the messages
-quoted above) was checked by running the previous main build (8cc062e) against an epoch log; it is a receipt,
+quoted above) was checked by running the previous main build (8 November 2026) against an epoch log; it is a receipt,
 not a test in this repo.
 
 ## Deferred (later slices)

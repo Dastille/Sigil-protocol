@@ -217,8 +217,8 @@ python3 docs/research/deep-space-mem.py   target/release/sigil 64
 `deep-space-bench.py` seals one 1 000 000-byte random file (fixed seed) and
 damages copies with fixed seeds (trial index). Each case runs `sigil unseal`.
 If that refuses, it runs `sigil mend --soft` and unseals the result. Every output
-is compared byte for byte with the original. "Before" is `origin/main` at
-`7b6aab6`, "after" is this branch. Both were run with the same script and seeds.
+is compared byte for byte with the original. "Before" is `origin/main` as of
+23 October 2026, "after" is this branch. Both were run with the same script and seeds.
 Times are wall-clock medians of whole CLI calls (process start included) on the
 successful path. They include contention from the other benchmark that ran at
 the same time, so treat them as rough.
@@ -493,9 +493,9 @@ works out how many spares to send for a given amount of expected loss.
 
 ## Appendix: raw benchmark output
 
-`origin/main` (7b6aab6) and this branch, same script, 10 trials, 1 000 000-byte file.
+`origin/main` (23 October 2026) and this branch, same script, 10 trials, 1 000 000-byte file.
 
-`origin/main` (binary reports `7b6aab6`):
+`origin/main` of 23 October 2026 (the binary reports its own short commit id):
 
 ```
 sigil: sigil 1.0.0 (commit 7b6aab6)
@@ -559,7 +559,7 @@ file: 1000000 random bytes, trials per case: 10
 | reflection | 64 | 146 | 50% | 0 | 10 | 0 | - |
 ```
 
-This branch (built from the uncommitted working tree on top of 7b6aab6, so it reports `7b6aab6-dirty`; same code as the PR commit):
+This branch (built from the uncommitted working tree on top of that main, so it reports the same id with `-dirty`; same code as the PR commit):
 
 ```
 sigil: sigil 1.0.0 (commit 7b6aab6-dirty)

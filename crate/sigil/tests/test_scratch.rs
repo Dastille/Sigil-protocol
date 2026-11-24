@@ -1,4 +1,4 @@
-//! Regression (PR #27 follow-up): test scratch folders are exclusive and unguessable.
+//! Regression (follow-up to the `staging::TempDir` fix): test scratch folders are exclusive and unguessable.
 //! Integration tests used `temp_dir()/sigil-<tag>-<pid>`, wiping and reusing whatever
 //! already sat at that name. A folder planted there is now neither used nor removed.
 mod common;

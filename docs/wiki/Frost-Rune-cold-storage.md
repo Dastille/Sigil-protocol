@@ -1,6 +1,6 @@
 # Frost Rune: cold storage
 
-*Version 1.0, 23 November 2026. Output captured from Sigil built from commit `8f03b46`.*
+*Version 1.0, 23 November 2026. Output captured from Sigil built from the main branch on 23 November 2026.*
 
 **Frost Rune** spreads one Sigil across several USB drives (or disks) that you store
 unplugged ("cold"). With the default four drives, any two are enough to get your file
@@ -41,8 +41,8 @@ piece-012.sgp
 
 Copy each `usb-` folder to its own drive. The small `KIT` file lists which piece is on
 which drive; a copy on each drive is handy, but `frost mend` needs only the `usb-` folders. Each `.sgp` file is one **shard**: one piece of
-the Sigil. The first line above was captured with the build that includes this page (commit
-`8f03b46` plus the 23 November 2026 documentation update); earlier builds print
+the Sigil. The first line above was captured with the build that includes this page (the main
+build of 23 November 2026 plus that day's documentation update); earlier builds print
 `cold-USB kit Option A` instead of `Frost Rune` (same result).
 
 ## Get the file back after losing drives

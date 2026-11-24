@@ -2,7 +2,7 @@
 
 *Plain-English guide for people who are not developers. Version 1.0, 23 November 2026.
 Every example on these pages is real output, captured on 23 November 2026 from Sigil
-built from commit `8f03b46` on a Linux desktop.*
+built from the main branch on a Linux desktop.*
 
 Sigil keeps your files safe from damage. It wraps a file or folder into one `.sg1` file
 (called a **Sigil**) that carries its own spare repair data. If part of that file is

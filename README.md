@@ -100,7 +100,7 @@ NOT recoverable (1 star(s) missing: sub/big.bin): too damaged to restore from th
 `scry` counts only pieces that pass their own checksum. Bit rot spread over every piece
 makes all of them fail it, so `scry` can say `NOT recoverable` (exit 2) for a file that
 `sigil mend` can still repair with its deeper repair. Before giving up on a copy, run
-`sigil mend --scan FILE` (it writes nothing). Captured on 23 November 2026 (build `8f03b46`)
+`sigil mend --scan FILE` (it writes nothing). Captured on 23 November 2026 (that day's main build)
 on a 2.2 MB photo with 2 000 random bits flipped:
 
 ```
@@ -116,7 +116,7 @@ To double-check the repaired copy: sigil verify rot.mended.sg1
 ```
 
 `sigil --version` prints the version and the git commit it was built from, e.g.
-`sigil 1.0.0 (commit 76d0639)` (`-dirty` after the SHA if the checkout had
+`sigil 1.0.0 (commit 1a2b3c4)` (`-dirty` after the SHA if the checkout had
 uncommitted changes, `unknown` when built without git, e.g. from a source tarball).
 
 ### Repair: mend
@@ -167,7 +167,7 @@ Long repairs (since 19 November 2026):
 - Ctrl-C stops a running repair safely: nothing is written, the original is unchanged,
   exit 130. Ctrl-C twice quits at once.
 
-Captured on 23 November 2026 (build `8f03b46`, 20-thread desktop). A 150 MB Sigil with
+Captured on 23 November 2026 (that day's main build, 20-thread desktop). A 150 MB Sigil with
 150 000 flipped bits: the scan, the progress line after 5 seconds, then the result (the
 padded estimate said about 80 seconds; the repair took about 6):
 
@@ -961,6 +961,7 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 
 ## History
 
-Code before October 2026 is kept on branch `archive/pre-2026-10` and tag
-`pre-2026-10-import`. The current code and its commit history were imported from
-`crate/sigil` and related paths of dove-bloom-star-island (main at `40e649a`).
+Code before October 2026, and the commit history before 24 November 2026, are kept in a
+private archive repository; this repository starts from a single clean commit. The code
+was originally imported from `crate/sigil` and related paths of dove-bloom-star-island
+(main at `40e649a`).

@@ -277,7 +277,7 @@ fn truncation_never_returns_wrong_plaintext() {
     assert_eq!(open(&f[..spare.start], Some(PASS), &[]).unwrap(), msg);
 }
 
-/// The PR #107 refusal case: key wrap hit AND data damaged. Now mend rebuilds it exactly.
+/// The refusal case from the 17 November 2026 mend change: key wrap hit AND data damaged. Now mend rebuilds it exactly.
 #[test]
 fn mend_with_keywrap_and_data_damage_is_byte_identical() {
     let msg = noise(48_000, 8);
@@ -293,7 +293,7 @@ fn mend_with_keywrap_and_data_damage_is_byte_identical() {
 }
 
 /// Files written before SGTO v3 (one key-wrap copy) open and mend exactly as before: no
-/// spare is added to them. `keywrap-v0` was written by `main` @ 13eee34 (PR #107).
+/// spare is added to them. `keywrap-v0` was written by `main` as of 17 November 2026.
 #[test]
 fn old_single_copy_files_open_and_mend_unchanged() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
