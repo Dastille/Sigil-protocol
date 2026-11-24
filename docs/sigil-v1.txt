@@ -215,7 +215,7 @@ name and length. A wrong guess may therefore only cause a refusal.
 THREAT MODEL
 This section states what a .sg1 protects, against whom, and what it does not.
 It describes the reference implementation (crate/sigil) as of November 2026
-(commit 8f03b46 plus this revision).
+(the main build of 23 November 2026 plus this revision).
 
 Assets
   payload      the original bytes: their confidentiality (only when a Ward

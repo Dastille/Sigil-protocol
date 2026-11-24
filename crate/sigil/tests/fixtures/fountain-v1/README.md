@@ -1,6 +1,6 @@
 # fountain-v1 fixtures (Channel mana, SGFT packet version 1)
 
-Written by the Rust CLI on `main` @ `bc96b5a` (before random symbol IDs and
+Written by the Rust CLI on `main` as of 22 October 2026 (before random symbol IDs and
 per-packet checksums), so the reader for version-1 packets stays tested. The
 packet bytes are unchanged; the files were renamed from the original
 `rain-NNNNN.rq` to `mana-NNNNN.mana` when Channel moved to the `.mana`

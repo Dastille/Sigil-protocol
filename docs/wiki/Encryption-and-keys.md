@@ -1,6 +1,6 @@
 # Encryption and keys
 
-*Version 1.0, 23 November 2026. Output captured from Sigil built from commit `8f03b46`.*
+*Version 1.0, 23 November 2026. Output captured from Sigil built from the main branch on 23 November 2026.*
 
 A plain Sigil protects a file from **damage**, not from **reading**: anyone with the file
 can open it. To keep a file private, lock it. Sigil has two ways.

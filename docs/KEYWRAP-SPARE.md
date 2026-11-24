@@ -11,8 +11,8 @@ Measurement: `crate/sigil/src/keywrap_measure.rs` (ignored test, see below).
 Every encrypted Sigil keeps its content key wrapped in one `SGTO` block (about 100 bytes) right
 after the Keystone. Before this change that block existed **once** and sat outside the shards, so
 Reflection/Seal repair never covered it. One flipped bit there failed its CRC32; `unseal` then
-said "no key wrap (SGTO) left; past repair" and `mend` refused (since PR #107), even with all 16
-shards intact. Shown by `keywrap_measure::keywrap_single_hit_repro` on `main` @ `13eee34`:
+said "no key wrap (SGTO) left; past repair" and `mend` refused (since the 17 November 2026 mend change), even with all 16
+shards intact. Shown by `keywrap_measure::keywrap_single_hit_repro` on the main build of 17 November 2026:
 one flipped bit, or 16 zeroed bytes, in the wrap → intact data shards 16/16, unseal and
 mend both refuse (passphrase and encrypt-to).
 
@@ -50,8 +50,8 @@ searched or written, and only on private-label (v3 header) seals.
 
 - Old files (SGTO v1/v2, one copy) open and mend exactly as before; mend does not add a spare
   (`old_single_copy_files_open_and_mend_unchanged`, fixtures `tests/fixtures/keywrap-v0/`
-  written by `13eee34`, plus `kdf-v2/`). They keep the one-copy weakness until re-sealed.
-- New encrypted files open only with this build or later. `13eee34` refuses them cleanly
+  written by the main build of 17 November 2026, plus `kdf-v2/`). They keep the one-copy weakness until re-sealed.
+- New encrypted files open only with this build or later. That 17 November build refuses them cleanly
   ("v3 seal has no key wrap (SGTO) left"; exit 1 for unseal, exit 2 and nothing written for
   mend). That refusal is deliberate: a tool that does not know the spare must not rewrite the
   front wrap and leave an old spare behind.
@@ -74,7 +74,7 @@ shard bodies): random bit flips at the given bit-error rate, or one zeroed run a
 offset. Open = `unseal`, else `mend` (quick, then soft) + `unseal`. "Lost only to key wrap" =
 refused, but opens once the key-wrap bytes are put back. Same seeds before and after; the
 new file is 121 bytes longer, so the same seed lands flips on slightly different bytes. WRONG
-(returned bytes that differ) was 0 in every row. Before = `main` @ `13eee34`; after = this
+(returned bytes that differ) was 0 in every row. Before = the main build of 17 November 2026; after = this
 change. "4 KiB" etc. is the plaintext size.
 
 Totals: lost only to the key wrap **908 of 7 200 → 9**; from one burst **156 → 0**.

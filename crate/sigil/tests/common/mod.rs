@@ -1,5 +1,5 @@
 //! Shared test scratch folders: the same pattern as the library's private
-//! `staging::TempDir` (PR #27). Each folder is `sigil-test-<tag>-<pid>-<seq>-<64 random
+//! `staging::TempDir`. Each folder is `sigil-test-<tag>-<pid>-<seq>-<64 random
 //! bits>` in the system temp folder, made by one exclusive `mkdir` (fails if anything
 //! already has that name, so a planted folder or symlink is never reused or wiped),
 //! mode 0700 on Unix, and removed with everything inside when dropped.

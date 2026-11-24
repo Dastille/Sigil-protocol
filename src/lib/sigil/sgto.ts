@@ -6,7 +6,7 @@
  * Each record starts with a kind byte:
  *   1  X25519 recipient: hint(8) eph_pk(32) nonce(12) tag(16) ct(32)      (lab cannot open these)
  *   2  passphrase, PBKDF2-HMAC-SHA256 80k with the header salt: nonce(12) tag(16) ct(32)  (legacy, read only)
- *   3  passphrase, Argon2id: salt(16) m_kib u32 t u32 p u32 nonce(12) tag(16) ct(32)      (written since PR #44)
+ *   3  passphrase, Argon2id: salt(16) m_kib u32 t u32 p u32 nonce(12) tag(16) ct(32)      (written since the key-wrap change)
  *
  * To support a new format version, add it to `SGTO_VERSIONS`; to support a new record kind,
  * add an entry to `RECORD_KINDS` (its length, and an `open` if the lab can unwrap it).

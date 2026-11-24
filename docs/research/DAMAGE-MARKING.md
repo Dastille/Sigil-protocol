@@ -3,7 +3,7 @@
 Status: design note, 2026-11-10. No code, no format change. Every gain figure
 below is a calculation or a model simulation, not a measurement of Sigil, and is
 marked **UNVERIFIED** until the measurement plan in §7 has been run. Line numbers
-refer to this branch. On base `main` (`e07e50f`) lines of `docs/sigil-v1.txt`
+refer to this branch. On base `main` (as of 9 November 2026) lines of `docs/sigil-v1.txt`
 after the Frost Rune section were 7 lower, and lines after claim P 11 lower
 (e.g. claim F `:183–197` here was `:176–190`; the A "NOT claimed" text
 `:208–212` here was `:197–201`).
