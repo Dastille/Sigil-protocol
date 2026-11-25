@@ -37,6 +37,30 @@ the list. Then each star is still opened and checked against its own length and
 SHA-256 as always, and the total is checked at the end. Damage that cannot be
 rebuilt keeps the old clean refusal and the old error message.
 
+## Length framing (decoder-only)
+
+The 8-byte length in front of each chunk star is not Reed–Solomon coded. When
+those prefixes are damaged but the facet list is intact, `mend` and `unseal`
+rebuild the lengths from each star's own protected header (and any intact
+pack-head guard), and accept a rebuilt length only when that star's SHA-256
+matches the listed facet, in order, and any intact guard names this index, this
+head and this pack. The on-disk format is unchanged: no new field is written
+for this; a successful mend writes the same length prefixes a clean pack
+already had.
+
+A rebuilt walk is refused when stars are swapped, a forged length points at a
+different valid-looking star, the pack is truncated, or the facet list is
+damaged too. Scans of untrusted input are capped (24 MiB per star, 64 MiB and
+3 seconds per rebuild, 64 magic hits, a reused 1 MiB window). Failures name
+framing when the facet list is intact, and both parts when it is not, instead
+of always blaming the facet list.
+
+Tests: `packhead::tests::framing_rebuild_heals_zeroed_flipped_and_sector_wiped_lengths_and_stays_fail_closed`,
+`framing_rebuild_wrong_key_on_encrypted_pack_stays_fail_closed`,
+`framing_rebuild_crafted_worst_case_scan_is_bounded`,
+`framing_rebuild_seeded_property_saved_bytes_equal_original_or_refused`,
+and `crate/sigil/tests/cli_pack_head.rs`.
+
 A head that parses but carries a wrong **total size** or **name** (both checkable
 against the stars) is corrected the same way. The name is recovered when star 0's
 header name (`name.0000`, kept to 16 bytes) holds all of it, which is true for
@@ -58,7 +82,7 @@ for byte except for the two advisory fields below.
   largest chunk and overture to the default.
 - **Head and facet list both damaged:** there is no record of the star count or
   order left, so the pack is refused.
-- **A damaged 8-byte length in front of a star:** refused, as before.
+- **A damaged 8-byte length in front of a star, when the facet list is also gone or the star cannot be confirmed:** refused. If the facet list (and any intact guard) can confirm the star, the length is rebuilt (see [Length framing](#length-framing-decoder-only)).
 - **Swapped or reordered stars:** never match the facet list, so they are refused
   with or without a damaged head.
 - **A truncated pack:** the head and the facet list both say how many stars there

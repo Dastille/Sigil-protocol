@@ -247,11 +247,16 @@ R1 slices, in this order:
      near 2 minutes, and the slowest repair was 4 seconds.
    - Unverified estimate: at the measured 16 MiB/s, a heavily damaged pack would need about
      2 GiB before the CPU repair passed 2 minutes on that machine.
-   - Large packs are limited by their framing, not by speed: 4 of the 5 refusals at
-     256 MiB stopped at once on damaged pack framing (the per-star length fields and the
-     facet list are not Reed–Solomon coded). A GPU cannot help with that.
-   - Reopen when a large-file pack survives heavy scattered damage and a measured repair of
-     a realistic file passes about 2 minutes on CPU.
+   - Large packs in that run were limited by their framing, not by speed: 4 of the 5
+     refusals at 256 MiB stopped at once on damaged pack framing (the per-star length
+     fields and the facet list are not Reed–Solomon coded). A GPU cannot help with that.
+   - A later, separate measure (25 November 2026) rebuilt damaged length prefixes from
+     the facet list and each star's own header, decoder-only, with no format change.
+     When the list is intact, a 256 MiB Seal pack with 1–4% scattered bad sectors is
+     repaired (12 of 12 runs; about 12–20 s). The facet list itself is still uncoded,
+     so a GPU still cannot help when that list is gone too. The parked-GPU reopen
+     condition is unchanged: a measured CPU repair of a realistic file that passes
+     about 2 minutes.
 5. Then: window-level CRC search (each window with exactly n − k bad shards and no spare
    symbol settled by the shard CRCs), after its false-match bound is worked out. Heavy
    scattered bit flips past the per-column Reed–Solomon limit will still need the stripe

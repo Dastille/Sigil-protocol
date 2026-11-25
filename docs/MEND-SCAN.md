@@ -140,7 +140,8 @@ time estimate and the plain-English scan. Details: docs/SOFT-RS.md, step 3f.
 - Large-file packs are scanned only with `--scan` / `--max-secs`; plain `mend` does not
   scan them first (it would read the pack twice). Merging the scan into the repair pass
   is not done yet (the second half added progress and Stop, not this).
-- A pack whose framing (head or length fields, which are not Reed–Solomon coded) is
-  damaged cannot be scanned; plain `mend` still tries its head rebuild.
+- A pack whose head or length framing will not parse cannot be scanned; plain `mend`
+  still tries to rebuild the head and, when the facet list can confirm them, the
+  length prefixes (decoder-only; the `.sg1` layout is unchanged).
 - Folder packs and atlas bags are not scanned.
 - The time model is from one machine.
