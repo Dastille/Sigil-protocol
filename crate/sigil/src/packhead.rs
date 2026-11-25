@@ -15,6 +15,15 @@
 //! * each star's own header must carry the listed SHA-256, in that order;
 //! * the total size is the sum of the stars' own lengths.
 //!
+//! When the 8-byte length prefixes between stars are damaged, [`layout`] also
+//! rebuilds that framing (decoder-only; the `.sg1` layout is unchanged). A
+//! rebuilt length is accepted only after the same confirmation: the star's
+//! own SHA-256 matches the SGFC list, and any intact guard names this index,
+//! this head and this pack. Reordered, swapped, truncated or forged lengths
+//! that point at a different valid-looking star are refused. Scans of
+//! untrusted input are capped (24 MiB per star, 64 MiB and 3 seconds per
+//! rebuild, 64 magic hits, a reused 1 MiB window).
+//!
 //! Nothing is guessed: a rebuild needs a unique head length at which every star
 //! matches the list, otherwise the original error is returned. Reordered or
 //! swapped stars never match the list, so they are still refused.
@@ -151,6 +160,9 @@ pub(crate) struct PackLayout {
     /// The facet list was damaged and has been rebuilt from the stars' own
     /// headers, in the order their guards prove.
     pub facets_rebuilt: bool,
+    /// The per-star length prefixes were rebuilt. Set only after every star
+    /// was confirmed against the SGFC list (and any intact guard).
+    pub framing_rebuilt: bool,
 }
 
 impl PackLayout {
@@ -201,6 +213,9 @@ fn tile<S: Src>(src: &mut S, start: u64, n: u32, limit: u64) -> Result<Vec<(u64,
             return Err(damaged());
         }
         let len = read_u64(src, off)?;
+        if len < MIN_STAR_BYTES {
+            return Err(damaged());
+        }
         let end = (off + 8)
             .checked_add(len)
             .filter(|&e| e <= limit)
@@ -279,6 +294,7 @@ fn strict<S: Src>(src: &mut S) -> Result<PackLayout> {
         guarded: false,
         pack_id: [0u8; 16],
         facets_rebuilt: false,
+        framing_rebuilt: false,
     })
 }
 
@@ -385,6 +401,7 @@ fn from_facets<S: Src>(src: &mut S) -> Result<PackLayout> {
         guarded: false,
         pack_id: [0u8; 16],
         facets_rebuilt: false,
+        framing_rebuilt: false,
     })
 }
 
@@ -565,15 +582,10 @@ pub(crate) fn seal_part(star: &[u8]) -> &[u8] {
         return &star[..g.seal_len as usize];
     }
     // Guard damaged or absent: the seal ends where its own header says.
+    // Trailing pieces are counted by [`sgts_then_sgkt_len`] (SGTS spare, then
+    // SGKT trailer). Asking for the Keystone trailer first misses both.
     match crate::locate_header(star) {
-        Ok((h, prefix, _)) => {
-            let mut end = prefix
-                .saturating_add((h.n as usize).saturating_mul(crate::header::shard_stride(&h)));
-            // New Keystone seals append an SGKT trailer after the shards; keep it
-            // when measuring the seal in front of a (possibly damaged) guard.
-            end = end.saturating_add(crate::header::keystone_trailer_len_at(star, end));
-            &star[..end.min(star.len())]
-        }
+        Ok((h, prefix, _)) => &star[..seal_len_after_header(&h, prefix, star)],
         Err(_) => star,
     }
 }
@@ -599,6 +611,7 @@ fn layout_with_head<S: Src>(src: &mut S, head_bytes: &[u8]) -> Result<PackLayout
         guarded: true,
         pack_id: [0u8; 16],
         facets_rebuilt: false,
+        framing_rebuilt: false,
     })
 }
 
@@ -702,10 +715,22 @@ fn from_guards<S: Src>(src: &mut S) -> Result<PackLayout> {
                 .and_then(|o| read_u64(src, o).ok())
                 == g.seal_len.checked_add(rec_len);
             if !placed {
+                // Length prefix gone or wrong: a checksum-valid guard can still
+                // supply the head, and rebuild confirms every star against SGFC.
+                if let Ok(r) = try_rebuild_framing(src, &g.head, HeadSource::Guard) {
+                    return Ok(r);
+                }
                 continue;
             }
-            let Ok(mut l) = layout_with_head(src, &g.head) else {
-                continue;
+            let mut l = match layout_with_head(src, &g.head) {
+                Ok(l) if !matches!(l.trailer, Trailer::Damaged) => l,
+                _ => match try_rebuild_framing(src, &g.head, HeadSource::Guard) {
+                    Ok(r) => return Ok(r),
+                    Err(_) => match layout_with_head(src, &g.head) {
+                        Ok(l) => l,
+                        Err(_) => continue,
+                    },
+                },
             };
             if apply_guards(src, &mut l)? {
                 l.source = HeadSource::Guard;
@@ -721,28 +746,793 @@ fn from_guards<S: Src>(src: &mut S) -> Result<PackLayout> {
     Err(none())
 }
 
-/// Lay out a pack, rebuilding its head when needed (see the module docs).
+/// Smallest accepted on-disk star (a header). A zeroed length prefix used to
+/// be taken as a 0-byte star, which landed the walk early and blamed the SGFC
+/// list even when that list was intact.
+const MIN_STAR_BYTES: u64 = crate::header::HEADER_SIZE as u64;
+/// Bytes read from the front of a star when looking for its header.
+const FRONT_PEEK: u64 = 4096;
+/// Per-star search ceiling when a length prefix is gone.
 ///
-/// Returns the strict reader's error when the head is damaged and cannot be
-/// rebuilt, so messages for unrepairable packs are unchanged.
+/// CDC Media max payload is 8 MiB, Seal expands 2×, and headers, an SGTS spare,
+/// an SGKT trailer and a pack-head guard add well under 2 MiB. Measured Seal
+/// stars for an 8 MiB payload stay under 18 MiB. 24 MiB is the hard cap so a
+/// crafted `chunk_size` cannot force a multi-gigabyte scan.
+const MAX_STAR_SCAN: u64 = 24 * 1024 * 1024;
+/// Hard cap on total bytes read by framing scans in one rebuild (all stars).
+const MAX_FRAMING_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+/// Wall-clock cap for one framing rebuild of untrusted input. There is no
+/// environment override: hitting this or [`MAX_FRAMING_SCAN_BYTES`] refuses
+/// the pack (fail-closed).
+const FRAMING_SCAN_SECS: u64 = 3;
+/// A real star has one `SGHG` guard and at most `n` (16) `SGEM` Ember headers.
+/// A crafted file filled with those magics is abandoned after this many hits.
+const MAX_MAGIC_HITS: u32 = 64;
+
+/// Time, memory and size budget for scans of untrusted pack bytes.
+struct ScanBudget {
+    started: std::time::Instant,
+    bytes: u64,
+    buf: Vec<u8>,
+}
+
+impl ScanBudget {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            bytes: 0,
+            buf: vec![0u8; SCAN_BLOCK as usize],
+        }
+    }
+
+    fn exhausted(&self) -> bool {
+        self.started.elapsed() >= std::time::Duration::from_secs(FRAMING_SCAN_SECS)
+            || self.bytes >= MAX_FRAMING_SCAN_BYTES
+    }
+
+    fn charge(&mut self, n: u64) -> bool {
+        self.bytes = self.bytes.saturating_add(n);
+        !self.exhausted()
+    }
+
+    /// Read `n` bytes at `off` into the reused 1 MiB window. `n` must be
+    /// ≤ [`SCAN_BLOCK`]. Charges the size budget; returns `None` when the
+    /// budget is exhausted or the read fails.
+    fn read_window<'a, S: Src>(&'a mut self, src: &mut S, off: u64, n: u64) -> Option<&'a [u8]> {
+        if self.exhausted() || n == 0 || n > SCAN_BLOCK {
+            return None;
+        }
+        let n_usz = n as usize;
+        if src.read_at(off, &mut self.buf[..n_usz]).is_err() {
+            return None;
+        }
+        if !self.charge(n) {
+            return None;
+        }
+        Some(&self.buf[..n_usz])
+    }
+}
+
+fn budget_exceeded(i: u32, n: u32) -> crate::Error {
+    msg(format!(
+        "work pack framing scan limit reached at star {i} of {n} \
+         (could not confirm the star against SGFC within the time and size budget); refusing"
+    ))
+}
+
+/// Length of the `SGTS` spare (if any) plus the `SGKT` trailer (if any) that
+/// follow the shard body. The pack-head guard is not included.
+///
+/// This is the only place that arithmetic lives. Asking for the Keystone
+/// trailer before skipping the spare looks at the spare's magic and returns
+/// 0, so both trailers are missed.
+fn sgts_then_sgkt_len(file: &[u8], body_end: usize) -> usize {
+    let sgts = crate::header::sgto_spare_len_at(file, body_end);
+    sgts + crate::header::keystone_trailer_len_at(file, body_end + sgts)
+}
+
+/// Length of the seal at the front of `star`, from a header found at `prefix`.
+fn seal_len_after_header(h: &crate::Header, prefix: usize, star: &[u8]) -> usize {
+    let body_end =
+        prefix.saturating_add((h.n as usize).saturating_mul(crate::header::shard_stride(h)));
+    body_end
+        .saturating_add(sgts_then_sgkt_len(star, body_end))
+        .min(star.len())
+}
+
+fn read_head_from_bytes(hb: &[u8]) -> Result<WorkHead> {
+    let mut cur = std::io::Cursor::new(hb);
+    let head = read_head(&mut cur)?;
+    if cur.position() != hb.len() as u64 {
+        return Err(msg("pack head copy has trailing bytes"));
+    }
+    Ok(head)
+}
+
+/// Rebuild length framing from a known, already-checked head, or return the
+/// error from that rebuild. Shared by [`layout`] and [`from_guards`].
+fn try_rebuild_framing<S: Src>(
+    src: &mut S,
+    head_bytes: &[u8],
+    source: HeadSource,
+) -> Result<PackLayout> {
+    rebuild_framing_with_head(
+        src,
+        read_head_from_bytes(head_bytes)?,
+        head_bytes.to_vec(),
+        source,
+    )
+}
+
+/// Error when a rebuild could not confirm a layout. Names framing when the
+/// SGFC list is intact at EOF, and both parts when it is not.
+fn framing_or_trailer_error<S: Src>(src: &mut S) -> crate::Error {
+    match find_facet_list(src) {
+        Ok(_) => msg("work pack framing damaged (length prefixes do not tile); \
+             SGFC list is intact but stars could not be confirmed; refusing"),
+        Err(_) => msg("work pack framing and SGFC facet trailer damaged; \
+             cannot confirm stars, refusing"),
+    }
+}
+
+/// Locate a star's seal header and compute its seal length (and guard length
+/// if a guard sits right after the seal). Falls back to a bounded scan for
+/// `SGEM` Embers if the front Keystone span was wiped. A candidate is only
+/// useful to the caller; acceptance still requires [`confirm_star_len`].
+fn seal_len_from_star_at<S: Src>(
+    src: &mut S,
+    star_start: u64,
+    max_len: u64,
+    head_len: u64,
+    expect_digest: Option<&[u8; 32]>,
+    budget: &mut ScanBudget,
+) -> Option<(crate::Header, u64, Option<u64>)> {
+    if max_len < MIN_STAR_BYTES {
+        return None;
+    }
+    let peek_n = max_len.min(FRONT_PEEK) as usize;
+    let mut peek = vec![0u8; peek_n];
+    if src.read_at(star_start, &mut peek).is_err() || !budget.charge(peek_n as u64) {
+        return None;
+    }
+    let found = if let Ok((h, prefix, _)) = crate::locate_header(&peek) {
+        if expect_digest.is_none_or(|d| h.digest == *d) {
+            Some((h, prefix as u64))
+        } else {
+            return None;
+        }
+    } else {
+        Some(scan_ember_header(
+            src,
+            star_start,
+            max_len,
+            expect_digest,
+            budget,
+        )?)
+    };
+    let (h, prefix) = found?;
+    let stride = crate::header::shard_stride(&h) as u64;
+    let body_end = prefix.checked_add((h.n as u64).checked_mul(stride)?)?;
+    if body_end > max_len {
+        return None;
+    }
+    let tail_n = max_len.saturating_sub(body_end).min(FRONT_PEEK) as usize;
+    let mut tail = vec![0u8; tail_n];
+    if tail_n > 0
+        && (src.read_at(star_start + body_end, &mut tail).is_err() || !budget.charge(tail_n as u64))
+    {
+        return None;
+    }
+    let mut extra = sgts_then_sgkt_len(&tail, 0) as u64;
+    // When the spare itself is unreadable, still offer the usual encrypted-v3
+    // length as a *candidate*. Confirming it is a later, separate step.
+    if extra == 0 && h.encrypted() && h.private_label() {
+        if let Some(guess) = guessed_sgts_len(&h, prefix, &peek, &tail) {
+            extra = guess;
+        }
+    }
+    let seal_len = body_end + extra;
+    let gl = (GUARD_FIXED as u64) + head_len;
+    let g_off = extra as usize;
+    let guard_len = if tail.get(g_off..g_off + 4) == Some(&GUARD_MAGIC)
+        || (star_start + seal_len + gl <= star_start + max_len
+            && star_guard(src, star_start, seal_len + gl).is_some())
+    {
+        Some(gl)
+    } else {
+        None
+    };
+    Some((h, seal_len, guard_len))
+}
+
+/// Best-effort SGTS length when the spare's own magic is gone, used only to
+/// build candidates (never as a verdict on its own).
+fn guessed_sgts_len(h: &crate::Header, prefix: u64, peek: &[u8], tail: &[u8]) -> Option<u64> {
+    let vow = if h.vow() {
+        crate::header::VOW_SIZE as u64
+    } else {
+        0
+    };
+    let maps = crate::header::maps_len(h) as u64;
+    let sgto_len = prefix.saturating_sub(maps + vow);
+    if sgto_len < 12 {
+        return None;
+    }
+    let mut spared = false;
+    if let Some(front) = peek.get(maps as usize..(maps + sgto_len) as usize) {
+        if crate::keys::read_sgto_at(front, 0)
+            .is_some_and(|b| crate::keys::sgto_is_spared(b) && b.len() as u64 == sgto_len)
+        {
+            spared = true;
+        }
+    }
+    let cand = 8 + sgto_len as usize;
+    let kt = crate::header::KEYSTONE_TRAILER_SIZE;
+    if spared
+        || tail.get(cand..cand + 4) == Some(&b"SGKT"[..])
+        || tail.get(cand + kt..cand + kt + 4) == Some(&GUARD_MAGIC)
+    {
+        Some(cand as u64)
+    } else {
+        None
+    }
+}
+
+fn scan_ember_header<S: Src>(
+    src: &mut S,
+    star_start: u64,
+    max_len: u64,
+    expect_digest: Option<&[u8; 32]>,
+    budget: &mut ScanBudget,
+) -> Option<(crate::Header, u64)> {
+    let scan_end = star_start.saturating_add(max_len.min(MAX_STAR_SCAN));
+    let mut off = star_start;
+    let mut hits = 0u32;
+    while off < scan_end && !budget.exhausted() {
+        let n = SCAN_BLOCK.min(scan_end - off);
+        if n < crate::header::HEADER_SIZE as u64 {
+            break;
+        }
+        let Some(block) = budget.read_window(src, off, n) else {
+            break;
+        };
+        let hit = block
+            .windows(4)
+            .position(|w| w == crate::header::EMBER_MAGIC);
+        let p = hit.map(|h| off + h as u64);
+        if let Some(p) = p {
+            hits += 1;
+            if hits > MAX_MAGIC_HITS {
+                return None;
+            }
+            let mut hdr = [0u8; crate::header::HEADER_SIZE];
+            let parsed = if src.read_at(p, &mut hdr).is_ok() && budget.charge(hdr.len() as u64) {
+                crate::header::parse_ember_header(&hdr)
+            } else {
+                None
+            };
+            if let Some((eh, slot)) = parsed {
+                if expect_digest.is_none_or(|d| eh.digest == *d) {
+                    let stride = crate::header::shard_stride(&eh) as u64;
+                    if stride != 0 && eh.n != 0 {
+                        if let Some(prefix) = (p - star_start).checked_sub(slot as u64 * stride) {
+                            if prefix >= crate::header::maps_len(&eh) as u64 {
+                                return Some((eh, prefix));
+                            }
+                        }
+                    }
+                }
+            }
+            off = p.saturating_add(1);
+            continue;
+        }
+        if off + n >= scan_end {
+            break;
+        }
+        off += n - 3;
+    }
+    None
+}
+
+/// Scan forward from `star_start` for a guard carrying `index`, matching
+/// `head_bytes` and `pack_id`, and sitting at `star_start + g.seal_len`.
+fn find_guard_for_star<S: Src>(
+    src: &mut S,
+    star_start: u64,
+    max_len: u64,
+    index: u32,
+    head_bytes: &[u8],
+    pack_id: Option<[u8; 16]>,
+    budget: &mut ScanBudget,
+) -> Option<u64> {
+    let rec_len = (GUARD_FIXED + head_bytes.len()) as u64;
+    let scan_end = star_start.saturating_add(max_len.min(MAX_STAR_SCAN));
+    let mut off = star_start;
+    let mut hits = 0u32;
+    while off < scan_end && !budget.exhausted() {
+        let n = SCAN_BLOCK.min(scan_end - off);
+        if n < rec_len {
+            break;
+        }
+        let Some(block) = budget.read_window(src, off, n) else {
+            break;
+        };
+        let found = block
+            .windows(4)
+            .position(|w| w == GUARD_MAGIC)
+            .map(|hit| off + hit as u64);
+        if found.is_some() {
+            hits += 1;
+            if hits > MAX_MAGIC_HITS {
+                return None;
+            }
+        }
+        // Re-read the candidate outside the window borrow.
+        if let Some(p) = found {
+            let mut rec = vec![0u8; rec_len as usize];
+            if src.read_at(p, &mut rec).is_ok() && budget.charge(rec_len) {
+                if let Some(g) = parse_guard(&rec) {
+                    if g.index == index
+                        && g.head == head_bytes
+                        && pack_id.is_none_or(|id| id == g.pack_id)
+                        && p.checked_sub(star_start) == Some(g.seal_len)
+                    {
+                        if let Some(total) = g.seal_len.checked_add(rec_len) {
+                            if total <= max_len {
+                                return Some(total);
+                            }
+                        }
+                    }
+                }
+            }
+            // Continue scanning after this hit.
+            off = p.saturating_add(1);
+            continue;
+        }
+        if off + n >= scan_end {
+            break;
+        }
+        off += n - 3;
+    }
+    None
+}
+
+/// Quick check whether `next_len_off` begins a star matching `next_facet`.
+/// Used only to disambiguate candidate lengths; it is not a verdict on its own.
+fn next_star_plausible<S: Src>(
+    src: &mut S,
+    next_len_off: u64,
+    limit: u64,
+    next_facet: &[u8; 32],
+    is_last_next: bool,
+    budget: &mut ScanBudget,
+) -> bool {
+    let Some(next_start) = next_len_off.checked_add(8) else {
+        return false;
+    };
+    if next_start + MIN_STAR_BYTES > limit {
+        return false;
+    }
+    if is_last_next {
+        let rem = limit - next_start;
+        return star_header(src, next_start, rem).is_ok_and(|(d, _, _)| d == *next_facet);
+    }
+    let peek_n = (limit - next_start).min(FRONT_PEEK) as usize;
+    let mut peek = vec![0u8; peek_n];
+    if src.read_at(next_start, &mut peek).is_ok() && budget.charge(peek_n as u64) {
+        if let Ok((h, _, _)) = crate::locate_header(&peek) {
+            return h.digest == *next_facet;
+        }
+    }
+    if let Ok(nl) = read_u64(src, next_len_off) {
+        if nl >= MIN_STAR_BYTES && next_start.checked_add(nl).is_some_and(|e| e < limit) {
+            return star_header(src, next_start, nl).is_ok_and(|(d, _, _)| d == *next_facet);
+        }
+    }
+    false
+}
+
+/// Inputs shared by every [`confirm_star_len`] call in one rebuild.
+struct ConfirmCtx<'a, S: Src> {
+    src: &'a mut S,
+    head_bytes: &'a [u8],
+    head_len: u64,
+    gl_default: u64,
+    guard_len_opt: &'a mut Option<u64>,
+    pack_id_opt: &'a mut Option<[u8; 16]>,
+    budget: &'a mut ScanBudget,
+}
+
+/// Accept `cand_len` only when the star's own SHA-256 matches `facets[i]` and
+/// any intact guard names this index, this head and this pack. This is the
+/// only acceptance decision for a rebuilt length.
+fn confirm_star_len<S: Src>(
+    ctx: &mut ConfirmCtx<'_, S>,
+    star_start: u64,
+    cand_len: u64,
+    max_len: u64,
+    i: u32,
+    facets_i: &[u8; 32],
+) -> Result<bool> {
+    if cand_len < MIN_STAR_BYTES || cand_len > max_len {
+        return Ok(false);
+    }
+    if let Some(g) = star_guard(ctx.src, star_start, cand_len) {
+        if g.index != i {
+            return Err(msg(format!(
+                "chunk star {i} is out of place (its guard says it is star {}); \
+                 swapped or reordered stars; refusing",
+                g.index
+            )));
+        }
+        if g.head != ctx.head_bytes || ctx.pack_id_opt.is_some_and(|id| id != g.pack_id) {
+            return Err(msg(
+                "chunk stars carry different pack heads (stars from different packs); refusing",
+            ));
+        }
+        let Ok((d, _, _)) = star_header(ctx.src, star_start, cand_len) else {
+            return Ok(false);
+        };
+        if d != *facets_i {
+            return Err(msg(format!(
+                "chunk star {i} true-name does not match the pack facet \
+                 (swapped star or damaged trailer); refusing"
+            )));
+        }
+        *ctx.guard_len_opt = Some(ctx.gl_default);
+        *ctx.pack_id_opt = Some(g.pack_id);
+        return Ok(true);
+    }
+    let Some((_, seal_len, g_opt)) = seal_len_from_star_at(
+        ctx.src,
+        star_start,
+        cand_len,
+        ctx.head_len,
+        Some(facets_i),
+        ctx.budget,
+    ) else {
+        return Ok(false);
+    };
+    if let Some(gl) = g_opt {
+        if cand_len == seal_len + gl {
+            *ctx.guard_len_opt = Some(gl);
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+    if let Some(gl) = *ctx.guard_len_opt {
+        let kt = crate::header::KEYSTONE_TRAILER_SIZE as u64;
+        return Ok(cand_len == seal_len + gl || cand_len == seal_len + kt + gl);
+    }
+    if cand_len == seal_len + ctx.gl_default {
+        *ctx.guard_len_opt = Some(ctx.gl_default);
+        return Ok(true);
+    }
+    Ok(cand_len == seal_len)
+}
+
+/// Rebuild per-star length framing given a known `head`, confirming every star
+/// against its own protected header (`h.digest`) and the `SGFC` facet list
+/// (and any intact guards). Decoder-only: the on-disk format is unchanged.
+fn rebuild_framing_with_head<S: Src>(
+    src: &mut S,
+    head: WorkHead,
+    head_bytes: Vec<u8>,
+    source: HeadSource,
+) -> Result<PackLayout> {
+    let n = head.stars;
+    if n == 0 {
+        return Err(msg("work pack has 0 stars; refusing"));
+    }
+    let (trailer_off, facets) = find_facet_list(src).map_err(|_| {
+        msg("work pack framing and SGFC facet trailer damaged; cannot confirm stars, refusing")
+    })?;
+    if facets.len() != n as usize {
+        return Err(msg(format!(
+            "work pack head says {n} stars but SGFC facet list has {}; refusing",
+            facets.len()
+        )));
+    }
+    let head_len = head_bytes.len() as u64;
+    let gl_default = (GUARD_FIXED as u64) + head_len;
+    let mut guard_len_opt: Option<u64> = (source == HeadSource::Guard).then_some(gl_default);
+    let mut pack_id_opt: Option<[u8; 16]> = None;
+    let mut typical_len: Option<u64> = None;
+    let mut stars: Vec<(u64, u64)> = Vec::with_capacity(n as usize);
+    let mut pos = head_len;
+    let mut rebuilt_framing = false;
+    let mut budget = ScanBudget::new();
+
+    for i in 0..n {
+        if budget.exhausted() {
+            return Err(budget_exceeded(i, n));
+        }
+        let Some(star_start) = pos.checked_add(8) else {
+            return Err(msg(format!(
+                "work pack truncated or framing damaged at star {i} of {n}; refusing"
+            )));
+        };
+        let min_rem = (n - 1 - i) as u64 * (8 + MIN_STAR_BYTES);
+        let Some(max_end) = trailer_off.checked_sub(min_rem) else {
+            return Err(msg(format!(
+                "work pack truncated or framing damaged at star {i} of {n}; refusing"
+            )));
+        };
+        if star_start + MIN_STAR_BYTES > max_end {
+            return Err(msg(format!(
+                "work pack truncated or framing damaged at star {i} of {n}; refusing"
+            )));
+        }
+        let max_len = max_end - star_start;
+        let raw_len = read_u64(src, pos).ok();
+        let facet = &facets[i as usize];
+
+        if i == n - 1 {
+            let cand_len = trailer_off - star_start;
+            // The last star's span is uniquely determined, but it is accepted
+            // only after the same confirmation as every other star.
+            if !confirm_star_len(
+                &mut ConfirmCtx {
+                    src,
+                    head_bytes: &head_bytes,
+                    head_len,
+                    gl_default,
+                    guard_len_opt: &mut guard_len_opt,
+                    pack_id_opt: &mut pack_id_opt,
+                    budget: &mut budget,
+                },
+                star_start,
+                cand_len,
+                max_len.max(cand_len),
+                i,
+                facet,
+            )? {
+                // Header may be unreadable (sector wipe). An Ember or the
+                // remainder still has to carry the listed SHA-256.
+                let Some((h, _, _)) = seal_len_from_star_at(
+                    src,
+                    star_start,
+                    cand_len,
+                    head_len,
+                    Some(facet),
+                    &mut budget,
+                ) else {
+                    return Err(msg(format!(
+                        "chunk star {i} of {n} could not be confirmed against SGFC after framing rebuild; refusing"
+                    )));
+                };
+                if h.digest != *facet {
+                    return Err(msg(format!(
+                        "chunk star {i} true-name does not match the pack facet \
+                         (swapped star or damaged trailer); refusing"
+                    )));
+                }
+            }
+            if raw_len != Some(cand_len) {
+                rebuilt_framing = true;
+            }
+            stars.push((star_start, cand_len));
+            pos = trailer_off;
+            break;
+        }
+
+        let mut chosen: Option<u64> = None;
+        if let Some(rl) = raw_len {
+            if confirm_star_len(
+                &mut ConfirmCtx {
+                    src,
+                    head_bytes: &head_bytes,
+                    head_len,
+                    gl_default,
+                    guard_len_opt: &mut guard_len_opt,
+                    pack_id_opt: &mut pack_id_opt,
+                    budget: &mut budget,
+                },
+                star_start,
+                rl,
+                max_len,
+                i,
+                facet,
+            )? {
+                chosen = Some(rl);
+            }
+        }
+        if chosen.is_none() {
+            if let Some(tl) = typical_len {
+                if Some(tl) != raw_len
+                    && confirm_star_len(
+                        &mut ConfirmCtx {
+                            src,
+                            head_bytes: &head_bytes,
+                            head_len,
+                            gl_default,
+                            guard_len_opt: &mut guard_len_opt,
+                            pack_id_opt: &mut pack_id_opt,
+                            budget: &mut budget,
+                        },
+                        star_start,
+                        tl,
+                        max_len,
+                        i,
+                        facet,
+                    )?
+                {
+                    chosen = Some(tl);
+                }
+            }
+        }
+        if chosen.is_none() {
+            if let Some(cl) = find_guard_for_star(
+                src,
+                star_start,
+                max_len,
+                i,
+                &head_bytes,
+                pack_id_opt,
+                &mut budget,
+            ) {
+                if confirm_star_len(
+                    &mut ConfirmCtx {
+                        src,
+                        head_bytes: &head_bytes,
+                        head_len,
+                        gl_default,
+                        guard_len_opt: &mut guard_len_opt,
+                        pack_id_opt: &mut pack_id_opt,
+                        budget: &mut budget,
+                    },
+                    star_start,
+                    cl,
+                    max_len,
+                    i,
+                    facet,
+                )? {
+                    chosen = Some(cl);
+                }
+            }
+        }
+        if chosen.is_none() {
+            if let Some((_, seal_len, g_opt)) =
+                seal_len_from_star_at(src, star_start, max_len, head_len, Some(facet), &mut budget)
+            {
+                let kt = crate::header::KEYSTONE_TRAILER_SIZE as u64;
+                let mut opts = Vec::new();
+                if let Some(gl) = g_opt {
+                    opts.push(seal_len + gl);
+                } else if let Some(gl) = guard_len_opt {
+                    opts.push(seal_len + gl);
+                    opts.push(seal_len + kt + gl);
+                } else {
+                    opts.push(seal_len + gl_default);
+                    opts.push(seal_len);
+                    opts.push(seal_len + kt + gl_default);
+                    opts.push(seal_len + kt);
+                }
+                for cand in opts {
+                    if cand <= max_len
+                        && next_star_plausible(
+                            src,
+                            star_start + cand,
+                            trailer_off,
+                            &facets[(i + 1) as usize],
+                            i + 1 == n - 1,
+                            &mut budget,
+                        )
+                        && confirm_star_len(
+                            &mut ConfirmCtx {
+                                src,
+                                head_bytes: &head_bytes,
+                                head_len,
+                                gl_default,
+                                guard_len_opt: &mut guard_len_opt,
+                                pack_id_opt: &mut pack_id_opt,
+                                budget: &mut budget,
+                            },
+                            star_start,
+                            cand,
+                            max_len,
+                            i,
+                            facet,
+                        )?
+                    {
+                        chosen = Some(cand);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if budget.exhausted() && chosen.is_none() {
+            return Err(budget_exceeded(i, n));
+        }
+        let Some(cand_len) = chosen else {
+            return Err(msg(format!(
+                "work pack framing damaged at star {i} of {n} \
+                 (could not locate or confirm star {i} against SGFC); refusing"
+            )));
+        };
+        if raw_len != Some(cand_len) {
+            rebuilt_framing = true;
+        }
+        if typical_len.is_none() {
+            typical_len = Some(cand_len);
+        }
+        stars.push((star_start, cand_len));
+        pos = star_start + cand_len;
+    }
+
+    if pos != trailer_off {
+        return Err(msg(
+            "work pack framing rebuild did not align with the SGFC facet list; refusing",
+        ));
+    }
+
+    let mut l = PackLayout {
+        head,
+        head_bytes,
+        stars,
+        trailer_off,
+        trailer: Trailer::Valid(facets),
+        source,
+        guarded: guard_len_opt.is_some(),
+        pack_id: pack_id_opt.unwrap_or([0u8; 16]),
+        facets_rebuilt: false,
+        framing_rebuilt: rebuilt_framing,
+    };
+    apply_guards(src, &mut l)?;
+    cross_check(src, &mut l);
+    Ok(l)
+}
+
+/// Lay out a pack, rebuilding its head and/or length framing when needed
+/// (see the module docs). Decoder-only; the `.sg1` format is unchanged.
+///
+/// Returns the most specific error when the pack cannot be rebuilt, so
+/// refusals name the real damaged part. Existing errors (I/O, a torn star
+/// later in mend, a wrong key) are not rewritten here.
 pub(crate) fn layout<S: Src>(src: &mut S) -> Result<PackLayout> {
     let mut l = match strict(src) {
         Ok(l) => l,
         Err(e) => {
+            // If the head itself parsed cleanly, try rebuilding framing with it.
+            let size = src.size();
+            let mut hb = vec![0u8; MAX_HEAD.min(size) as usize];
+            if src.read_at(0, &mut hb).is_ok() {
+                let mut cur = std::io::Cursor::new(&hb[..]);
+                if let Ok(head) = read_head(&mut cur) {
+                    let hl = cur.position() as usize;
+                    hb.truncate(hl);
+                    if read_head_from_bytes(&hb).is_ok() && head.stars > 0 {
+                        if let Ok(r) = try_rebuild_framing(src, &hb, HeadSource::Intact) {
+                            return Ok(r);
+                        }
+                    }
+                }
+            }
             return from_guards(src)
                 .or_else(|_| from_facets(src))
-                .map_err(|_| e)
+                .map_err(|_| e);
         }
     };
     // Guarded pack: the guards are authoritative for head, order and facets.
-    if apply_guards(src, &mut l)? {
-        return Ok(l);
-    }
+    let guarded = apply_guards(src, &mut l)?;
     if matches!(l.trailer, Trailer::Damaged) {
-        // A wrong star count leaves the real list stranded in the "trailer".
+        // Damaged framing can strand the real SGFC list in the "trailer".
+        if let Ok(r) = try_rebuild_framing(src, &l.head_bytes, l.source) {
+            return Ok(r);
+        }
         if let Ok(r) = from_guards(src).or_else(|_| from_facets(src)) {
             return Ok(r);
         }
+        // A well-formed list still in the file means the failure is framing.
+        // Old unguarded packs whose list is genuinely gone still open; mend
+        // refuses the list.
+        if find_facet_list(src).is_ok() {
+            return Err(framing_or_trailer_error(src));
+        }
+        return Ok(l);
+    }
+    if guarded {
         return Ok(l);
     }
     cross_check(src, &mut l);
@@ -1523,6 +2313,219 @@ pub(crate) mod tests {
         let (rep, fixed) = mend(&dir, &bad);
         assert_eq!(rep.head, HeadSource::Guard);
         assert_eq!(fixed, pack);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn framing_rebuild_heals_zeroed_flipped_and_sector_wiped_lengths_and_stays_fail_closed() {
+        let dir = tmp("framing-rebuild");
+        let want = plain();
+        let pack = new_pack(&dir, "plain.bin", None, crate::Mode::Reflection);
+        let sp = star_ranges(&pack);
+
+        // 1. Zeroed u64 length on star 1, plus front 4 KiB of star 1 wiped
+        //    (primary + keystone). The exact mend path must restore it.
+        let mut bad = pack.clone();
+        let len_off = sp[1].0 - 8;
+        bad[len_off..sp[1].0 + 3600].fill(0);
+        assert_eq!(open(&dir, &bad, None).unwrap(), want);
+        let (rep, fixed) = mend(&dir, &bad);
+        assert!(
+            rep.framing_rebuilt,
+            "framing_rebuilt must be set on this path"
+        );
+        assert_eq!(rep.mended, vec![1]);
+        assert_eq!(fixed, pack);
+        assert!(crate::work::pack_mend_summary(&rep).contains("length framing rebuilt"));
+
+        // 2. Bit-flipped u64 length on star 2 (-4096), which used to blame SGFC.
+        let mut flipped = pack.clone();
+        let orig_len = u64::from_le_bytes(flipped[sp[2].0 - 8..sp[2].0].try_into().unwrap());
+        flipped[sp[2].0 - 8..sp[2].0].copy_from_slice(&(orig_len - 4096).to_le_bytes());
+        assert_eq!(open(&dir, &flipped, None).unwrap(), want);
+        let (rep2, fixed2) = mend(&dir, &flipped);
+        assert!(rep2.framing_rebuilt);
+        assert_eq!(fixed2, pack);
+
+        // 3. Framing damaged on star 1 + star 1 guard wiped; confirmed by Ember + SGFC.
+        let mut no_guard = pack.clone();
+        no_guard[sp[1].0 - 8..sp[1].0].fill(0);
+        no_guard[sp[1].1 - 30..sp[1].1].fill(0);
+        assert_eq!(open(&dir, &no_guard, None).unwrap(), want);
+        let (rep3, fixed3) = mend(&dir, &no_guard);
+        assert!(rep3.framing_rebuilt);
+        assert_eq!(rep3.guards_restored, 1);
+        assert_eq!(fixed3, pack);
+
+        // 4. Fail closed: framing damaged + swapped stars must still be refused.
+        let mut sw = pack.clone();
+        let a = pack[sp[1].0..sp[1].1].to_vec();
+        sw[sp[1].0..sp[1].1].copy_from_slice(&pack[sp[2].0..sp[2].1]);
+        sw[sp[2].0..sp[2].1].copy_from_slice(&a);
+        sw[sp[1].0 - 8..sp[1].0].fill(0);
+        assert!(open(&dir, &sw, None).is_err());
+        let p = dir.join("sw.sg1");
+        std::fs::write(&p, &sw).unwrap();
+        assert!(mend_pack_path(&p, &dir.join("sw-out.sg1"), false).is_err());
+
+        // 5. Fail closed: framing damaged + SGFC digest corrupted on that star must be refused.
+        let mut bad_sgfc = pack.clone();
+        bad_sgfc[sp[1].0 - 8..sp[1].0].fill(0);
+        bad_sgfc[pack.len() - 32 * 3 - 1] ^= 0xff; // flip digest of star 1 in SGFC
+        assert!(open(&dir, &bad_sgfc, None).is_err());
+        std::fs::write(&p, &bad_sgfc).unwrap();
+        assert!(mend_pack_path(&p, &dir.join("sgfc-out.sg1"), false).is_err());
+
+        // 6. Fail closed: framing damaged + truncated pack must be refused naming framing/star.
+        let mut trunc = pack[..sp[2].1 - 100].to_vec();
+        trunc[sp[1].0 - 8..sp[1].0].fill(0);
+        std::fs::write(&p, &trunc).unwrap();
+        let e = mend_pack_path(&p, &dir.join("tr-out.sg1"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("framing") || e.contains("truncated"), "{e}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn framing_rebuild_wrong_key_on_encrypted_pack_stays_fail_closed() {
+        let dir = tmp("framing-wrong-key");
+        let want = plain();
+        let pack = new_pack(&dir, "enc.bin", Some(PASS), crate::Mode::Seal);
+        let sp = star_ranges(&pack);
+        let mut bad = pack.clone();
+        bad[sp[1].0 - 8..sp[1].0].fill(0);
+        assert_eq!(open(&dir, &bad, Some(PASS)).unwrap(), want);
+        let err = open(&dir, &bad, Some("wrong-pass")).unwrap_err();
+        assert!(
+            err.contains("pass")
+                || err.contains("key")
+                || err.contains("refusing")
+                || err.contains("wrong")
+                || err.contains("decrypt")
+                || err.contains("MAC")
+                || err.contains("seal")
+                || err.contains("auth")
+                || err.contains("Ward")
+                || err.contains("Warded"),
+            "wrong key must fail closed, got: {err}"
+        );
+        let (rep, fixed) = mend(&dir, &bad);
+        assert!(rep.framing_rebuilt);
+        assert_eq!(fixed, pack);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn framing_rebuild_crafted_worst_case_scan_is_bounded() {
+        let dir = tmp("framing-worst");
+        let pack = new_pack(&dir, "plain.bin", None, crate::Mode::Seal);
+        let hl = head_len(&pack);
+        let sgfc_at = pack.windows(4).rposition(|w| w == b"SGFC").expect("SGFC");
+        let mut crafted = pack[..hl].to_vec();
+        crafted.extend_from_slice(&0u64.to_le_bytes());
+        let fill = 32 * 1024 * 1024;
+        crafted.reserve(fill + pack.len() - sgfc_at);
+        for _ in 0..(fill / 4) {
+            crafted.extend_from_slice(b"SGHG");
+        }
+        crafted.extend_from_slice(&pack[sgfc_at..]);
+
+        let start = std::time::Instant::now();
+        let mut src = MemSrc(&crafted);
+        match layout(&mut src) {
+            Ok(_) => panic!("crafted magic-filled pack must be refused"),
+            Err(e) => {
+                let s = e.to_string();
+                assert!(
+                    s.contains("refusing")
+                        || s.contains("scan limit")
+                        || s.contains("framing")
+                        || s.contains("budget"),
+                    "refusal must name the bound or framing, got: {s}"
+                );
+            }
+        }
+        let dt = start.elapsed();
+        assert!(
+            dt <= std::time::Duration::from_secs(FRAMING_SCAN_SECS + 2),
+            "worst-case scan took {dt:?}, cap is {FRAMING_SCAN_SECS}s + 2s slack"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn framing_rebuild_seeded_property_saved_bytes_equal_original_or_refused() {
+        let dir = tmp("framing-prop");
+        let want = plain();
+        let pack = new_pack(&dir, "plain.bin", None, crate::Mode::Reflection);
+        let sp = star_ranges(&pack);
+        assert!(sp.len() >= 3, "plain() must produce at least 3 stars");
+        for seed in 0u64..24 {
+            let kind = seed % 6;
+            let mut bad = pack.clone();
+            let (start, end) = sp[1];
+            match kind {
+                0 => bad[start - 8..start].fill(0),
+                1 => {
+                    let orig = u64::from_le_bytes(bad[start - 8..start].try_into().unwrap());
+                    let bit = 1u64 << (seed % 63);
+                    bad[start - 8..start].copy_from_slice(&(orig ^ bit).to_le_bytes());
+                }
+                2 => {
+                    let hi = (start + 4096).min(bad.len());
+                    bad[start - 8..hi].fill(0);
+                }
+                3 => {
+                    let forged = ((end - start) as u64 / 2).max(MIN_STAR_BYTES);
+                    bad[start - 8..start].copy_from_slice(&forged.to_le_bytes());
+                }
+                4 => {
+                    bad[start - 8..start].fill(0);
+                    let cut = (end - 50).max(start + MIN_STAR_BYTES as usize);
+                    bad.truncate(cut);
+                }
+                5 => {
+                    let (s2, e2) = sp[2];
+                    if e2 - s2 == end - start {
+                        let a = bad[start..end].to_vec();
+                        bad[start..end].copy_from_slice(&pack[s2..e2]);
+                        bad[s2..e2].copy_from_slice(&a);
+                    }
+                    bad[start - 8..start].fill(0);
+                }
+                _ => unreachable!(),
+            }
+            match open(&dir, &bad, None) {
+                Ok(got) => {
+                    assert_eq!(got, want, "seed {seed} kind {kind}: wrong bytes");
+                    let (_rep, fixed) = mend(&dir, &bad);
+                    if kind != 5 {
+                        assert_eq!(fixed, pack, "seed {seed} kind {kind}: mend bytes");
+                    }
+                }
+                Err(s) => {
+                    assert!(
+                        s.contains("framing")
+                            || s.contains("truncated")
+                            || s.contains("refusing")
+                            || s.contains("swapped")
+                            || s.contains("out of place")
+                            || s.contains("true-name")
+                            || s.contains("facet")
+                            || s.contains("star"),
+                        "seed {seed} kind {kind}: refused without naming the part: {s}"
+                    );
+                    let p = dir.join(format!("p{seed}.sg1"));
+                    std::fs::write(&p, &bad).unwrap();
+                    assert!(
+                        mend_pack_path(&p, &dir.join(format!("o{seed}.sg1")), false).is_err(),
+                        "seed {seed} kind {kind}: mend must also refuse"
+                    );
+                }
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

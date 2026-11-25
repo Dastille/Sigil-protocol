@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Repair
+
+- `mend` and `unseal` rebuild damaged length prefixes in a large-file pack
+  (the 8-byte length in front of each chunk star) when every star confirms
+  against the facet list and any intact pack-head guard. Decoder-only: the
+  `.sg1` layout is unchanged. A successful mend writes the same prefixes a
+  clean pack already had.
+- A rebuilt length is accepted only after that confirmation. Swapped stars, a
+  forged length that points at a different valid-looking star, a truncated pack,
+  and a wrong passphrase on a Warded large-file pack are still refused.
+- When the prefixes are damaged but the facet list is intact, the refusal no
+  longer blames the facet list. The facet list itself is still not
+  Reed–Solomon coded; if it is damaged too, `mend` still refuses.
+- Measured (same damage model as the 25 November 2026 GPU park, three seeds per
+  case): 256 MiB Seal packs with 1–4% scattered bad sectors, previously often
+  refused at once, were repaired in 12 of 12 sector-damage runs (about 12–20 s,
+  about 105 MiB peak RSS). No run wrote a wrong file. Scans of untrusted input
+  are capped (24 MiB per star, 64 MiB and 3 seconds per rebuild, 64 magic hits,
+  a reused 1 MiB window).
+- `sigil mend` prints `length framing rebuilt` from one shared summary helper
+  when that is what it did.
+
 ### Recovery guidance
 
 - When an archive will not open or cannot be repaired, `scry`, `verify`, `unseal`, `open`,

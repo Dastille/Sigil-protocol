@@ -43,9 +43,11 @@ through a pack left a half-written output file behind.
   its own, so the file comes back whole and exact.
 - **A damaged pack head is now rebuilt when the evidence is unambiguous** (facet
   list + each star's own header; in new packs, a guard copy after each star), see
-  `PACK-HEAD-REPAIR.md`. When it cannot be
-  rebuilt, the refusal above still applies. A lone first star still behind its
-  pack framing is refused too ("one part of a large-file pack").
+  `PACK-HEAD-REPAIR.md`. Damaged length prefixes between stars are rebuilt the
+  same way, decoder-only, and only when every star confirms against the facet
+  list. When either cannot be rebuilt, the refusal above still applies. A lone
+  first star still behind its pack framing is refused too ("one part of a
+  large-file pack").
 
 Tests: `tests/cli_unseal_failclosed.rs` (the original 6 MB `--mode seal
 --shards 254` case, truncations, existing output preserved, mend refuses) and
