@@ -221,6 +221,13 @@ pub fn deluge_fountain_report(
 /// Consecutive already-taken random ESIs tolerated before a top-up gives up.
 const ESI_MISS_LIMIT: u32 = 100_000;
 
+fn esi_miss_err(sbn: usize, misses: u32, written: u32, missing: u32) -> crate::Error {
+    err(format!(
+        "could not find a fresh symbol ID for block {sbn} after {misses} tries; \
+         wrote {written} new packet(s), {missing} still short"
+    ))
+}
+
 /// A fresh ESI from the OS random source, masked to the 24-bit ESI space.
 fn random_esi() -> Result<u32> {
     let mut r = [0u8; 4];
@@ -348,11 +355,7 @@ pub(crate) fn deluge_fountain_with(
             if taken[sbn].contains(&esi) || path.exists() {
                 misses += 1;
                 if misses >= ESI_MISS_LIMIT {
-                    return Err(err(format!(
-                        "could not find a fresh symbol ID for block {sbn} after {misses} tries; \
-                         wrote {} new packet(s), {missing} still short",
-                        rep.written
-                    )));
+                    return Err(esi_miss_err(sbn, misses, rep.written, missing));
                 }
                 continue;
             }
@@ -767,16 +770,19 @@ fn answer_with(
         let sbn_u8 = u8::try_from(sbn).map_err(|_| err("internal: too many source blocks"))?;
         let mut taken = HashSet::new();
         let mut left = *n;
+        let mut misses = 0u32;
         while left > 0 {
             // Fresh repair symbols only (ESI >= K): the receiver may hold any source ones.
             let esi = next_esi()? & MAX_ESI;
-            if esi < k || !taken.insert(esi) {
-                continue;
-            }
             let path = dir.join(format!("mana-{sbn_u8:03}-{esi:08}.{MANA_EXT}"));
-            if path.exists() {
+            if esi < k || !taken.insert(esi) || path.exists() {
+                misses += 1;
+                if misses >= ESI_MISS_LIMIT {
+                    return Err(esi_miss_err(sbn, misses, written, left));
+                }
                 continue;
             }
+            misses = 0;
             let pkt = expected_packet(block, &source, esi)?;
             write_new(&path, &packet_v2(&cfg, &object, &pkt))?;
             written += 1;
@@ -1217,6 +1223,20 @@ mod tests {
             b.extend_from_slice(&h);
             let _ = parse_packet(&b);
         }
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn answer_with_stuck_esi_source_fails_closed() {
+        let m = mark(100_000);
+        let d = scratch("ans-stuck");
+        let mut gen = || Ok(0u32); // Always < k, hits ESI_MISS_LIMIT immediately
+        let e = answer_with(&m, &d, &[2], &mut gen);
+        assert!(
+            e.is_err(),
+            "stuck generator in answer_with must fail closed"
+        );
+        assert!(rq_files(&d).is_empty());
         let _ = fs::remove_dir_all(&d);
     }
 }

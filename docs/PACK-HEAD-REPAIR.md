@@ -127,6 +127,11 @@ Undamaged old packs never get guards added by `mend`.
   pack, even one with the same name and size) are refused.
 - Any one intact guard is enough; damaged guards are rewritten by `mend`. If
   every guard is damaged, the facet-list rebuild above still applies.
+- Guard scans of untrusted input are bounded (256 MiB total bytes read,
+  `clamp(size / 1024, 64, 262_144)` `SGHG` hits, shared 3-second wall-clock
+  budget across guard inspection and framing rebuild, reused 1 MiB window).
+  Exceeding the budget fails closed on the streaming path without loading the
+  whole file into memory (exit code 2 with recovery hints).
 
 The SHA-256 only detects accidental damage; like the rest of an unsigned pack it
 is not a MAC. A guard repeats only what the head already holds in the clear (name,
@@ -184,4 +189,8 @@ large-file pack". Tests: `packhead::tests::old_format_refuses_when_the_evidence_
   with its magic wiped (mend output is byte-identical to the original), a wrong
   total mended in place, an unrebuildable head still refused with no output, and a
   new pack with head and facet list wiped coming back byte-exact.
+- `packhead::tests::guard_scan_crafted_worst_case_is_bounded`,
+  `guard_scan_2gib_sghg_src_fails_closed_subsecond`,
+  `guard_scan_restores_many_star_pack_beyond_64_corrupt_guards`, and
+  `cli_pack_head::crafted_guard_flood_mend_and_unseal_fail_closed_with_hints`.
 - `doctor::tests::damaged_pack_head_is_reported_as_mendable`.

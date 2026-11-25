@@ -683,58 +683,151 @@ fn apply_guards<S: Src>(src: &mut S, l: &mut PackLayout) -> Result<bool> {
     ))
 }
 
+/// Outcome of scanning for an intact pack-head guard.
+enum GuardLookup {
+    Found(PackLayout),
+    NotFound,
+    BudgetExceeded(crate::Error),
+}
+
+fn guard_hit_cap(size: u64) -> u64 {
+    (size / GUARD_HIT_STRIDE).clamp(u64::from(MAX_MAGIC_HITS), MAX_GUARD_HITS)
+}
+
+fn guard_budget_exceeded(hits: u64, bytes: u64) -> crate::Error {
+    msg(format!(
+        "work pack guard scan limit reached after {hits} SGHG hit(s) and {bytes} bytes (could not find an intact pack-head guard within the time, byte, and hit budget); refusing"
+    ))
+}
+
 /// Find the first intact, correctly placed guard anywhere in the file and lay
-/// the pack out from its head copy.
-fn from_guards<S: Src>(src: &mut S) -> Result<PackLayout> {
+/// the pack out from its head copy, bounded by [`ScanBudget`] and [`guard_hit_cap`].
+fn from_guards_scan<S: Src>(src: &mut S) -> Result<GuardLookup> {
     let size = src.size();
-    let none = || msg("no intact pack-head guard found");
+    let max_hits = guard_hit_cap(size);
+    let mut budget = ScanBudget::for_guards();
+    let mut hits = 0u64;
     let mut off = 0u64;
     while off < size {
+        if budget.exhausted() {
+            return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                hits,
+                budget.bytes,
+            )));
+        }
         let n = SCAN_BLOCK.min(size - off);
-        let mut block = vec![0u8; n as usize];
-        src.read_at(off, &mut block)?;
+        let n_usz = n as usize;
+        if src.read_at(off, &mut budget.buf[..n_usz]).is_err() {
+            return Ok(GuardLookup::NotFound);
+        }
+        budget.bytes = budget.bytes.saturating_add(n);
         let mut i = 0usize;
-        while let Some(hit) = block[i..].windows(4).position(|w| w == GUARD_MAGIC) {
-            let p = off + (i + hit) as u64;
-            i += hit + 1;
-            let mut rec = vec![0u8; (MAX_GUARD as u64).min(size - p) as usize];
-            if src.read_at(p, &mut rec).is_err() || rec.len() < GUARD_FIXED {
+        while i < n_usz {
+            let Some(hit) = budget.buf[i..n_usz]
+                .windows(4)
+                .position(|w| w == GUARD_MAGIC)
+            else {
+                break;
+            };
+            let hit_at = i + hit;
+            let p = off + hit_at as u64;
+            i = hit_at + 1;
+            hits += 1;
+            if hits > max_hits || budget.time_exhausted() {
+                return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                    hits,
+                    budget.bytes,
+                )));
+            }
+            let avail_in_file = (MAX_GUARD as u64).min(size - p) as usize;
+            if avail_in_file < GUARD_FIXED {
                 continue;
+            }
+            let mut rec = [0u8; MAX_GUARD];
+            if hit_at + avail_in_file <= n_usz {
+                rec[..avail_in_file].copy_from_slice(&budget.buf[hit_at..hit_at + avail_in_file]);
+            } else {
+                if src.read_at(p, &mut rec[..avail_in_file]).is_err() {
+                    continue;
+                }
+                budget.bytes = budget.bytes.saturating_add(avail_in_file as u64);
+                if budget.exhausted() {
+                    return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                        hits,
+                        budget.bytes,
+                    )));
+                }
             }
             let at = GUARD_HEAD_LEN_AT;
             let head_len = u16::from_le_bytes([rec[at], rec[at + 1]]) as usize;
-            let Some(g) = rec.get(..GUARD_FIXED + head_len).and_then(parse_guard) else {
+            let Some(g) = rec[..avail_in_file]
+                .get(..GUARD_FIXED + head_len)
+                .and_then(parse_guard)
+            else {
                 continue;
             };
             // It must end a framed star: the 8-byte length in front of its seal covers
             // exactly the seal plus this guard. (Not the recorded offset, which a
             // pre-guard mend may have shifted.)
             let rec_len = (GUARD_FIXED + head_len) as u64;
-            let placed = p
-                .checked_sub(g.seal_len + 8)
-                .and_then(|o| read_u64(src, o).ok())
-                == g.seal_len.checked_add(rec_len);
+            let placed = p.checked_sub(g.seal_len + 8).and_then(|o| {
+                budget.bytes = budget.bytes.saturating_add(8);
+                read_u64(src, o).ok()
+            }) == g.seal_len.checked_add(rec_len);
+            if budget.time_exhausted() {
+                return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                    hits,
+                    budget.bytes,
+                )));
+            }
             if !placed {
                 // Length prefix gone or wrong: a checksum-valid guard can still
                 // supply the head, and rebuild confirms every star against SGFC.
-                if let Ok(r) = try_rebuild_framing(src, &g.head, HeadSource::Guard) {
-                    return Ok(r);
+                if let Ok(r) =
+                    try_rebuild_framing_with_start(src, &g.head, HeadSource::Guard, budget.started)
+                {
+                    return Ok(GuardLookup::Found(r));
+                }
+                if budget.time_exhausted() {
+                    return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                        hits,
+                        budget.bytes,
+                    )));
                 }
                 continue;
             }
             let mut l = match layout_with_head(src, &g.head) {
                 Ok(l) if !matches!(l.trailer, Trailer::Damaged) => l,
-                _ => match try_rebuild_framing(src, &g.head, HeadSource::Guard) {
-                    Ok(r) => return Ok(r),
+                _ => match try_rebuild_framing_with_start(
+                    src,
+                    &g.head,
+                    HeadSource::Guard,
+                    budget.started,
+                ) {
+                    Ok(r) => return Ok(GuardLookup::Found(r)),
                     Err(_) => match layout_with_head(src, &g.head) {
                         Ok(l) => l,
-                        Err(_) => continue,
+                        Err(_) => {
+                            if budget.time_exhausted() {
+                                return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                                    hits,
+                                    budget.bytes,
+                                )));
+                            }
+                            continue;
+                        }
                     },
                 },
             };
             if apply_guards(src, &mut l)? {
                 l.source = HeadSource::Guard;
-                return Ok(l);
+                return Ok(GuardLookup::Found(l));
+            }
+            if budget.time_exhausted() {
+                return Ok(GuardLookup::BudgetExceeded(guard_budget_exceeded(
+                    hits,
+                    budget.bytes,
+                )));
             }
         }
         if off + n >= size {
@@ -743,7 +836,7 @@ fn from_guards<S: Src>(src: &mut S) -> Result<PackLayout> {
         // Overlap so a magic split across blocks is still seen.
         off += n - 3;
     }
-    Err(none())
+    Ok(GuardLookup::NotFound)
 }
 
 /// Smallest accepted on-disk star (a header). A zeroed length prefix used to
@@ -768,26 +861,42 @@ const FRAMING_SCAN_SECS: u64 = 3;
 /// A real star has one `SGHG` guard and at most `n` (16) `SGEM` Ember headers.
 /// A crafted file filled with those magics is abandoned after this many hits.
 const MAX_MAGIC_HITS: u32 = 64;
+/// Hard cap on total bytes read by the whole-file `SGHG` guard walk.
+const MAX_GUARD_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+/// Minimum bytes per real guarded star used to scale the `SGHG` hit cap with
+/// file size (a real pack has one guard per star, never one every 4 bytes).
+const GUARD_HIT_STRIDE: u64 = 1024;
+/// Ceiling on `SGHG` hits inspected in one guard walk.
+const MAX_GUARD_HITS: u64 = MAX_GUARD_SCAN_BYTES / GUARD_HIT_STRIDE;
 
 /// Time, memory and size budget for scans of untrusted pack bytes.
 struct ScanBudget {
     started: std::time::Instant,
     bytes: u64,
+    max_bytes: u64,
     buf: Vec<u8>,
 }
 
 impl ScanBudget {
-    fn new() -> Self {
+    fn for_guards() -> Self {
+        Self::with_limits(std::time::Instant::now(), MAX_GUARD_SCAN_BYTES)
+    }
+
+    fn with_limits(started: std::time::Instant, max_bytes: u64) -> Self {
         Self {
-            started: std::time::Instant::now(),
+            started,
             bytes: 0,
+            max_bytes,
             buf: vec![0u8; SCAN_BLOCK as usize],
         }
     }
 
-    fn exhausted(&self) -> bool {
+    fn time_exhausted(&self) -> bool {
         self.started.elapsed() >= std::time::Duration::from_secs(FRAMING_SCAN_SECS)
-            || self.bytes >= MAX_FRAMING_SCAN_BYTES
+    }
+
+    fn exhausted(&self) -> bool {
+        self.time_exhausted() || self.bytes >= self.max_bytes
     }
 
     fn charge(&mut self, n: u64) -> bool {
@@ -850,17 +959,27 @@ fn read_head_from_bytes(hb: &[u8]) -> Result<WorkHead> {
 }
 
 /// Rebuild length framing from a known, already-checked head, or return the
-/// error from that rebuild. Shared by [`layout`] and [`from_guards`].
+/// error from that rebuild. Shared by [`layout`] and [`from_guards_scan`].
 fn try_rebuild_framing<S: Src>(
     src: &mut S,
     head_bytes: &[u8],
     source: HeadSource,
+) -> Result<PackLayout> {
+    try_rebuild_framing_with_start(src, head_bytes, source, std::time::Instant::now())
+}
+
+fn try_rebuild_framing_with_start<S: Src>(
+    src: &mut S,
+    head_bytes: &[u8],
+    source: HeadSource,
+    started: std::time::Instant,
 ) -> Result<PackLayout> {
     rebuild_framing_with_head(
         src,
         read_head_from_bytes(head_bytes)?,
         head_bytes.to_vec(),
         source,
+        started,
     )
 }
 
@@ -1219,6 +1338,7 @@ fn rebuild_framing_with_head<S: Src>(
     head: WorkHead,
     head_bytes: Vec<u8>,
     source: HeadSource,
+    started: std::time::Instant,
 ) -> Result<PackLayout> {
     let n = head.stars;
     if n == 0 {
@@ -1241,7 +1361,7 @@ fn rebuild_framing_with_head<S: Src>(
     let mut stars: Vec<(u64, u64)> = Vec::with_capacity(n as usize);
     let mut pos = head_len;
     let mut rebuilt_framing = false;
-    let mut budget = ScanBudget::new();
+    let mut budget = ScanBudget::with_limits(started, MAX_FRAMING_SCAN_BYTES);
 
     for i in 0..n {
         if budget.exhausted() {
@@ -1509,9 +1629,11 @@ pub(crate) fn layout<S: Src>(src: &mut S) -> Result<PackLayout> {
                     }
                 }
             }
-            return from_guards(src)
-                .or_else(|_| from_facets(src))
-                .map_err(|_| e);
+            return match from_guards_scan(src)? {
+                GuardLookup::Found(r) => Ok(r),
+                GuardLookup::BudgetExceeded(limit) => Err(limit),
+                GuardLookup::NotFound => from_facets(src).map_err(|_| e),
+            };
         }
     };
     // Guarded pack: the guards are authoritative for head, order and facets.
@@ -1521,8 +1643,14 @@ pub(crate) fn layout<S: Src>(src: &mut S) -> Result<PackLayout> {
         if let Ok(r) = try_rebuild_framing(src, &l.head_bytes, l.source) {
             return Ok(r);
         }
-        if let Ok(r) = from_guards(src).or_else(|_| from_facets(src)) {
-            return Ok(r);
+        match from_guards_scan(src)? {
+            GuardLookup::Found(r) => return Ok(r),
+            GuardLookup::BudgetExceeded(limit) => return Err(limit),
+            GuardLookup::NotFound => {
+                if let Ok(r) = from_facets(src) {
+                    return Ok(r);
+                }
+            }
         }
         // A well-formed list still in the file means the failure is framing.
         // Old unguarded packs whose list is genuinely gone still open; mend
@@ -1546,19 +1674,38 @@ pub(crate) fn layout_path(path: &Path) -> Result<PackLayout> {
 
 /// Rebuild the layout of bytes that do not start with the SGWK magic but may be
 /// a pack whose head is damaged (guards first, then the facet list).
-pub(crate) fn recover_bytes(bytes: &[u8]) -> Option<PackLayout> {
+/// Returns `Err` when the guard scan hits its budget (fail-closed), `Ok(None)`
+/// when no guard or facet layout is found.
+pub(crate) fn recover_bytes_result(bytes: &[u8]) -> Result<Option<PackLayout>> {
     let mut src = MemSrc(bytes);
-    from_guards(&mut src)
-        .or_else(|_| from_facets(&mut src))
-        .ok()
+    match from_guards_scan(&mut src)? {
+        GuardLookup::Found(l) => Ok(Some(l)),
+        GuardLookup::BudgetExceeded(limit) => Err(limit),
+        GuardLookup::NotFound => Ok(from_facets(&mut src).ok()),
+    }
+}
+
+/// Rebuild the layout of bytes that do not start with the SGWK magic but may be
+/// a pack whose head is damaged (guards first, then the facet list).
+pub(crate) fn recover_bytes(bytes: &[u8]) -> Option<PackLayout> {
+    recover_bytes_result(bytes).ok().flatten()
+}
+
+/// Like [`recover_bytes_result`] for a file on disk.
+pub(crate) fn recover_path_result(path: &Path) -> Result<Option<PackLayout>> {
+    let Ok(mut src) = FileSrc::open(path) else {
+        return Ok(None);
+    };
+    match from_guards_scan(&mut src)? {
+        GuardLookup::Found(l) => Ok(Some(l)),
+        GuardLookup::BudgetExceeded(limit) => Err(limit),
+        GuardLookup::NotFound => Ok(from_facets(&mut src).ok()),
+    }
 }
 
 /// Like [`recover_bytes`] for a file on disk.
 pub(crate) fn recover_path(path: &Path) -> Option<PackLayout> {
-    let mut src = FileSrc::open(path).ok()?;
-    from_guards(&mut src)
-        .or_else(|_| from_facets(&mut src))
-        .ok()
+    recover_path_result(path).ok().flatten()
 }
 
 #[cfg(test)]
@@ -2537,5 +2684,192 @@ pub(crate) mod tests {
         junk.extend_from_slice(b"SGFC\x01\x00\x00\x00");
         junk.extend_from_slice(&[7u8; 32]);
         assert!(recover_bytes(&junk).is_none());
+    }
+
+    struct SyntheticRepeatSrc {
+        len: u64,
+        pat: Vec<u8>,
+        head: Vec<u8>,
+        tail: Vec<u8>,
+    }
+
+    impl Src for SyntheticRepeatSrc {
+        fn size(&self) -> u64 {
+            self.len
+        }
+
+        fn read_at(&mut self, off: u64, dst: &mut [u8]) -> Result<()> {
+            if off.saturating_add(dst.len() as u64) > self.len {
+                return Err(msg("eof"));
+            }
+            let tail_start = self.len.saturating_sub(self.tail.len() as u64);
+            for (i, b) in dst.iter_mut().enumerate() {
+                let p = off + i as u64;
+                *b = if (p as usize) < self.head.len() {
+                    self.head[p as usize]
+                } else if p >= tail_start {
+                    self.tail[(p - tail_start) as usize]
+                } else {
+                    self.pat[(p as usize) % self.pat.len()]
+                };
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn guard_scan_crafted_worst_case_is_bounded() {
+        let dir = tmp("guard-worst");
+        let pack = new_pack(&dir, "plain.bin", None, crate::Mode::Seal);
+        let hl = head_len(&pack);
+        let sgfc_at = pack.windows(4).rposition(|w| w == b"SGFC").expect("SGFC");
+        let head_bytes = pack[..hl].to_vec();
+        let tail_bytes = pack[sgfc_at..].to_vec();
+
+        // Case 1: repeating `SGHG` stream (dense magic flood) fails closed fast.
+        let mut crafted = vec![0u8; hl + 8];
+        let fill = 8 * 1024 * 1024;
+        crafted.reserve(fill + tail_bytes.len());
+        for _ in 0..(fill / 4) {
+            crafted.extend_from_slice(b"SGHG");
+        }
+        crafted.extend_from_slice(&tail_bytes);
+        let start = std::time::Instant::now();
+        let err = match layout(&mut MemSrc(&crafted)) {
+            Ok(_) => panic!("dense SGHG flood must fail"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("guard scan limit"),
+            "dense SGHG flood must cite guard scan limit, got: {err}"
+        );
+        assert!(
+            start.elapsed() <= std::time::Duration::from_secs(FRAMING_SCAN_SECS + 2),
+            "dense SGHG scan took {:?}",
+            start.elapsed()
+        );
+
+        // Case 2: forged checksum-valid !placed guards spaced every 1024 bytes across 2 GiB
+        // (each triggers try_rebuild_framing_with_start sharing budget.started).
+        let mut tile = guard_bytes(0, 0, 500, &[0x55; 16], &head_bytes);
+        assert!(tile.len() <= 1024);
+        tile.resize(1024, 0);
+        let mut forged_src = SyntheticRepeatSrc {
+            len: 2 * 1024 * 1024 * 1024,
+            pat: tile,
+            head: vec![0u8; hl + 8],
+            tail: tail_bytes,
+        };
+        let start = std::time::Instant::now();
+        let err = match layout(&mut forged_src) {
+            Ok(_) => panic!("forged guard flood must fail"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("guard scan limit"),
+            "forged checksum-valid guard flood must hit guard scan limit, got: {err}"
+        );
+        assert!(
+            start.elapsed() <= std::time::Duration::from_secs(FRAMING_SCAN_SECS + 2),
+            "forged guard flood took {:?}, shared wall-clock budget is {FRAMING_SCAN_SECS}s",
+            start.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn guard_scan_2gib_sghg_src_fails_closed_subsecond() {
+        // Reproduces the 2 GiB hostile `SGHG` pack pattern (which ran ~195s mend / ~211s unseal
+        // at ~2.0 GiB RSS on commit fc2d4af) via a zero-copy 2 GiB synthetic Src.
+        let dir = tmp("guard-2g");
+        let pack = new_pack(&dir, "plain.bin", None, crate::Mode::Seal);
+        let hl = head_len(&pack);
+        let sgfc_at = pack.windows(4).rposition(|w| w == b"SGFC").expect("SGFC");
+        let mut src = SyntheticRepeatSrc {
+            len: 2 * 1024 * 1024 * 1024,
+            pat: b"SGHG".to_vec(),
+            head: vec![0u8; hl + 8],
+            tail: pack[sgfc_at..].to_vec(),
+        };
+        let start = std::time::Instant::now();
+        let err = match layout(&mut src) {
+            Ok(_) => panic!("2 GiB SGHG scan must fail"),
+            Err(e) => e.to_string(),
+        };
+        let dt = start.elapsed();
+        assert!(err.contains("guard scan limit"), "got: {err}");
+        assert!(
+            dt < std::time::Duration::from_secs(2),
+            "2 GiB SGHG scan should abort in sub-second time, took {dt:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn guard_scan_restores_many_star_pack_beyond_64_corrupt_guards() {
+        let dir = tmp("guard-many-stars");
+        // 72 stars at 64 KiB chunk size (~4.6 MiB total) so hit cap > 64.
+        let src_path = dir.join("many.bin");
+        let mut x = 0x9e3779b97f4a7c15u64;
+        let payload: Vec<u8> = (0..(72 * 64 * 1024))
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        std::fs::write(&src_path, &payload).unwrap();
+        let pack_path = dir.join("many.sg1");
+        crate::work::inscribe_path(
+            &src_path,
+            &pack_path,
+            crate::Mode::Reflection,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            0,
+            0,
+            None,
+        )
+        .unwrap();
+        let pack = std::fs::read(&pack_path).unwrap();
+        let sp = star_ranges(&pack);
+        assert_eq!(sp.len(), 72);
+        let hl = sp[0].0 - 8;
+
+        // Wipe the head and damage the first 68 guards (leaving their `SGHG` magic intact
+        // so the scan sees >64 `SGHG` hits before reaching star 68's intact guard).
+        let mut bad = pack.clone();
+        bad[..hl].fill(0);
+        for &(a, b) in &sp[..68] {
+            let g_at = a + bad[a..b]
+                .windows(4)
+                .rposition(|w| w == GUARD_MAGIC)
+                .unwrap();
+            // Flip a byte inside the guard's checksum/payload, keeping `SGHG` intact.
+            bad[g_at + 10] ^= 0xff;
+        }
+        let bad_path = dir.join("torn-many.sg1");
+        std::fs::write(&bad_path, &bad).unwrap();
+
+        let l = recover_path_result(&bad_path)
+            .unwrap()
+            .expect("must recover");
+        assert_eq!(l.source, HeadSource::Guard);
+        assert_eq!(l.head.stars, 72);
+
+        let out_bin = dir.join("out.bin");
+        let n = unseal_path_keys(&bad_path, &out_bin, None, &[], &[]).unwrap();
+        assert_eq!(n as usize, payload.len());
+        assert_eq!(std::fs::read(&out_bin).unwrap(), payload);
+
+        let out_mend = dir.join("fixed.sg1");
+        let rep = mend_pack_path(&bad_path, &out_mend, false).unwrap();
+        assert_eq!(rep.head, HeadSource::Guard);
+        assert_eq!(std::fs::read(&out_mend).unwrap(), pack);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
