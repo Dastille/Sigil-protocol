@@ -415,7 +415,7 @@ fn doctor_and_gc_understand_logs() {
     let c = sample(&d, 3);
     let (code, o) = run(&d, &["doctor", "ev"]);
     assert_eq!(code, 0, "{o}");
-    assert!(o.contains("(log, container"), "{o}");
+    assert!(o.contains("(log, `name.sigil/` folder"), "{o}");
     // missing segment → ERROR, and gc/--fix never invent or delete anything live
     let keep = fs::read(seg(&c, 2)).unwrap();
     fs::remove_file(seg(&c, 2)).unwrap();

@@ -102,13 +102,17 @@ impl DoctorReport {
 
     /// Same report under another command name (`sigil log verify`).
     pub fn render_as(&self, cmd: &str) -> String {
+        let layout = match self.layout.as_str() {
+            "container" => "`name.sigil/` folder",
+            other => other,
+        };
         let mut s = format!(
             "{cmd} {} ({}, {}{})\n",
             self.root.display(),
             self.kind,
-            self.layout,
+            layout,
             self.container_version
-                .map(|v| format!(" format {v}"))
+                .map(|v| format!(", format {v}"))
                 .unwrap_or_default()
         );
         for f in &self.fixed {
@@ -419,7 +423,7 @@ fn push_health(rep: &mut DoctorReport, subject: &str, path: &Path, mend_target: 
             "bit-rot-unrecoverable",
             subject,
             m,
-            Some("restore this file from another copy (backup, cold kit, atlas bag)".into()),
+            Some("restore this file from another copy (backup, Frost Rune, atlas bag)".into()),
         )),
     }
 }
@@ -564,7 +568,7 @@ fn manifest_findings(rep: &mut DoctorReport, dir: &Path, want_kind: &str) {
             container::CONTAINER_FILE,
             e.to_string(),
             Some(
-                "upgrade sigil if the container is newer; otherwise restore CONTAINER from a copy"
+                "upgrade sigil if the `name.sigil/` layout is newer; otherwise restore the on-disk CONTAINER manifest from a copy"
                     .into(),
             ),
         )),
@@ -576,7 +580,7 @@ fn old_layout_finding(rep: &mut DoctorReport) {
         Severity::Warn,
         "old-layout",
         rep.root.display().to_string(),
-        "old layout still opens, but is not a tidy `name.sigil/` container",
+        "old layout still opens, but is not a tidy `name.sigil/` folder",
         Some("sigil tidy PATH (or doctor --fix)".into()),
     ));
 }
@@ -737,7 +741,7 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
                     Severity::Info,
                     "cold-unknown",
                     rel(vdir, &p),
-                    "not a cold kit folder (vN/); left alone",
+                    "not a Frost Rune cold folder (vN/); left alone",
                     None,
                 ));
                 continue;
@@ -775,8 +779,8 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
             if uses_cold { Severity::Warn } else { Severity::Info },
             "cold-missing",
             "cold/",
-            format!("light retention: {list} left the chart and no Frost Rune (cold folder) for it is inside this container{}", if uses_cold { "" } else { " (fine if you used an external --cold DIR, which doctor cannot see)" }),
-            Some("keep cold kits with `--cold-here` so they travel with the container".into()),
+            format!("light retention: {list} left the chart and no Frost Rune (cold folder) for it is inside this `name.sigil/` folder{}", if uses_cold { "" } else { " (fine if you used an external --cold DIR, which doctor cannot see)" }),
+            Some("keep Frost Rune cold folders with `--cold-here` so they travel with the `name.sigil/` folder".into()),
         ));
     }
     // Orphans / temp files, shared with gc.
@@ -820,7 +824,7 @@ fn check_cold_kit(rep: &mut DoctorReport, dir: &Path, subject: &str, quick: bool
                 "cold-broken",
                 subject,
                 format!("cold folder (Frost Rune) cannot be rebuilt: {e}"),
-                Some("copy the missing usb-* folders back under the kit".into()),
+                Some("copy the missing usb-* folders back under the Frost Rune folder".into()),
             )),
             Ok(bytes) => {
                 rep.verified += 1;
@@ -860,7 +864,7 @@ fn check_cold_kit(rep: &mut DoctorReport, dir: &Path, subject: &str, quick: bool
             Severity::Warn,
             "cold-broken",
             subject,
-            "cold folder holds neither a kit (KIT) nor a plain .sg1 archive",
+            "cold folder holds neither a Frost Rune (on-disk KIT manifest) nor a plain .sg1 archive",
             Some("the cold copy is empty; re-prune from a backup or delete the folder".into()),
         ));
         return;

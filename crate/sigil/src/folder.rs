@@ -121,7 +121,7 @@ pub fn inscribe_dir(
 }
 
 /// Why a folder pack locked only by per-file wards is refused by default.
-pub const WARD_ONLY_REFUSED: &str = "a folder pack locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names";
+pub const WARD_ONLY_REFUSED: &str = "a Tome locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names";
 
 /// True when per-file wards are the only keys: no folder passphrase, no recipient.
 fn ward_only(
@@ -707,7 +707,7 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
         "ok"
     };
     Ok(format!(
-        "mended {} → {} (sealed folder pack, {n} files, body merkle {state})",
+        "mended {} → {} (sealed Tome, {n} files, body merkle {state})",
         input.display(),
         output.display()
     ))
@@ -763,7 +763,7 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
     fs::write(&part, encode_sgdr(&healed_entries)?).map_err(io)?;
     fs::rename(&part, output).map_err(io)?;
     Ok(format!(
-        "mended {} → {} (folder pack, {total} files, {} healed{}{})",
+        "mended {} → {} (Tome, {total} files, {} healed{}{})",
         input.display(),
         output.display(),
         mended.len(),
@@ -1131,7 +1131,7 @@ pub fn list_dir_pack_keys(
 }
 
 fn list_v1<R: Read>(reader: &mut R) -> Result<Vec<DirEntry>> {
-    let (ver, n) = read_head(reader, "not a folder pack")?;
+    let (ver, n) = read_head(reader, "not a Tome")?;
     if ver == DIR_VER_SEALED {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
@@ -1416,7 +1416,7 @@ pub fn seal_dir_names(
     let raw = fs::read(input).map_err(io)?;
     if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && raw[4] == DIR_VER_SEALED {
         return Err(crate::Error::Msg(
-            "this folder pack already seals its names (SGDR v2); nothing to do".into(),
+            "this Tome already seals its names (SGDR v2); nothing to do".into(),
         ));
     }
     let mut entries = parse_sgdr_entries(&raw)?;
@@ -1452,7 +1452,7 @@ pub fn seal_dir_names(
         ));
     }
     let count = u32::try_from(entries.len())
-        .map_err(|_| crate::Error::Msg("folder pack has too many members".into()))?;
+        .map_err(|_| crate::Error::Msg("Tome has too many members".into()))?;
     // A sealed directory's members open with its key: clear members are sealed now (Glyph mode,
     // as `inscribe` does inside a body); encrypted members are copied as they are.
     for &i in &clear {

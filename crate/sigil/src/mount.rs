@@ -429,7 +429,7 @@ impl VaultFs {
         let rel = e.path.replace('\\', "/");
         if rel.contains("..") || Path::new(&rel).is_absolute() {
             return Err(crate::Error::Msg(format!(
-                "refusing unsafe path in folder pack: {rel}"
+                "refusing unsafe path in Tome: {rel}"
             )));
         }
         // Ensure parent dirs exist.

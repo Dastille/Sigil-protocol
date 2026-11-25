@@ -167,7 +167,7 @@ pub fn version_seal(vdir: &Path, n: u32) -> Result<PathBuf> {
     let chart = crate::vault::load_chart(vdir)?;
     let v = chart.versions.iter().find(|v| v.n == n).ok_or_else(|| {
         err(format!(
-            "no version v{n} in this vault (see `sigil ls` of the container)"
+            "no version v{n} in this vault (see `sigil ls` of the `name.sigil/` folder)"
         ))
     })?;
     Ok(crate::vault::seal_path_in(vdir, &v.seal))

@@ -410,7 +410,7 @@ fn descend_one(
         NestKind::DirPack => {
             if step.is_empty() || step == "." {
                 return Err(crate::Error::Msg(
-                    "folder pack needs a path segment (e.g. --into inner.sg1)".into(),
+                    "Tome needs a path segment (e.g. --into inner.sg1)".into(),
                 ));
             }
             let star = crate::folder::read_entry_star_v1_bytes(cur, step)?;

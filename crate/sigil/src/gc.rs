@@ -322,7 +322,7 @@ pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
         return Ok(Target::Sky(sky));
     }
     Err(err(format!(
-        "nothing found at {} (not a tracked vault, nor a constellation folder / container)",
+        "nothing found at {} (not a tracked vault, nor a constellation or `name.sigil/` folder)",
         path.display()
     )))
 }
@@ -331,7 +331,7 @@ pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
 pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     match resolve_target(path).map_err(|_| {
         err(format!(
-            "nothing to gc at {} (not a tracked vault, nor a constellation folder / container)",
+            "nothing to gc at {} (not a tracked vault, nor a constellation or `name.sigil/` folder)",
             path.display()
         ))
     })? {

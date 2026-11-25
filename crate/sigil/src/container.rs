@@ -97,7 +97,7 @@ impl Manifest {
             version.ok_or_else(|| err("not a sigil CONTAINER (missing sigil-container=)"))?;
         if version > CONTAINER_VERSION {
             return Err(err(format!(
-                "container format {version} is newer than this sigil understands ({CONTAINER_VERSION}); upgrade sigil"
+                "`name.sigil/` layout {version} is newer than this sigil understands ({CONTAINER_VERSION}); upgrade sigil"
             )));
         }
         Ok(Manifest {
@@ -152,7 +152,7 @@ pub fn ensure(dir: &Path, kind: &str, name: &str) -> Result<()> {
         let m = read_manifest(dir)?;
         if m.kind != kind {
             return Err(err(format!(
-                "{} is a {} container, not a {kind}; refusing to mix them",
+                "{} is a {} `name.sigil/` folder, not a {kind}; refusing to mix them",
                 dir.display(),
                 m.kind
             )));
@@ -610,7 +610,7 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
                 let old = crate::vault::seal_path_in(&plan.from, &v.seal);
                 if old.is_file() && !p.is_file() {
                     return Err(err(format!(
-                        "version v{} missing in container; refusing",
+                        "version v{} missing in the `name.sigil/` folder; refusing",
                         v.n
                     )));
                 }
@@ -624,7 +624,7 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
                 (Ok(old), Ok(new)) => {
                     if new.len() > old.len() {
                         return Err(err(format!(
-                            "container would miss stars the old folder had ({}); refusing",
+                            "the `name.sigil/` folder would miss stars the old folder had ({}); refusing",
                             new.join(", ")
                         )));
                     }

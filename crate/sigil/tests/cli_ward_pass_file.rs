@@ -55,8 +55,8 @@ fn scratch(tag: &str) -> common::Scratch {
 }
 
 const MEMBER: &str = "private-sub/tax-return-2025.pdf";
-const WARD_WARNING: &str = "WARNING: a ward password given as --ward PATH=PASSWORD";
-const WARD_REFUSED: &str = "a ward password given as --ward PATH=PASSWORD is refused";
+const WARD_WARNING: &str = "WARNING: a Ward passphrase given as --ward PATH=PASSWORD";
+const WARD_REFUSED: &str = "a Ward passphrase given as --ward PATH=PASSWORD is refused";
 
 #[cfg(unix)]
 #[test]

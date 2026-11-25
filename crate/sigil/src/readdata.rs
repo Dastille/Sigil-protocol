@@ -144,7 +144,7 @@ pub fn read_data_subset_wards(
 ) -> Result<ReadDataReceipt> {
     if !wards.is_empty() && !crate::is_dir_pack(input) {
         return Err(Error::Msg(
-            "--ward-file is for members of a folder pack; this is not one".into(),
+            "--ward-file is for members of a Tome; this is not one".into(),
         ));
     }
     if input.is_dir() {
@@ -319,7 +319,7 @@ fn read_dir_pack(
         if s.star.starts_with(&crate::folder::DIR_MAGIC) {
             r.skipped.push((
                 *i,
-                format!("{}: nested folder pack (verify it on its own)", s.path),
+                format!("{}: nested Tome (verify it on its own)", s.path),
             ));
             continue;
         }

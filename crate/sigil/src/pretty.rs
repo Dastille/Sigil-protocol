@@ -252,7 +252,7 @@ struct Line {
 
 fn kind_label(k: &NestKind) -> &'static str {
     match k {
-        NestKind::DirPack => "folder pack",
+        NestKind::DirPack => "Tome",
         NestKind::Mark => "sealed file",
         NestKind::Work => "large-file pack",
         NestKind::Leaf => "file inside a pack",
@@ -507,7 +507,7 @@ mod tests {
         assert!(s.is_ascii(), "{s}");
         let l: Vec<&str> = s.lines().collect();
         assert_eq!(l[0], "  album.sg1");
-        assert_eq!(l[2], "  KIND      folder pack");
+        assert_eq!(l[2], "  KIND      Tome");
         assert_eq!(l[3], "  STATUS    healthy, 3 files checked");
         assert_eq!(l[4], "  HOLDS     3 files, 2 dirs, 15 B");
         assert!(s.contains("\n  notes/\n    todo.txt"), "{s}");
