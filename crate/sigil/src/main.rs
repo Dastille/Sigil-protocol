@@ -4717,6 +4717,29 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             // its own. Both keep a result only if the Merkle root and true name match.
             let auto_soft = !soft && !hard_only;
             let try_soft = soft || auto_soft;
+            match sigil::try_recover_work_pack(&input) {
+                Ok(true) => {
+                    let watch = RepairWatch::start(None);
+                    let result = mend_pack_report(&input, &output, try_soft);
+                    drop(watch);
+                    mend_stop_gate(&input)?;
+                    return result.map_err(|e| {
+                        damage_failure(
+                            e.to_string(),
+                            mend_hints(&input, hard_only && !soft, Vec::new()),
+                        )
+                    });
+                }
+                Err(e) => {
+                    let msg = mend_failed(&input, &e.to_string());
+                    return Err(hinted_err(
+                        msg,
+                        mend_hints(&input, !try_soft, Vec::new()),
+                        2,
+                    ));
+                }
+                Ok(false) => {}
+            }
             let data = fs::read(&input)?;
             let mut est = None;
             // Scan → estimate → decide. A scan error is not a verdict: mend still tries.

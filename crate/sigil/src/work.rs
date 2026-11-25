@@ -538,8 +538,12 @@ pub fn read_facet_digests(input: &Path) -> Result<Vec<[u8; 32]>> {
 
 /// Bao-style slice list: each work-pack star is a checkable 4 MiB facet.
 pub fn scry_facets(input: &Path) -> Result<Vec<Facet>> {
-    let mut reader =
-        BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let file = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let file_len = file
+        .metadata()
+        .map_err(|e| crate::Error::Msg(e.to_string()))?
+        .len();
+    let mut reader = BufReader::new(file);
     let head = read_head(&mut reader)?;
     let mut out = Vec::new();
     let mut remain = head.orig_total;
@@ -549,7 +553,13 @@ pub fn scry_facets(input: &Path) -> Result<Vec<Facet>> {
         reader
             .read_exact(&mut lenb)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let len = u64::from_le_bytes(lenb) as usize;
+        let len_u64 = u64::from_le_bytes(lenb);
+        if len_u64 > file_len {
+            return Err(crate::Error::Msg(
+                "work pack star length exceeds file size".into(),
+            ));
+        }
+        let len = len_u64 as usize;
         let mut star = vec![0u8; len];
         reader
             .read_exact(&mut star)
@@ -607,6 +617,9 @@ pub fn index_pack(input: &Path) -> Result<(WorkHead, Vec<StarLoc>)> {
             break;
         }
         let star_len = u64::from_le_bytes(lenb);
+        if star_len < crate::header::HEADER_SIZE as u64 {
+            break;
+        }
         let file_off = match f.stream_position() {
             Ok(o) => o,
             Err(_) => break,
@@ -1330,6 +1343,12 @@ pub fn unseal_path_keys(
             unseal_pack_stream(&mut src, &l, writer, pass, companions, identities)
         });
     }
+    if let Some(l) = packhead::recover_path_result(input)? {
+        let mut src = packhead::FileSrc::open(input)?;
+        return write_atomic(output, |writer| {
+            unseal_pack_stream(&mut src, &l, writer, pass, companions, identities)
+        });
+    }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // unseal_ex_keys checks length + SHA-256 against the header and refuses a
     // buffer holding more than one seal (damaged pack head).
@@ -1395,7 +1414,7 @@ pub(crate) fn unseal_bytes_into<W: Write>(
                 .map_err(|e| crate::Error::Msg(e.to_string()))?;
             Ok(plain.len() as u64)
         }
-        Err(e) => match packhead::recover_bytes(data) {
+        Err(e) => match packhead::recover_bytes_result(data)? {
             Some(l) => unseal_pack_stream(&mut src, &l, writer, pass, companions, identities),
             None => Err(e),
         },
@@ -1407,6 +1426,18 @@ pub(crate) fn unseal_bytes_into<W: Write>(
 /// the worst case; call it only after the ordinary readers have failed.
 pub fn is_damaged_work_pack(path: &Path) -> bool {
     packhead::recover_path(path).is_some()
+}
+
+/// Like [`is_damaged_work_pack`], returning `Err` when the guard scan hits its
+/// cap (fail-closed) instead of collapsing the limit error into `false`.
+pub fn try_recover_work_pack(path: &Path) -> Result<bool> {
+    Ok(packhead::recover_path_result(path)?.is_some())
+}
+
+/// True when `path` is a damaged-head work pack or hit the guard scan limit
+/// (so callers treat it as a large-file archive without reading it whole).
+pub fn is_damaged_work_pack_or_limit(path: &Path) -> bool {
+    !matches!(packhead::recover_path_result(path), Ok(None))
 }
 
 /// Stream every chunk star of an SGWK pack into `writer`, verifying each star
@@ -1723,6 +1754,7 @@ pub fn scry_path(input: &Path) -> Result<String> {
         return Ok(s);
     }
     drop(f);
+    let _ = packhead::recover_path_result(input)?;
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let (h, merkle_ok, live, k, recovered) = crate::verify(&data)?;
     let mut s = if h.private_label() {
@@ -2193,5 +2225,45 @@ mod tests {
         // Range that avoids the dead star still works.
         let (_, n) = unseal_range_keys(&p, &out, None, &[], 0, 1, &[]).unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn index_pack_breaks_on_zero_star_length_with_huge_star_count() {
+        let dir = tmp("zero-star-len");
+        let head = WorkHead {
+            version: 2,
+            chunk_size: 65536,
+            orig_total: 65536,
+            name: "x.bin".into(),
+            stars: u32::MAX,
+            overture: 0,
+        };
+        let mut buf = crate::packhead::head_to_bytes(&head);
+        buf.extend_from_slice(&0u64.to_le_bytes());
+        let p = dir.join("bad.sg1");
+        std::fs::write(&p, &buf).unwrap();
+        let start = std::time::Instant::now();
+        let (parsed, locs) = index_pack(&p).unwrap();
+        assert_eq!(parsed.stars, u32::MAX);
+        assert!(locs.is_empty());
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn scry_facets_rejects_star_length_exceeding_file_size() {
+        let dir = tmp("scry-huge-len");
+        let head = WorkHead {
+            version: 2,
+            chunk_size: 65536,
+            orig_total: 65536,
+            name: "x.bin".into(),
+            stars: 1,
+            overture: 1,
+        };
+        let mut buf = crate::packhead::head_to_bytes(&head);
+        buf.extend_from_slice(&u64::MAX.to_le_bytes());
+        let p = dir.join("bad.sg1");
+        std::fs::write(&p, &buf).unwrap();
+        assert!(scry_facets(&p).is_err());
     }
 }

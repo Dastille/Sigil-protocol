@@ -251,23 +251,63 @@ fn head(
     })
 }
 
-fn handle(mut stream: TcpStream, sh: &Shared) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
-    let mut reader = BufReader::new(stream.try_clone().map_err(err)?);
+/// Maximum total HTTP request head bytes accepted per connection.
+const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
+/// Maximum HTTP header lines accepted per connection.
+const MAX_HTTP_HEADER_LINES: usize = 64;
+
+fn read_limited_line<R: Read>(
+    reader: &mut BufReader<R>,
+    buf: &mut String,
+    max_bytes: usize,
+) -> Result<usize> {
+    buf.clear();
+    let mut raw = Vec::new();
+    let n = reader
+        .by_ref()
+        .take((max_bytes + 1) as u64)
+        .read_until(b'\n', &mut raw)
+        .map_err(err)?;
+    if raw.len() > max_bytes {
+        return Err(crate::Error::Msg("HTTP header too large".into()));
+    }
+    *buf = String::from_utf8_lossy(&raw).into_owned();
+    Ok(n)
+}
+
+fn read_http_head<R: Read>(reader: &mut BufReader<R>) -> Result<(String, Option<Want>)> {
+    let mut budget = MAX_HTTP_HEADER_BYTES;
     let mut line = String::new();
-    reader.read_line(&mut line).map_err(err)?;
+    let n = read_limited_line(reader, &mut line, budget)?;
+    budget = budget.saturating_sub(n);
     let req = line.clone();
     let mut want = None;
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).map_err(err)? == 0 || line.trim().is_empty() {
-            break;
+    for _ in 0..MAX_HTTP_HEADER_LINES {
+        let n = read_limited_line(reader, &mut line, budget)?;
+        if n == 0 || line.trim().is_empty() {
+            return Ok((req, want));
         }
+        budget = budget.saturating_sub(n);
         let lower = line.to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("range:") {
             want = parse_range(rest);
         }
     }
+    Err(crate::Error::Msg("too many HTTP header lines".into()))
+}
+
+fn handle(mut stream: TcpStream, sh: &Shared) -> Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    let mut reader = BufReader::new(stream.try_clone().map_err(err)?);
+    let (req, want) = match read_http_head(&mut reader) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = stream.write_all(
+                b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return Ok(());
+        }
+    };
     let mut parts = req.split_whitespace();
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
@@ -468,5 +508,29 @@ mod tests {
         assert_eq!(mime_for("Film.MKV"), "video/x-matroska");
         assert_eq!(mime_for("a.mp4"), "video/mp4");
         assert_eq!(mime_for("noext"), "application/octet-stream");
+    }
+
+    #[test]
+    fn read_http_head_rejects_oversized_and_too_many_headers() {
+        let ok_req = b"GET /play HTTP/1.1\r\nHost: localhost\r\nRange: bytes=0-9\r\n\r\n";
+        let mut r = BufReader::new(&ok_req[..]);
+        let (req, want) = read_http_head(&mut r).unwrap();
+        assert_eq!(req, "GET /play HTTP/1.1\r\n");
+        assert_eq!(want, Some(Want::From(0, Some(9))));
+
+        let big_line = format!(
+            "GET /play HTTP/1.1\r\nX-Pad: {}\r\n\r\n",
+            "a".repeat(MAX_HTTP_HEADER_BYTES + 8)
+        );
+        let mut r = BufReader::new(big_line.as_bytes());
+        assert!(read_http_head(&mut r).is_err());
+
+        let mut many = String::from("GET /play HTTP/1.1\r\n");
+        for i in 0..=MAX_HTTP_HEADER_LINES {
+            many.push_str(&format!("X-H{i}: v\r\n"));
+        }
+        many.push_str("\r\n");
+        let mut r = BufReader::new(many.as_bytes());
+        assert!(read_http_head(&mut r).is_err());
     }
 }

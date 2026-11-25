@@ -31,6 +31,18 @@
   a reused 1 MiB window).
 - `sigil mend` prints `length framing rebuilt` from one shared summary helper
   when that is what it did.
+- Whole-file pack-head guard (`SGHG`) recovery is bounded by a shared 3-second
+  wall-clock budget, 256 MiB scan ceiling, size-scaled `SGHG` hit cap
+  (`clamp(size / 1024, 64, 262_144)`), and a reused 1 MiB read window, and
+  runs streaming before `fs::read` in `mend`, `unseal`, `scry`, and recovery
+  diagnostics. Measured on a 2.00 GiB crafted `SGHG`-flooded pack: `mend`
+  dropped from 194.5 s / 2.0 GiB RSS to 0.009 s / 11.7 MiB RSS (exit 2 with
+  recovery hints), and `unseal` dropped from 211.0 s / 2.0 GiB RSS (exit 1) to
+  0.032 s / 11.9 MiB RSS (exit 2 with recovery hints).
+- Additional bounds on untrusted input: `work::index_pack` stops immediately
+  on zero/short star lengths when `stars` is huge, `fountain::answer_with`
+  enforces `ESI_MISS_LIMIT`, and `show::handle` caps HTTP request headers at
+  16 KiB and 64 lines (431 on excess).
 
 ### Recovery guidance
 
