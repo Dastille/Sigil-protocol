@@ -21,7 +21,7 @@ Nothing new is written for this; it works on every pack ever made, including
 files written before this change (`crate/sigil/tests/fixtures/pack-v0`).
 
 When the head does not parse, or does not fit the rest of the file, the reader
-(`unseal`, range unseal, `mend`, folder-pack mend, `doctor`, the pack index)
+(`unseal`, range unseal, `mend`, Tome mend, `doctor`, the pack index)
 rebuilds it from:
 
 - **the facet list** at the end of the file, which gives the star count and the

@@ -162,18 +162,18 @@ the web codec's repair coverage was not checked for this note.
 
 ## 5. Interaction with existing commands
 
-* `inscribe` / `seal`: unchanged; an SFX wraps a finished `.sg1` (or a folder pack, a work pack).
+* `inscribe` / `seal`: unchanged; an SFX wraps a finished `.sg1` (or a Tome, a work pack).
 * `mend` / `mend --soft` / `unseal --repair`: the stub (A) would expose exactly these; HTML (D)
   only as far as the TS codec does.
 * `scatter` / `deluge` / `gather` and `frost place` / `frost mend`: multi-file forms; an SFX of one
   piece does not help reassembly. Option 0's recovery folder is the natural home (the binary beside the
   pieces). A stub could gather from sibling files, but that grows it into the full CLI.
-* Encrypted folder packs, private labels, wards: unchanged; the extractor needs the same keys.
+* Encrypted Tomes, private labels, wards: unchanged; the extractor needs the same keys.
 * Segment logs: out of scope (a log is a directory, not one file).
 
 ## 6. Limitations and non-goals
 
-* Not a new container format; the `.sg1` layout does not change.
+* Not a new archive format; the `.sg1` layout does not change.
 * Not an installer, updater or auto-runner. Nothing executes on open; the user runs it.
 * Not protection of the extractor by RS parity.
 * Not code signing (no infrastructure today).

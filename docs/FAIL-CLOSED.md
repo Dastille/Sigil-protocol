@@ -24,13 +24,13 @@ through a pack left a half-written output file behind.
   file is removed and an existing output is left untouched. Used by plain unseal,
   pack unseal and `--star` / `--from-mb` range unseal. Pack mend and single mend
   already used temp + rename.
-- **Folder packs and constellations restore all-or-nothing too.** Every member
+- **Tomes and constellations restore all-or-nothing too.** Every member
   is written in full to a hidden part file beside its destination
   (`.<name>.<pid>-<n>.sigil-part`) and synced. Only after every wanted member has
   unsealed and verified are the part files renamed into place. If any member
   fails (damage beyond repair, wrong key or ward, missing star), every part file
   and every folder the restore created is removed and existing files are left
-  untouched. This covers folder-pack De-scribe (with and without mend),
+  untouched. This covers Tome De-scribe (with and without mend),
   constellation folders, cards and atlases (`staging::Staging`). Limit: the
   final renames are one per file. If a rename itself fails during that last step,
   files already renamed stay; each is complete and verified. A crash before the

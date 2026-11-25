@@ -17,7 +17,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare Sig
 A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CONTAINER.md](CONTAINER.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
 
-`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR folder pack; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
+`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR Tome; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
 
 ## When to use which
 
@@ -134,7 +134,7 @@ An SGDR pack is one `.sg1` whose payload is a directory of per-file stars. A sta
 ./sigil path tree.sg1 --pass-file house.txt --ward-file photos/secret.jpg=room.txt --into photos
 ```
 
-Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. An encrypted folder pack (sealed directory) cannot be path-walked; unseal or mount it with the key. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
+Hard nest depth cap is 32 (`--depth` may lower it). Cycles are refused. An encrypted Tome (sealed directory) cannot be path-walked; unseal or mount it with the key. Work packs are not nested folder seals — De-scribe the work pack instead of path-walking it as SGDR.
 
 What is **not** rewritten: the durable outer `.sg1`, vault tip seals, or chart history. Path extract and mount export only write cleartext (or nested Sigil bytes) to the destination you named.
 

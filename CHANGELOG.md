@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Naming
+
+- User-facing text (CLI `--help`, messages, README, docs, wiki, and the desktop lab) uses the
+  approved names: **Sigil Archive**, **Tome**, **Ward**, **Channel** / **mana**, **Inscribe**,
+  **Mend**, **Scry**, **Frost Rune**. **Fire Rune** is reserved (not built). On-disk names
+  (`CONTAINER`, `KIT`, `name.sigil/`) and machine-readable JSON keys (`kind`, `layout`, `cmd`)
+  are unchanged. Hidden aliases `kit` and `cold-usb` still run `sigil frost`.
+
 ### Repair
 
 - `mend` and `unseal` rebuild damaged length prefixes in a large-file pack

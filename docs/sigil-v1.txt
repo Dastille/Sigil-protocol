@@ -340,7 +340,7 @@ Out of scope (what is not claimed)
         (size buckets, ≤ ~6.25% growth) or `--pad max` / `pow2` (next
         power of two). Default remains off (no silent size growth).
         `--pad` needs encryption and is single-file for now.
-      - folder packs (SGDR) written before sealed directories, or protected
+      - Tomes (SGDR) written before sealed directories, or protected
         only by per-file wards: member names and sizes inside the folder
         record, and per-member plaintext SHA-256 for large members. An
         encrypted pack is now written as SGDR ver=2 ("SGDR" | 2 | count u32

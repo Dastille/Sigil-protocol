@@ -1,6 +1,6 @@
 # Frequently asked questions
 
-*Version 1.0, 23 November 2026.*
+*Version 1.0, 25 November 2026.*
 
 **How much bigger does Sigil make my files?**
 About a third bigger in the default Reflection mode (a 2 270 725-byte photo became
@@ -28,6 +28,13 @@ this single copy cannot be rebuilt alone — follow the `What you can try:` opti
 the verdict (pool a second copy with `sigil mend A.sg1 B.sg1`, `sigil gather`, `sigil frost mend`,
 `sigil vault versions`, or for a partially damaged Tome rescue intact files with
 `sigil unseal --only <path>`). See [Repairing a damaged file](Repairing-a-damaged-file.md).
+
+**A large file will not open, but `mend` says `length framing rebuilt`. What was wrong?**
+In a large-file pack, an 8-byte length sits in front of each chunk. Those prefixes are not
+Reed–Solomon coded, so a bad sector there used to make `mend` refuse (sometimes blaming the
+facet list). `mend` now rebuilds the prefixes when every chunk confirms against the facet list,
+and prints `length framing rebuilt`. If the facet list is damaged too, `mend` still refuses.
+Tested in `crate/sigil/tests/cli_pack_head.rs`.
 
 **Will `mend` overwrite my damaged file?**
 No. Without `-o` it writes `name.mended.sg1` next to it (or `-2`, `-3` if that is taken). If

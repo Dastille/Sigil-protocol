@@ -117,7 +117,7 @@ fn encrypted_folder_hides_names_and_round_trips() {
     let s = ok(&sigil(&d, &["scry", "torn.sg1"]));
     assert!(!s.contains("live=16/16"), "damage visible keyless: {s}");
     let m = ok(&sigil(&d, &["mend", "torn.sg1", "-o", "m.sg1"]));
-    assert!(m.contains("sealed folder pack"), "{m}");
+    assert!(m.contains("sealed Tome"), "{m}");
     let healed = std::fs::read(d.join("m.sg1")).unwrap();
     assert_eq!(&healed[0..5], b"SGDR\x02");
     assert!(!contains(&healed, b"tax-return-2025"));

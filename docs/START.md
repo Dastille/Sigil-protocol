@@ -33,7 +33,7 @@ chunk, plus the pack's chunk list for big files). If it can't restore the whole
 file it exits nonzero, removes the part file and leaves any existing `file.bin`
 alone. A big file whose front (the pack head) is damaged is refused with
 "this file holds more than one seal" instead of quietly returning the first 4 MiB.
-Folder packs and constellations work the same way for the whole folder: if any
+Tomes and constellations work the same way for the whole folder: if any
 file in it can't be restored, none are written and existing files stay as they were.
 
 Folder:
@@ -70,6 +70,10 @@ Exit codes: 0 done, 1 error or key problem, 2 not recoverable / too damaged (not
 3 nothing checked, 4 repair skipped, 5 damaged but `sigil mend` repairs it, 6 damaged, repair
 not checked (run `sigil mend`), 130 stopped with Ctrl-C. Changes: [CHANGELOG.md](../CHANGELOG.md). Guides: [MEND-SCAN.md](MEND-SCAN.md),
 [SOFT-RS.md](SOFT-RS.md); walk-through: [wiki/Repairing-a-damaged-file.md](wiki/Repairing-a-damaged-file.md).
+
+On a large-file pack, `mend` also rebuilds damaged length prefixes in front of each chunk star
+when every star confirms against the facet list (`length framing rebuilt`). Tested in
+`crate/sigil/tests/cli_pack_head.rs`.
 
 ### Keep versions of a live file (vault tip + dirty edit → re-seal)
 
@@ -116,7 +120,7 @@ Full story: [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) · retention (full vs lig
 ./sigil gc ./notes.txt.sigil
 ```
 
-Guide: [CONTAINER.md](CONTAINER.md)
+On-disk `name.sigil/` layout: [CONTAINER.md](CONTAINER.md)
 
 ### Append-only segment log (batches you can prove later)
 

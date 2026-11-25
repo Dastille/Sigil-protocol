@@ -158,7 +158,7 @@ impl Log {
         let m = container::read_manifest(dir)?;
         if m.kind != KIND {
             return Err(err(format!(
-                "{} is a {} container, not a segment log",
+                "{} is a {} `name.sigil/` folder, not a segment log",
                 dir.display(),
                 m.kind
             )));
@@ -3292,7 +3292,7 @@ pub fn check(path: &Path, opts: &CheckOpts<'_>) -> Result<CheckReport> {
     match container::read_manifest(&dir) {
         Ok(m) => rep.container_version = Some(m.version),
         Err(e) => {
-            rep.findings.push(fnd(Severity::Error, "manifest", container::CONTAINER_FILE, e.to_string(), Some("upgrade sigil if the container is newer; otherwise restore CONTAINER from a copy")));
+            rep.findings.push(fnd(Severity::Error, "manifest", container::CONTAINER_FILE, e.to_string(), Some("upgrade sigil if the `name.sigil/` layout is newer; otherwise restore the on-disk CONTAINER manifest from a copy")));
             return Ok(rep);
         }
     }

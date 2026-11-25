@@ -178,7 +178,7 @@ built or measured here.
   the report* should not need it: the report is plain text, and the signature is
   plain Ed25519 [4] over SHA-256 of the file, so any Ed25519 tool can verify it
   given the pinned key (not tested with a non-Sigil tool yet). The drives
-  themselves stay recoverable without the box (recovery kit,
+  themselves stay recoverable without the box (recovery folder,
   `docs/SFX-DESIGN.md`).
 - **Paper.** Printed reports are a one-way carrier with a human reader; a paper
   copy of the pinned box key is the trust anchor.

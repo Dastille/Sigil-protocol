@@ -326,7 +326,7 @@ pub fn scan_path(path: &Path) -> Result<RepairScan> {
         || crate::is_plain_dir_pack(path)
     {
         return Err(crate::Error::Msg(
-            "the repair scan covers single Sigils and large-file packs for now, not folder packs or atlas bags".into(),
+            "the repair scan covers single Sigils and large-file packs for now, not Tomes or atlas bags".into(),
         ));
     }
     if crate::is_work_pack(path) {

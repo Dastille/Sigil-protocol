@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a Sigil recovery kit (SFX-DESIGN.md Option 0): everything needed to open or repair the
+# Build a Sigil recovery folder (SFX-DESIGN.md Option 0): everything needed to open or repair the
 # given archives later, without assuming anything is installed. Writes DEST/sigil-recovery/.
 #
 #   scripts/make-recovery-kit.sh [--dest DIR] [--bin FILE]... [--spec FILE] [--minisig FILE]
@@ -8,20 +8,20 @@
 # ARCHIVE  .sg1 files or segment log folders (NAME.sigil). Hashed into ARCHIVES.sha256 (every
 #          file of a log folder), never copied.
 # --check  first run `sigil scry` (.sg1) / `sigil log verify` (log folder) on each ARCHIVE with
-#          the kit's binary; refuse to make the kit if one is damaged or unreadable (no keys used).
+#          a binary in the recovery folder; refuse to write the folder if one is damaged or unreadable (no keys used).
 # --dest   where to create sigil-recovery/ (default: the folder of the first ARCHIVE)
 # --bin    a sigil binary to include (repeatable; e.g. release builds for other platforms).
 #          Default: the one being run ($SIGIL or `sigil` on PATH), named for this platform.
 # --spec   format spec to include (default: docs/sigil-v1.txt next to this script's repo)
-# --minisig  official release signature of SHA256SUMS (SHA256SUMS.minisig). Copied into the kit
+# --minisig  official release signature of SHA256SUMS (SHA256SUMS.minisig). Copied into the recovery folder
 #          when given, or when SHA256SUMS.minisig sits next to the first ARCHIVE or in --dest
 #          (not inside an old sigil-recovery/ folder). This is the release signature, not a
 #          signature of this folder's own SHA256SUMS.
-# --dry-run  list what would be written; write nothing.   --force  replace an existing kit.
+# --dry-run  list what would be written; write nothing.   --force  replace an existing recovery folder.
 # Always copies the project minisign public key as SIGNING-KEY.pub (keys/sigil-release.pub).
 # Never includes passphrases or keys: .sgk, .key, .pem and pass-file-like names are refused,
 # and any file whose first line is "untrusted comment: minisign encrypted secret key" is refused.
-# Exit: 0 kit written (or planned), 2 bad input, 3 could not write.
+# Exit: 0 recovery folder written (or planned), 2 bad input, 3 could not write.
 set -u
 SIGIL="${SIGIL:-sigil}"
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
     --check) check=1; shift ;;
     --force) force=1; shift ;;
     -h|--help) usage ;;
-    --pass|--pass-file|--identity|--ward|--ward-file) die "$1: a recovery kit never holds secrets" ;;
+    --pass|--pass-file|--identity|--ward|--ward-file) die "$1: a recovery folder never holds secrets" ;;
     -*) die "unknown option $1" ;;
     *) archives+=("$1"); shift ;;
   esac
@@ -98,7 +98,7 @@ esac
 [ -n "$dest" ] || dest="$(dirname "${archives[0]}")"
 [ -d "$dest" ] || die "destination folder not found: $dest"
 
-# Resolve an optional release SHA256SUMS.minisig. Never pick one out of an existing kit.
+# Resolve an optional release SHA256SUMS.minisig. Never pick one out of an existing recovery folder.
 if [ -n "$minisig" ]; then
   [ -f "$minisig" ] || die "signature not found: $minisig"
   refuse_secret "$minisig" "signature"
@@ -110,7 +110,7 @@ else
     cand="$first_dir/SHA256SUMS.minisig"
   fi
   if [ -n "$cand" ]; then
-    # Skip if that path is inside a sigil-recovery folder (an old kit's copy).
+    # Skip if that path is inside a sigil-recovery folder (an old recovery folder's copy).
     case "$(cd "$(dirname "$cand")" && pwd)" in
       */sigil-recovery) cand="" ;;
     esac
@@ -135,7 +135,7 @@ if [ $check -eq 1 ]; then
     # log verify: 1 = warnings only (still readable); anything else non-zero is damage
     if [ $rc -ne 0 ] && { [ ! -d "$a" ] || [ $rc -ne 1 ]; }; then
       printf '%s\n' "$out" >&2
-      die "check failed for $a (exit $rc): repair it first (sigil mend / sigil log mend), then make the kit"
+      die "check failed for $a (exit $rc): repair it first (sigil mend / sigil log mend), then write the recovery folder"
     fi
     echo "checked: $a"
   done
@@ -190,15 +190,15 @@ for a in "${archives[@]}"; do
       while IFS= read -r f; do sha "$f"; done
     else sha "$b"; fi) >> "$tmp/ARCHIVES.sha256" || die "hashing $a failed" 3
 done
-# Kit SHA256SUMS covers the folder's own files (including SIGNING-KEY.pub). It does not
+# SHA256SUMS covers the folder's own files (including SIGNING-KEY.pub). It does not
 # include SHA256SUMS itself or a release SHA256SUMS.minisig (that signature is of the
 # official release checksums, not of this list).
 (cd "$tmp" && sha RECOVER.txt ARCHIVES.sha256 SIGNING-KEY.pub spec/sigil-v1.txt bin/* > SHA256SUMS) || die "checksums failed" 3
 
-rm -rf "$kit" && mv "$tmp" "$kit" || die "cannot move kit into $kit" 3
+rm -rf "$kit" && mv "$tmp" "$kit" || die "cannot move the recovery folder into $kit" 3
 trap - EXIT
 extra=""
 [ -n "$minisig" ] && extra=", SHA256SUMS.minisig"
-echo "recovery kit: $kit (${#names[@]} binary, spec, SIGNING-KEY.pub, RECOVER.txt, SHA256SUMS, ARCHIVES.sha256${extra})"
+echo "recovery folder: $kit (${#names[@]} binary, spec, SIGNING-KEY.pub, RECOVER.txt, SHA256SUMS, ARCHIVES.sha256${extra})"
 echo "copy it next to the archives; check with: (cd $kit && sha256sum -c SHA256SUMS)"
 echo "compare SIGNING-KEY.pub with the README and a paper copy before trusting it"

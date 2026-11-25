@@ -1083,7 +1083,7 @@ impl Lab {
 
         card(ui, false, |ui| {
             ui.label(
-                RichText::new("Ward — optional password")
+                RichText::new("Ward — optional passphrase")
                     .color(CREAM)
                     .size(13.5),
             );
@@ -1091,7 +1091,7 @@ impl Lab {
             field(
                 ui,
                 &mut self.ward,
-                "Leave blank if you do not want a password",
+                "Leave blank if you do not want a passphrase",
                 true,
             );
             ui.add_space(4.0);
@@ -1372,7 +1372,7 @@ impl Lab {
 
         ui.add_space(14.0);
         ui.label(
-            RichText::new("Password (Ward), if you set one")
+            RichText::new("Ward passphrase, if you set one")
                 .color(CREAM)
                 .size(13.5),
         );
@@ -1621,7 +1621,7 @@ impl Lab {
             ),
             (
                 "Ward",
-                "Optional password. The only real lock. Blank means scrambled, not secret — anyone with Sigil can still open it.",
+                "Optional passphrase. The only real lock. Blank means scrambled, not secret — anyone with Sigil can still open it.",
             ),
             (
                 "Covenant / Geas",

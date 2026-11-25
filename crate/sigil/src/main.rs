@@ -445,11 +445,11 @@ enum Cmd {
         /// Alone is enough; with --pass, either passphrase OR matching --identity opens.
         #[arg(long = "to")]
         to: Vec<String>,
-        /// Per-file password inside a folder wrap: --ward photos/cat.jpg=secret (repeatable).
+        /// Per-file Ward passphrase inside a Tome: --ward photos/cat.jpg=secret (repeatable).
         /// Needs --pass or --to as well, so the file names stay hidden.
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -519,7 +519,7 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -603,7 +603,7 @@ enum Cmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
-    /// Seal the member names of an old folder pack (SGDR v1, names in the clear) into a new
+    /// Seal the member names of an old Tome (SGDR v1, names in the clear) into a new
     /// sealed-directory pack (v2). Members are copied as they are; INPUT is never changed.
     SealFolderNames {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
@@ -851,7 +851,7 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -943,7 +943,7 @@ enum Cmd {
         cmd: BootCmd,
     },
     /// Move an old-layout vault (`x.sgv/`) or flat constellation folder into a tidy
-    /// `name.sigil/` container. Copies, verifies fingerprints, then removes the old files.
+    /// `name.sigil/` folder. Copies, verifies fingerprints, then removes the old files.
     Tidy {
         /// Vault live path / `.sgv` chart dir, or constellation folder
         path: PathBuf,
@@ -965,7 +965,7 @@ enum Cmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
-    /// Reclaim orphan stars / versions and abandoned temp files from a container (report-only
+    /// Reclaim orphan stars / versions and abandoned temp files from a `name.sigil/` folder (report-only
     /// unless --apply). Never deletes anything the card / CHART lists, nor cold/ folders (Frost Rune).
     Gc {
         /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
@@ -1076,7 +1076,7 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -1100,7 +1100,7 @@ enum Cmd {
     },
     /// FUSE mount (read-only) or export-dir of a .sg1 / SGDR pack, vault tip, or segment log. Alias: fuse.
     /// Durable seal / log is never rewritten. Use --export-dir --writable for a dirty cleartext vault tree.
-    /// A `kind=log` container mounts as one file per live segment (tombstones omitted).
+    /// A `kind=log` `name.sigil/` folder mounts as one file per live segment (tombstones omitted).
     #[command(visible_alias = "fuse")]
     Mount {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr. Needs
@@ -1122,7 +1122,7 @@ enum Cmd {
         identity: Vec<PathBuf>,
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -1247,10 +1247,10 @@ enum VaultCmd {
         /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
         #[arg(long = "to")]
         to: Vec<String>,
-        /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
+        /// Folder vault: per-file Ward passphrase, --ward photos/cat.jpg=secret (repeatable)
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -1286,10 +1286,10 @@ enum VaultCmd {
         /// Encrypt-to recipient (.pub / .sgk / hex pk); repeatable
         #[arg(long = "to")]
         to: Vec<String>,
-        /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
+        /// Folder vault: per-file Ward passphrase, --ward photos/cat.jpg=secret (repeatable)
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -1332,10 +1332,10 @@ enum VaultCmd {
         /// Identity (.sgk) to unwrap encrypt-to CEK (repeatable)
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
-        /// Folder vault: per-file password, --ward photos/cat.jpg=secret (repeatable)
+        /// Folder vault: per-file Ward passphrase, --ward photos/cat.jpg=secret (repeatable)
         #[arg(long = "ward")]
         ward: Vec<String>,
-        /// Per-file password from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
+        /// Per-file Ward passphrase from a file, like --pass-file: --ward-file photos/cat.jpg=PWFILE
         /// (repeatable; first line, owner-only permissions). Keeps it off the command line.
         #[arg(long = "ward-file", value_name = "PATH=PWFILE")]
         ward_file: Vec<String>,
@@ -1358,7 +1358,7 @@ enum VaultCmd {
         /// Light retention: allow dropping seals without --cold (discards history)
         #[arg(long = "force-drop")]
         force_drop: bool,
-        /// Archive into the container's own `cold/` folder (tidy containers only)
+        /// Archive into this `name.sigil/` folder's own `cold/` folder (tidy `name.sigil/` folders only)
         #[arg(long = "cold-here", conflicts_with = "cold")]
         cold_here: bool,
     },
@@ -1376,7 +1376,7 @@ enum VaultCmd {
         /// Archive the seal under DIR/vN/ first (Frost Rune placement or plain .sg1)
         #[arg(long)]
         cold: Option<PathBuf>,
-        /// Archive into the container's own `cold/` folder (tidy containers only)
+        /// Archive into this `name.sigil/` folder's own `cold/` folder (tidy `name.sigil/` folders only)
         #[arg(long = "cold-here", conflicts_with = "cold")]
         cold_here: bool,
         /// Discard without a cold folder (light retention)
@@ -1422,7 +1422,7 @@ enum VaultCmd {
 
 #[derive(Subcommand)]
 enum KitCmd {
-    /// Round-robin pieces into usb-0..usb-(N-1) plus a KIT manifest (Frost Rune) (Option A).
+    /// Round-robin pieces into usb-0..usb-(N-1) plus an on-disk KIT manifest (Frost Rune) (Option A).
     Place {
         input: PathBuf,
         #[arg(short, long)]
@@ -1436,7 +1436,7 @@ enum KitCmd {
     },
     /// Rebuild a healthy .sg1 from the remaining usb-* folders after a drive loss.
     Mend {
-        /// Frost Rune folder that still has the surviving usb-* dirs (+ KIT).
+        /// Frost Rune folder that still has the surviving usb-* dirs (and the on-disk KIT manifest).
         input: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
@@ -1503,7 +1503,7 @@ enum BootCmd {
 
 #[derive(Subcommand)]
 enum LogCmd {
-    /// Create an empty log container (`PATH` or `PATH.sigil`). With --identity every append must be signed by that key.
+    /// Create an empty signed log (`PATH` or `PATH.sigil`). With --identity every append must be signed by that key.
     Init {
         path: PathBuf,
         /// Identity (.sgk) whose Ed25519 key signs HEAD; pinned in the manifest. Omit for an unsigned log
@@ -2654,7 +2654,7 @@ fn parse_wards(
         let pw = if pw == "-" {
             if !can_prompt() {
                 return Err(format!(
-                    "--ward {path}=- types the ward password on a terminal, and there is none here \
+                    "--ward {path}=- types the Ward passphrase on a terminal, and there is none here \
 (input is piped or redirected); use --ward-file {path}=PWFILE in scripts. Nothing was done"
                 )
                 .into());
@@ -2687,9 +2687,9 @@ fn parse_wards(
     Ok(out)
 }
 
-/// Refused when a ward password is typed straight onto the command line (the value is not echoed).
+/// Refused when a Ward passphrase is typed straight onto the command line (the value is not echoed).
 const LITERAL_WARD_REFUSED: &str =
-    "a ward password given as --ward PATH=PASSWORD is refused: it is visible to other programs on \
+    "a Ward passphrase given as --ward PATH=PASSWORD is refused: it is visible to other programs on \
 this computer (process list) and may be saved in your shell history. Use --ward-file PATH=PWFILE \
 (a file only you can read) or --ward PATH=- (type it, hidden). Nothing was done";
 
@@ -3721,9 +3721,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 if input.is_dir() {
-                    return Err(
-                        "--pad is for a single encrypted file for now (not a folder pack)".into(),
-                    );
+                    return Err("--pad is for a single encrypted file for now (not a Tome)".into());
                 }
             }
             let seal_opts = SealOpts {
@@ -3981,7 +3979,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     || is_dir_pack(&input)
                     || is_constellation_input(&input)
                 {
-                    return Err("-o - streams one file only (not a folder wrap, constellation, --only, --repair or --mds)".into());
+                    return Err("-o - streams one file only (not a Tome, constellation, --only, --repair or --mds)".into());
                 }
             }
             let attempt = |pass: Option<&str>| -> Result<(), Box<dyn std::error::Error>> {
@@ -4213,7 +4211,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
             say!(
-                "sealed folder pack written to {} ({} files, {} bytes): member names, sizes and the tree are now encrypted; {} is unchanged, delete it (and its copies) yourself",
+                "sealed Tome written to {} ({} files, {} bytes): member names, sizes and the tree are now encrypted; {} is unchanged, delete it (and its copies) yourself",
                 output.display(),
                 r.files,
                 r.out_bytes,
@@ -6903,7 +6901,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                         kind: "log".into(),
                         root: dir,
                         layout: format!(
-                            "container, {} segment(s){}{}",
+                            "`name.sigil/` folder, {} segment(s){}{}",
                             c.segments,
                             if c.signed {
                                 if c.handovers > 0 {

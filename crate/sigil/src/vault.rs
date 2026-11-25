@@ -1798,7 +1798,7 @@ pub fn cold_here(path: &Path) -> Result<PathBuf> {
     let (_live, vault_dir) = resolve_paths(path)?;
     if !is_container_vault_dir(&vault_dir) {
         return Err(crate::Error::Msg(
-            "--cold-here needs a tidy container (run `sigil tidy` first) or pass --cold DIR".into(),
+            "--cold-here needs a tidy `name.sigil/` folder (run `sigil tidy` first) or pass --cold DIR".into(),
         ));
     }
     Ok(vault_dir.join(crate::container::COLD_DIR))
@@ -1872,7 +1872,7 @@ fn cold_archive_version(vault_dir: &Path, entry: &VersionEntry, cold_root: &Path
     // the first inner star and archive that alone. Folder versions go cold as a plain copy.
     let placed = if bytes.starts_with(&crate::folder::DIR_MAGIC) {
         Err(crate::Error::Msg(
-            "SGDR folder pack (kit place is single-star only)".into(),
+            "Tome (Frost Rune place is single-star only)".into(),
         ))
     } else {
         crate::kit::place(&bytes, &dest, crate::kit::DEFAULT_DRIVES)
@@ -1888,7 +1888,7 @@ fn cold_archive_version(vault_dir: &Path, entry: &VersionEntry, cold_root: &Path
             };
             fs::write(dest.join(&archive_name), &bytes).map_err(|e| {
                 crate::Error::Msg(format!(
-                    "cold plain copy to {}: {e} (kit place also failed: {kit_err})",
+                    "cold plain copy to {}: {e} (`sigil frost place` also failed: {kit_err})",
                     dest.display()
                 ))
             })?;

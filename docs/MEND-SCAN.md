@@ -76,7 +76,7 @@ wait-UX notes ask. Measurement scripts: `rates.py` and
   `--json` result of a single-Sigil mend also carries `scan`.
 - `--max-secs SECS` (single Sigil or large-file pack): if the estimate is over SECS, write
   nothing and exit 4 with "repair skipped"; `--json` adds `"skipped":true`. Several copies,
-  folder packs and atlas bags are refused with `--max-secs` (exit 1).
+  Tomes and atlas bags are refused with `--max-secs` (exit 1).
 
 ## Second half (19 November 2026): progress, ask, Stop
 
@@ -143,5 +143,5 @@ time estimate and the plain-English scan. Details: docs/SOFT-RS.md, step 3f.
 - A pack whose head or length framing will not parse cannot be scanned; plain `mend`
   still tries to rebuild the head and, when the facet list can confirm them, the
   length prefixes (decoder-only; the `.sg1` layout is unchanged).
-- Folder packs and atlas bags are not scanned.
+- Tomes and atlas bags are not scanned.
 - The time model is from one machine.

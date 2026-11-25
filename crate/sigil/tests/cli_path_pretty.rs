@@ -35,7 +35,7 @@ fn path_pretty_folder_and_mark() {
 
     let pretty = sigil(&d, &["path", "album.sg1", "--pretty"]);
     assert!(pretty.starts_with("  album.sg1\n"), "{pretty}");
-    assert!(pretty.contains("  KIND      folder pack"), "{pretty}");
+    assert!(pretty.contains("  KIND      Tome"), "{pretty}");
     assert!(
         pretty.contains("  STATUS    healthy · 2 files checked"),
         "{pretty}"
