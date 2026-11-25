@@ -213,14 +213,25 @@ Programs and scripts see a number when Sigil finishes (`echo $?` shows it in a t
 | Code | Meaning |
 |---:|---|
 | 0 | Done (repaired, or the scan ran) |
-| 1 | Some other error (for example a file that is not a Sigil) |
-| 2 | Too damaged: nothing was written |
+| 1 | Some other error (for example a file that is not a Sigil, or a wrong or missing key) |
+| 2 | Too damaged: nothing was written (or a cut-off Tome) |
+| 3 | Nothing could be checked |
 | 4 | Repair skipped: too long, or you said no; nothing was written |
+| 5 | Damaged, and `sigil mend` repairs it (checked in memory; the file cannot be opened as-is). `scry`, `verify`, `unseal` and `open` use this code |
+| 6 | Damaged; whether `sigil mend` can repair it was not found out (time limit `SIGIL_SCRY_PROBE_SECS`, default 3 seconds, or a seal over 32 MiB). Run `sigil mend` |
 | 130 | Stopped with Ctrl-C: nothing was written |
+
+Exit 5 is given only after the repair was checked in memory (nothing is written by that check; at most 2 CPU threads). Exit 6 is not a guess that repair will fail. These codes and the `What you can try:` lines are tested in `crate/sigil/tests/cli_recovery_hints.rs`.
+
+## Large-file packs: length framing
+
+In a large-file pack (SGWK, a big file sealed as a row of chunk stars), each chunk star is preceded by an 8-byte length. Those prefixes and the facet list at the end are not Reed–Solomon coded. `sigil mend` rebuilds damaged length prefixes when every chunk star confirms against the facet list and any intact pack-head guard. It prints `length framing rebuilt`. The `.sg1` layout is unchanged. If the facet list is damaged too, `mend` refuses.
+
+This is tested in `crate/sigil/tests/cli_pack_head.rs` (`new_pack_with_wiped_length_prefix_mends_and_prints_framing_rebuilt`) and the packhead unit test `framing_rebuild_heals_zeroed_flipped_and_sector_wiped_lengths_and_stays_fail_closed`.
 
 ## Limits
 
 - The time estimate was measured on one 8-core computer. On slower machines it may be off.
 - The question comes before the repair starts; there is no "finish later" option yet.
-- Folder packs and several copies at once are not scanned first.
+- Tomes and several copies at once are not scanned first. A pack whose head or length framing will not parse cannot be scanned either (plain `mend` still tries to rebuild both).
 - Damage past the repair budget is refused. Keep a second copy somewhere else.

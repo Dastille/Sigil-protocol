@@ -359,13 +359,13 @@ specified, through vetted library implementations.
 - **Health reports are conservative.** `scry`/`verify` can report "NOT recoverable" for a
   file the deeper repair can fix (Section 4).
 - **Uncoded regions.** A large-file pack's own head, length framing and fingerprint list are
-  not Reed–Solomon coded; heavy damage there is refused. The folder index of a folder pack
+  not Reed–Solomon coded; heavy damage there is refused. The folder index of a Tome
   has no spare copy. Encrypted files written before 17 November 2026 have one key-wrap copy.
 - **Measurement scope.** Bit-flip results use independent uniform flips, 10 trials per row,
   on one x86-64 machine; burst, stuck-bit and multi-bit-upset patterns were measured only as
   zeroed runs. Time estimates come from one 8-core machine.
 - **Wait screen.** The question is asked before the repair, not after the quick part; there
-  is no live re-estimate and no "finish later" option. Large-file packs, folder packs and
+  is no live re-estimate and no "finish later" option. Large-file packs, Tomes and
   pooled copies are not scanned by plain `mend`. On Windows, Ctrl-C ends the process at once.
 - **Memory.** A segment-log segment is sealed in memory, so a single file larger than memory
   cannot be added to a log.

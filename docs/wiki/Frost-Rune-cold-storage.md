@@ -39,11 +39,11 @@ piece-008.sgp
 piece-012.sgp
 ```
 
-Copy each `usb-` folder to its own drive. The small `KIT` file lists which piece is on
+Copy each `usb-` folder to its own drive. The small on-disk `KIT` file lists which piece is on
 which drive; a copy on each drive is handy, but `frost mend` needs only the `usb-` folders. Each `.sgp` file is one **shard**: one piece of
 the Sigil. The first line above was captured with the build that includes this page (the main
 build of 23 November 2026 plus that day's documentation update); earlier builds print
-`cold-USB kit Option A` instead of `Frost Rune` (same result).
+`cold-USB kit Option A` instead of `Frost Rune` (same result; the people-facing name is Frost Rune, and the hidden aliases `kit` / `cold-usb` still run `sigil frost`).
 
 ## Get the file back after losing drives
 

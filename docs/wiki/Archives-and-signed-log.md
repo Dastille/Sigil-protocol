@@ -79,7 +79,7 @@ with `sigil log verify backup --anchor 3:<root>`.
 
 ```
 $ sigil log verify backup --signer signer.sgk.pub
-log verify backup.sigil (log, container, 3 segment(s), signed format 1)
+log verify backup.sigil (log, `name.sigil/` folder, 3 segment(s), signed format 1)
 verified 3 member(s)
 result: healthy
 ```

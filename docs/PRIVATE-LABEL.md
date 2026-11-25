@@ -23,16 +23,16 @@ key, salt = file salt, info `sigil v3 keyed fingerprint`; fingerprint = HMAC-SHA
 key from a vault-wide secret instead so equal files dedupe for its holder.
 `sigil::keyed_fingerprint_matches` lets the key holder test a live file without decrypting the body.
 
-## Folder packs (sealed directory, SGDR v2)
+## Tomes (sealed directory, SGDR v2)
 
-Every encrypted folder pack (`--pass` and/or `--to`) is written as a sealed
+Every encrypted Tome (`--pass` and/or `--to`) is written as a sealed
 directory. There is no opt-out flag. Layout (code: `crate/sigil/src/folder.rs`):
 
     "SGDR" | ver=2 | file count u32 LE | body length u64 LE | body
 
 `body` is one ordinary encrypted `.sg1` (a v3 private-label Sigil, or an SGWK work
 pack when the folder is over the chunk size, 4 MiB by default) sealed with the same
-mode and keys. Its plaintext is the complete v1 folder pack, so the member names,
+mode and keys. Its plaintext is the complete v1 Tome, so the member names,
 the folder tree and the per-member star lengths are all inside AES-256-GCM.
 Members inside the body are still sealed with the same keys (per-file `--ward`s keep
 working), in Glyph mode because the body already carries the Reed-Solomon parity.
@@ -43,7 +43,7 @@ working), in Glyph mode because the body already carries the Reed-Solomon parity
   work as for v1. Readers reject a body whose inner pack does not match the outer
   file count, trailing bytes, a truncated body, and any GCM / Merkle failure.
 - Still visible: the file count and the total ciphertext length.
-- Plain folder packs (no key) stay v1 with names in the clear. A pack whose only keys
+- Plain Tomes (no key) stay v1 with names in the clear. A pack whose only keys
   are `--ward`s is refused unless `--ward-names-visible` is given (then it is v1, names
   in the clear, with a warning); add `--pass` / `--to` to get v2. Every v1 pack,
   including encrypted and ward-only ones written earlier, opens and lists as before.
@@ -77,7 +77,7 @@ after unlock.
 
 ## Compatibility
 
-Plain Sigils stay v2. Every existing file (v0–v2, packs, folder packs,
+Plain Sigils stay v2. Every existing file (v0–v2, packs, Tomes,
 constellations, logs) opens as before; fixtures in `tests/fixtures/enc-v2/`.
 Readers refuse a v3 label on an unencrypted Sigil, a v3 Sigil without SGTO, a
 nonzero outer entropy slot, and any label edit. Since 17 November 2026 the SGTO block of a
@@ -87,7 +87,7 @@ builds before that refuse those files.
 ## Still leaks
 
 Ciphertext length (padding is a follow-up, opt-in only), the file count of an
-encrypted folder pack (names are sealed: see above), member names of folder packs
+encrypted Tome (names are sealed: see above), member names of Tomes
 written before sealed directories (until converted with `sigil seal-folder-names`; old copies still show them), ward-only packs (made before wards needed a folder key, or with `--ward-names-visible`), vault CHART digests/sizes, segment-log INDEX size/SHA-256/path in a log created
 with no key or with `--public-index` (a private INDEX, the default for a keyed log, seals them: docs/SEGMENT-LOG.md "Private INDEX").
 See the threat model.

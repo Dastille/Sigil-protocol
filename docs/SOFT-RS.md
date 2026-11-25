@@ -88,7 +88,7 @@ R1 slices, in this order:
    it is never the input and never an existing file (a name that appears during the repair
    is not replaced either). When nothing passes the check, mend writes nothing, exits 2 and
    prints full copyable next commands (`--hard-only` dropped; another copy pooled). The
-   `doctor` and `scry` hints print the full `sigil mend <file>` command. Folder packs, atlas
+   `doctor` and `scry` hints print the full `sigil mend <file>` command. Tomes, atlas
    bags and work packs get the same fallback; several copies at once stay hard-only.
    Also: an encrypted private-label (v3) Sigil whose key wrap (SGTO) is damaged is now
    refused by mend instead of being "repaired" into a copy that could never be opened.

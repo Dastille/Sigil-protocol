@@ -250,9 +250,9 @@ This works for single-file Sigils (plain or encrypted; no passphrase needed). It
 refuses, and writes nothing, when the copies are of different Sigils, when two
 copies hold different contents for the same piece, or when the rebuilt file does
 not match its hash tree. `--soft` works on one copy at a time. Large-file work
-packs and folder packs are mended one copy at a time.
+packs and Tomes are mended one copy at a time.
 
-Folder wraps mend too: `sigil mend folder.sg1 -o fixed.sg1` heals each damaged file
+Tomes mend too: `sigil mend folder.sg1 -o fixed.sg1` heals each damaged file
 inside (small files and large ones) and says which. If any file inside is beyond
 repair, nothing is written. The folder's own index (file names and sizes) has no
 spare copy — if that is hit, mend says so; restore from another copy.
@@ -420,7 +420,7 @@ ok  v3  live=16/16 need=12 merkle=closed keystone=intact label=private (name, si
 Repair and checking still work without the key. Ciphertext length is still
 visible. Details: [docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md).
 
-### Folder packs
+### Tomes
 
 ```
 $ sigil seal -o album.sg1 album
@@ -436,7 +436,7 @@ $ sigil unseal --only sub/b.txt -o just-b album.sg1
 de-scribed 1 files → just-b
 ```
 
-An **encrypted** folder pack (`--pass` or `--to`) hides its file names, folder
+An **encrypted** Tome (`--pass` or `--to`) hides its file names, folder
 layout and per-file sizes. There is no flag for this; it is always on. Without the
 key, `scry` shows only how many files there are and whether the pack is healthy:
 
@@ -455,7 +455,7 @@ $ sigil unseal --pass-file pw.txt --only sub/b.txt -o just-b secret-album.sg1
 de-scribed 1 files → just-b
 ```
 
-Per-file passwords (`--ward-file PATH=PWFILE`) lock single files inside the pack, on
+Per-file Ward passphrases (`--ward-file PATH=PWFILE`) lock single files inside the pack, on
 top of the folder key. A ward needs `--pass` or `--to` as well, so the names stay
 hidden; to open, give both:
 
@@ -466,7 +466,7 @@ folder 2 files, 4 bytes → secret-album.sg1
 $ sigil unseal --pass-file pw.txt --ward-file sub/b.txt=room.txt -o album-out secret-album.sg1
 de-scribed 2 files → album-out
 $ sigil seal --ward-file sub/b.txt=room.txt -o w.sg1 album
-a folder pack locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names
+a Tome locked only with --ward would show every file name and size to anyone: add --pass (or --to) to hide them (the wards still lock their files), or add --ward-names-visible to accept visible names
 ```
 
 `--ward-names-visible` is the opt-in for a ward-only pack (the old layout): it
@@ -474,13 +474,13 @@ warns, then writes a pack whose names, sizes and unwarded files anyone can read;
 only the warded files' contents are locked. `vault track` refuses ward-only folder
 vaults the same way. Ward-only packs made before this change still open.
 
-A ward password typed as `--ward PATH=PASSWORD` would show in the process list and
+A Ward passphrase typed as `--ward PATH=PASSWORD` would show in the process list and
 your shell history, so Sigil **refuses** it (nothing is read or written, and the error
 does not repeat it), like a literal `--pass VALUE`. Keep it off the command line with
 `--ward-file PATH=PWFILE` (same rules as `--pass-file`: the first line of a file only
 you can read) or `--ward PATH=-` (type it, hidden; asked twice when sealing). Both
 work everywhere `--ward` does; `--ward PATH=-` needs a terminal and never reads piped
-input. Giving one path two passwords is refused.
+input. Giving one path two Ward passphrases is refused.
 
 ```
 $ sigil seal --pass-file ~/.sigil-pass --ward-file sub/b.txt=$HOME/.room-pass -o secret-album.sg1 album
@@ -488,8 +488,8 @@ folder 2 files, 4 bytes → secret-album.sg1
 ```
 
 `mend`, `scry`, `verify` and `doctor` still work without the key. Encrypted
-folder packs written before this change still open (and still show their names);
-seal the folder again to hide them. Details: "Folder packs" in
+Tomes written before this change still open (and still show their names);
+seal the folder again to hide them. Details: "Tomes" in
 [docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md).
 
 ### Segment log (append-only backups)
@@ -690,7 +690,7 @@ your library folder.
   Seeking near the end (`Range: bytes=-N`) works.
 - If part of a large pack is not copied yet, the player gets "416" with
   `X-Sigil: overture-incomplete` instead of wrong bytes.
-- Folder wraps and constellations are refused: `show` plays one file.
+- Tomes and constellations are refused: `show` plays one file.
 - Local only by default (`--bind 127.0.0.1:7845`). If the player is on another PC, set
   `--bind 0.0.0.0:7845 --public http://THIS-PC:7845` — anyone on the network who can
   reach that port can then watch it (no password on the HTTP side).
@@ -712,7 +712,7 @@ pg_dump mydb | sigil seal - --pass-file ~/.sigil-pass -o dump.sg1 --stdin-name m
 
 **Unseal to stdout.** `sigil unseal dump.sg1 --pass-file ~/.sigil-pass -o - | psql mydb`.
 Works for one file (plain `.sg1` or a large-file pack, also with `--star` / `--from-mb` /
-`--to-mb`). Not for folder wraps or constellations. A large pack streams part by part;
+`--to-mb`). Not for Tomes or constellations. A large pack streams part by part;
 if a later part fails, the exit code is not 0 — treat that output as incomplete.
 
 **`--json`** on `seal`, `unseal`, `verify`, `scry`, `mend`, `scatter`, `gather`, `frost place`,
@@ -728,16 +728,16 @@ exactly one JSON line on stdout; the friendly lines move to stderr.
 `verify --json` adds `"report"` (the normal text) and, with a deep read, `"read_data"`.
 `scry --json` adds the same `"report"`. Both (and `constellation scry --json`) also add a structured
 `"status"` object (`"schema":1`, additive — `report` stays) built from library data, not
-the text: `kind` (`mark` = a single Sigil, `work-pack`, `folder-pack`, `constellation`; JSON values are stable), `health`
+the text: `kind` (`mark` = a single Sigil, `work-pack`, `folder-pack` = a Tome, `constellation`; JSON values are stable), `health`
 (`healthy`, `needs-repair`, `not-recoverable`), `reason` (why not recoverable, else null),
 `repair` (what needs `sigil mend`, else null). A Sigil adds `version`, `shards` (`live`,
 `total`, `need`, `len`), `merkle_closed`, `header_recovered`, `encrypted`, `compressed`,
 `private_label`, `orig_len` (null when private); a large-file pack adds `parts` (`total`,
-`present`), `chunk_size`, `overture`, `orig_len`; a folder pack adds `members` and
+`present`), `chunk_size`, `overture`, `orig_len`; a Tome adds `members` and
 `encrypted`; a constellation adds `stars` (`members`, `packed`, `present`, `missing`,
 `needs_repair`, `beyond_repair`). A not-recoverable copy is `ok:false`, exit 2, and still
-carries `status`. New fields may be added within schema 1; a rename or removal bumps it. `mend --json` adds `"kind"` (`mark`, `folder-pack`,
-`sealed-folder-pack`, `work-pack`) and, for one Sigil (`kind` `mark`), `"live"`, `"n"`, `"need"`, `"merkle"`,
+carries `status`. New fields may be added within schema 1; a rename or removal bumps it. `mend --json` adds `"kind"` (`mark`, `folder-pack` = a Tome,
+`sealed-folder-pack` = a sealed Tome, `work-pack`) and, for one Sigil (`kind` `mark`), `"live"`, `"n"`, `"need"`, `"merkle"`,
 `"soft_salvage"` (counted on the mended copy); a work pack adds `"stars"`, `"facets_checked"`.
 `scatter --json` adds `"pieces"`; `frost place --json` adds `"drives"`, `"pieces"`, `"per_drive"`,
 `"star"`; `frost mend --json` has `"output"` / `"output_bytes"`. For script stability their
@@ -800,12 +800,12 @@ open every part all the way back to the original bytes (decrypt + true-name chec
 `--read-data-subset 10%` to open an evenly spaced tenth. The sample moves each day, so
 a daily 10% check covers the whole file in about ten days (like restic). Encrypted Sigils
 need `--pass-file` / `--identity`. Nothing is written to disk. Pin the sample with
-`--subset-offset N`. Works on one `.sg1`, a large-file pack, a folder pack or a
+`--subset-offset N`. Works on one `.sg1`, a large-file pack, a Tome or a
 constellation (each member's star is a part; a locked card takes the same `--pass-file` /
 `--identity`). An atlas bag (`.sga`) is unpacked to a scratch folder and read the same way
-(`kind: atlas`). Plain `verify` / `scry` of a bag also unpacks it and checks every star. On a folder pack each sampled member is a part; an encrypted pack
+(`kind: atlas`). Plain `verify` / `scry` of a bag also unpacks it and checks every star. On a Tome each sampled member is a part; an encrypted pack
 needs its key, a member locked with its own `--ward` opens with `--ward-file PATH=PWFILE`
-(without it, it fails as a key problem), and a nested folder pack is listed under `skipped`, never counted as opened. Each
+(without it, it fails as a key problem), and a nested Tome is listed under `skipped`, never counted as opened. Each
 failure carries a `cause`: `key-needed` or `wrong-key` (exit 1, a key problem, nothing shown
 damaged) or `damaged` (exit 2, NOT recoverable). Unknown errors count as `damaged`.
 
@@ -893,8 +893,12 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   star and the facet list at the end are not Reed–Solomon coded. `mend` now rebuilds damaged length
   prefixes when every chunk star confirms against the facet list (decoder-only; the `.sg1` layout is
   unchanged). A 256 MiB Seal pack with 1–4% scattered bad sectors, previously refused at once with a
-  message that blamed the facet list, is repaired when that list is intact (12 of 12 such runs in the
-  measure). The facet list itself is still uncoded: if it is damaged too, `mend` refuses, and now
+  message that blamed the facet list, is repaired when that list is intact. This is tested in
+  `crate/sigil/tests/cli_pack_head.rs` (`new_pack_with_wiped_length_prefix_mends_and_prints_framing_rebuilt`)
+  and the packhead unit test `framing_rebuild_heals_zeroed_flipped_and_sector_wiped_lengths_and_stays_fail_closed`
+  (zeroed, flipped, and sector-wiped prefixes; a successful mend prints `length framing rebuilt`).
+  A measured 12-of-12 sector-damage run on 256 MiB Seal packs is recorded in CHANGELOG (Unreleased, Repair).
+  The facet list itself is still uncoded: if it is damaged too, `mend` refuses, and now
   names framing when the list is intact but the prefixes are not. Reflection packs can still be
   refused when a chunk star is past its 25% repair budget.
 - `sigil keygen -o me.sgk` with no `--pass` / `--passkey` still writes the secret identity
@@ -906,14 +910,14 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 - Unencrypted Seal pieces on Frost Rune (cold) drives are readable by anyone holding one drive.
   Each `.sgp` piece carries the header, and data pieces are slices of the payload under the fold,
   which is not a cipher; with the default 4 drives, one drive holds 2 of the 8 data pieces of a
-  Seal (8,16). The plain header and the `KIT` manifest also show the file name and true name.
+  Seal (8,16). The plain header and the on-disk `KIT` manifest also show the file name and true name.
   Use `--to` (encrypt-to) or a passphrase when sealing anything that goes on cold drives.
   `sigil frost place` does not warn about this yet. Tested in `crate/sigil/src/kit.rs`
   (`unencrypted_seal_piece_on_one_frost_drive_is_readable_without_key`,
   `passphrase_seal_piece_on_one_frost_drive_shows_no_plaintext`).
 - `sigil doctor --scrub DIR` checks only `.sg1` files. Frost Rune / scatter pieces (`.sgp`)
   are not checked; scrub lists them as NOT CHECKED and exits 3 (fails closed). Check cold
-  drives with `sigil frost mend KIT -o check.sg1 && sigil verify check.sg1`. `--scrub`
+  drives with `sigil frost mend ./frost -o check.sg1 && sigil verify check.sg1`. `--scrub`
   cannot be combined with `--json` (refused). See
   [docs/research/COLD-HOT-BOX.md](docs/research/COLD-HOT-BOX.md).
 - `--pass -` needs a terminal: it never reads a piped stdin (use
@@ -924,7 +928,7 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   (exit 4) unattended repairs estimated over 15 minutes, and stops cleanly on Ctrl-C (exit
   130, nothing written). Limits: the ask and the unattended skip work only on a single
   Sigil (a large-file pack is not scanned by plain `mend`, so it is never asked about or
-  skipped unless `--max-secs` is given; folder packs, atlas bags and several copies are not
+  skipped unless `--max-secs` is given; Tomes, atlas bags and several copies are not
   scanned at all). The question comes before any repair starts (not after the quick part)
   and offers only yes/no (no "finish tonight" option yet). The progress line is time-based
   for a single Sigil (no percentage) and the estimate is not re-measured while it runs.
@@ -960,15 +964,15 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   `--pad bucket` or `--pad max` (then only the bucket or power-of-two size
   shows). Default is `--pad off` (no silent size growth). `--pad` needs
   encryption and is single-file for now (folder / work packs not yet). Encrypted
-  folder packs still reveal how many files they hold and their total encrypted
+  Tomes still reveal how many files they hold and their total encrypted
   size (not names or per-file sizes).
-- Some folder packs still show member names: encrypted packs made before October
+- Some Tomes still show member names: encrypted packs made before October
   2026, ward-only packs made before wards needed `--pass` / `--to`, and packs sealed
   with `--ward-names-visible`. Convert them with `sigil seal-folder-names OLD -o NEW
   --pass-file F` (or seal the folder again with `--pass` / `--to`); old copies keep the names.
-- `sigil path` / `ls` / `walk` open an encrypted folder pack only with its key
+- `sigil path` / `ls` / `walk` open an encrypted Tome only with its key
   (`--pass-file`, `--pass -`, `--identity`); without it they refuse and show no names.
-- With the key, `scry` and `path` of an encrypted folder pack show names and
+- With the key, `scry` and `path` of an encrypted Tome show names and
   per-file sizes; this opens each member once (one decrypt per file), so a pack
   with very many files takes longer to list than a plain one. Without the key
   only the file count shows.

@@ -1,5 +1,8 @@
 # Segment log (`sigil log …`)
 
+A segment log lives in a `name.sigil/` folder (`kind=log` in the on-disk `CONTAINER` manifest).
+This page describes that on-disk layout and the `sigil log` commands.
+
 ## Abstract
 
 A Sigil segment log is an append-only, tamper-evident log of opaque batches, stored as a plain
@@ -614,7 +617,7 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
   as for every entry).
 * **Checks.** A file that is not a star, or whose ECC check finds damage, is **left in place** and
   listed (exit code 1); a repairable one says to run `sigil mend FILE` first. Folders that are
-  already sigil containers, and stars inside one, are refused (adopt is for loose stars).
+  already `name.sigil/` folders, and stars inside one, are refused (adopt is for loose stars).
 * **Crash-safe order:** segments written as unindexed files (each read back) → INDEX lines
   appended in one write (the commit point) → HEAD → originals removed last. Before the commit a
   crash leaves only unindexed leftovers (`gc` reclaims them, the next append overwrites them).
@@ -680,7 +683,7 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
   lets a single file be read back, proved, tombstoned or shredded on its own.
 * **Walk.** `DIR` is walked recursively; files are taken in **byte order of their relative path**
   (stable on every run and machine). Symlinks are never followed; symlinks, devices, pipes, sockets
-  and nested sigil containers (including the log itself, if it lives inside `DIR`) are **skipped and
+  and nested `name.sigil/` folders (including the log itself, if it lives inside `DIR`) are **skipped and
   listed** (`skipped-special`). Empty folders are not recorded. A `DIR` inside a sigil container is
   refused. A file that cannot be read is listed and not added, and the exit code is 1. Output
   shows names with control characters escaped (`\n`), so a file name cannot fake extra lines.
@@ -1758,7 +1761,7 @@ Done in slice 2: tombstones + compaction. Done in slice 3: per-segment keys + cr
 
 * Card follow-ups: cards that **replace** old INDEX history (pruning).
 * Streaming appends / segments above memory size (work-pack chunking): needs a new segment kind and `log=9` (see "Size notes"). Re-evaluated 2026-10-31: every reader (`read`, `verify`, `mend`, `compact`, `shred --rewrite`, `restore`, `mount`) holds a whole segment in memory and checks it against the INDEX in one piece, so a streaming *append* alone would write segments nothing can read without loading them; not shipped as an MVP. Options (chunked work-pack segments, framed AEAD, external pack, defer) and open questions: [STREAMING-DESIGN.md](STREAMING-DESIGN.md) (deferred, locked 2026-11-02).
-* Encrypted folder packs (SGDR) hide member names since sealed directories (ver=2); older packs still show them until converted with `sigil seal-folder-names` (see PRIVATE-LABEL.md; old copies keep the names).
+* Encrypted Tomes (SGDR) hide member names since sealed directories (ver=2); older packs still show them until converted with `sigil seal-folder-names` (see PRIVATE-LABEL.md; old copies keep the names).
 * INDEX roll-up / pruning of very old history: Option A (epoch rollover into a new log, `sigil log epoch`, `log=10`) shipped 2026-11-08, see "Epoch rollover". Dropping old INDEX lines in place stays chain-breaking by nature and is not done. [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md).
 * Unattended retention by default: the monthly script only applies with an explicit `--apply` and a rule (see "Monthly retention check").
 * Shredding one batch inside a compaction segment **without rewriting that segment**: impossible

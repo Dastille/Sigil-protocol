@@ -1,6 +1,11 @@
-# Tidy container (`name.sigil/`)
+# The `name.sigil/` on-disk layout
 
-Status: container format **1**, shipped. Approved 2026-10-10 as the "tidy container" track,
+This page describes the on-disk layout of a `name.sigil/` folder (a Vault, a Constellation, or a
+signed log). The people-facing name is that folder. The on-disk manifest file is still named
+`CONTAINER`, and its first line is `sigil-container=1`. Those identifiers are the format, not the
+name you use in conversation. Older pages called this layout a "container".
+
+Status: on-disk layout version **1**, shipped. Approved 2026-10-10 as the tidy `name.sigil/` track,
 ahead of the segment-log mode.
 
 Goal: after years of use a folder holds **one `name.sigil/` per thing** — not a pile of
@@ -118,7 +123,7 @@ sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the con
   retention the seal must go to a cold folder (Frost Rune; `--cold DIR` or `--cold-here`) or be discarded on
   purpose (`--force-drop`); under **full** an explicit remove is allowed. The CHART is
   rewritten before the seal file is deleted (same order now used by `prune`).
-* `--cold-here` = `<name>.sigil/cold/` (containers only). Frost Rune cold folders land in `cold/vN/` exactly
+* `--cold-here` = `<name>.sigil/cold/` (`name.sigil/` folders only). Frost Rune cold folders land in `cold/vN/` exactly
   as with an external `--cold DIR`.
 
 ## `sigil gc PATH`
@@ -133,7 +138,7 @@ sigil gc Sky --pass-file F|--identity key.sgk   # card must be readable (see bel
 **Report-only unless `--apply`.** The report lists each orphan with its size, what was kept,
 what was left alone, and ends with "dry run: nothing was changed" or "reclaimed N …".
 
-Reclaims (containers):
+Reclaims (`name.sigil/` folders):
 
 | What                         | Rule |
 |------------------------------|------|
