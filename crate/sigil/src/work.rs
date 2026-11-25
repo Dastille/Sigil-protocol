@@ -967,6 +967,44 @@ pub struct PackMendReport {
     /// Stars of a guarded pack whose guard was missing or damaged and has been
     /// written again (for example after a mend by a pre-guard binary).
     pub guards_restored: u32,
+    /// The per-star length prefixes were rebuilt (and confirmed against SGFC).
+    pub framing_rebuilt: bool,
+}
+
+/// Plain-English summary of what a pack mend did. This is the only source for
+/// that wording: the CLI prints it, and tests run both this helper and
+/// `sigil mend` itself.
+pub fn pack_mend_summary(rep: &PackMendReport) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if rep.framing_rebuilt {
+        parts.push("length framing rebuilt".into());
+    }
+    if rep.facets_rebuilt {
+        parts.push("facet list rebuilt".into());
+    }
+    if rep.guards_restored > 0 {
+        parts.push(format!("restored {} star guard(s)", rep.guards_restored));
+    }
+    match rep.head {
+        crate::packhead::HeadSource::FacetList => {
+            parts.push("pack head rebuilt from the facet list".into())
+        }
+        crate::packhead::HeadSource::Guard => {
+            parts.push("pack head restored from a guard copy".into())
+        }
+        crate::packhead::HeadSource::Intact => {}
+    }
+    if !rep.mended.is_empty() {
+        let list: Vec<String> = rep.mended.iter().map(|i| i.to_string()).collect();
+        parts.push(format!(
+            "healed {} chunk star(s): {}",
+            rep.mended.len(),
+            list.join(", ")
+        ));
+    } else if parts.is_empty() {
+        parts.push("no damage".into());
+    }
+    parts.join("; ")
 }
 
 /// Heal one chunk star without keys: returns `Some(healed)` when it was torn.
@@ -989,6 +1027,10 @@ fn mend_chunk_star(i: u32, stars: u32, star: &[u8], soft: bool) -> Result<Option
 }
 
 /// Lay out the pack at `input` for mend: a damaged facet trailer is refused.
+/// Layout (including framing rebuild) is decided in [`packhead::layout`].
+/// A Damaged trailer that still reaches here means the SGFC list itself is
+/// gone and could not be rebuilt; that is the error we report. Other errors
+/// (I/O, a torn star, a wrong key) pass through unchanged.
 pub(crate) fn mend_layout<S: Src>(src: &mut S) -> Result<PackLayout> {
     let l = packhead::layout(src)?;
     if matches!(l.trailer, packhead::Trailer::Damaged) {
@@ -1007,9 +1049,11 @@ pub(crate) fn mend_layout<S: Src>(src: &mut S) -> Result<PackLayout> {
 /// file beside `output` and is renamed into place only when every star is clean,
 /// so `output` may equal `input`. A damaged pack head is rebuilt from the facet
 /// list and the stars' own headers when that is unambiguous (see
-/// `docs/PACK-HEAD-REPAIR.md`); damaged per-star length framing or a damaged
-/// facet trailer is refused, never guessed. Nothing is decrypted, so Warded /
-/// encrypt-to packs mend without a passphrase or identity.
+/// `docs/PACK-HEAD-REPAIR.md`); damaged per-star length prefixes are rebuilt
+/// when every star confirms against the SGFC list (decoder-only, no format
+/// change). A damaged facet trailer that cannot be rebuilt is refused, never
+/// guessed. Nothing is decrypted, so Warded / encrypt-to packs mend without a
+/// passphrase or identity.
 pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMendReport> {
     let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
     let mut src = packhead::FileSrc::open(input)?;
@@ -1083,6 +1127,7 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
             head: l.source,
             facets_rebuilt: l.facets_rebuilt,
             guards_restored,
+            framing_rebuilt: l.framing_rebuilt,
         })
     })();
     drop(src);
@@ -1139,7 +1184,8 @@ fn span(l: &PackLayout, i: usize) -> (usize, usize) {
 /// shows damage (bad shard CRC / Merkle / primary header). Healed stars must keep
 /// the chunk true-name recorded in the SGFC facet trailer. A damaged pack head is
 /// rebuilt from the facet list when that is unambiguous; damaged per-star length
-/// framing is refused, never guessed.
+/// prefixes are rebuilt when every star confirms against the SGFC list, and
+/// refused when they cannot be confirmed.
 pub fn mend_pack_to<W: Write>(
     pack: &[u8],
     out: &mut W,
@@ -1210,7 +1256,11 @@ pub fn mend_pack_to<W: Write>(
         )));
     }
     let mended: Vec<u32> = healed_stars.iter().map(|(i, _)| *i).collect();
-    let healed = if healed_stars.is_empty() && l.source == HeadSource::Intact && !l.guarded {
+    let healed = if healed_stars.is_empty()
+        && l.source == HeadSource::Intact
+        && !l.guarded
+        && !l.framing_rebuilt
+    {
         None
     } else {
         let mut rebuilt = Vec::with_capacity(pack.len());
@@ -1794,6 +1844,37 @@ mod tests {
         pack[a] = 3;
     }
 
+    #[test]
+    fn pack_mend_summary_is_the_only_wording_source() {
+        let base = crate::work::PackMendReport {
+            stars: 4,
+            mended: vec![],
+            soft_used: false,
+            facets_checked: true,
+            bytes: 0,
+            head: HeadSource::Intact,
+            facets_rebuilt: false,
+            guards_restored: 0,
+            framing_rebuilt: false,
+        };
+        assert_eq!(crate::work::pack_mend_summary(&base), "no damage");
+        let mut r = base;
+        r.framing_rebuilt = true;
+        assert_eq!(crate::work::pack_mend_summary(&r), "length framing rebuilt");
+        r.mended = vec![1, 3];
+        assert_eq!(
+            crate::work::pack_mend_summary(&r),
+            "length framing rebuilt; healed 2 chunk star(s): 1, 3"
+        );
+        r.facets_rebuilt = true;
+        r.head = HeadSource::Guard;
+        r.guards_restored = 1;
+        assert_eq!(
+            crate::work::pack_mend_summary(&r),
+            "length framing rebuilt; facet list rebuilt; restored 1 star guard(s); pack head restored from a guard copy; healed 2 chunk star(s): 1, 3"
+        );
+    }
+
     fn make_pack(dir: &Path, n: usize, recipients: &[PublicIdentity]) -> (Vec<u8>, Vec<u8>) {
         let d = data(n);
         let src = dir.join("big.bin");
@@ -1877,8 +1958,19 @@ mod tests {
             .to_string();
         assert!(e.contains("star 2"), "{e}");
 
+        // Repairable framing (SGFC + stars intact) is rebuilt byte-identically.
         let mut framing = pack.clone();
         framing[spans[1].0 - 8..spans[1].0].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(
+            mend_pack_to(&framing, &mut Vec::new(), None, &[], &[])
+                .unwrap()
+                .healed
+                .unwrap(),
+            pack
+        );
+        // Unconfirmable framing (length gone and SGFC damaged) still refuses
+        // and still names framing — the check is not weakened.
+        framing[pack.len() - 32 * spans.len() - 8] = b'X';
         let e = mend_pack_to(&framing, &mut Vec::new(), None, &[], &[])
             .err()
             .unwrap()
@@ -1976,10 +2068,18 @@ mod tests {
             smash_shard(&mut over, spans[3].0, spans[3].1, s);
         }
         check(&over, "chunk star 3");
-        // Length framing.
+        // Length framing: repairable when SGFC + star confirm it.
         let mut fr = pack.clone();
         fr[spans[2].0 - 8..spans[2].0].copy_from_slice(&(1u64 << 40).to_le_bytes());
-        check(&fr, "framing damaged at star 2");
+        std::fs::write(&p, &fr).unwrap();
+        assert!(mend_pack_path(&p, &out, false).is_ok());
+        assert_eq!(std::fs::read(&out).unwrap(), pack);
+        std::fs::remove_file(&out).unwrap();
+        // Unconfirmable framing (SGFC also damaged) still refuses and names
+        // framing — the check is not weakened.
+        let fr_len = fr.len();
+        fr[fr_len - 32 * spans.len() - 8] = b'X';
+        check(&fr, "framing");
         // Trailer: every star's guard proves the order, so a guarded pack's
         // facet list is rebuilt (old packs still refuse; see packhead tests).
         let mut tr = pack.clone();

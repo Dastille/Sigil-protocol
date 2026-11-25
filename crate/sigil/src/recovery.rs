@@ -353,10 +353,15 @@ fn assess_pack<S: Src>(src: &mut S, mode: MendMode, budget: &mut ProbeBudget) ->
         ));
     }
     let facets = l.facets().map(<[[u8; 32]]>::to_vec);
-    let mut worst = if l.source == crate::HeadSource::Intact {
-        Condition::Healthy
-    } else {
-        Condition::Torn("archive head damaged (sigil mend rebuilds it)".into())
+    // Head source and framing_rebuilt come from mend_layout, the same function
+    // `sigil mend` uses, so this is not a second opinion.
+    let mut worst = match (l.source == crate::HeadSource::Intact, l.framing_rebuilt) {
+        (true, false) => Condition::Healthy,
+        (true, true) => Condition::Torn("length framing damaged (sigil mend rebuilds it)".into()),
+        (false, false) => Condition::Torn("archive head damaged (sigil mend rebuilds it)".into()),
+        (false, true) => Condition::Torn(
+            "archive head and length framing damaged (sigil mend rebuilds them)".into(),
+        ),
     };
     for (i, &(off, len)) in l.stars.iter().enumerate() {
         let Ok(len) = usize::try_from(len) else {
@@ -391,7 +396,10 @@ fn assess_pack<S: Src>(src: &mut S, mode: MendMode, budget: &mut ProbeBudget) ->
 
 /// Assess a classic `.sg1` or large-file archive on disk with plain `sigil mend`'s repair.
 pub fn assess_path(input: &Path, budget: &mut ProbeBudget) -> Result<Condition> {
-    if crate::is_work_pack(input) {
+    // A pack whose official head is gone is still a large-file archive when
+    // recover_path (from_guards / from_facets, the same path unseal uses) can
+    // lay it out. That check is the existing is_damaged_work_pack helper.
+    if crate::is_work_pack(input) || crate::is_damaged_work_pack(input) {
         return assess_pack_path(input, MendMode::Deep, budget);
     }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -999,7 +1007,10 @@ pub fn diagnose_open_failure(
     err: &str,
     budget: &mut ProbeBudget,
 ) -> Option<Guidance> {
-    let kind = ArchiveKind::of(input);
+    let kind = match ArchiveKind::of(input) {
+        ArchiveKind::Single if crate::is_damaged_work_pack(input) => ArchiveKind::LargeFile,
+        k => k,
+    };
     let target = shell_word(&input.display().to_string());
     if let Some(s) = key_situation(err) {
         return Some(Guidance {

@@ -51,37 +51,77 @@ fn damaged_pack_head_fails_closed_not_truncated() {
     assert!(o.status.success());
     assert_eq!(std::fs::read(dir.join("ok.bin")).unwrap(), data);
 
-    let mut pack = std::fs::read(dir.join("a.sg1")).unwrap();
-    pack[..50].fill(0); // pack head (magic, sizes) gone; first chunk star intact
+    let original = std::fs::read(dir.join("a.sg1")).unwrap();
+    let mut pack = original.clone();
+    pack[..50].fill(0); // pack head (magic, sizes) gone; first chunk star mostly intact
     std::fs::write(dir.join("torn.sg1"), &pack).unwrap();
 
+    // Guards carry a checksummed copy of the head, and SGFC names both chunk
+    // stars. layout() restores the head and framing only after that
+    // confirmation, so unseal must return the original 6 MB — not the first
+    // star alone (the old truncated-success bug this test was written to
+    // catch). The fail-closed contract is unchanged: never a short file.
     let o = sigil(&dir, &["unseal", "torn.sg1", "-o", "out.bin"]);
     assert!(
-        !o.status.success(),
-        "must exit nonzero, stdout: {}",
-        String::from_utf8_lossy(&o.stdout)
+        o.status.success(),
+        "guard-restored head must unseal, stderr: {}",
+        String::from_utf8_lossy(&o.stderr)
     );
-    let err = String::from_utf8_lossy(&o.stderr);
-    assert!(
-        err.contains("more than one seal"),
-        "clear error, got: {err}"
+    assert_eq!(
+        std::fs::read(dir.join("out.bin")).unwrap(),
+        data,
+        "must be the original 6 MB, not a truncated first star"
     );
-    no_leftovers(&dir, "out.bin");
+    std::fs::remove_file(dir.join("out.bin")).unwrap();
 
-    // An existing output file is left untouched on failure.
-    std::fs::write(dir.join("keep.bin"), b"previous").unwrap();
-    let o = sigil(&dir, &["unseal", "torn.sg1", "-o", "keep.bin"]);
-    assert!(!o.status.success());
-    assert_eq!(std::fs::read(dir.join("keep.bin")).unwrap(), b"previous");
-
-    // mend must not "heal" it into a healthy-looking single-chunk seal either.
+    // mend must not collapse it into a healthy-looking single-chunk seal.
+    // With an intact guard it restores the original two-star work pack.
     let o = sigil(&dir, &["mend", "torn.sg1", "-o", "m.sg1"]);
     assert!(
+        o.status.success(),
+        "mend should restore from the guard: {}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let mended = std::fs::read(dir.join("m.sg1")).unwrap();
+    assert!(
+        mended.starts_with(b"SGWK"),
+        "mend must write a work pack, not a lone star"
+    );
+    let nlen = mended[17] as usize;
+    let nstars = u32::from_le_bytes(mended[18 + nlen..18 + nlen + 4].try_into().unwrap());
+    assert!(
+        nstars >= 2,
+        "must not collapse to a single-chunk seal, got {nstars}"
+    );
+    let o = sigil(&dir, &["unseal", "m.sg1", "-o", "mended.bin"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read(dir.join("mended.bin")).unwrap(), data);
+
+    // Head and SGFC both gone: confirmation is impossible, so unseal and mend
+    // must refuse and write nothing (the original fail-closed path).
+    let mut no_confirm = original.clone();
+    no_confirm[..50].fill(0);
+    let n = no_confirm.len();
+    no_confirm[n - 4096..].fill(0);
+    std::fs::write(dir.join("gone.sg1"), &no_confirm).unwrap();
+    let o = sigil(&dir, &["unseal", "gone.sg1", "-o", "gone.bin"]);
+    assert!(
         !o.status.success(),
-        "mend must refuse: {}",
+        "must exit nonzero when confirmation is impossible, stdout: {}",
         String::from_utf8_lossy(&o.stdout)
     );
-    assert!(!dir.join("m.sg1").exists());
+    no_leftovers(&dir, "gone.bin");
+    std::fs::write(dir.join("keep.bin"), b"previous").unwrap();
+    let o = sigil(&dir, &["unseal", "gone.sg1", "-o", "keep.bin"]);
+    assert!(!o.status.success());
+    assert_eq!(std::fs::read(dir.join("keep.bin")).unwrap(), b"previous");
+    let o = sigil(&dir, &["mend", "gone.sg1", "-o", "m2.sg1"]);
+    assert!(
+        !o.status.success(),
+        "mend must refuse when confirmation is impossible: {}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    assert!(!dir.join("m2.sg1").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -190,11 +190,11 @@ pub use vault::{
 pub use work::{
     choose_overture, index_pack, index_pack_keys, inscribe_path, inscribe_path_to,
     inscribe_stars_dir, inscribe_stars_dir_to, is_damaged_work_pack, is_work_pack, mend_pack_path,
-    overture_report, path_report, path_unrecoverable, payload_label_keys, payload_name,
-    read_facet_digests, scry_facets, scry_path, scry_path_checked, star_bytes_unrecoverable,
-    suggested_output_name, unseal_path, unseal_path_keys, unseal_range, unseal_range_keys,
-    unseal_star_at, unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
-    OVERTURE, WORK_MAGIC,
+    overture_report, pack_mend_summary, path_report, path_unrecoverable, payload_label_keys,
+    payload_name, read_facet_digests, scry_facets, scry_path, scry_path_checked,
+    star_bytes_unrecoverable, suggested_output_name, unseal_path, unseal_path_keys, unseal_range,
+    unseal_range_keys, unseal_star_at, unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK,
+    DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;

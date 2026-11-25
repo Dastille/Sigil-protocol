@@ -7902,33 +7902,7 @@ fn mend_pack_report(
     soft: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let rep = sigil::mend_pack_path(input, output, soft)?;
-    let healed = if rep.mended.is_empty() {
-        "no damage".to_string()
-    } else {
-        let list: Vec<String> = rep.mended.iter().map(|i| i.to_string()).collect();
-        format!(
-            "healed {} chunk star(s): {}",
-            rep.mended.len(),
-            list.join(", ")
-        )
-    };
-    let healed = match rep.head {
-        sigil::HeadSource::Intact => healed,
-        sigil::HeadSource::FacetList => {
-            format!("pack head rebuilt from the facet list; {healed}")
-        }
-        sigil::HeadSource::Guard => format!("pack head restored from a guard copy; {healed}"),
-    };
-    let healed = if rep.guards_restored > 0 {
-        format!("restored {} star guard(s); {healed}", rep.guards_restored)
-    } else {
-        healed
-    };
-    let healed = if rep.facets_rebuilt {
-        format!("facet list rebuilt; {healed}")
-    } else {
-        healed
-    };
+    let healed = sigil::pack_mend_summary(&rep);
     json_extra(&format!(
         ",\"kind\":\"work-pack\",\"stars\":{},\"facets_checked\":{}",
         rep.stars, rep.facets_checked

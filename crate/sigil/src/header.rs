@@ -169,6 +169,24 @@ fn parse_header(buf: &[u8], magic: &[u8; 4]) -> Result<Header> {
     })
 }
 
+pub(crate) const EMBER_MAGIC: [u8; 4] = MAGIC_EMBER;
+
+/// Parse an `SGEM` Ember header at the start of `buf`.
+///
+/// The on-disk Ember header stores the shard slot in the top byte of
+/// `entropy_milli`. This returns the header with that slot cleared, plus the
+/// slot itself, so a framing scan can walk back from a surviving Ember to the
+/// start of its star.
+pub(crate) fn parse_ember_header(buf: &[u8]) -> Option<(Header, u8)> {
+    let mut h = parse_header(buf, &MAGIC_EMBER).ok()?;
+    if !h.ember() {
+        return None;
+    }
+    let slot = (h.entropy_milli >> 24) as u8;
+    h.entropy_milli &= 0x00ff_ffff;
+    Some((h, slot))
+}
+
 pub fn write_ember(header: &[u8], index: u8) -> Vec<u8> {
     let mut buf = header[..HEADER_SIZE].to_vec();
     buf[0..4].copy_from_slice(&MAGIC_EMBER);
