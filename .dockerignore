@@ -1,0 +1,12 @@
+.git
+.github
+target
+dist
+node_modules
+research
+docs
+assets
+*.sg1
+*.sgk
+*.sga
+*.sgp
