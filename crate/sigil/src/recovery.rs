@@ -399,7 +399,7 @@ pub fn assess_path(input: &Path, budget: &mut ProbeBudget) -> Result<Condition> 
     // A pack whose official head is gone is still a large-file archive when
     // recover_path (from_guards / from_facets, the same path unseal uses) can
     // lay it out. That check is the existing is_damaged_work_pack helper.
-    if crate::is_work_pack(input) || crate::is_damaged_work_pack(input) {
+    if crate::is_work_pack(input) || crate::is_damaged_work_pack_or_limit(input) {
         return assess_pack_path(input, MendMode::Deep, budget);
     }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -1008,7 +1008,9 @@ pub fn diagnose_open_failure(
     budget: &mut ProbeBudget,
 ) -> Option<Guidance> {
     let kind = match ArchiveKind::of(input) {
-        ArchiveKind::Single if crate::is_damaged_work_pack(input) => ArchiveKind::LargeFile,
+        ArchiveKind::Single if crate::is_damaged_work_pack_or_limit(input) => {
+            ArchiveKind::LargeFile
+        }
         k => k,
     };
     let target = shell_word(&input.display().to_string());

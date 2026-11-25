@@ -613,13 +613,35 @@ fn score_prefix(file: &[u8], h: &Header, prefix: usize) -> i32 {
     live * 1024 + embers
 }
 
+/// A real seal has at most `n <= 255` shards (one Ember per shard).
+/// Cap raw `SGEM` magic inspections, valid-CRC Ember headers, and distinct
+/// `score_prefix` probes so a crafted dense-`SGEM` buffer cannot spin.
+const MAX_EMBER_MAGIC_SCANS: usize = 4096;
+const MAX_EMBER_HITS: usize = 512;
+const MAX_EMBER_PROBES: usize = 1024;
+
 fn locate_from_ember(file: &[u8]) -> Option<(Header, usize)> {
     let mut best: Option<(Header, usize, i32)> = None;
+    let mut magic_scans = 0usize;
+    let mut valid_hits = 0usize;
+    let mut probes = 0usize;
+    let mut seen_probes = std::collections::HashSet::new();
     let mut i = 0usize;
     while i + HEADER_SIZE <= file.len() {
+        let Some(rel) = file[i..file.len() - HEADER_SIZE + 1]
+            .iter()
+            .position(|&b| b == MAGIC_EMBER[0])
+        else {
+            break;
+        };
+        i += rel;
         if file[i..i + 4] != MAGIC_EMBER {
             i += 1;
             continue;
+        }
+        magic_scans += 1;
+        if magic_scans > MAX_EMBER_MAGIC_SCANS {
+            break;
         }
         if let Ok(mut h) = parse_header(&file[i..], &MAGIC_EMBER) {
             // An Ember keeps its slot in the top byte of the entropy word; the
@@ -627,6 +649,10 @@ fn locate_from_ember(file: &[u8]) -> Option<(Header, usize)> {
             // so clear it to get the front header's exact bytes back.
             h.entropy_milli &= 0x00ff_ffff;
             if h.ember() {
+                valid_hits += 1;
+                if valid_hits > MAX_EMBER_HITS {
+                    break;
+                }
                 let stride = shard_stride(&h);
                 if stride > 0 {
                     let mut prefixes = vec![0usize, KEYSTONE_SPAN, KEYSTONE_SPAN + VOW_SIZE];
@@ -642,6 +668,13 @@ fn locate_from_ember(file: &[u8]) -> Option<(Header, usize)> {
                         }
                     }
                     for p in prefixes {
+                        if !seen_probes.insert((p, h.digest, h.merkle, h.shard_len, h.k, h.n)) {
+                            continue;
+                        }
+                        probes += 1;
+                        if probes > MAX_EMBER_PROBES {
+                            return best.filter(|b| b.2 >= 0).map(|b| (b.0, b.1));
+                        }
                         let score = score_prefix(file, &h, p);
                         let better = best.as_ref().map(|b| score > b.2).unwrap_or(true);
                         if better {
@@ -1155,5 +1188,66 @@ mod tests {
                 assert_eq!(got, msg, "leading drop {drop} returned different bytes");
             }
         }
+    }
+
+    #[test]
+    fn locate_from_ember_32mib_dense_sgem_is_bounded() {
+        let h = Header {
+            version: VERSION,
+            flags: FLAG_EMBER,
+            k: 128,
+            n: 255,
+            orig_len: 1024,
+            folded_len: 1024,
+            digest: [1u8; 32],
+            salt: [0u8; 16],
+            nonce: [0u8; 12],
+            tag: [0u8; 16],
+            shard_len: 16,
+            entropy_milli: 8000 | (1u32 << 24),
+            name: "x".into(),
+            merkle: [0u8; 32],
+        };
+        let mut rec = write_header(&h);
+        rec[0..4].copy_from_slice(&MAGIC_EMBER);
+        rec[108..112].copy_from_slice(&[0u8; 4]);
+        let crc = crc32fast::hash(&rec);
+        rec[108..112].copy_from_slice(&crc.to_le_bytes());
+
+        // Case 1: 32 MiB packed with identical valid-CRC SGEM headers (n = 255).
+        let reps = (32 * 1024 * 1024) / rec.len();
+        let mut same = Vec::with_capacity(reps * rec.len());
+        for _ in 0..reps {
+            same.extend_from_slice(&rec);
+        }
+        let t0 = std::time::Instant::now();
+        let _ = locate_from_ember(&same);
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(2),
+            "32 MiB identical dense SGEM took {:?}",
+            t0.elapsed()
+        );
+
+        // Case 2: 32 MiB packed with distinct-digest valid-CRC SGEM headers (n = 255).
+        let mut distinct = same;
+        for (idx, chunk) in distinct
+            .as_chunks_mut::<HEADER_SIZE>()
+            .0
+            .iter_mut()
+            .take(2048)
+            .enumerate()
+        {
+            chunk[24..28].copy_from_slice(&(idx as u32).to_le_bytes());
+            chunk[108..112].copy_from_slice(&[0u8; 4]);
+            let c = crc32fast::hash(chunk);
+            chunk[108..112].copy_from_slice(&c.to_le_bytes());
+        }
+        let t1 = std::time::Instant::now();
+        let _ = locate_from_ember(&distinct);
+        assert!(
+            t1.elapsed() < std::time::Duration::from_secs(2),
+            "32 MiB distinct dense SGEM took {:?}",
+            t1.elapsed()
+        );
     }
 }

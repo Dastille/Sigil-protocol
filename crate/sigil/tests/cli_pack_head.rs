@@ -250,3 +250,38 @@ fn wrong_passphrase_on_encrypted_large_pack_stays_fail_closed_after_framing_mend
     assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), plain());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn crafted_guard_flood_mend_and_unseal_fail_closed_with_hints() {
+    let dir = common::scratch("cli-ph-guard-cap");
+    std::fs::write(dir.join("plain.bin"), plain()).unwrap();
+    let o = sigil(
+        &dir,
+        &["seal", "--chunk", "65536", "-o", "new.sg1", "plain.bin"],
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    let pack = std::fs::read(dir.join("new.sg1")).unwrap();
+    let sgfc_at = pack.windows(4).rposition(|w| w == b"SGFC").expect("SGFC");
+    // Wipe head & framing, fill 1 MiB with repeating `SGHG`, append trailer.
+    let mut bad = vec![0u8; 64];
+    for _ in 0..(1024 * 1024 / 4) {
+        bad.extend_from_slice(b"SGHG");
+    }
+    bad.extend_from_slice(&pack[sgfc_at..]);
+    std::fs::write(dir.join("hostile.sg1"), &bad).unwrap();
+
+    let om = sigil(&dir, &["mend", "hostile.sg1", "-o", "m.sg1"]);
+    assert_eq!(om.status.code(), Some(2), "{}", text(&om));
+    let tm = text(&om);
+    assert!(tm.contains("guard scan limit"), "{tm}");
+    assert!(tm.contains("What you can try:"), "{tm}");
+    assert!(!dir.join("m.sg1").exists());
+
+    let ou = sigil(&dir, &["unseal", "hostile.sg1", "-o", "out.bin"]);
+    assert_eq!(ou.status.code(), Some(2), "{}", text(&ou));
+    let tu = text(&ou);
+    assert!(tu.contains("guard scan limit"), "{tu}");
+    assert!(tu.contains("What you can try:"), "{tu}");
+    assert!(!dir.join("out.bin").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
