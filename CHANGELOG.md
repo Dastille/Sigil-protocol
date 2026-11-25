@@ -27,22 +27,33 @@
   case): 256 MiB Seal packs with 1–4% scattered bad sectors, previously often
   refused at once, were repaired in 12 of 12 sector-damage runs (about 12–20 s,
   about 105 MiB peak RSS). No run wrote a wrong file. Scans of untrusted input
-  are capped (24 MiB per star, 64 MiB and 3 seconds per rebuild, 64 magic hits,
-  a reused 1 MiB window).
+  are capped (24 MiB per star, 64 MiB per rebuild, 3 seconds of CPU time
+  excluding disk I/O wait, 64 magic hits, a reused 1 MiB window, Ctrl-C checks).
 - `sigil mend` prints `length framing rebuilt` from one shared summary helper
   when that is what it did.
-- Whole-file pack-head guard (`SGHG`) recovery is bounded by a shared 3-second
-  wall-clock budget, 256 MiB scan ceiling, size-scaled `SGHG` hit cap
-  (`clamp(size / 1024, 64, 262_144)`), and a reused 1 MiB read window, and
-  runs streaming before `fs::read` in `mend`, `unseal`, `scry`, and recovery
-  diagnostics. Measured on a 2.00 GiB crafted `SGHG`-flooded pack: `mend`
-  dropped from 194.5 s / 2.0 GiB RSS to 0.009 s / 11.7 MiB RSS (exit 2 with
-  recovery hints), and `unseal` dropped from 211.0 s / 2.0 GiB RSS (exit 1) to
-  0.032 s / 11.9 MiB RSS (exit 2 with recovery hints).
-- Additional bounds on untrusted input: `work::index_pack` stops immediately
-  on zero/short star lengths when `stars` is huge, `fountain::answer_with`
-  enforces `ESI_MISS_LIMIT`, and `show::handle` caps HTTP request headers at
-  16 KiB and 64 lines (431 on excess).
+- Whole-file pack-head guard (`SGHG`) recovery runs in one linear pass bounded
+  by file size (no 256 MiB scan cutoff), with a size-scaled `SGHG` hit cap
+  (`max(size / 1024, 64)`), `(head, placed)` candidate deduplication, at most
+  8 distinct candidate heads, a shared 3-second CPU-only budget (excluding disk
+  I/O wait), Ctrl-C checks, and a reused 1 MiB read window, running streaming
+  before `fs::read` in `mend`, `unseal`, `scry`, and recovery diagnostics.
+  - Measured on a 2.52 GB (`450`-star) guarded pack with the head and first
+    272.2 MiB of guards wiped: `mend` recovers all 50 missing guards and the
+    head in 15.05 s at 13.2 MiB RSS, and `unseal` recovers byte-exact in
+    44.59 s at 39.0 MiB RSS (exit 0).
+  - Measured on a throttled 30 MB/s source: both guard scanning past 3 s wall
+    clock and framing rebuild succeed without false refusal.
+  - Measured on a 2.00 GiB crafted `SGHG`-flooded pack: `mend` dropped from
+    194.5 s / 2.0 GiB RSS to 0.069 s / 12.0 MiB RSS (exit 2 with hints), and
+    `unseal` dropped from 211.0 s / 2.0 GiB RSS (exit 1) to 0.199 s / 12.0 MiB
+    RSS (exit 2 with hints).
+- Additional bounds on untrusted input: `header::locate_from_ember` caps
+  raw `SGEM` scans (4,096), valid Ember headers (512), and deduplicated prefix
+  probes (1,024), cutting a 32 MiB dense-`SGEM` worst case from ~5 min
+  (9.83 s per 1 MiB) to 0.03 s while preserving damaged-seal recovery;
+  `work::index_pack` stops immediately on zero/short star lengths when `stars`
+  is huge; `fountain::answer_with` enforces `ESI_MISS_LIMIT`; and `show::handle`
+  caps HTTP request headers at 16 KiB and 64 lines (431 on excess).
 
 ### Recovery guidance
 

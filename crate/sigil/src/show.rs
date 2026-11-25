@@ -54,7 +54,7 @@ pub fn run_showing(
 ) -> Result<()> {
     if mark.is_dir() || crate::is_dir_pack(mark) || crate::is_constellation_input(mark) {
         return Err(crate::Error::Msg(
-            "show plays ONE sealed file (a .sg1 or a large-file pack). For a folder wrap or \
+            "show plays ONE sealed file (a .sg1 or a large-file pack). For a Tome or \
              constellation use `sigil mount` (any app) or unseal the one file first"
                 .into(),
         ));

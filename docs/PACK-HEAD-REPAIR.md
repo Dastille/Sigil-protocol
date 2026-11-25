@@ -50,8 +50,9 @@ already had.
 
 A rebuilt walk is refused when stars are swapped, a forged length points at a
 different valid-looking star, the pack is truncated, or the facet list is
-damaged too. Scans of untrusted input are capped (24 MiB per star, 64 MiB and
-3 seconds per rebuild, 64 magic hits, a reused 1 MiB window). Failures name
+damaged too. Scans of untrusted input are capped (24 MiB per star, 64 MiB per rebuild,
+3 seconds of CPU time excluding disk I/O wait, 64 magic hits, a reused 1 MiB
+window), with Ctrl-C checks during long scans. Failures name
 framing when the facet list is intact, and both parts when it is not, instead
 of always blaming the facet list.
 
@@ -127,11 +128,15 @@ Undamaged old packs never get guards added by `mend`.
   pack, even one with the same name and size) are refused.
 - Any one intact guard is enough; damaged guards are rewritten by `mend`. If
   every guard is damaged, the facet-list rebuild above still applies.
-- Guard scans of untrusted input are bounded (256 MiB total bytes read,
-  `clamp(size / 1024, 64, 262_144)` `SGHG` hits, shared 3-second wall-clock
-  budget across guard inspection and framing rebuild, reused 1 MiB window).
-  Exceeding the budget fails closed on the streaming path without loading the
-  whole file into memory (exit code 2 with recovery hints).
+- Guard scans of untrusted input run in a single linear pass bounded by the
+  file size, with a size-scaled `SGHG` hit cap (`max(size / 1024, 64)`),
+  deduplication by `(head, placed)`, at most 8 distinct candidate heads,
+  a shared 3-second CPU-only budget (excluding disk I/O wait) across guard
+  inspection and framing rebuild, Ctrl-C checks, and a reused 1 MiB window.
+  A legit pack with wiped front guards or slow disk reads is not cut off by
+  a fixed byte or I/O wall-clock cap; exceeding the hit, candidate, or CPU
+  budget fails closed on the streaming path without loading the whole file
+  into memory (exit code 2 with recovery hints).
 
 The SHA-256 only detects accidental damage; like the rest of an unsigned pack it
 is not a MAC. A guard repeats only what the head already holds in the clear (name,
@@ -191,6 +196,9 @@ large-file pack". Tests: `packhead::tests::old_format_refuses_when_the_evidence_
   new pack with head and facet list wiped coming back byte-exact.
 - `packhead::tests::guard_scan_crafted_worst_case_is_bounded`,
   `guard_scan_2gib_sghg_src_fails_closed_subsecond`,
-  `guard_scan_restores_many_star_pack_beyond_64_corrupt_guards`, and
+  `guard_scan_recovers_beyond_256mib_when_front_guards_wiped`,
+  `guard_scan_restores_many_star_pack_beyond_64_corrupt_guards`,
+  `guard_scan_and_framing_rebuild_succeed_on_throttled_30mbs_src`,
+  `header::tests::locate_from_ember_32mib_dense_sgem_is_bounded`, and
   `cli_pack_head::crafted_guard_flood_mend_and_unseal_fail_closed_with_hints`.
 - `doctor::tests::damaged_pack_head_is_reported_as_mendable`.
