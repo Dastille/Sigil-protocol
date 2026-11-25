@@ -234,7 +234,24 @@ R1 slices, in this order:
      copies gave 86.8% → 89.8% and 69.5% → 81.7% at about 1.08× time. Light damage (one
      sector, truncation) was already 100%, and heavy bit rot is not helped: there is no
      shared position to use.
-4. Then: a GPU option, with a CPU path that must still work.
+4. **Measured, parked (25 November 2026): a GPU option.** The CPU repair is not the slow
+   part, so a GPU would add a second code path with no measured gain. Rule: build a repair
+   feature only when it shows a measured edge on realistic damage.
+   - Measured (one 8-core test machine, release build of main, nice 10, one run per case,
+     random data, damage = one bad 4 KiB sector, 4 zeroed runs, 1 / 2 / 4% scattered bad
+     sectors, bit flips at 5e-4, 2% sectors plus 8 flips; every success unsealed and
+     byte-compared; receipt sigil-1125-gpu-usefulness.md). 4 MiB: 14 of 14 repaired,
+     0.11 to 0.33 s each. 64 MiB large-file pack: 7 of 14 repaired, slowest 4.0 s (Seal, 2%
+     sectors, about 16 MiB/s); refusals 0.0 to 2.7 s. 256 MiB large-file pack (Reflection):
+     2 of 7 repaired (0.9 and 1.3 s); the other 5 were refused in under 0.5 s. No run came
+     near 2 minutes, and the slowest repair was 4 seconds.
+   - Unverified estimate: at the measured 16 MiB/s, a heavily damaged pack would need about
+     2 GiB before the CPU repair passed 2 minutes on that machine.
+   - Large packs are limited by their framing, not by speed: 4 of the 5 refusals at
+     256 MiB stopped at once on damaged pack framing (the per-star length fields and the
+     facet list are not Reed–Solomon coded). A GPU cannot help with that.
+   - Reopen when a large-file pack survives heavy scattered damage and a measured repair of
+     a realistic file passes about 2 minutes on CPU.
 5. Then: window-level CRC search (each window with exactly n − k bad shards and no spare
    symbol settled by the shard CRCs), after its false-match bound is worked out. Heavy
    scattered bit flips past the per-column Reed–Solomon limit will still need the stripe
