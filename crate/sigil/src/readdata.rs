@@ -58,7 +58,7 @@ pub fn cause_of(why: &str) -> Cause {
         || why.contains("this pack is locked")
     {
         Cause::KeyNeeded
-    } else if why.contains("could not unwrap CEK") {
+    } else if why.contains("Wrong passphrase or key") || why.contains("could not unwrap CEK") {
         Cause::WrongKey
     } else {
         Cause::Damaged
@@ -376,7 +376,7 @@ mod tests {
             Cause::KeyNeeded
         );
         assert_eq!(
-            cause_of("a.txt: could not unwrap CEK — need matching --identity or passphrase"),
+            cause_of("a.txt: Wrong passphrase or key — this Sigil Archive is Warded (matching --identity or passphrase did not unlock it)"),
             Cause::WrongKey
         );
         assert_eq!(cause_of("part missing"), Cause::Damaged);

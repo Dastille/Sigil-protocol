@@ -912,7 +912,7 @@ pub fn unwrap_cek(
         }
     }
     Err(Error::Msg(
-        "could not unwrap CEK — need matching --identity or passphrase".into(),
+        "Wrong passphrase or key — this Sigil Archive is Warded (matching --identity or passphrase did not unlock it)".into(),
     ))
 }
 

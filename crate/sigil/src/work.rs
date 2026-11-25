@@ -1589,11 +1589,9 @@ pub fn star_bytes_unrecoverable(star: &[u8]) -> Option<String> {
 }
 
 fn classic_unrecoverable(star: &[u8]) -> Option<String> {
-    match crate::verify(star) {
-        Ok((h, _, live, k, _)) if live < k => Some(format!("live={live}/{} need={k}", h.n)),
-        Ok(_) => None,
-        Err(e) => Some(format!("unreadable: {e}")),
-    }
+    crate::recovery::assess_classic_bytes(star)
+        .unrecoverable_reason()
+        .map(str::to_string)
 }
 
 /// Like [`star_bytes_unrecoverable`] for a file on disk; a large-file pack is
@@ -1611,24 +1609,10 @@ pub fn path_unrecoverable(input: &Path) -> Result<Option<String>> {
             head.stars
         )));
     }
-    let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    for loc in &locs {
-        use std::io::Seek;
-        f.seek(std::io::SeekFrom::Start(loc.file_off))
-            .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let mut part = Vec::new();
-        (&mut f)
-            .take(loc.star_len)
-            .read_to_end(&mut part)
-            .map_err(|e| crate::Error::Msg(e.to_string()))?;
-        if (part.len() as u64) < loc.star_len {
-            return Ok(Some(format!("part {} is cut off", loc.index)));
-        }
-        if let Some(why) = classic_unrecoverable(&part) {
-            return Ok(Some(format!("part {}: {why}", loc.index)));
-        }
-    }
-    Ok(None)
+    let _ = (head, locs);
+    Ok(crate::recovery::assess_work_pack_path(input)?
+        .unrecoverable_reason()
+        .map(str::to_string))
 }
 
 /// [`scry_path`] plus a recoverability verdict. When the file can no longer be

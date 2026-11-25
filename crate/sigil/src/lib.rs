@@ -65,6 +65,7 @@ mod pieces;
 pub mod pretty;
 pub mod privacy;
 pub mod readdata;
+pub mod recovery;
 pub mod repair_ctl;
 pub mod repair_scan;
 mod rs;
@@ -969,7 +970,10 @@ fn unseal_meta(
                 Ok(cek) => cek,
                 Err(e) => {
                     if identities.is_empty() && p.is_empty() {
-                        return Err(Error::Msg("passphrase or --identity required".into()));
+                        return Err(Error::Msg(
+                            "passphrase or --identity required — this Sigil Archive is Warded"
+                                .into(),
+                        ));
                     }
                     return Err(e);
                 }
@@ -986,7 +990,9 @@ fn unseal_meta(
                         "seal has no encrypt-to recipients; passphrase required".into(),
                     ));
                 }
-                return Err(Error::Msg("passphrase required".into()));
+                return Err(Error::Msg(
+                    "passphrase or --identity required — this Sigil Archive is Warded".into(),
+                ));
             }
             derive_key(p, &h.salt)
         };

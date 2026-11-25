@@ -60,11 +60,12 @@ first when the estimate is over about 2 minutes (`--yes` skips the question), an
 safely on Ctrl-C. For scheduled jobs: `--max-secs SECS` skips (exit 4) a repair estimated
 longer than that.
 
-`scry` may say `NOT recoverable` for a file with bit rot on every piece that `mend` can
-still fix, so run `mend --scan` before giving up on a copy.
+When scattered bit rot hits every piece (`live < need`), `scry` and `unseal` check whether
+`mend`'s deeper repair can heal it: if so, they report `damaged — run sigil mend` (exit 5)
+instead of `NOT recoverable`, and every failure prints a tailored `What you can try:` list.
 
-Exit codes: 0 done, 1 error or key problem, 2 too damaged (nothing written), 3 nothing
-checked, 4 repair skipped, 130 stopped with Ctrl-C. Guides: [MEND-SCAN.md](MEND-SCAN.md),
+Exit codes: 0 done, 1 error or key problem, 2 not recoverable / too damaged (nothing written),
+3 nothing checked, 4 repair skipped, 5 damaged but repairable with `sigil mend`, 130 stopped with Ctrl-C. Guides: [MEND-SCAN.md](MEND-SCAN.md),
 [SOFT-RS.md](SOFT-RS.md); walk-through: [wiki/Repairing-a-damaged-file.md](wiki/Repairing-a-damaged-file.md).
 
 ### Keep versions of a live file (vault tip + dirty edit → re-seal)

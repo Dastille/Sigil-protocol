@@ -32,7 +32,7 @@ pub const DIR_VER_PLAIN: u8 = 1;
 pub const DIR_VER_SEALED: u8 = 2;
 
 const HIDDEN_HINT: &str =
-    "encrypted folder pack: member names are hidden; give --pass / --identity to list or open it";
+    "Warded Tome: member names are hidden; give --pass / --identity to list or open it";
 
 fn io(e: std::io::Error) -> crate::Error {
     crate::Error::Msg(e.to_string())
@@ -412,7 +412,7 @@ fn read_sealed_body<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
 /// For a sealed-directory (v2) pack: `Some((member_count, body))`; `None` for v1.
 pub fn sealed_dir_body(input: &Path) -> Result<Option<(u32, Vec<u8>)>> {
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
-    let (ver, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     if ver != DIR_VER_SEALED {
         return Ok(None);
     }
@@ -493,7 +493,7 @@ pub fn unseal_dir_only_keys(
 ) -> Result<u32> {
     crate::refuse_empty_open_pass(pass)?;
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
-    let (ver, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     if ver == DIR_VER_SEALED {
         if pass.is_none() && identities.is_empty() {
             return Err(crate::Error::Msg(HIDDEN_HINT.into()));
@@ -501,7 +501,7 @@ pub fn unseal_dir_only_keys(
         let body = read_sealed_body(&mut reader)?;
         let inner = open_body(n, &body, pass, companions, identities)?;
         let mut cur = Cursor::new(inner);
-        let (_, n) = read_head(&mut cur, "not a folder pack (SGDR)")?;
+        let (_, n) = read_head(&mut cur, "not a Tome archive (SGDR)")?;
         return unseal_v1_stream(&mut cur, n, dest, pass, companions, only, wards, identities);
     }
     unseal_v1_stream(
@@ -540,9 +540,7 @@ fn unseal_v1_stream<R: Read>(
         reader.read_exact(&mut name).map_err(io)?;
         let rel = String::from_utf8_lossy(&name).into_owned();
         if rel.contains("..") || Path::new(&rel).is_absolute() {
-            return Err(crate::Error::Msg(
-                "refusing unsafe path in folder pack".into(),
-            ));
+            return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
         let mut sl = [0u8; 8];
         reader.read_exact(&mut sl).map_err(io)?;
@@ -555,7 +553,7 @@ fn unseal_v1_stream<R: Read>(
             .map_err(io)?;
         if star.len() as u64 != slen {
             return Err(crate::Error::Msg(
-                "truncated folder pack (star bytes)".into(),
+                "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
             ));
         }
         if !wanted(&rel, only) {
@@ -581,7 +579,7 @@ fn unseal_v1_stream<R: Read>(
     }
     if !only.is_empty() && got == 0 {
         return Err(crate::Error::Msg(
-            "nothing matched --only (Scry the pack to see paths)".into(),
+            "nothing matched --only (run sigil scry on the Tome to see paths)".into(),
         ));
     }
     staged.commit()?;
@@ -646,7 +644,7 @@ pub fn unseal_dir_mend_keys(
     let raw = fs::read(input).map_err(io)?;
     if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && raw[4] == DIR_VER_SEALED {
         let mut cur = Cursor::new(&raw[..]);
-        let (_, n) = read_head(&mut cur, "not a folder pack (SGDR)")?;
+        let (_, n) = read_head(&mut cur, "not a Tome archive (SGDR)")?;
         let body = read_sealed_body(&mut cur)?;
         let (inner, healed_body) = if body.starts_with(&crate::work::WORK_MAGIC) {
             let mut v = Vec::new();
@@ -679,8 +677,8 @@ pub fn unseal_dir_mend_keys(
 /// Keyless mend of a sealed-directory (v2) pack: heal the body's torn shards and
 /// write the healed pack to `output` (via `.mend-part` + rename). Returns a one-line report.
 pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
-    let (n, body) = sealed_dir_body(input)?
-        .ok_or_else(|| crate::Error::Msg("not a sealed folder pack".into()))?;
+    let (n, body) =
+        sealed_dir_body(input)?.ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
     let healed = if body.starts_with(&crate::work::WORK_MAGIC) {
         let src = Scratch(scratch_beside(output, "mend-body-in"));
         let dst = Scratch(scratch_beside(output, "mend-body-out"));
@@ -715,7 +713,7 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
 pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
     let raw = fs::read(input).map_err(io)?;
     let entries = parse_sgdr_entries(&raw)
-        .map_err(|e| crate::Error::Msg(format!("folder pack index unreadable: {e}")))?;
+        .map_err(|e| crate::Error::Msg(format!("truncated or unreadable Tome index: {e}")))?;
     drop(raw);
     let total = entries.len();
     let mut healed_entries = Vec::with_capacity(total);
@@ -727,7 +725,7 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
             let dst = Scratch(scratch_beside(output, "mend-member-out"));
             fs::write(&src.0, &star).map_err(io)?;
             let r = crate::work::mend_pack_path(&src.0, &dst.0, soft).map_err(|e| {
-                crate::Error::Msg(format!("member '{rel}' could not be mended: {e}"))
+                crate::Error::Msg(format!("member '{rel}' is too damaged to mend: {e}"))
             })?;
             soft_used |= r.soft_used;
             if r.mended.is_empty() {
@@ -738,7 +736,7 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
             }
         } else if crate::work::star_torn(&star) {
             let (h, used) = crate::pieces::mend_bytes_ex(&star, soft).map_err(|e| {
-                crate::Error::Msg(format!("member '{rel}' could not be mended: {e}"))
+                crate::Error::Msg(format!("member '{rel}' is too damaged to mend: {e}"))
             })?;
             if crate::work::star_torn(&h) {
                 return Err(crate::Error::Msg(format!(
@@ -805,9 +803,7 @@ fn restore_entries(
     for (rel, star) in entries {
         let mut star = star;
         if rel.contains("..") || Path::new(&rel).is_absolute() {
-            return Err(crate::Error::Msg(
-                "refusing unsafe path in folder pack".into(),
-            ));
+            return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
         if wanted(&rel, only) {
             let file_pass = pass_for(&rel, pass, wards);
@@ -857,7 +853,7 @@ fn restore_entries(
 
     if !only.is_empty() && got == 0 {
         return Err(crate::Error::Msg(
-            "nothing matched --only (Scry the pack to see paths)".into(),
+            "nothing matched --only (run sigil scry on the Tome to see paths)".into(),
         ));
     }
     staged.commit()?;
@@ -869,7 +865,7 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         return Err(crate::Error::Msg("folder pack too short".into()));
     }
     if raw[0..4] != DIR_MAGIC {
-        return Err(crate::Error::Msg("not a folder pack (SGDR)".into()));
+        return Err(crate::Error::Msg("not a Tome archive (SGDR)".into()));
     }
     if raw[4] == DIR_VER_SEALED {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
@@ -886,14 +882,16 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     let mut entries = Vec::with_capacity((n as usize).min(raw.len() / 10));
     for _ in 0..n {
         if off + 2 > raw.len() {
-            return Err(crate::Error::Msg("truncated folder pack (name len)".into()));
+            return Err(crate::Error::Msg(
+                "truncated Tome (cut off inside member list)".into(),
+            ));
         }
         let nlen =
             u16::from_le_bytes(raw[off..off + 2].try_into().map_err(crate::short_field)?) as usize;
         off += 2;
         if off + nlen + 8 > raw.len() {
             return Err(crate::Error::Msg(
-                "truncated folder pack (name/star len)".into(),
+                "truncated Tome (cut off inside member header)".into(),
             ));
         }
         let name = String::from_utf8_lossy(&raw[off..off + nlen]).into_owned();
@@ -905,7 +903,7 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         off += 8;
         if slen > raw.len() - off {
             return Err(crate::Error::Msg(
-                "truncated folder pack (star bytes)".into(),
+                "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
             ));
         }
         let star = raw[off..off + slen].to_vec();
@@ -1029,7 +1027,7 @@ pub fn dir_unrecoverable(input: &Path) -> Result<Option<String>> {
 fn v1_unrecoverable(input: &Path) -> Result<(Option<String>, Vec<String>)> {
     let mut torn = Vec::new();
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
-    let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let (_, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     for i in 0..n {
         let mut lb = [0u8; 2];
         if reader.read_exact(&mut lb).is_err() {
@@ -1055,9 +1053,12 @@ fn v1_unrecoverable(input: &Path) -> Result<(Option<String>, Vec<String>)> {
             .read_to_end(&mut star)
             .map_err(io)?;
         if (star.len() as u64) < slen {
-            return Ok((Some(format!("{rel}: cut off")), torn));
+            return Ok((
+                Some(format!("truncated Tome (cut off inside '{rel}' data)")),
+                torn,
+            ));
         }
-        if let Some(why) = crate::work::star_bytes_unrecoverable(&star) {
+        if let Some(why) = crate::recovery::assess_star_bytes(&star).unrecoverable_reason() {
             return Ok((Some(format!("{rel}: {why}")), torn));
         }
         if crate::work::star_bytes_torn(&star) {
@@ -1255,7 +1256,7 @@ pub(crate) fn open_sealed_inner(
 ) -> Result<Vec<u8>> {
     match sealed_dir_body(input)? {
         Some((n, body)) => open_body(n, &body, pass, companions, identities),
-        None => Err(crate::Error::Msg("not a sealed folder pack".into())),
+        None => Err(crate::Error::Msg("not a Warded Tome".into())),
     }
 }
 
@@ -1274,7 +1275,7 @@ pub(crate) fn unlock_dir_bytes(
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
     let mut reader = Cursor::new(&data[..]);
-    let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let (_, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     let body = read_sealed_body(&mut reader)?;
     open_body(n, &body, pass, &[], identities)
 }
@@ -1309,7 +1310,7 @@ pub(crate) fn fill_sizes_v1_bytes(
         return Ok(());
     }
     let mut reader = Cursor::new(inner);
-    let (ver, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     if ver == DIR_VER_SEALED {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
@@ -1325,7 +1326,11 @@ pub(crate) fn fill_sizes_v1_bytes(
         let end = start
             .checked_add(u64::from_le_bytes(sl) as usize)
             .filter(|e| *e <= inner.len())
-            .ok_or_else(|| crate::Error::Msg("truncated folder pack (star bytes)".into()))?;
+            .ok_or_else(|| {
+                crate::Error::Msg(
+                    "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
+                )
+            })?;
         reader.set_position(end as u64);
         if let Some(e) = entries
             .iter_mut()
@@ -1349,7 +1354,7 @@ pub(crate) fn read_entry_star_v1_bytes(inner: &[u8], want: &str) -> Result<Vec<u
 
 fn read_entry_star_from<R: Read>(reader: &mut R, want: &str) -> Result<Vec<u8>> {
     let want = want.trim().trim_start_matches("./");
-    let (ver, n) = read_head(reader, "not a folder pack (SGDR)")?;
+    let (ver, n) = read_head(reader, "not a Tome archive (SGDR)")?;
     if ver == DIR_VER_SEALED {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
@@ -1372,7 +1377,7 @@ fn read_entry_star_from<R: Read>(reader: &mut R, want: &str) -> Result<Vec<u8>> 
                 .map_err(io)?;
             if star.len() != slen {
                 return Err(crate::Error::Msg(
-                    "truncated folder pack (star bytes)".into(),
+                    "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
                 ));
             }
             return Ok(star);
@@ -1386,7 +1391,7 @@ fn read_entry_star_from<R: Read>(reader: &mut R, want: &str) -> Result<Vec<u8>> 
         }
     }
     Err(crate::Error::Msg(format!(
-        "no entry '{want}' in folder pack (Scry / path to list)"
+        "no entry '{want}' in Tome (run sigil scry or sigil path to list)"
     )))
 }
 
@@ -1989,7 +1994,7 @@ pub struct PickedStar {
 /// Member count of any folder pack (plain or sealed), without a key.
 pub fn dir_member_count(input: &Path) -> Result<u32> {
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
-    let (_, n) = read_head(&mut reader, "not a folder pack (SGDR)")?;
+    let (_, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     Ok(n)
 }
 
@@ -2003,7 +2008,7 @@ pub fn dir_pick_stars(
     picks: &[u32],
 ) -> Result<Vec<PickedStar>> {
     fn walk<R: Read>(reader: &mut R, picks: &[u32]) -> Result<Vec<PickedStar>> {
-        let (ver, n) = read_head(reader, "not a folder pack (SGDR)")?;
+        let (ver, n) = read_head(reader, "not a Tome archive (SGDR)")?;
         if ver == DIR_VER_SEALED {
             return Err(crate::Error::Msg(HIDDEN_HINT.into()));
         }
@@ -2025,7 +2030,7 @@ pub fn dir_pick_stars(
                     .map_err(io)?;
                 if star.len() as u64 != slen {
                     return Err(crate::Error::Msg(
-                        "truncated folder pack (star bytes)".into(),
+                        "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
                     ));
                 }
                 out.push(PickedStar {
@@ -2038,7 +2043,7 @@ pub fn dir_pick_stars(
                     .map_err(io)?;
                 if got != slen {
                     return Err(crate::Error::Msg(
-                        "truncated folder pack (star bytes)".into(),
+                        "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
                     ));
                 }
             }
