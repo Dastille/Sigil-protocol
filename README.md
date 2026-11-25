@@ -856,6 +856,12 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
 
 ## Known limitations
 
+- In a large-file pack (SGWK, a big file sealed as a row of chunk stars), the length field in front of each chunk
+  star and the facet list at the end are not Reed–Solomon coded. Scattered bad sectors that
+  hit them make `mend` refuse the whole pack before any chunk star is tried:
+  in one test run, 256 MiB packs with 1–2% scattered bad sectors were refused at once, while
+  64 MiB packs with 1% (Reflection) and 2% (Seal) were repaired. The error can name the facet list when
+  the damage is elsewhere in the framing.
 - `sigil keygen -o me.sgk` with no `--pass` / `--passkey` still writes the secret identity
   unprotected (owner-only file, but plain bytes) so existing scripts keep working; it prints a
   warning. Use `--pass -` or `--passkey`. A passphrase-protected identity asks for its
@@ -894,7 +900,7 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   (never the output name). A pack whose framing is damaged cannot be scanned (plain `mend`
   still tries). Time estimates are a throughput model measured on one 8-core machine and are
   unverified elsewhere. The rest of
-  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): a GPU option, and a CRC search for damaged regions with no spare symbol left (racing across CPU threads with a shared stop is done; it makes repair faster, not able to fix more). Since 24 November 2026 the deeper repair also settles neighbouring damaged columns together, which repairs more files with many scattered bad sectors (test `mend_joint_windows_repair_scattered_sectors_main_loses`, fixed seeds: 23 → 41 of 54 cases; never a wrong file); it does not help heavy scattered bit rot. An explicit `-o` that names
+  the planned order is in [docs/SOFT-RS.md](docs/SOFT-RS.md): a CRC search for damaged regions with no spare symbol left (racing across CPU threads with a shared stop is done; it makes repair faster, not able to fix more). A GPU option was measured on 25 November 2026 and parked: the slowest CPU repair in that run took 4 seconds (64 MiB). Since 24 November 2026 the deeper repair also settles neighbouring damaged columns together, which repairs more files with many scattered bad sectors (test `mend_joint_windows_repair_scattered_sectors_main_loses`, fixed seeds: 23 → 41 of 54 cases; never a wrong file); it does not help heavy scattered bit rot. An explicit `-o` that names
   an existing file still replaces it (after the repair has passed its check), as before.
   When several copies are given, the deeper repair is not used (one copy at a time). Soft repair is bounded (a work cap plus at most
   2(n−k)+2 whole-file checks), so it finishes in seconds on files of tens of MB, but scattered
