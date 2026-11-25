@@ -135,7 +135,7 @@ fn plain_mend_both_fail_refuses_without_output() {
         t.contains("could not repair") && t.contains("Nothing was written"),
         "{t}"
     );
-    assert!(t.contains("sigil mend photo.sg1 other-copy.sg1"), "{t}");
+    assert!(t.contains("sigil mend photo.sg1 <other-copy.sg1>"), "{t}");
     assert!(mended_files(&d).is_empty(), "{:?}", mended_files(&d));
     // Same with an explicit -o: nothing at that path either.
     let o = sigil(&d, &["mend", "photo.sg1", "-o", "out.sg1"]);

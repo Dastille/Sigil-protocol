@@ -53,12 +53,13 @@ impl Cause {
 /// Sort an open error into a cause. Anything not clearly a key refusal is `Damaged`
 /// (fail closed: an unknown error never reads as "just a key problem").
 pub fn cause_of(why: &str) -> Cause {
-    if why.contains("passphrase or --identity required")
+    if why.contains(crate::KEY_REQUIRED)
+        || why.contains(crate::NO_RECIPIENTS)
         || why.contains("member names are hidden")
         || why.contains("this pack is locked")
     {
         Cause::KeyNeeded
-    } else if why.contains("could not unwrap CEK") {
+    } else if why.contains(crate::keys::WRONG_KEY) || why.contains("could not unwrap CEK") {
         Cause::WrongKey
     } else {
         Cause::Damaged
@@ -376,7 +377,7 @@ mod tests {
             Cause::KeyNeeded
         );
         assert_eq!(
-            cause_of("a.txt: could not unwrap CEK — need matching --identity or passphrase"),
+            cause_of(&format!("a.txt: {} (x)", crate::keys::WRONG_KEY)),
             Cause::WrongKey
         );
         assert_eq!(cause_of("part missing"), Cause::Damaged);

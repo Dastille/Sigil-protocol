@@ -44,6 +44,9 @@ pub(crate) const MTU: u16 = 16 * 1024;
 /// Largest Encoding Symbol ID: RFC 6330 section 3.2, the ESI is a 24-bit field.
 pub const MAX_ESI: u32 = (1 << 24) - 1;
 /// Largest source block RFC 6330 supports (K'max, section 5.1.2 / Table 2).
+/// Start of the error `gather` gives when a Channel folder does not hold enough mana yet.
+pub(crate) const MANA_SHORT: &str = "not enough mana yet";
+
 const MAX_K: u32 = 56_403;
 /// Refuse to allocate a decoder for more than this (a hostile OTI could ask for TBs).
 const MAX_TRANSFER: u64 = 1 << 40;
@@ -544,12 +547,12 @@ pub fn gather_fountain_report(dir: &Path) -> Result<(Vec<u8>, FountainReport)> {
             .sum();
         return Err(err(if more > 0 {
             format!(
-                "not enough mana yet: have {usable} of {} needed, need {more} more (keep raining){note}",
+                "{MANA_SHORT}: have {usable} of {} needed, need {more} more (keep raining){note}",
                 rep.needed
             )
         } else {
             format!(
-                "not enough mana yet: have {} for {} needed; RaptorQ sometimes needs 1-2 extra, keep raining{note}",
+                "{MANA_SHORT}: have {} for {} needed; RaptorQ sometimes needs 1-2 extra, keep raining{note}",
                 rep.packets, rep.needed
             )
         }));

@@ -78,7 +78,13 @@ with code 2:
 ```
 $ sigil scry dead.sg1
 NOT recoverable  v2  live=5/16 need=12 merkle=open keystone=intact ...
-NOT recoverable (live=5/16 need=12): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
+NOT recoverable (live=5/16 need=12): too damaged to restore from this copy alone
+
+What you can try:
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend dead.sg1 <other-copy.sg1>
+  - If you kept .sgp pieces or Channel mana for it, rebuild from them: sigil gather <folder> -o <rebuilt.sg1>
+  - If it is on Frost Rune drives, rebuild from them: sigil frost mend <frost-folder> -o <rebuilt.sg1>
+  - If it is kept in a Vault, restore an earlier version: sigil vault versions <vault>, then sigil vault restore --version <N> <vault>
 ```
 
 A constellation (`sigil constellation scry Sky` or `sigil scry Sky.sigil`) gets
@@ -94,20 +100,30 @@ star  star  a.txt  17 bytes  d7db...
 star  MISSING  sub/big.bin  200000 bytes  6705...
 missing  sub/big.bin (6705...)
 NOT recoverable: 1 star(s) missing: sub/big.bin
-NOT recoverable (1 star(s) missing: sub/big.bin): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
+NOT recoverable (1 star(s) missing: sub/big.bin): too damaged to restore from this copy alone
 ```
 
-`scry` counts only pieces that pass their own checksum. Bit rot spread over every piece
-makes all of them fail it, so `scry` can say `NOT recoverable` (exit 2) for a file that
-`sigil mend` can still repair with its deeper repair. Before giving up on a copy, run
-`sigil mend --scan FILE` (it writes nothing). Captured on 23 November 2026 (that day's main build)
-on a 2.2 MB photo with 2 000 random bits flipped:
+`scry` checks per-piece checksums first; when bit rot touches so many pieces that too few
+are intact (`live < need`), `scry` runs the same repair `sigil mend` would run, in memory
+(nothing is written), to find out whether this copy can still be rebuilt. If it can, `scry`
+reports `damaged — run sigil mend` and exits **5** (rather than falsely claiming
+`NOT recoverable`), and prints the next steps (`What you can try:`). That check has a time
+limit of 3 seconds per command (`SIGIL_SCRY_PROBE_SECS=N` to change it, `0` to turn it off),
+uses at most 2 CPU threads, and skips seals over 32 MiB; when it cannot finish, `scry` says
+`damaged — run sigil mend … to find out whether it can be repaired` and exits **6** instead
+of guessing. Measured worst case on a crafted 32 MiB seal: about 3.2 s and 290 MiB.
 
 ```
 $ sigil scry rot.sg1
-NOT recoverable  v2  live=0/16 need=12 merkle=open keystone=intact orig=2270725 entropy=7988 name=photo.jpg
+damaged  v2  live=0/16 need=12 merkle=open keystone=intact orig=2270725 entropy=7988 name=photo.jpg
 attestation: none (no .sig beside this file)
-NOT recoverable (live=0/16 need=12): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
+damaged — run sigil mend rot.sg1 (0 of 16 shards intact, 12 needed; the deeper repair restores it)
+
+What you can try:
+  - See what is damaged and how long a repair takes: sigil mend --scan rot.sg1
+  - Repair it into a new file (the original is kept): sigil mend rot.sg1
+  - Or open it with a one-off repair in memory: sigil unseal --repair -o <out-file> rot.sg1
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend rot.sg1 <other-copy.sg1>
 $ sigil mend rot.sg1
 mended rot.sg1 → rot.mended.sg1 (live 16/16, need 12, merkle ok, soft salvage)
 The quick repair was not enough, so Sigil used the deeper repair for bit rot. The result passed the full check (Merkle root and true name).
@@ -268,29 +284,44 @@ NOT CHECKED: 4 piece file(s) (.sgp). Scrub only checks .sg1 files, so these were
 ```
 
 `unseal` also works directly on a damaged file while enough pieces are live.
-When too many are gone it refuses rather than guessing:
+When `live < need`, `unseal` and `open` tell repairable bit rot (exit 5, pointing to
+`sigil mend` and `sigil unseal --repair`) from unrecoverable loss (exit 2), and list only the
+next steps that exist for that archive (for a partly damaged Tome: `sigil unseal --only
+<path>` and the names of the undamaged files). Other errors (a missing file, an output that
+already exists, Ctrl-C) keep their own message and exit code:
 
 ```
 $ sigil unseal -o out.jpg dead.sg1
-need 12 pieces, have 5
+Cannot open dead.sg1: NOT recoverable (live=4/16 need=12): too damaged to restore from this copy alone
+
+What you can try:
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend dead.sg1 <other-copy.sg1>
+  - If you kept .sgp pieces or Channel mana for it, rebuild from them: sigil gather <folder> -o <rebuilt.sg1>
+  - If it is on Frost Rune drives, rebuild from them: sigil frost mend <frost-folder> -o <rebuilt.sg1>
+  - If it is kept in a Vault, restore an earlier version: sigil vault versions <vault>, then sigil vault restore --version <N> <vault>
 ```
 
 ### Exit codes
 
 Every command ends with one of these codes, so scripts and scheduled jobs can tell what
-happened (source: `classify_exit` in `crate/sigil/src/main.rs`; scrub and doctor reports in
-`scrub.rs` / `doctor.rs`):
+happened (source: `HintedError` / `classify_exit` in `crate/sigil/src/main.rs`; scrub and
+doctor reports in `scrub.rs` / `doctor.rs`):
 
 | Code | Meaning | Examples |
 |---:|---|---|
-| 0 | Done; or checked and fine | `seal`, `unseal`, `mend` succeeded; `scry` / `verify` ok (also when a `needs repair` line is printed); `mend --scan` ran |
-| 1 | Error, or a key problem | wrong or missing passphrase or identity; unreadable input; `unseal` or `frost mend` with too few pieces (`need 12 pieces, have 5`); `doctor` warnings |
-| 2 | Too damaged (nothing written), or a usage error | `scry` / `verify` `NOT recoverable`; `mend` could not repair; `doctor --scrub` found an uncorrectable Sigil; a refused option such as `--pass VALUE` |
+| 0 | Done; or checked and fine | `seal`, `unseal`, `mend` succeeded; `scry` / `verify` ok (also when `needs repair` is printed and `live >= need`); `mend --scan` ran |
+| 1 | Error, or a key problem | wrong or missing passphrase or identity (`Wrong passphrase or key — this Sigil Archive is Warded`); `--ward-file` wrong/missing; unreadable input; `doctor` warnings |
+| 2 | Not recoverable / too damaged (nothing written), or a usage error | `scry` / `verify` `NOT recoverable`; `mend` could not repair; `unseal` / `open` on an unrecoverable archive; `gather` / `frost mend` short on pieces or mana; `doctor --scrub` found an uncorrectable Sigil; a refused option such as `--pass VALUE` |
 | 3 | Nothing could be checked | `doctor --scrub` on Frost Rune pieces or a folder with no `.sg1`; `boot` found no Sigil |
 | 4 | Repair skipped, nothing written | `mend --max-secs` estimate too long; "no" at the `Keep going?` question; unattended repair estimated over 15 minutes |
+| 5 | Damaged, will not open as-is, and `sigil mend` repairs it (checked: the repair ran in memory and passed the full check) | `scry` / `verify` / `unseal` / `open` when `live < need` (e.g. scattered bit rot) |
+| 6 | Damaged, will not open as-is; whether `sigil mend` can repair it was not found out (the repair check ran out of time, was turned off, or the seal is over 32 MiB) | same commands; run `sigil mend` to find out |
 | 130 | Stopped with Ctrl-C, nothing written | `mend` stopped safely |
 
 A failed `mend` leaves the damaged file exactly as it was and writes no output file.
+With `--json`, a failure line keeps its fields (`ok`, `cmd`, `exit`, `error`, …) and may add
+an optional `hints` array holding the same "What you can try" lines.
+Exit codes changed in this release; see [CHANGELOG.md](CHANGELOG.md#breaking-changes).
 
 ### Encryption with a passphrase
 
@@ -301,9 +332,9 @@ a file only you can read, or type it with `--pass -`.
 $ printf '%s\n' 'correct horse' > pw.txt && chmod 600 pw.txt
 $ sigil seal --pass-file pw.txt -o secret.sg1 photo.jpg
 $ sigil unseal -o out.jpg secret.sg1 < /dev/null
-passphrase or --identity required
+passphrase or --identity required — this Sigil Archive is Warded
 $ sigil unseal --pass-file wrong.txt -o out.jpg secret.sg1
-could not unwrap CEK — need matching --identity or passphrase
+Wrong passphrase or key — this Sigil Archive is Warded (the passphrase or --identity given did not unlock it)
 $ sigil unseal --pass-file pw.txt -o out.jpg secret.sg1
 de-scribed 3000000 bytes → out.jpg
 ```
@@ -754,9 +785,11 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 |------|---------|
 | 0 | it worked / the Sigil is healthy |
 | 1 | error or refused (bad key, missing file, empty stdin, wrong option combo) |
-| 2 | too damaged to restore, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
+| 2 | not recoverable / too damaged to restore, short on pieces/mana, or a deep read found a part that will not open. (Also clap's code for a mistyped command line — check `--json` `ok`.) |
 | 3 | no boot Sigil found |
 | 4 | `mend`: repair skipped — the estimate was over `--max-secs`, over the 15-minute unattended limit with nobody to ask, or you answered no; nothing written |
+| 5 | damaged, repairable with `sigil mend` (cannot open as-is; the repair was checked in memory) |
+| 6 | damaged, cannot open as-is; repair not checked (time limit, `SIGIL_SCRY_PROBE_SECS=0`, or over 32 MiB): run `sigil mend` |
 | 130 | `mend`: stopped with Ctrl-C; nothing written |
 
 `doctor` keeps its own documented codes.
@@ -944,13 +977,10 @@ See [docs/RELEASE-SIGNING-DESIGN.md](docs/RELEASE-SIGNING-DESIGN.md).
   recovery folder: `scripts/make-recovery-kit.sh ARCHIVE...` puts the program, checksums, the spec
   and a plain-English `RECOVER.txt` next to the archive (no passphrases or keys).
 
-- `scry` and `verify` judge a file by the pieces whose own checksum still passes. Scattered
-  bit rot can fail every piece's checksum, so they report `NOT recoverable` (exit 2) and
-  suggest finding another copy even when `sigil mend` can repair the file with its deeper
-  repair (captured 23 November 2026, see "Check: scry / verify" above). Run
-  `sigil mend --scan FILE` before giving up on a copy.
-- `unseal` and `frost mend` with too few pieces exit 1 (`need 12 pieces, have 0`), not 2
-  like `scry` and `mend`. Scripts should treat any non-zero code as "not restored".
+- For very large archives (over 32 MiB per seal), `scry` and `unseal` estimate whether
+  scattered bit rot is repairable from the scan heuristic instead of running the full
+  deeper-repair solve inline; run `sigil mend --scan FILE` or `sigil mend FILE` for the
+  final answer.
 - The release public key is published (minisign id `6AA9D817CBAC87FA`,
   [`keys/sigil-release.pub`](keys/sigil-release.pub)), but no release has been signed yet.
   `SHA256SUMS` alone still only catches accidental damage, not a swapped file. Once a release

@@ -911,10 +911,14 @@ pub fn unwrap_cek(
             _ => break,
         }
     }
-    Err(Error::Msg(
-        "could not unwrap CEK — need matching --identity or passphrase".into(),
-    ))
+    Err(Error::Msg(format!(
+        "{WRONG_KEY} (the passphrase or --identity given did not unlock it)"
+    )))
 }
+
+/// Start of the error for a passphrase or key that does not unlock a Warded archive.
+/// [`crate::readdata::cause_of`] sorts errors by this text, so keep them in step.
+pub const WRONG_KEY: &str = "Wrong passphrase or key — this Sigil Archive is Warded";
 
 /// Offset of SGTO in a mark (right after keystone / single header).
 #[cfg(test)]

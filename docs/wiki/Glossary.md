@@ -39,4 +39,4 @@
 | **Argon2id** | A method that turns a passphrase into a key slowly, so guessing passphrases is expensive. |
 | **Bit rot** | Slow, scattered damage to stored data, often single flipped bits. |
 | **Hexadecimal (hex)** | Writing numbers with 0–9 and a–f; Sigil shows keys and fingerprints this way. You never need to type them. |
-| **Result code (exit code)** | The number a command leaves for scripts: 0 done, 1 error, 2 too damaged, 3 nothing checked, 4 skipped, 130 stopped. |
+| **Result code (exit code)** | The number a command leaves for scripts: 0 done, 1 error, 2 too damaged, 3 nothing checked, 4 skipped, 5 damaged but `sigil mend` repairs it, 6 damaged, repair not checked, 130 stopped. |

@@ -13,8 +13,8 @@
 //!   same one a single thread would pick.
 //!
 //! Both stop all workers at the next item when the repair is asked to stop (Ctrl-C,
-//! [`crate::repair_ctl::request_stop`]), or when a worker panics, and then return an
-//! error — a partial result is never used as a whole one.
+//! [`crate::repair_ctl::request_stop`]), when a probe's time limit passes, or when a worker
+//! panics, and then return an error — a partial result is never used as a whole one.
 
 use crate::Error;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -45,7 +45,7 @@ impl Drop for CancelOnPanic<'_> {
 }
 
 fn stopped(cancel: &AtomicBool) -> bool {
-    cancel.load(Ordering::SeqCst) || crate::repair_ctl::stop_requested()
+    cancel.load(Ordering::SeqCst) || crate::repair_ctl::should_stop()
 }
 
 /// Run `work` on `threads` scoped threads (inline when 1) and collect what each returned.
@@ -57,11 +57,14 @@ fn run_workers<T: Send>(
     if threads <= 1 {
         return Ok(work());
     }
+    // Workers inherit the starting thread's probe time limit (see `repair_ctl`).
+    let deadline = crate::repair_ctl::current_deadline();
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
                 s.spawn(move || {
                     let _guard = CancelOnPanic(cancel);
+                    let _limit = crate::repair_ctl::DeadlineScope::enter(deadline);
                     work()
                 })
             })

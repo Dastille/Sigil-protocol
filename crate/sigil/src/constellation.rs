@@ -1108,13 +1108,7 @@ pub fn scry_constellation_keys(
     let resolved = crate::container::sky_for_read(input);
     let input = resolved.as_path();
     let (chart, dir) = load_chart_keys(input, pass, identities)?;
-    let card = if input.is_dir() {
-        find_card(input)
-    } else if is_constellation_mark(input) {
-        Some(input.to_path_buf())
-    } else {
-        find_card(&dir)
-    };
+    let card = chart_card(input, &dir);
     Ok(render_scry(
         &chart,
         &dir,
@@ -1125,69 +1119,73 @@ pub fn scry_constellation_keys(
 }
 
 /// [`scry_constellation_keys`] plus a recoverability verdict, like
-/// [`crate::work::scry_path_checked`] for one file. The verdict is `Some(reason)`
-/// when at least one listed member cannot be restored from this copy: its star is
-/// missing (or too damaged to be recognised), or the star is present but beyond
-/// repair. The report then ends with a `NOT recoverable: <reason>` line. Stars
-/// that are damaged but still repairable do not count (`sigil doctor` lists them).
-/// Atlas bags are unpacked to a scratch folder and their stars checked the same way.
+/// [`crate::work::scry_path_checked`] for one file. The verdict is `Some(reason)` when a
+/// listed member cannot be restored from this copy: its star is missing (or too damaged
+/// to be recognised), or this copy of the star cannot be repaired (see
+/// [`crate::recovery::assess_constellation`], run within the probe time limit of
+/// [`crate::recovery::ProbeBudget::from_env`]). The report then ends with a
+/// `NOT recoverable: <reason>` line.
 pub fn scry_constellation_checked(
     input: &Path,
     pass: Option<&str>,
     identities: &[Identity],
 ) -> Result<(String, Option<String>)> {
-    let resolved = crate::container::sky_for_read(input);
-    let input = resolved.as_path();
-    let (chart, dir) = load_chart_keys(input, pass, identities)?;
-    let card = if input.is_dir() {
+    let text = scry_constellation_keys(input, pass, identities)?;
+    let mut budget = crate::recovery::ProbeBudget::from_env()?;
+    let (condition, _) =
+        crate::recovery::assess_constellation(input, pass, identities, &mut budget)?;
+    Ok(match condition.unrecoverable_reason() {
+        None => (text, None),
+        Some(why) => (
+            format!("{text}\nNOT recoverable: {why}"),
+            Some(why.to_string()),
+        ),
+    })
+}
+
+/// The card of a constellation opened at `input` (its chart loaded from `dir`).
+pub(crate) fn chart_card(input: &Path, dir: &Path) -> Option<PathBuf> {
+    if input.is_dir() {
         find_card(input)
     } else if is_constellation_mark(input) {
         Some(input.to_path_buf())
     } else {
-        find_card(&dir)
-    };
-    let in_atlas = is_atlas_file(input);
-    let text = render_scry(
-        &chart,
-        &dir,
-        card.as_deref(),
-        in_atlas,
-        Keys(pass, identities),
-    );
-    let verdict = if in_atlas {
-        // Check the bag's stars one by one: unpack to scratch and run the same verdict.
-        with_extracted_atlas(input, |tmp| {
-            let (c, d) = load_chart_keys(tmp, pass, identities)?;
-            let k = find_card(tmp);
-            Ok(constellation_verdict(&c, &d, k.as_deref()))
-        })?
-    } else {
-        constellation_verdict(&chart, &dir, card.as_deref())
-    };
-    Ok(match verdict {
-        None => (text, None),
-        Some(why) => (format!("{text}\nNOT recoverable: {why}"), Some(why)),
-    })
+        find_card(dir)
+    }
 }
 
-/// Why a constellation in `dir` cannot be fully restored, or `None` if every
-/// member is packed in the card or has a star that is healthy or repairable.
-fn constellation_verdict(chart: &Chart, dir: &Path, card: Option<&Path>) -> Option<String> {
+/// The condition of a constellation's star files (members packed in the card need none):
+/// a missing star makes it unrecoverable; each star is assessed with
+/// [`crate::recovery::assess_path`]. Also returns the star file that needs `sigil mend`.
+pub(crate) fn assess_stars(
+    chart: &Chart,
+    dir: &Path,
+    card: Option<&Path>,
+    budget: &mut crate::recovery::ProbeBudget,
+) -> (crate::recovery::Condition, Option<PathBuf>) {
+    use crate::recovery::Condition;
     let by_digest = index_stars(dir, card);
     let mut missing: Vec<&str> = Vec::new();
     let mut broken: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut worst: (Condition, Option<PathBuf>) = (Condition::Healthy, None);
     for m in chart.members.iter().filter(|m| m.bytes.is_empty()) {
-        match find_member_star(dir, m, &by_digest) {
-            None => missing.push(&m.name),
-            Some(p) => {
-                if !seen.insert(p.clone()) {
-                    continue;
-                }
-                if let Some(why) = crate::doctor::star_unrecoverable(&p) {
-                    broken.push(format!("{}: {why}", m.name));
-                }
-            }
+        let Some(p) = find_member_star(dir, m, &by_digest) else {
+            missing.push(&m.name);
+            continue;
+        };
+        if !seen.insert(p.clone()) {
+            continue;
+        }
+        let c = match crate::recovery::assess_path(&p, budget) {
+            Ok(c) => c,
+            Err(e) => Condition::Unrecoverable(format!("unreadable: {e}")),
+        };
+        if let Some(why) = c.unrecoverable_reason() {
+            broken.push(format!("{}: {why}", m.name));
+        } else if c.is_worse_than(&worst.0) {
+            let star = (!c.opens_as_is()).then(|| p.clone());
+            worst = (c.within(&m.name), star);
         }
     }
     let mut parts: Vec<String> = Vec::new();
@@ -1206,9 +1204,9 @@ fn constellation_verdict(chart: &Chart, dir: &Path, card: Option<&Path>) -> Opti
         ));
     }
     if parts.is_empty() {
-        None
+        worst
     } else {
-        Some(parts.join("; "))
+        (Condition::Unrecoverable(parts.join("; ")), None)
     }
 }
 

@@ -102,8 +102,27 @@ fn verdict_of(bad: Option<String>, h: Health) -> (Verdict, Option<String>, Optio
     }
 }
 
-/// Status of one file: a mark, a large-file pack or a folder pack (keyless).
+/// Status of one file: a mark, a large-file pack or a folder pack (keyless). Runs the
+/// repair probe of [`crate::recovery`] within [`crate::recovery::ProbeBudget::from_env`].
 pub fn scry_status_path(input: &Path) -> Result<ScryStatus> {
+    let mut budget = crate::recovery::ProbeBudget::from_env()?;
+    let condition = if crate::is_dir_pack(input) {
+        crate::recovery::assess_tome(input, &mut budget)?.0
+    } else {
+        crate::recovery::assess_path(input, &mut budget)?
+    };
+    scry_status_assessed(input, &condition)
+}
+
+/// [`scry_status_path`] for a file whose condition was already assessed (so the repair
+/// probe is not run twice). `verdict` is `not-recoverable` only for
+/// [`Condition::Unrecoverable`](crate::recovery::Condition::Unrecoverable); a copy that
+/// will not open as-is but may be repaired stays `needs-repair`.
+pub fn scry_status_assessed(
+    input: &Path,
+    condition: &crate::recovery::Condition,
+) -> Result<ScryStatus> {
+    let bad = condition.unrecoverable_reason().map(str::to_string);
     let mut st = ScryStatus {
         kind: "mark",
         verdict: Verdict::Healthy,
@@ -121,10 +140,11 @@ pub fn scry_status_path(input: &Path) -> Result<ScryStatus> {
             st.members = Some(u64::from(n));
             st.encrypted = Some(true);
         } else {
-            st.members = Some(crate::list_dir_pack(input)?.len() as u64);
+            // A cut-off Tome cannot be listed: its member count is unknown.
+            st.members = crate::list_dir_pack(input).ok().map(|m| m.len() as u64);
             st.encrypted = Some(false);
         }
-        crate::folder::dir_unrecoverable(input)?
+        bad
     } else if crate::is_work_pack(input) {
         st.kind = "work-pack";
         let (head, locs) = crate::index_pack(input)?;
@@ -139,7 +159,7 @@ pub fn scry_status_path(input: &Path) -> Result<ScryStatus> {
                 Some(head.orig_total)
             },
         });
-        crate::path_unrecoverable(input)?
+        bad
     } else {
         let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
         let (h, merkle_ok, live, k, recovered) = crate::verify(&data)?;
@@ -160,7 +180,7 @@ pub fn scry_status_path(input: &Path) -> Result<ScryStatus> {
                 Some(h.orig_len)
             },
         });
-        crate::path_unrecoverable(input)?
+        bad
     };
     let (v, reason, repair) = verdict_of(bad, health_file(input));
     st.verdict = v;
@@ -170,30 +190,40 @@ pub fn scry_status_path(input: &Path) -> Result<ScryStatus> {
 }
 
 /// Status of a constellation (folder, card or atlas), trying `pass` / `identities` on a
-/// locked card. An atlas bag is unpacked to scratch and its stars checked too.
+/// locked card. An atlas bag is unpacked to scratch and its stars checked too. Runs the
+/// repair probe within [`crate::recovery::ProbeBudget::from_env`].
 pub fn scry_status_constellation(
     input: &Path,
     pass: Option<&str>,
     identities: &[crate::keys::Identity],
 ) -> Result<ScryStatus> {
+    let mut budget = crate::recovery::ProbeBudget::from_env()?;
+    let (condition, _) =
+        crate::recovery::assess_constellation(input, pass, identities, &mut budget)?;
+    scry_status_constellation_assessed(input, pass, identities, &condition)
+}
+
+/// [`scry_status_constellation`] for a constellation whose condition was already
+/// assessed. A star that fails the quick count is `beyond_repair` only when the
+/// constellation as a whole is not recoverable; otherwise it is `needs_repair`.
+pub fn scry_status_constellation_assessed(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[crate::keys::Identity],
+    condition: &crate::recovery::Condition,
+) -> Result<ScryStatus> {
     let resolved = crate::container::sky_for_read(input);
     if crate::is_atlas_file(resolved.as_path()) {
         // Same counts as for the unpacked constellation: every bag star is checked.
         return crate::constellation::with_extracted_atlas(resolved.as_path(), |tmp| {
-            scry_status_constellation(tmp, pass, identities)
+            scry_status_constellation_assessed(tmp, pass, identities, condition)
         });
     }
-    let (_, bad) = crate::scry_constellation_checked(input, pass, identities)?;
+    let bad = condition.unrecoverable_reason().map(str::to_string);
     let input = resolved.as_path();
     let (chart, dir) = crate::constellation::load_chart_keys(input, pass, identities)?;
     let in_atlas = crate::is_atlas_file(input);
-    let card = if input.is_dir() {
-        crate::constellation::find_card(input)
-    } else if crate::is_constellation_mark(input) {
-        Some(input.to_path_buf())
-    } else {
-        crate::constellation::find_card(&dir)
-    };
+    let card = crate::constellation::chart_card(input, &dir);
     let by_digest = crate::constellation::index_stars(&dir, card.as_deref());
     let mut c = StarCounts {
         members: chart.members.len() as u64,
@@ -222,6 +252,10 @@ pub fn scry_status_constellation(
                         c.needs_repair += 1;
                         mend.push(format!("{}: {w}", m.name));
                     }
+                    Health::Damaged(w) if bad.is_none() => {
+                        c.needs_repair += 1;
+                        mend.push(format!("{}: {w}", m.name));
+                    }
                     Health::Damaged(_) => c.beyond_repair += 1,
                 }
             }
@@ -229,7 +263,7 @@ pub fn scry_status_constellation(
     }
     let verdict = if bad.is_some() {
         Verdict::NotRecoverable
-    } else if c.needs_repair > 0 {
+    } else if c.needs_repair > 0 || !condition.opens_as_is() {
         Verdict::NeedsRepair
     } else {
         Verdict::Healthy

@@ -350,7 +350,7 @@ fn assemble_mark(
     out
 }
 
-fn sgto_from_prefix(file: &[u8], h: &Header) -> Option<Vec<u8>> {
+pub(crate) fn sgto_from_prefix(file: &[u8], h: &Header) -> Option<Vec<u8>> {
     header::sgto_slice(h, file).map(std::borrow::Cow::into_owned)
 }
 

@@ -89,6 +89,6 @@ fn scatter_and_kit_as_json() {
     assert_eq!(fs::read(d.join("back.sg1")).unwrap(), full);
     // two sticks lost: 8 of 16 pieces, below k=12
     fs::remove_dir_all(d.join("kit/usb-0")).unwrap();
-    let j = json(&d, &["kit", "mend", "kit", "-o", "nope.sg1", "--json"], 1);
+    let j = json(&d, &["kit", "mend", "kit", "-o", "nope.sg1", "--json"], 2);
     assert!(j.starts_with("{\"ok\":false,\"cmd\":\"kit mend\""), "{j}");
 }

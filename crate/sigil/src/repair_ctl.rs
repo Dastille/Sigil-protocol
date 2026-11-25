@@ -9,9 +9,14 @@
 //! 5–10 seconds, ask (interactive only) when the padded estimate is over about 2 minutes,
 //! and unattended runs never ask but skip repairs over a 15-minute budget.
 //!
-//! State is process-wide (one repair per `sigil` process).
+//! Stop and progress state is process-wide (one repair per `sigil` process). The optional
+//! time limit used by read-only repair *probes* ([`crate::recovery`]) is per thread instead,
+//! so a probe never stops an unrelated repair running on another thread; the worker
+//! threads of [`crate::race`] inherit the limit of the thread that started them.
 use crate::{Error, Result};
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicU64 = AtomicU64::new(0);
@@ -19,6 +24,50 @@ static TOTAL: AtomicU64 = AtomicU64::new(0);
 
 /// Text every "stopped" error starts with (the CLI maps it to exit 130).
 pub const STOPPED: &str = "repair stopped:";
+
+/// Text every "time limit" error starts with. Only repair probes set a time limit; the
+/// probe reports such a run as "not confirmed", never as "cannot be repaired".
+pub const TIME_LIMIT: &str = "repair check stopped at its time limit:";
+
+thread_local! {
+    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// While alive, repair work on this thread (and on [`crate::race`] workers it starts)
+/// stops at its next [`check`] once `deadline` has passed. Restores the previous limit
+/// when dropped, so scopes nest.
+pub(crate) struct DeadlineScope {
+    prev: Option<Instant>,
+}
+
+impl DeadlineScope {
+    pub(crate) fn enter(deadline: Option<Instant>) -> Self {
+        DeadlineScope {
+            prev: DEADLINE.with(|c| c.replace(deadline)),
+        }
+    }
+}
+
+impl Drop for DeadlineScope {
+    fn drop(&mut self) {
+        DEADLINE.with(|c| c.set(self.prev));
+    }
+}
+
+/// The time limit in force on this thread, if any.
+pub(crate) fn current_deadline() -> Option<Instant> {
+    DEADLINE.with(Cell::get)
+}
+
+/// True once this thread's time limit (if any) has passed.
+pub(crate) fn deadline_passed() -> bool {
+    current_deadline().is_some_and(|d| Instant::now() >= d)
+}
+
+/// True when repair work should stop now: Ctrl-C, or this thread's time limit.
+pub(crate) fn should_stop() -> bool {
+    stop_requested() || deadline_passed()
+}
 
 /// Default ask point for interactive runs, in seconds of padded estimate.
 pub const ASK_SECS: u64 = 120;
@@ -42,12 +91,18 @@ pub fn clear_stop() {
     STOP.store(false, Ordering::SeqCst);
 }
 
-/// `Err` (containing [`STOPPED`]) once a stop was asked for; repair loops call this
+/// `Err` (containing [`STOPPED`]) once a stop was asked for, or (containing
+/// [`TIME_LIMIT`]) once this thread's probe time limit has passed; repair loops call this
 /// between units of work.
 pub fn check() -> Result<()> {
     if stop_requested() {
         return Err(Error::Msg(format!(
             "{STOPPED} stopped before it finished. Nothing was written; the original is unchanged"
+        )));
+    }
+    if deadline_passed() {
+        return Err(Error::Msg(format!(
+            "{TIME_LIMIT} the check ran out of time before it could finish"
         )));
     }
     Ok(())

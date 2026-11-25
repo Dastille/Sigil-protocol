@@ -65,17 +65,25 @@ To choose the name yourself, add `-o fixed.sg1`.
 ## Example 2: bit rot everywhere
 
 Here 2 000 single bits were flipped at random across the whole file. Every piece now fails
-its own small checksum, so the simple check gives up:
+its own small checksum, so `unseal` cannot open it directly—yet `sigil mend` can still heal
+it. `scry` runs the same repair in memory (nothing is written; at most 3 seconds), sees that it
+works, exits **5** (`damaged — run sigil mend`), and prints the next steps. (If that check runs
+out of time, `scry` exits **6** and says to run `sigil mend` to find out.)
 
 ```
 $ sigil scry rot.sg1
-NOT recoverable  v2  live=0/16 need=12 merkle=open keystone=intact orig=2270725 entropy=7988 name=photo.jpg
+damaged  v2  live=0/16 need=12 merkle=open keystone=intact orig=2270725 entropy=7988 name=photo.jpg
 attestation: none (no .sig beside this file)
-NOT recoverable (live=0/16 need=12): too damaged to restore from this copy; find another copy or more pieces (sigil gather), then try again
+damaged — run sigil mend rot.sg1 (0 of 16 shards intact, 12 needed; the deeper repair restores it)
+
+What you can try:
+  - See what is damaged and how long a repair takes: sigil mend --scan rot.sg1
+  - Repair it into a new file (the original is kept): sigil mend rot.sg1
+  - Or open it with a one-off repair in memory: sigil unseal --repair -o <out-file> rot.sg1
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend rot.sg1 <other-copy.sg1>
 ```
 
-**Do not give up on the copy yet.** `scry` only counts pieces that are entirely intact.
-The scan looks closer:
+Running `sigil mend --scan` inspects the damage and estimates the repair time:
 
 ```
 $ sigil mend --scan rot.sg1
@@ -114,8 +122,12 @@ Nothing was written. To repair it: sigil mend dead.sg1
 
 $ sigil mend dead.sg1
 could not repair dead.sg1: too damaged to rebuild from this copy (soft mend could not reconstruct a true-name match). Nothing was written.
-If you have another copy of this Sigil (a backup, a USB stick), give both and Sigil will combine their good parts:
-  sigil mend dead.sg1 other-copy.sg1
+
+What you can try:
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend dead.sg1 <other-copy.sg1>
+  - If you kept .sgp pieces or Channel mana for it, rebuild from them: sigil gather <folder> -o <rebuilt.sg1>
+  - If it is on Frost Rune drives, rebuild from them: sigil frost mend <frost-folder> -o <rebuilt.sg1>
+  - If it is kept in a Vault, restore an earlier version: sigil vault versions <vault>, then sigil vault restore --version <N> <vault>
 ```
 
 The result code was 2 and no file was written. Sigil does not guess.

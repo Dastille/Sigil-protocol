@@ -331,16 +331,6 @@ fn health_work_pack(path: &Path) -> Health {
 }
 
 /// Verify a `.sg1` file of any shape: single mark, work pack, or SGDR folder pack.
-/// `Some(reason)` when the star file at `path` is damaged beyond repair (the same
-/// test `doctor` uses for `bit-rot-unrecoverable`); `None` when it is healthy or
-/// still repairable. Read-only.
-pub(crate) fn star_unrecoverable(path: &Path) -> Option<String> {
-    match health_file(path) {
-        Health::Damaged(m) => Some(m),
-        Health::Ok | Health::Mendable(_) => None,
-    }
-}
-
 pub(crate) fn health_file(path: &Path) -> Health {
     if crate::work::is_work_pack(path) {
         return health_work_pack(path);
@@ -348,8 +338,8 @@ pub(crate) fn health_file(path: &Path) -> Health {
     if crate::is_sealed_dir_pack(path) {
         // Sealed directory: members are inside the encrypted body; check the body.
         return match crate::sealed_dir_body(path) {
-            Err(e) => Health::Damaged(format!("sealed folder pack unreadable: {e}")),
-            Ok(None) => Health::Damaged("sealed folder pack unreadable".into()),
+            Err(e) => Health::Damaged(format!("Warded Tome unreadable: {e}")),
+            Ok(None) => Health::Damaged("Warded Tome unreadable".into()),
             Ok(Some((_, body))) if body.starts_with(&crate::work::WORK_MAGIC) => {
                 match crate::staging::TempFile::with_bytes("doctor-body", &body) {
                     Ok(tmp) => health_work_pack(tmp.path()),
@@ -362,7 +352,7 @@ pub(crate) fn health_file(path: &Path) -> Health {
     if crate::is_dir_pack(path) {
         let entries = match crate::list_dir_pack(path) {
             Ok(e) => e,
-            Err(e) => return Health::Damaged(format!("folder pack unreadable: {e}")),
+            Err(e) => return Health::Damaged(format!("Tome unreadable: {e}")),
         };
         let mut worst = Health::Ok;
         for e in entries {

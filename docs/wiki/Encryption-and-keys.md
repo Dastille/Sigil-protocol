@@ -32,17 +32,28 @@ Without the key, even the file name and size stay hidden (`label=private`). Open
 
 ```
 $ sigil unseal -o secret-out.jpg secret.sg1
-passphrase or --identity required
+passphrase or --identity required — this Sigil Archive is Warded
+
+What you can try:
+  - Provide the passphrase interactively with --pass - or from a file with --pass-file <path>
+  - Or pass your authorized secret key with --identity <me.sgk> (or --talisman <keyfile> for a Talisman Ward)
 
 $ sigil unseal --pass-file wrong-pass.txt -o secret-out.jpg secret.sg1
-could not unwrap CEK — need matching --identity or passphrase
+Wrong passphrase or key — this Sigil Archive is Warded (the passphrase or --identity given did not unlock it)
+
+What you can try:
+  - Check your passphrase and try again with --pass - (interactive) or --pass-file <path>
+  - If Warded to a recipient key, pass the matching secret key with --identity <me.sgk>
+  - If shared with multiple recipients, ask another listed recipient to unlock it with their .sgk key
+  - If a Tome member has its own Ward, pass --ward-file <member>=<pwfile> (or --ward <member>:-)
+  - Sigil Wards have no password reset — if the key is lost, check for an unencrypted backup or an earlier Vault version (sigil vault versions)
 
 $ sigil unseal --pass-file my-pass.txt -o secret-out.jpg secret.sg1
 de-scribed 2270725 bytes → secret-out.jpg
 ```
 
 (The first command was run with no keyboard attached; at a terminal it asks for the
-passphrase. "CEK" is the content key, the random key that actually locks the file.)
+passphrase. Both errors exit with code 1.)
 
 Typing the passphrase into the command is refused:
 
