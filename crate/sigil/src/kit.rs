@@ -43,6 +43,9 @@ fn usb_dirs(kit: &Path) -> Result<Vec<PathBuf>> {
     Ok(dirs)
 }
 
+/// Start of the error `frost mend` gives when the folder holds no `usb-*` drive folder.
+pub(crate) const NO_DRIVES: &str = "no usb-* folders in this Frost Rune folder";
+
 fn budget_ok(h: &Header, drives: usize) -> Result<usize> {
     let n = h.n as usize;
     let k = h.k as usize;
@@ -130,9 +133,9 @@ pub fn place(file: &[u8], kit: &Path, drives: usize) -> Result<PlaceReport> {
 pub fn mend(kit: &Path) -> Result<Vec<u8>> {
     let dirs = usb_dirs(kit)?;
     if dirs.is_empty() {
-        return Err(crate::Error::Msg(
-            "no usb-* folders in this Frost Rune folder (copy the usb-* folders from the remaining drives back into it)".into(),
-        ));
+        return Err(crate::Error::Msg(format!(
+            "{NO_DRIVES} (copy the usb-* folders from the remaining drives back into it)"
+        )));
     }
     let refs: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
     gather_dirs(&refs)

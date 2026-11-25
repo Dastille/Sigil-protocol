@@ -393,7 +393,7 @@ use std::process::{Command, Stdio};
     name = "sigil",
     version = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("SIGIL_GIT_COMMIT"), ")"),
     about = "Wrap a file so a damaged copy can still be restored, and so you can tell if it was swapped.",
-    long_about = "Inscribe makes a .sg1 Sigil Archive. Scry checks it without unpacking. De-scribe gets the original back.\nDefault redundancy style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nExit codes: 0 ok; 1 error, wrong or missing key; 2 not recoverable / too damaged (nothing written) or usage error; 3 nothing could be checked; 4 repair skipped (too long, or you said no); 5 damaged, repairable with `sigil mend` (cannot open as-is); 130 stopped with Ctrl-C.",
+    long_about = "Inscribe makes a .sg1 Sigil Archive. Scry checks it without unpacking. De-scribe gets the original back.\nDefault redundancy style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nExit codes: 0 ok; 1 error, wrong or missing key; 2 not recoverable / too damaged (nothing written) or usage error; 3 nothing could be checked; 4 repair skipped (too long, or you said no); 5 damaged, `sigil mend` repairs it (checked in memory; cannot open as-is); 6 damaged, repair not checked (time limit SIGIL_SCRY_PROBE_SECS, default 3 s): run `sigil mend`; 130 stopped with Ctrl-C.",
     after_long_help = "See docs/START.md in the repo for a plain-English map of everyday commands."
 )]
 struct Cli {
@@ -548,7 +548,7 @@ enum Cmd {
     },
     /// Check a .sg1 Sigil Archive without writing anything: shards, Merkle binding, header copies
     /// (and with --read-data, the original bytes). Exit 0 ok, 1 key problem/error, 2 NOT recoverable,
-    /// 5 damaged but repairable with `sigil mend`
+    /// 5 damaged but repairable with `sigil mend`, 6 damaged and the repair not checked in time
     Verify {
         input: PathBuf,
         /// Machine-readable result on stdout (one JSON line)
@@ -581,7 +581,9 @@ enum Cmd {
     /// Check a .sg1 Sigil Archive without unpacking it or needing a key: how many pieces are intact
     /// and how many are needed, the hash tree, the header copies.
     /// Exit 0 ok (a `needs repair` line means `unseal` still works and `sigil mend` restores full redundancy);
-    /// 5 damaged but repairable with `sigil mend` (cannot open as-is, e.g. scattered bit rot);
+    /// 5 damaged but repairable with `sigil mend` (cannot open as-is, e.g. scattered bit rot;
+    /// checked by running the repair in memory, at most SIGIL_SCRY_PROBE_SECS seconds, default 3);
+    /// 6 damaged, that check did not finish (run `sigil mend` to find out);
     /// 2 NOT recoverable from this copy alone; 1 error or wrong/missing key
     #[command(visible_alias = "gaze")]
     Scry {
@@ -2952,155 +2954,86 @@ fn verify_cmd(
     subset_offset: Option<u64>,
     wards: &[(String, String)],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use sigil::recovery::ProbeBudget;
     if is_constellation_input(&input) {
         // A locked card opens with the same key the deep read uses.
         let key = resolve_pass(pass.clone(), talisman.clone())?;
         let ids = load_identities(&identity)?;
-        let (text, verdict) = sigil::recovery::scry_constellation_assessed(
+        let text = sigil::scry_constellation_keys(&input, key.as_deref(), &ids)
+            .map_err(|e| card_failure(&input, &e.to_string()))?;
+        let mut budget = ProbeBudget::from_env()?;
+        let (condition, star) =
+            sigil::recovery::assess_constellation(&input, key.as_deref(), &ids, &mut budget)
+                .map_err(|e| card_failure(&input, &e.to_string()))?;
+        let st = sigil::status::scry_status_constellation_assessed(
             &input,
             key.as_deref(),
             &ids,
-        )
-        .map_err(|e| {
-            let s = e.to_string();
-            if sigil::recovery::is_wrong_key_err(&s) || sigil::recovery::is_missing_key_err(&s) {
-                let g = sigil::recovery::classify_open_error(&input, &s, wards, &[], false);
-                hinted_err(
-                    format!("{}\n(Warded Constellation card: give --pass-file / --identity, or use `sigil constellation scry <sky> --pass-file/--identity`)", g.message),
-                    g.hints,
-                    g.exit_code,
-                )
-            } else {
-                format!("{s}\n(locked card: give --pass-file / --identity, or use `sigil constellation scry <sky> --pass/--identity`)").into()
-            }
-        })?;
-        let st = if json_on() {
-            Some(sigil::status::scry_status_constellation(
-                &input,
-                key.as_deref(),
-                &ids,
-            )?)
-        } else {
-            sigil::status::scry_status_constellation(&input, key.as_deref(), &ids).ok()
+            &condition,
+        );
+        let st = if json_on() { Some(st?) } else { st.ok() };
+        let text = match condition.unrecoverable_reason() {
+            Some(why) => format!("{text}\nNOT recoverable: {why}"),
+            None => text,
         };
-        let text = if matches!(verdict, sigil::recovery::ScryVerdict::DamagedMendable(_)) {
-            text
-        } else {
-            agree_report(text, st.as_ref(), None)
-        };
-        say!("{text}");
-        json_extra(&format!(",\"report\":{}", jq(&text)));
-        if let (true, Some(st)) = (json_on(), &st) {
-            json_extra(&status_json(st));
-        }
-        match verdict {
-            sigil::recovery::ScryVerdict::DamagedMendable(why) => {
-                let arg = sigil::mend_out::shell_word(&input.display().to_string());
-                let hints =
-                    sigil::recovery::hints_for_scry_mendable(&input, false, None, false, true);
-                return Err(hinted_err(
-                    format!("damaged — run sigil mend {arg} ({why})"),
-                    hints,
-                    sigil::recovery::EXIT_REPAIRABLE,
-                ));
-            }
-            sigil::recovery::ScryVerdict::NotRecoverable(why) => {
-                let hints = sigil::recovery::hints_for_not_recoverable(
-                    &input, false, None, false, true, false,
-                );
-                return Err(hinted_err(not_recoverable(&why), hints, 2));
-            }
-            _ => {}
-        }
+        scry_verdict(
+            &input,
+            text,
+            &condition,
+            st.as_ref(),
+            None,
+            star.as_deref(),
+            None,
+        )?;
     } else if is_dir_pack(&input) {
         let pass = resolve_pass(pass.clone(), talisman.clone())?;
         let identities = load_identities(&identity)?;
-        let is_sealed = sigil::is_sealed_dir_pack(&input);
-        let (text, verdict, insp) = sigil::recovery::scry_dir_assessed(
+        let mut budget = ProbeBudget::from_env()?;
+        let (condition, tome) = sigil::recovery::assess_tome(&input, &mut budget)?;
+        let text = match sigil::scry_dir_keys(&input, pass.as_deref(), &[], &identities) {
+            Ok(t) => t,
+            // A cut-off Tome cannot be listed; report what is known instead.
+            Err(_) if tome.as_ref().is_some_and(|t| t.truncated.is_some()) => {
+                match tome.as_ref().filter(|_| !sigil::is_sealed_dir_pack(&input)) {
+                    Some(t) => format!(
+                        "Tome  cut off; {} undamaged member(s) before the cut",
+                        t.intact.len()
+                    ),
+                    None => "Warded Tome  cut off (member names are hidden)".to_string(),
+                }
+            }
+            Err(e) => return Err(open_failure(&input, e.into())),
+        };
+        let text = if condition.opens_as_is() || condition.unrecoverable_reason().is_some() {
+            sigil::dir_report(&input, text, &condition, tome.as_ref()).0
+        } else {
+            text
+        };
+        let st = sigil::status::scry_status_assessed(&input, &condition)?;
+        scry_verdict(
             &input,
-            pass.as_deref(),
-            &[],
-            &identities,
-        )
-        .map_err(|e| {
-            let g = sigil::recovery::classify_open_error(&input, &e.to_string(), wards, &[], false);
-            hinted_err(g.message, g.hints, g.exit_code)
-        })?;
-        let st = sigil::status::scry_status_path(&input).ok();
-        let text = if matches!(verdict, sigil::recovery::ScryVerdict::DamagedMendable(_)) {
-            text
-        } else {
-            agree_report(text, st.as_ref(), Some(&input))
-        };
-        say!("{text}");
-        json_extra(&format!(",\"report\":{}", jq(&text)));
-        if let (true, Some(st)) = (json_on(), &st) {
-            json_extra(&status_json(st));
-        }
-        match verdict {
-            sigil::recovery::ScryVerdict::DamagedMendable(why) => {
-                let arg = sigil::mend_out::shell_word(&input.display().to_string());
-                let hints = sigil::recovery::hints_for_scry_mendable(
-                    &input,
-                    false,
-                    insp.as_ref(),
-                    is_sealed,
-                    false,
-                );
-                return Err(hinted_err(
-                    format!("damaged — run sigil mend {arg} ({why})"),
-                    hints,
-                    sigil::recovery::EXIT_REPAIRABLE,
-                ));
-            }
-            sigil::recovery::ScryVerdict::NotRecoverable(why) => {
-                let truncated = insp.as_ref().map(|i| i.truncated).unwrap_or(false)
-                    || why.contains("truncated Tome");
-                let hints = sigil::recovery::hints_for_not_recoverable(
-                    &input,
-                    false,
-                    insp.as_ref(),
-                    is_sealed,
-                    false,
-                    truncated,
-                );
-                return Err(hinted_err(not_recoverable(&why), hints, 2));
-            }
-            _ => {}
-        }
+            text,
+            &condition,
+            Some(&st),
+            tome.as_ref(),
+            None,
+            Some(&input),
+        )?;
     } else {
-        let is_work = sigil::is_work_pack(&input);
-        let (text, verdict) = sigil::recovery::scry_path_assessed(&input)?;
-        let st = sigil::status::scry_status_path(&input).ok();
-        let text = if matches!(verdict, sigil::recovery::ScryVerdict::DamagedMendable(_)) {
-            text
-        } else {
-            agree_report(text, st.as_ref(), Some(&input))
-        };
-        say!("{text}");
-        json_extra(&format!(",\"report\":{}", jq(&text)));
-        if let (true, Some(st)) = (json_on(), &st) {
-            json_extra(&status_json(st));
-        }
-        match verdict {
-            sigil::recovery::ScryVerdict::DamagedMendable(why) => {
-                let arg = sigil::mend_out::shell_word(&input.display().to_string());
-                let hints =
-                    sigil::recovery::hints_for_scry_mendable(&input, is_work, None, false, false);
-                return Err(hinted_err(
-                    format!("damaged — run sigil mend {arg} ({why})"),
-                    hints,
-                    sigil::recovery::EXIT_REPAIRABLE,
-                ));
-            }
-            sigil::recovery::ScryVerdict::NotRecoverable(why) => {
-                let hints = sigil::recovery::hints_for_not_recoverable(
-                    &input, is_work, None, false, false, false,
-                );
-                return Err(hinted_err(not_recoverable(&why), hints, 2));
-            }
-            _ => {}
-        }
+        let text = sigil::scry_path(&input)?;
+        let mut budget = ProbeBudget::from_env()?;
+        let condition = sigil::recovery::assess_path(&input, &mut budget)?;
+        let text = sigil::path_report(text, &condition);
+        let st = sigil::status::scry_status_assessed(&input, &condition)?;
+        scry_verdict(
+            &input,
+            text,
+            &condition,
+            Some(&st),
+            None,
+            None,
+            Some(&input),
+        )?;
     }
     if let Some(pct) = subset {
         let pass = resolve_pass(pass, talisman)?;
@@ -3172,32 +3105,32 @@ fn verify_cmd(
                     r.failed.len(),
                     r.checked.len()
                 ),
-                sigil::recovery::hints_for_wrong_key(!wards.is_empty()),
+                sigil::recovery::hints(
+                    sigil::recovery::ArchiveKind::of(&input),
+                    &sigil::recovery::Situation::WrongKey,
+                    &input,
+                ),
                 1,
             ));
         }
         if !r.ok() {
-            let is_work = sigil::is_work_pack(&input);
-            let is_sealed = sigil::is_sealed_dir_pack(&input);
-            let is_constellation = is_constellation_input(&input);
-            let insp = if !is_sealed && is_dir_pack(&input) {
-                sigil::recovery::inspect_plain_tome(&input).ok()
+            let tome = if sigil::is_plain_dir_pack(&input) {
+                // Names of the members that open as-is (no repair probes needed for that).
+                sigil::recovery::inspect_plain_tome(&input, &mut ProbeBudget::disabled()).ok()
             } else {
                 None
             };
+            let intact = tome.map(|t| t.intact).unwrap_or_default();
             return Err(hinted_err(
                 not_recoverable(&format!(
                     "deep read: {} of {} sampled part(s) would not open",
                     r.failed.len(),
                     r.checked.len()
                 )),
-                sigil::recovery::hints_for_not_recoverable(
+                sigil::recovery::hints(
+                    sigil::recovery::ArchiveKind::of(&input),
+                    &sigil::recovery::Situation::NotRecoverable { intact },
                     &input,
-                    is_work,
-                    insp.as_ref(),
-                    is_sealed,
-                    is_constellation,
-                    false,
                 ),
                 2,
             ));
@@ -3441,9 +3374,9 @@ fn mend_guidance(out: &Path, deeper_used: bool, auto: bool, encrypted: bool) {
     );
 }
 
-/// Error for a single-file mend that found no verified repair. Says nothing was written
-/// and gives the next full commands to try; contains "too damaged" (exit 2).
-fn mend_failed(input: &Path, why: &str, _tried_deeper: bool) -> String {
+/// Error for a single-file mend that found no verified repair. Says nothing was written;
+/// contains "too damaged" (exit 2). The next steps come from [`sigil::recovery::remedies`].
+fn mend_failed(input: &Path, why: &str) -> String {
     format!(
         "could not repair {}: too damaged to rebuild from this copy ({why}). Nothing was written.",
         input.display()
@@ -3550,6 +3483,8 @@ fn gather_fountain_noted(
     Ok((data, rep))
 }
 
+/// An error that carries its own exit code and "What you can try" lines (printed after
+/// the message, or as the optional JSON `hints` array).
 #[derive(Debug)]
 struct HintedError {
     msg: String,
@@ -3579,9 +3514,119 @@ fn hinted_err(
 
 /// Error text for a file `scry` / `verify` found beyond repair (exit 2: "too damaged").
 fn not_recoverable(why: &str) -> String {
-    format!("NOT recoverable ({why}): too damaged to restore from this copy alone")
+    sigil::recovery::not_recoverable(why)
 }
 
+/// Print a Scry report and its JSON status; then, when the archive will not open as-is,
+/// fail with its verdict: exit 5 (`sigil mend` repair confirmed), 6 (not confirmed) or 2
+/// (beyond repair), with "What you can try". `star` is a constellation's damaged star
+/// file; `mend_target` the file `needs repair` lines name (`None` for a constellation).
+fn scry_verdict(
+    input: &Path,
+    text: String,
+    condition: &sigil::recovery::Condition,
+    st: Option<&sigil::status::ScryStatus>,
+    tome: Option<&sigil::recovery::TomeInspection>,
+    star: Option<&Path>,
+    mend_target: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text = if condition.opens_as_is() {
+        agree_report(text, st, mend_target)
+    } else {
+        text
+    };
+    say!("{text}");
+    json_extra(&format!(",\"report\":{}", jq(&text)));
+    if let (true, Some(st)) = (json_on(), st) {
+        json_extra(&status_json(st));
+    }
+    let Some(situation) = sigil::recovery::situation_of(condition, tome, star) else {
+        return Ok(());
+    };
+    let mend = sigil::mend_out::mend_command(star.unwrap_or(input));
+    let message = condition.headline(&mend).unwrap_or_default();
+    let kind = sigil::recovery::ArchiveKind::of(input);
+    Err(hinted_err(
+        message,
+        sigil::recovery::hints(kind, &situation, input),
+        condition.exit_code(),
+    ))
+}
+
+/// A command that opened `input` failed. Damage or a key problem gets a plain message,
+/// "What you can try" and its exit code from [`sigil::recovery::diagnose_open_failure`];
+/// any other error (a missing file, an output that exists, Ctrl-C, a bad option) is
+/// returned unchanged, with its own exit code.
+fn open_failure(input: &Path, e: Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
+    if e.downcast_ref::<HintedError>().is_some() {
+        return e;
+    }
+    let msg = e.to_string();
+    let not_damage = msg.contains(sigil::repair_ctl::STOPPED)
+        || msg.contains("repair skipped:")
+        || msg.contains("(os error")
+        || msg.contains("already exists");
+    if not_damage {
+        return e;
+    }
+    let Ok(mut budget) = sigil::recovery::ProbeBudget::from_env() else {
+        return e;
+    };
+    match sigil::recovery::diagnose_open_failure(input, &msg, &mut budget) {
+        Some(g) => hinted_err(g.message, g.hints, g.exit_code),
+        None => e,
+    }
+}
+
+/// A repair or rebuild failed: attach "What you can try" when it failed for damage or a
+/// shortage of pieces (exit 2); any other error keeps its own message and exit code.
+fn damage_failure(msg: String, hints: Vec<String>) -> Box<dyn std::error::Error> {
+    let code = classify_exit(&msg);
+    if code == 2 {
+        hinted_err(msg, hints, code)
+    } else {
+        msg.into()
+    }
+}
+
+/// "What you can try" after `sigil mend` on `input` found no verified repair.
+/// `quick_only`: only the quick repair ran (`--hard-only`); `intact`: the members of a
+/// plain Tome that open as-is.
+fn mend_hints(input: &Path, quick_only: bool, intact: Vec<String>) -> Vec<String> {
+    let kind = sigil::recovery::ArchiveKind::of(input);
+    let cut = matches!(kind, sigil::recovery::ArchiveKind::Tome)
+        && sigil::recovery::inspect_plain_tome(
+            input,
+            &mut sigil::recovery::ProbeBudget::disabled(),
+        )
+        .is_ok_and(|t| t.truncated.is_some());
+    let cut = cut
+        || (matches!(kind, sigil::recovery::ArchiveKind::WardedTome)
+            && sigil::sealed_dir_body(input).is_err());
+    let situation = if cut {
+        sigil::recovery::Situation::Truncated
+    } else {
+        sigil::recovery::Situation::MendFailed { quick_only, intact }
+    };
+    sigil::recovery::hints(kind, &situation, input)
+}
+
+/// A Warded constellation card would not open: key errors get the key hints.
+fn card_failure(input: &Path, err: &str) -> Box<dyn std::error::Error> {
+    let msg = format!(
+        "{err}\n(locked card: give --pass-file / --identity, or use `sigil constellation scry <sky> --pass/--identity`)"
+    );
+    match sigil::recovery::key_problem(err) {
+        Some(s) => hinted_err(
+            msg,
+            sigil::recovery::hints(sigil::recovery::ArchiveKind::of(input), &s, input),
+            1,
+        ),
+        None => msg.into(),
+    }
+}
+
+/// Exit code for an error without its own (see `sigil --help` for the table).
 fn classify_exit(msg: &str) -> i32 {
     if msg.contains("no boot Sigil") {
         3
@@ -3589,17 +3634,13 @@ fn classify_exit(msg: &str) -> i32 {
         4
     } else if msg.contains(sigil::repair_ctl::STOPPED) {
         130
-    } else if msg.contains("damaged — run sigil mend") {
-        sigil::recovery::EXIT_REPAIRABLE
     } else if msg.contains("too damaged")
-        || msg.contains("NOT recoverable")
         || msg.contains("truncated Tome")
         || msg.contains("will not guess")
         || msg.contains("work pack incomplete")
         || msg.contains("Attest refused")
         || msg.contains("missing a star")
-        || msg.contains("not enough mana")
-        || msg.contains("not enough Frost Rune")
+        || sigil::recovery::is_pieces_short(msg)
     {
         2
     } else {
@@ -4066,7 +4107,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     say!("de-scribed {n} files → {}", output.display());
                 } else {
                     if !only.is_empty() {
-                        return Err("--only is for a folder wrap. This is one file.".into());
+                        return Err("--only is for a Tome; this is a single file.".into());
                     }
                     let n = unseal_path_keys(&input, &output, pass, &companions, &identities)?;
                     say!("de-scribed {n} bytes → {}", output.display());
@@ -4086,16 +4127,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 r => r,
             };
-            if let Err(e) = res {
-                let g = sigil::recovery::classify_open_error(
-                    &input,
-                    &e.to_string(),
-                    &wards,
-                    &only,
-                    false,
-                );
-                return Err(hinted_err(g.message, g.hints, g.exit_code));
-            }
+            res.map_err(|e| open_failure(&input, e))?;
         }
         Cmd::Verify {
             input,
@@ -4417,31 +4449,50 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let sg1 = match got {
                     Ok(b) => b,
-                    Err(e) if partial => {
-                        let msg = gather_partial(&input, &output, fountain, json, &e.to_string())?;
-                        return Err(hinted_err(
-                            msg,
-                            sigil::recovery::hints_for_gather(&input, fountain, true),
-                            2,
-                        ));
-                    }
                     Err(e) => {
-                        return Err(hinted_err(
-                            e.to_string(),
-                            sigil::recovery::hints_for_gather(&input, fountain, false),
-                            2,
-                        ));
+                        let why = e.to_string();
+                        let short = sigil::recovery::is_pieces_short(&why);
+                        let msg = if partial {
+                            gather_partial(&input, &output, fountain, json, &why)?
+                        } else if short {
+                            why
+                        } else {
+                            return Err(e);
+                        };
+                        let situation = if fountain {
+                            sigil::recovery::Situation::ManaShort {
+                                receipt_saved: partial,
+                            }
+                        } else {
+                            sigil::recovery::Situation::PiecesShort
+                        };
+                        let hints = if short {
+                            sigil::recovery::hints(
+                                sigil::recovery::ArchiveKind::Single,
+                                &situation,
+                                &input,
+                            )
+                        } else {
+                            Vec::new()
+                        };
+                        return Err(hinted_err(msg, hints, 2));
                     }
                 };
                 if open {
                     let plain = unseal_ex(&sg1, pass.as_deref(), &[]).map_err(|e| {
                         let msg = e.to_string();
-                        if sigil::recovery::is_missing_key_err(&msg) {
-                            hinted_err(msg, sigil::recovery::hints_for_missing_key(false), 1)
-                        } else if sigil::recovery::is_wrong_key_err(&msg) {
-                            hinted_err(msg, sigil::recovery::hints_for_wrong_key(false), 1)
-                        } else {
-                            e.into()
+                        match sigil::recovery::key_problem(&msg) {
+                            Some(s) => {
+                                let wrong = s == sigil::recovery::Situation::WrongKey;
+                                let s = sigil::recovery::Situation::GatherOpenKey { wrong };
+                                let hints = sigil::recovery::hints(
+                                    sigil::recovery::ArchiveKind::Single,
+                                    &s,
+                                    &input,
+                                );
+                                hinted_err(msg, hints, 1)
+                            }
+                            None => e.into(),
                         }
                     })?;
                     fs::write(&output, plain)?;
@@ -4522,19 +4573,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let data: Vec<Vec<u8>> = paths.iter().map(fs::read).collect::<Result<_, _>>()?;
             let views: Vec<&[u8]> = data.iter().map(|d| d.as_slice()).collect();
             let rep = sigil::mend_copies(&views).map_err(|e| {
-                let msg = e.to_string();
-                let code = classify_exit(&msg);
-                let hints = sigil::recovery::hints_for_mend_failed(
-                    &paths[0],
-                    true,
-                    false,
-                    false,
-                    false,
-                    paths.len(),
-                    None,
-                    false,
+                let all: Vec<String> = paths
+                    .iter()
+                    .map(|p| sigil::mend_out::shell_word(&p.display().to_string()))
+                    .collect();
+                let hints = sigil::recovery::hints_for_target(
+                    sigil::recovery::ArchiveKind::Single,
+                    &sigil::recovery::Situation::PooledMendFailed,
+                    &all.join(" "),
                 );
-                hinted_err(msg, hints, code)
+                damage_failure(e.to_string(), hints)
             })?;
             drop(data);
             let mut tmp = output.as_os_str().to_os_string();
@@ -4576,19 +4624,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } if sigil::is_atlas_file(&input) => {
             let output = mend_output(&input, output)?;
             let mended = sigil::mend_atlas(&input, &output, soft || !hard_only).map_err(|e| {
-                let msg = e.to_string();
-                let hints = sigil::recovery::hints_for_mend_failed(
-                    &input,
-                    soft || !hard_only,
-                    false,
-                    false,
-                    true,
-                    1,
-                    None,
-                    false,
-                );
-                let code = classify_exit(&msg).max(2);
-                hinted_err(msg, hints, code)
+                let quick_only = hard_only && !soft;
+                damage_failure(e.to_string(), mend_hints(&input, quick_only, Vec::new()))
             })?;
             json_extra(&format!(
                 ",\"kind\":\"atlas\",\"mended\":[{}]",
@@ -4614,12 +4651,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let output = mend_output(&input, output)?;
             json_extra(",\"kind\":\"sealed-folder-pack\"");
             let msg = sigil::mend_sealed_dir(&input, &output).map_err(|e| {
-                let s = e.to_string();
-                let trunc = s.contains("truncated");
-                let hints = sigil::recovery::hints_for_mend_failed(
-                    &input, true, false, true, false, 1, None, trunc,
-                );
-                hinted_err(s, hints, 2)
+                damage_failure(e.to_string(), mend_hints(&input, false, Vec::new()))
             })?;
             say!("{msg}");
         }
@@ -4633,21 +4665,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let output = mend_output(&input, output)?;
             json_extra(",\"kind\":\"folder-pack\"");
             let msg = sigil::mend_plain_dir(&input, &output, soft || !hard_only).map_err(|e| {
-                let s = e.to_string();
-                let insp = sigil::recovery::inspect_plain_tome(&input).ok();
-                let trunc =
-                    s.contains("truncated") || insp.as_ref().map(|i| i.truncated).unwrap_or(false);
-                let hints = sigil::recovery::hints_for_mend_failed(
+                // Members that open as-is can still be taken out (no repair probes needed).
+                let intact = sigil::recovery::inspect_plain_tome(
                     &input,
-                    soft || !hard_only,
-                    false,
-                    false,
-                    false,
-                    1,
-                    insp.as_ref(),
-                    trunc,
-                );
-                hinted_err(s, hints, 2)
+                    &mut sigil::recovery::ProbeBudget::disabled(),
+                )
+                .map(|t| t.intact)
+                .unwrap_or_default();
+                damage_failure(
+                    e.to_string(),
+                    mend_hints(&input, hard_only && !soft, intact),
+                )
             })?;
             say!("{msg}");
         }
@@ -4670,20 +4698,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let result = mend_pack_report(&input, &output, soft || !hard_only);
             drop(watch);
             mend_stop_gate(&input)?;
-            if let Err(e) = result {
-                let s = e.to_string();
-                let hints = sigil::recovery::hints_for_mend_failed(
-                    &input,
-                    soft || !hard_only,
-                    true,
-                    false,
-                    false,
-                    1,
-                    None,
-                    false,
-                );
-                return Err(hinted_err(s, hints, 2));
-            }
+            result.map_err(|e| {
+                damage_failure(
+                    e.to_string(),
+                    mend_hints(&input, hard_only && !soft, Vec::new()),
+                )
+            })?;
         }
         Cmd::Mend {
             input,
@@ -4734,14 +4754,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => {
                     drop(data);
                     if sigil::is_damaged_work_pack(&input) {
-                        mend_pack_report(&input, &output, try_soft)?;
-                        return Ok(());
+                        return mend_pack_report(&input, &output, try_soft).map_err(|e| {
+                            damage_failure(e.to_string(), mend_hints(&input, !try_soft, Vec::new()))
+                        });
                     }
-                    let msg = mend_failed(&input, &e.to_string(), try_soft);
-                    let hints = sigil::recovery::hints_for_mend_failed(
-                        &input, try_soft, false, false, false, 1, None, false,
-                    );
-                    return Err(hinted_err(msg, hints, 2));
+                    let msg = mend_failed(&input, &e.to_string());
+                    return Err(hinted_err(
+                        msg,
+                        mend_hints(&input, !try_soft, Vec::new()),
+                        2,
+                    ));
                 }
             };
             let mut tmp = output.as_os_str().to_os_string();
@@ -4887,17 +4909,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let wards = parse_wards(&ward, &ward_file, false)?;
-            if let Err(e) = run_open_keys(&input, pass.as_deref(), &wards, &only, keep, &identities)
-            {
-                let g = sigil::recovery::classify_open_error(
-                    &input,
-                    &e.to_string(),
-                    &wards,
-                    &only,
-                    true,
-                );
-                return Err(hinted_err(g.message, g.hints, g.exit_code));
-            }
+            run_open_keys(&input, pass.as_deref(), &wards, &only, keep, &identities)
+                .map_err(|e| open_failure(&input, e.into()))?;
         }
         Cmd::Keygen {
             output,
@@ -6005,15 +6018,18 @@ fn run_kit(cmd: KitCmd) -> Result<(), Box<dyn std::error::Error>> {
         KitCmd::Mend { input, output, .. } => {
             let healed = mend_kit(&input).map_err(|e| {
                 let s = e.to_string();
-                let no_usb = s.contains("no usb-* folders");
-                let msg = if s.contains("need ") {
-                    format!("Not enough Frost Rune pieces yet: {s} (nothing was written).")
-                } else {
-                    s
-                };
+                if !sigil::recovery::is_pieces_short(&s) {
+                    return Box::<dyn std::error::Error>::from(e);
+                }
+                let none = sigil::recovery::is_no_drives(&s);
+                let hints = sigil::recovery::hints(
+                    sigil::recovery::ArchiveKind::Single,
+                    &sigil::recovery::Situation::DrivesShort { none },
+                    &input,
+                );
                 hinted_err(
-                    msg,
-                    sigil::recovery::hints_for_frost_mend(&input, no_usb),
+                    format!("Not enough Frost Rune pieces to rebuild: {s} (nothing was written)"),
+                    hints,
                     2,
                 )
             })?;
@@ -7744,56 +7760,36 @@ fn run_sky(cmd: SkyCmd) -> Result<(), Box<dyn std::error::Error>> {
             let pass = pass.or(pass_file);
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
-            let (text, verdict) =
-                sigil::recovery::scry_constellation_assessed(&sky, pass.as_deref(), &identities)
-                    .map_err(|e| {
-                        let g = sigil::recovery::classify_open_error(
-                            &sky,
-                            &e.to_string(),
-                            &[],
-                            &[],
-                            false,
-                        );
-                        hinted_err(g.message, g.hints, g.exit_code)
-                    })?;
-            let st = if json {
-                Some(sigil::status::scry_status_constellation(
-                    &sky,
-                    pass.as_deref(),
-                    &identities,
-                )?)
-            } else {
-                sigil::status::scry_status_constellation(&sky, pass.as_deref(), &identities).ok()
+            let text = sigil::scry_constellation_keys(&sky, pass.as_deref(), &identities)
+                .map_err(|e| card_failure(&sky, &e.to_string()))?;
+            let mut budget = sigil::recovery::ProbeBudget::from_env()?;
+            let (condition, star) = sigil::recovery::assess_constellation(
+                &sky,
+                pass.as_deref(),
+                &identities,
+                &mut budget,
+            )
+            .map_err(|e| card_failure(&sky, &e.to_string()))?;
+            let st = sigil::status::scry_status_constellation_assessed(
+                &sky,
+                pass.as_deref(),
+                &identities,
+                &condition,
+            );
+            let st = if json { Some(st?) } else { st.ok() };
+            let text = match condition.unrecoverable_reason() {
+                Some(why) => format!("{text}\nNOT recoverable: {why}"),
+                None => text,
             };
-            let text = if matches!(verdict, sigil::recovery::ScryVerdict::DamagedMendable(_)) {
-                text
-            } else {
-                agree_report(text, st.as_ref(), None)
-            };
-            if let (true, Some(st)) = (json, &st) {
-                json_extra(&format!(",\"report\":{}", jq(&text)));
-                json_extra(&status_json(st));
-            }
-            say!("{text}");
-            match verdict {
-                sigil::recovery::ScryVerdict::DamagedMendable(why) => {
-                    let arg = sigil::mend_out::shell_word(&sky.display().to_string());
-                    let hints =
-                        sigil::recovery::hints_for_scry_mendable(&sky, false, None, false, true);
-                    return Err(hinted_err(
-                        format!("damaged — run sigil mend {arg} ({why})"),
-                        hints,
-                        sigil::recovery::EXIT_REPAIRABLE,
-                    ));
-                }
-                sigil::recovery::ScryVerdict::NotRecoverable(why) => {
-                    let hints = sigil::recovery::hints_for_not_recoverable(
-                        &sky, false, None, false, true, false,
-                    );
-                    return Err(hinted_err(not_recoverable(&why), hints, 2));
-                }
-                _ => {}
-            }
+            scry_verdict(
+                &sky,
+                text,
+                &condition,
+                st.as_ref(),
+                None,
+                star.as_deref(),
+                None,
+            )?;
         }
     }
     Ok(())

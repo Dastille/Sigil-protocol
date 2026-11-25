@@ -260,14 +260,7 @@ pub(crate) fn health_bytes_with(bytes: &[u8], bounded: bool) -> Health {
         Ok((h, merkle_ok, live, k, recovered)) => {
             let n = h.n as usize;
             if live < k {
-                match crate::recovery::assess_classic_bytes(bytes) {
-                    crate::recovery::StarHealth::Mendable(m) => Health::Mendable(m),
-                    crate::recovery::StarHealth::QuickRepairable(m) => Health::Mendable(m),
-                    crate::recovery::StarHealth::Ok => Health::Ok,
-                    crate::recovery::StarHealth::Unrecoverable(_) => {
-                        Health::Damaged(format!("only {live}/{n} shards intact, need {k}"))
-                    }
-                }
+                Health::Damaged(format!("only {live}/{n} shards intact, need {k}"))
             } else if live < n || recovered {
                 Health::Mendable(format!(
                     "{live}/{n} shards intact (need {k}){}",
@@ -338,16 +331,6 @@ fn health_work_pack(path: &Path) -> Health {
 }
 
 /// Verify a `.sg1` file of any shape: single mark, work pack, or SGDR folder pack.
-/// `Some(reason)` when the star file at `path` is damaged beyond repair (the same
-/// test `doctor` uses for `bit-rot-unrecoverable`); `None` when it is healthy or
-/// still repairable. Read-only.
-pub(crate) fn star_unrecoverable(path: &Path) -> Option<String> {
-    match health_file(path) {
-        Health::Damaged(m) => Some(m),
-        Health::Ok | Health::Mendable(_) => None,
-    }
-}
-
 pub(crate) fn health_file(path: &Path) -> Health {
     if crate::work::is_work_pack(path) {
         return health_work_pack(path);

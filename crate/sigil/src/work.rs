@@ -989,7 +989,7 @@ fn mend_chunk_star(i: u32, stars: u32, star: &[u8], soft: bool) -> Result<Option
 }
 
 /// Lay out the pack at `input` for mend: a damaged facet trailer is refused.
-fn mend_layout<S: Src>(src: &mut S) -> Result<PackLayout> {
+pub(crate) fn mend_layout<S: Src>(src: &mut S) -> Result<PackLayout> {
     let l = packhead::layout(src)?;
     if matches!(l.trailer, packhead::Trailer::Damaged) {
         return Err(crate::Error::Msg(
@@ -1543,24 +1543,8 @@ fn basename_only(name: &str) -> Option<String> {
 
 /// Why a sealed star (classic `.sg1` bytes or an in-memory SGWK pack) cannot be
 /// restored without more pieces: `None` when every part has at least `need`
-/// intact pieces. Keyless; nothing is decrypted.
-/// True when a star (classic `.sg1` or in-memory large-file pack) still opens but has
-/// damage that `sigil mend` would heal (Merkle open or keystone recovered in any part).
-/// An unreadable pack layout counts as torn; [`star_bytes_unrecoverable`] says if it is fatal.
-pub fn star_bytes_torn(star: &[u8]) -> bool {
-    if star.starts_with(&WORK_MAGIC) {
-        let Ok(l) = packhead::layout(&mut packhead::MemSrc(star)) else {
-            return true;
-        };
-        return l.stars.iter().any(|&(o, n)| {
-            star.get(o as usize..(o + n) as usize)
-                .map(star_torn)
-                .unwrap_or(true)
-        });
-    }
-    star_torn(star)
-}
-
+/// intact pieces. Keyless; nothing is decrypted; no repair probe (see
+/// [`crate::recovery`] for that).
 pub fn star_bytes_unrecoverable(star: &[u8]) -> Option<String> {
     if star.starts_with(&WORK_MAGIC) {
         let l = match packhead::layout(&mut packhead::MemSrc(star)) {
@@ -1589,48 +1573,55 @@ pub fn star_bytes_unrecoverable(star: &[u8]) -> Option<String> {
 }
 
 fn classic_unrecoverable(star: &[u8]) -> Option<String> {
-    crate::recovery::assess_classic_bytes(star)
-        .unrecoverable_reason()
-        .map(str::to_string)
+    match crate::verify(star) {
+        Ok((h, _, live, k, _)) if live < k => Some(format!("live={live}/{} need={k}", h.n)),
+        Ok(_) => None,
+        Err(e) => Some(format!("unreadable: {e}")),
+    }
 }
 
-/// Like [`star_bytes_unrecoverable`] for a file on disk; a large-file pack is
-/// checked one part at a time (never loaded whole).
+/// Why the file on disk cannot be restored by `sigil mend`, or `None`. Unlike
+/// [`star_bytes_unrecoverable`] (a count of intact pieces), this runs the repair probe of
+/// [`crate::recovery`] when too few pieces are intact, within the time limit of
+/// [`crate::recovery::ProbeBudget::from_env`]; a large-file pack is checked one part at a
+/// time (never loaded whole).
 pub fn path_unrecoverable(input: &Path) -> Result<Option<String>> {
-    if !is_work_pack(input) {
-        let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        return Ok(classic_unrecoverable(&data));
-    }
-    let (head, locs) = index_pack(input)?;
-    if (locs.len() as u64) < u64::from(head.stars) {
-        return Ok(Some(format!(
-            "only {} of {} parts present",
-            locs.len(),
-            head.stars
-        )));
-    }
-    let _ = (head, locs);
-    Ok(crate::recovery::assess_work_pack_path(input)?
+    let mut budget = crate::recovery::ProbeBudget::from_env()?;
+    Ok(crate::recovery::assess_path(input, &mut budget)?
         .unrecoverable_reason()
         .map(str::to_string))
 }
 
 /// [`scry_path`] plus a recoverability verdict. When the file can no longer be
 /// restored, the report's first line starts with `NOT recoverable` (not `ok`)
-/// and the verdict is `Some(reason)`.
+/// and the verdict is `Some(reason)`. Runs the repair probe of [`crate::recovery`]
+/// within [`crate::recovery::ProbeBudget::from_env`].
 pub fn scry_path_checked(input: &Path) -> Result<(String, Option<String>)> {
     let s = scry_path(input)?;
-    let bad = path_unrecoverable(input)?;
-    Ok(match bad {
-        None => (s, None),
-        Some(why) => {
-            let s = match s.strip_prefix("ok  ") {
-                Some(rest) => format!("NOT recoverable  {rest}"),
-                None => format!("{s}\nNOT recoverable: {why}"),
-            };
-            (s, Some(why))
-        }
-    })
+    let mut budget = crate::recovery::ProbeBudget::from_env()?;
+    let condition = crate::recovery::assess_path(input, &mut budget)?;
+    Ok((
+        path_report(s, &condition),
+        condition.unrecoverable_reason().map(str::to_string),
+    ))
+}
+
+/// A file's [`scry_path`] text marked with its condition: a first line `ok  …` becomes
+/// `NOT recoverable  …` or (will not open as-is, may be repaired) `damaged  …`.
+pub fn path_report(text: String, condition: &crate::recovery::Condition) -> String {
+    use crate::recovery::Condition;
+    match condition {
+        Condition::Unrecoverable(why) => match text.strip_prefix("ok  ") {
+            Some(rest) => format!("NOT recoverable  {rest}"),
+            None => format!("{text}\nNOT recoverable: {why}"),
+        },
+        Condition::Repairable(_) | Condition::Unconfirmed { .. } => match text.strip_prefix("ok  ")
+        {
+            Some(rest) => format!("damaged  {rest}"),
+            None => text,
+        },
+        Condition::Healthy | Condition::Torn(_) => text,
+    }
 }
 
 pub fn scry_path(input: &Path) -> Result<String> {

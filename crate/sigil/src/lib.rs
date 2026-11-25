@@ -121,11 +121,11 @@ pub use constellation::{
     RemoveReport as ConstellationRemoveReport,
 };
 pub use folder::{
-    inscribe_dir, inscribe_dir_to, inscribe_dir_to_names_visible, is_dir_pack, is_plain_dir_pack,
-    is_sealed_dir_pack, list_dir_pack, list_dir_pack_keys, looks_like_nest_name, mend_plain_dir,
-    mend_sealed_dir, read_dir_entry_star, scry_dir, scry_dir_checked, scry_dir_keys,
-    seal_dir_names, sealed_dir_body, unseal_dir, unseal_dir_mend_keys, unseal_dir_only,
-    unseal_dir_only_keys, DirEntry, SealNamesReport,
+    dir_report, inscribe_dir, inscribe_dir_to, inscribe_dir_to_names_visible, is_dir_pack,
+    is_plain_dir_pack, is_sealed_dir_pack, list_dir_pack, list_dir_pack_keys, looks_like_nest_name,
+    mend_plain_dir, mend_sealed_dir, read_dir_entry_star, scry_dir, scry_dir_checked,
+    scry_dir_keys, seal_dir_names, sealed_dir_body, unseal_dir, unseal_dir_mend_keys,
+    unseal_dir_only, unseal_dir_only_keys, DirEntry, SealNamesReport,
 };
 pub use fountain::{
     deluge_answer_report, deluge_fountain, deluge_fountain_opts, deluge_fountain_report,
@@ -190,10 +190,11 @@ pub use vault::{
 pub use work::{
     choose_overture, index_pack, index_pack_keys, inscribe_path, inscribe_path_to,
     inscribe_stars_dir, inscribe_stars_dir_to, is_damaged_work_pack, is_work_pack, mend_pack_path,
-    overture_report, path_unrecoverable, payload_label_keys, payload_name, read_facet_digests,
-    scry_facets, scry_path, scry_path_checked, star_bytes_unrecoverable, suggested_output_name,
-    unseal_path, unseal_path_keys, unseal_range, unseal_range_keys, unseal_star_at,
-    unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB, OVERTURE, WORK_MAGIC,
+    overture_report, path_report, path_unrecoverable, payload_label_keys, payload_name,
+    read_facet_digests, scry_facets, scry_path, scry_path_checked, star_bytes_unrecoverable,
+    suggested_output_name, unseal_path, unseal_path_keys, unseal_range, unseal_range_keys,
+    unseal_star_at, unseal_star_at_keys, PackMendReport, DEFAULT_CHUNK, DEFAULT_OVERTURE_MB,
+    OVERTURE, WORK_MAGIC,
 };
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
@@ -287,6 +288,17 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Start of the error for a Warded archive opened with no passphrase or key.
+/// [`readdata::cause_of`] sorts errors by this text, so keep them in step.
+pub const KEY_REQUIRED: &str = "passphrase or --identity required";
+
+/// Error for an `--identity` given to an archive Warded with a passphrase only.
+pub const NO_RECIPIENTS: &str = "seal has no encrypt-to recipients; passphrase required";
+
+/// Error of an older archive (no key wrap) that would not decrypt: a wrong key, an
+/// edited label, or damage cannot be told apart from the cipher alone.
+pub const LEGACY_OPEN_FAILED: &str = "wrong passphrase/identity, label edited, or past repair";
 
 /// Error for a fixed-width field whose slice did not have the field's width.
 ///
@@ -970,10 +982,9 @@ fn unseal_meta(
                 Ok(cek) => cek,
                 Err(e) => {
                     if identities.is_empty() && p.is_empty() {
-                        return Err(Error::Msg(
-                            "passphrase or --identity required — this Sigil Archive is Warded"
-                                .into(),
-                        ));
+                        return Err(Error::Msg(format!(
+                            "{KEY_REQUIRED} — this Sigil Archive is Warded"
+                        )));
                     }
                     return Err(e);
                 }
@@ -986,13 +997,11 @@ fn unseal_meta(
             // Legacy passphrase Ward.
             if p.is_empty() {
                 if !identities.is_empty() {
-                    return Err(Error::Msg(
-                        "seal has no encrypt-to recipients; passphrase required".into(),
-                    ));
+                    return Err(Error::Msg(NO_RECIPIENTS.into()));
                 }
-                return Err(Error::Msg(
-                    "passphrase or --identity required — this Sigil Archive is Warded".into(),
-                ));
+                return Err(Error::Msg(format!(
+                    "{KEY_REQUIRED} — this Sigil Archive is Warded"
+                )));
             }
             derive_key(p, &h.salt)
         };
@@ -1027,9 +1036,7 @@ fn unseal_meta(
                     aad: &aad,
                 },
             )
-            .map_err(|_| {
-                Error::Msg("wrong passphrase/identity, label edited, or past repair".into())
-            })?;
+            .map_err(|_| Error::Msg(LEGACY_OPEN_FAILED.into()))?;
         let mut kept = zeroize::Zeroizing::new([0u8; 32]);
         kept.copy_from_slice(&key[..32.min(key.len())]);
         cek_kept = Some(kept);

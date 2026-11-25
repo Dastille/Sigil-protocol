@@ -31,6 +31,10 @@ pub const DIR_VER_PLAIN: u8 = 1;
 /// Sealed directory: the whole v1 pack is encrypted as one body star.
 pub const DIR_VER_SEALED: u8 = 2;
 
+/// Error for a Warded Tome whose locked body is cut short (contains "truncated Tome").
+const TRUNCATED_WARDED: &str =
+    "truncated Tome (its locked Warded body is cut off; incomplete copy or transfer)";
+
 const HIDDEN_HINT: &str =
     "Warded Tome: member names are hidden; give --pass / --identity to list or open it";
 
@@ -372,7 +376,7 @@ fn read_head<R: Read>(reader: &mut R, not_pack: &str) -> Result<(u8, u32)> {
     reader.read_exact(&mut ver).map_err(io)?;
     if ver[0] != DIR_VER_PLAIN && ver[0] != DIR_VER_SEALED {
         return Err(crate::Error::Msg(format!(
-            "unknown folder pack version {}",
+            "unknown Tome version {}",
             ver[0]
         )));
     }
@@ -386,7 +390,7 @@ fn read_sealed_body<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
     let mut lb = [0u8; 8];
     reader
         .read_exact(&mut lb)
-        .map_err(|_| crate::Error::Msg("truncated sealed folder pack (body length)".into()))?;
+        .map_err(|_| crate::Error::Msg(TRUNCATED_WARDED.into()))?;
     let len = u64::from_le_bytes(lb);
     let mut body = Vec::new();
     // `len` is untrusted: read through `take` so a hostile length cannot pre-allocate.
@@ -396,14 +400,12 @@ fn read_sealed_body<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
         .read_to_end(&mut body)
         .map_err(io)?;
     if (body.len() as u64) != len {
-        return Err(crate::Error::Msg(
-            "truncated sealed folder pack (body bytes)".into(),
-        ));
+        return Err(crate::Error::Msg(TRUNCATED_WARDED.into()));
     }
     let mut extra = [0u8; 1];
     if reader.read(&mut extra).map_err(io)? != 0 {
         return Err(crate::Error::Msg(
-            "sealed folder pack has trailing bytes".into(),
+            "Warded Tome has extra bytes after its locked body (edited or damaged)".into(),
         ));
     }
     Ok(body)
@@ -457,7 +459,8 @@ fn check_inner(count: u32, inner: &[u8]) -> Result<()> {
         Ok(())
     } else {
         Err(crate::Error::Msg(
-            "sealed folder pack: inner pack does not match its outer header (tampered?)".into(),
+            "Warded Tome: the locked contents do not match its outer header (edited or damaged)"
+                .into(),
         ))
     }
 }
@@ -686,7 +689,11 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
         crate::work::mend_pack_path(&src.0, &dst.0, false)?;
         fs::read(&dst.0).map_err(io)?
     } else {
-        crate::pieces::mend_bytes(&body)?
+        crate::pieces::mend_bytes(&body).map_err(|e| {
+            crate::Error::Msg(format!(
+                "the locked body of this Warded Tome is too damaged to mend: {e}"
+            ))
+        })?
     };
     let mut part = output.as_os_str().to_os_string();
     part.push(".mend-part");
@@ -862,7 +869,9 @@ fn restore_entries(
 
 fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     if raw.len() < 9 {
-        return Err(crate::Error::Msg("folder pack too short".into()));
+        return Err(crate::Error::Msg(
+            "truncated Tome (too short to hold its header)".into(),
+        ));
     }
     if raw[0..4] != DIR_MAGIC {
         return Err(crate::Error::Msg("not a Tome archive (SGDR)".into()));
@@ -872,7 +881,7 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     }
     if raw[4] != DIR_VER_PLAIN {
         return Err(crate::Error::Msg(format!(
-            "unknown folder pack version {}",
+            "unknown Tome version {}",
             raw[4]
         )));
     }
@@ -977,7 +986,8 @@ pub fn scry_dir_keys(
 }
 
 /// [`scry_dir_keys`] plus a keyless recoverability verdict: `Some(reason)` when a
-/// member (v1) or the encrypted body (v2) has fewer intact pieces than it needs.
+/// member (plain Tome) or the locked body (Warded Tome) cannot be restored by `sigil mend`
+/// (see [`crate::recovery::assess_tome`]).
 pub fn scry_dir_checked(
     input: &Path,
     pass: Option<&str>,
@@ -985,87 +995,57 @@ pub fn scry_dir_checked(
     identities: &[Identity],
 ) -> Result<(String, Option<String>)> {
     let text = scry_dir_keys(input, pass, companions, identities)?;
-    let (bad, torn) = if let Some((_, body)) = sealed_dir_body(input)? {
-        let bad =
-            crate::work::star_bytes_unrecoverable(&body).map(|w| format!("encrypted body: {w}"));
-        let torn = if bad.is_none() && crate::work::star_bytes_torn(&body) {
-            vec!["encrypted body".to_string()]
-        } else {
-            Vec::new()
-        };
-        (bad, torn)
-    } else {
-        v1_unrecoverable(input)?
+    let mut budget = crate::recovery::ProbeBudget::from_env()?;
+    let (condition, insp) = crate::recovery::assess_tome(input, &mut budget)?;
+    Ok(dir_report(input, text, &condition, insp.as_ref()))
+}
+
+/// A Tome's Scry text with its verdict line: `needs mend: …` for members (or the locked
+/// body) that `sigil mend` should repair, `NOT recoverable: …` (and `Some(reason)`) when
+/// this copy cannot be restored.
+pub fn dir_report(
+    input: &Path,
+    text: String,
+    condition: &crate::recovery::Condition,
+    insp: Option<&crate::recovery::TomeInspection>,
+) -> (String, Option<String>) {
+    use crate::recovery::Condition;
+    let names = || -> String {
+        match insp {
+            Some(i) => i
+                .torn
+                .iter()
+                .chain(i.repairable.iter().map(|(r, _)| r))
+                .chain(i.unconfirmed.iter().map(|(r, _)| r))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            None => "Warded Tome body".into(),
+        }
     };
-    Ok(match bad {
-        None if torn.is_empty() => (text, None),
-        None => (
+    let run = crate::mend_out::mend_command(input);
+    match condition {
+        Condition::Healthy => (text, None),
+        Condition::Torn(_) => (
             format!(
-                "{text}\nneeds mend: {} (damaged but repairable, like merkle=open on one file; run: {})",
-                torn.join(", "),
-                crate::mend_out::mend_command(input)
+                "{text}\nneeds mend: {} (damaged but repairable, like merkle=open on one file; run: {run})",
+                names()
             ),
             None,
         ),
-        Some(why) => (format!("{text}\nNOT recoverable: {why}"), Some(why)),
-    })
-}
-
-/// Keyless recoverability verdict of a folder pack (the one [`scry_dir_checked`] reports):
-/// `Some(reason)` when a member (v1) or the encrypted body (v2) cannot be restored.
-pub fn dir_unrecoverable(input: &Path) -> Result<Option<String>> {
-    if let Some((_, body)) = sealed_dir_body(input)? {
-        return Ok(
-            crate::work::star_bytes_unrecoverable(&body).map(|w| format!("encrypted body: {w}"))
-        );
+        Condition::Repairable(_) => (
+            format!("{text}\nneeds mend: {} (will not open until repaired; run: {run})", names()),
+            None,
+        ),
+        Condition::Unconfirmed { .. } => (
+            format!(
+                "{text}\nneeds mend: {} (will not open as-is; run {run} to find out whether it can be repaired)",
+                names()
+            ),
+            None,
+        ),
+        Condition::Unrecoverable(why) => (format!("{text}\nNOT recoverable: {why}"), Some(why.clone())),
     }
-    Ok(v1_unrecoverable(input)?.0)
-}
-
-/// First member of a v1 pack that cannot be restored, and the members that are damaged
-/// but repairable (one member in memory at a time).
-fn v1_unrecoverable(input: &Path) -> Result<(Option<String>, Vec<String>)> {
-    let mut torn = Vec::new();
-    let mut reader = BufReader::new(File::open(input).map_err(io)?);
-    let (_, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
-    for i in 0..n {
-        let mut lb = [0u8; 2];
-        if reader.read_exact(&mut lb).is_err() {
-            return Ok((
-                Some(format!("folder pack cut off at member {i} of {n}")),
-                torn,
-            ));
-        }
-        let mut name = vec![0u8; u16::from_le_bytes(lb) as usize];
-        let mut sl = [0u8; 8];
-        if reader.read_exact(&mut name).is_err() || reader.read_exact(&mut sl).is_err() {
-            return Ok((
-                Some(format!("folder pack cut off at member {i} of {n}")),
-                torn,
-            ));
-        }
-        let rel = String::from_utf8_lossy(&name).into_owned();
-        let slen = u64::from_le_bytes(sl);
-        let mut star = Vec::new();
-        reader
-            .by_ref()
-            .take(slen)
-            .read_to_end(&mut star)
-            .map_err(io)?;
-        if (star.len() as u64) < slen {
-            return Ok((
-                Some(format!("truncated Tome (cut off inside '{rel}' data)")),
-                torn,
-            ));
-        }
-        if let Some(why) = crate::recovery::assess_star_bytes(&star).unrecoverable_reason() {
-            return Ok((Some(format!("{rel}: {why}")), torn));
-        }
-        if crate::work::star_bytes_torn(&star) {
-            torn.push(rel);
-        }
-    }
-    Ok((None, torn))
 }
 
 /// Scry line of a sealed body (written to a private scratch file: it is ciphertext).
