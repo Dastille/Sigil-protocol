@@ -39,7 +39,7 @@ What you can try:
   - Or pass your authorized secret key with --identity <me.sgk> (or --talisman <keyfile> for a Talisman Ward)
 
 $ sigil unseal --pass-file wrong-pass.txt -o secret-out.jpg secret.sg1
-Wrong passphrase or key — this Sigil Archive is Warded (matching --identity or passphrase did not unlock it)
+Wrong passphrase or key — this Sigil Archive is Warded (the passphrase or --identity given did not unlock it)
 
 What you can try:
   - Check your passphrase and try again with --pass - (interactive) or --pass-file <path>

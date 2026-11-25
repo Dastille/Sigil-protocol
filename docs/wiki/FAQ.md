@@ -19,9 +19,11 @@ Sigil keeps a repaired file only if it matches the fingerprints stored when the 
 made (a hash tree over the pieces, and for an unlocked Sigil a SHA-256 fingerprint of the
 original). If it does not match, nothing is written.
 
-**`scry` says `damaged — run sigil mend` (exit 5) or `NOT recoverable` (exit 2). Is my file gone?**
+**`scry` says `damaged — run sigil mend` (exit 5 or 6) or `NOT recoverable` (exit 2). Is my file gone?**
 If `scry` says `damaged — run sigil mend` (exit 5), scattered bit rot touched too many pieces
-for direct `unseal`, but `sigil mend` can repair it. If `scry` says `NOT recoverable` (exit 2),
+for direct `unseal`, but `sigil mend` repairs it (`scry` checked by running the repair in
+memory). Exit 6 means `scry` could not finish that check in its time limit (3 seconds, or
+`SIGIL_SCRY_PROBE_SECS`): run `sigil mend` to find out. If `scry` says `NOT recoverable` (exit 2),
 this single copy cannot be rebuilt alone — follow the `What you can try:` options printed below
 the verdict (pool a second copy with `sigil mend A.sg1 B.sg1`, `sigil gather`, `sigil frost mend`,
 `sigil vault versions`, or for a partially damaged Tome rescue intact files with

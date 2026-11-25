@@ -66,19 +66,21 @@ To choose the name yourself, add `-o fixed.sg1`.
 
 Here 2 000 single bits were flipped at random across the whole file. Every piece now fails
 its own small checksum, so `unseal` cannot open it directly—yet `sigil mend` can still heal
-it. `scry` detects this, exits **5** (`damaged — run sigil mend`), and prints recovery options:
+it. `scry` runs the same repair in memory (nothing is written; at most 3 seconds), sees that it
+works, exits **5** (`damaged — run sigil mend`), and prints the next steps. (If that check runs
+out of time, `scry` exits **6** and says to run `sigil mend` to find out.)
 
 ```
 $ sigil scry rot.sg1
 damaged  v2  live=0/16 need=12 merkle=open keystone=intact orig=2270725 entropy=7988 name=photo.jpg
 attestation: none (no .sig beside this file)
-damaged — run sigil mend rot.sg1 (only 0/16 shards intact (need 12); repairable with deeper repair)
+damaged — run sigil mend rot.sg1 (0 of 16 shards intact, 12 needed; the deeper repair restores it)
 
 What you can try:
-  - Inspect the damage and estimated repair time: sigil mend --scan rot.sg1
-  - Repair this Sigil Archive into a new file (keeps original untouched): sigil mend rot.sg1
-  - Open once in memory without saving a repaired copy: sigil unseal --repair -o <out> rot.sg1
-  - Combine good shards from another copy if you have one: sigil mend rot.sg1 other-copy.sg1
+  - See what is damaged and how long a repair takes: sigil mend --scan rot.sg1
+  - Repair it into a new file (the original is kept): sigil mend rot.sg1
+  - Or open it with a one-off repair in memory: sigil unseal --repair -o <out-file> rot.sg1
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend rot.sg1 <other-copy.sg1>
 ```
 
 Running `sigil mend --scan` inspects the damage and estimates the repair time:
@@ -122,10 +124,10 @@ $ sigil mend dead.sg1
 could not repair dead.sg1: too damaged to rebuild from this copy (soft mend could not reconstruct a true-name match). Nothing was written.
 
 What you can try:
-  - Combine good shards from another copy (backup, cloud sync, or USB stick): sigil mend dead.sg1 other-copy.sg1
-  - Rebuild from saved .sgp shards or Channel .mana packets: sigil gather <pieces-or-mana-folder> -o rebuilt.sg1
-  - Rebuild from Frost Rune cold drives: sigil frost mend <frost-dir> -o rebuilt.sg1
-  - Check Vault history for an earlier version: sigil vault versions <vault-or-path> (then sigil vault restore ...)
+  - If you have another copy (backup, cloud, USB stick), combine them: sigil mend dead.sg1 <other-copy.sg1>
+  - If you kept .sgp pieces or Channel mana for it, rebuild from them: sigil gather <folder> -o <rebuilt.sg1>
+  - If it is on Frost Rune drives, rebuild from them: sigil frost mend <frost-folder> -o <rebuilt.sg1>
+  - If it is kept in a Vault, restore an earlier version: sigil vault versions <vault>, then sigil vault restore --version <N> <vault>
 ```
 
 The result code was 2 and no file was written. Sigil does not guess.
