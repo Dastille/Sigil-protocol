@@ -52,6 +52,8 @@ Optional on track/commit: `--mode seal`, `--pass-file F`, `--to alice.pub`. Encr
 
 FUSE is read-only. Writable cleartext requires `--export-dir --writable` (writes a `.sigil-dirty` sidecar; never stores passphrases). Re-seal only through `vault commit --from-export`.
 
+Memory: a large-file member (a large member of a Tome, a Warded Tome with a large body, a single large-file pack, or a Constellation star) is read one chunk star at a time. Its first read checks every star once, as `unseal` does; later reads open only the stars they cover and check each again. At most three decoded stars are kept. Classic members (at most the Tome's `--chunk`) and log segments are decoded whole, with at most 256 MiB of them cached. `--export-dir` writes each file via a `.sigil-part` file renamed into place only after its checks pass.
+
 ```
 # FUSE read-only (Linux: /dev/fuse + fusermount3)
 mkdir -p ./view
@@ -170,6 +172,7 @@ Constellations take `--to` on `constellation add` (stars + card) and `--identity
 - Dirty `--from-export` re-seal: single-file and folder vault tips; bare (non-vault) SGDR exports must be tracked or re-inscribed.
 - Folder vault restore mends torn inner stars in an SGDR version — small classic members **and** the 4 MiB chunk stars of large-file WORK/SGWK members — then sets `mended` and rewrites the version seal (atomic temp + rename, only after the restored tree matches the chart true-name). Healed chunk stars must keep their SGFC facet true-name. Same layout and size; plain seals unaffected. An encrypted (sealed-directory, ver=2) version mends its encrypted body instead; the inner pack is authenticated by AES-256-GCM. Not RS-coded, so refused rather than guessed: the outer SGDR framing and a WORK member's head / per-star length framing. A chunk star beyond its mode's budget fails the restore with the member and star named, and the seal is left untouched.
 - FUSE: read-only; writable needs `--export-dir`.
+- Mount decodes whole: a classic member, a log segment, and a single file sealed whole with a large `--chunk`. A large Warded Tome export reads each member through the locked body, about three times slower than `unseal` of the same Tome; `unseal` stays the fast way to restore a whole Warded Tome.
 - Nested seals: mount shows one layer; `sigil path` walks deeper.
 - Constellation encrypt-to: give the same `--to` set on every `add` (an encrypt-to card refuses an add without `--to`); stars minted earlier keep their original recipients. Top-level `sigil scry` of a locked card points at `sigil constellation scry --identity/--pass`.
 - Format policy: new `.sg1` features stay additive/opt-in at Inscribe; plain seals stay readable forever — no layout fork.

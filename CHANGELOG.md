@@ -20,6 +20,43 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   (a `.sg1` of a whole folder). The on-disk `CONTAINER` manifest and the JSON value
   `"layout":"container"` are unchanged.
 
+### Tomes
+
+- A folder Inscribe lists every path it leaves out of the Tome on stderr: names starting
+  with `.` (a dot-folder is not entered), special files, links whose target is missing, and
+  folders with nothing stored under them. The summary line counts them and `--json` adds
+  `"not_packed": N`. At most 50 paths are printed by name, then a count. A note says how many
+  executable files will restore without their executable bit (permissions are not stored).
+  What is packed is unchanged, and the exit code stays 0.
+- New `seal --fail-on-skip` (folders only): when any path would be left out, list them,
+  write nothing and exit 1.
+- `scry` and `path` list a member larger than `--chunk` (stored as a large-file pack inside
+  the Tome) as `file`, not `nest`. A member is a `nest` when its name ends in `.sg1` or
+  `.sgwk`, whatever its size. `path --json` reports `"nest": false` for such members.
+
+### Mount
+
+- `mount` (FUSE and `--export-dir`) reads a large-file member one chunk star at a time
+  instead of decoding it whole into memory. This covers a large member of a plain Tome (read
+  in place), of a Warded Tome with a large locked body (the body is decrypted a star at a
+  time, never whole), a single large-file pack, and a Constellation star. The first read of
+  a member checks every star once, as `unseal` does (each star, its facet position, the
+  total), holding one star; later reads open only the stars they cover and check each again,
+  so a pack changed after it was opened is refused, never served. At most three decoded
+  stars are kept. `--export-dir` writes each file through a `.sigil-part` file renamed into
+  place only after its checks pass.
+- Classic members (one AES-GCM message, at most the Tome's `--chunk`) and log segments are
+  still decoded whole; at most 256 MiB of them stay cached, oldest dropped first, and the
+  member being read is always kept. A single file sealed whole with a large `--chunk` is
+  still decoded whole by `mount`.
+- Measured peak RSS of `mount --export-dir` with one 96 MiB member at a 1 MiB `--chunk`
+  (before -> after): plain Tome 240 MiB -> 17 MiB, Warded Tome 318 MiB -> 46 MiB, single
+  large-file pack 111 MiB -> 16 MiB. Plain Tome and single pack exports were faster (2.4 s ->
+  1.8 s). A large Warded Tome export was slower (7.2 s -> 20 s): each member star is read
+  through the locked body, and finding a member's stars reads the body once more.
+- Library: `VaultFs::read_range` and `VaultFs::copy_file_to` read part of a file, or copy
+  it, without holding the whole file.
+
 ### Memory
 
 - Tomes and Warded Tomes no longer load a member or the locked body into memory whole.

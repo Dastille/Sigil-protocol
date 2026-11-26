@@ -29,6 +29,7 @@ For the design, threat model and measured results, read the white paper:
 | `src/lib/sigil/` | TypeScript codec used by the web lab, with tests against the Rust CLI |
 | `scripts/` | `sigil-selftest.mjs` (standalone math self-test), `measure-repair.py` |
 | `.github/workflows/` | CI and release workflows (see "CI" below) |
+| `ROADMAP.md` | The order of planned work |
 
 ## Build
 
@@ -435,6 +436,29 @@ de-scribed 2 files → album-out
 $ sigil unseal --only sub/b.txt -o just-b album.sg1
 de-scribed 1 files → just-b
 ```
+
+A Tome keeps regular files only. These are left out, and every one is listed on stderr
+when the Tome is made (the summary line counts them; `--json` adds `"not_packed": N`):
+names starting with `.` (files and whole folders: a dot-folder is not entered), special
+files (named pipes, sockets, devices), links whose target is missing, and folders with
+nothing stored under them. Links to files and folders are followed. File permissions are
+not stored either; a note says how many executable files will come back without their
+executable bit. The Tome is still written and the exit code is 0, as before. Add
+`--fail-on-skip` to refuse instead: the paths are listed, nothing is written, and the exit
+code is 1.
+
+```
+$ sigil seal -o album.sg1 album
+WARNING: 2 path(s) in album are not packed into the Tome (1 hidden file, 1 empty folder):
+  hidden file    .env
+  empty folder   drafts/
+  (add --fail-on-skip to refuse instead of packing without them)
+folder 2 files, 4 bytes → album.sg1 (2 not packed: listed on stderr)
+```
+
+A member larger than `--chunk` is stored as a large-file pack inside the Tome; `scry`
+and `path` list it as `file`, like any other. Only a member whose name ends in `.sg1` or
+`.sgwk` is listed as `nest`.
 
 An **encrypted** Tome (`--pass` or `--to`) hides its file names, folder
 layout and per-file sizes. There is no flag for this; it is always on. Without the
