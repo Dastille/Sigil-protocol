@@ -350,3 +350,44 @@ fn a_protected_tome_can_get_sealed_names() {
     );
     assert_eq!(tree(&d.join("out")), want);
 }
+
+#[test]
+fn ward_only_tome_with_visible_names_is_protected_and_keeps_its_ward() {
+    let d = common::scratch("prot-ward");
+    fixture_src(&d);
+    let want = tree(&d.join("src"));
+    std::fs::write(d.join("wp"), "prot ward pass 3\n").expect("w");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d.join("wp"), std::fs::Permissions::from_mode(0o600))
+            .expect("chmod");
+    }
+    ok(
+        &d,
+        &[
+            "seal",
+            "--ward-file",
+            "a.txt=wp",
+            "--ward-names-visible",
+            "-o",
+            "w.sg1",
+            "src",
+        ],
+    );
+    assert_eq!(
+        &std::fs::read(d.join("w.sg1")).expect("r")[..5],
+        b"SGDR\x03"
+    );
+    let o = sigil(&d, &["unseal", "-o", "nokey", "w.sg1"]);
+    assert!(
+        !o.status.success() && !d.join("nokey").exists(),
+        "{}",
+        text(&o)
+    );
+    ok(
+        &d,
+        &["unseal", "--ward-file", "a.txt=wp", "-o", "out", "w.sg1"],
+    );
+    assert_eq!(tree(&d.join("out")), want);
+}

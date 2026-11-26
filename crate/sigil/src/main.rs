@@ -471,9 +471,10 @@ enum Cmd {
         /// Without it those paths are listed on stderr and the Tome is written.
         #[arg(long = "fail-on-skip")]
         fail_on_skip: bool,
-        /// Folder only, no --pass / --to: write the older Tome layout (folder list outside the
-        /// repaired body), which sigil versions before 0.9.0 can read. By default a new
-        /// unlocked Tome keeps its folder list inside the repair-protected body (Tome v3).
+        /// Folder only, no --pass / --to: write the older Tome layout (v1, folder list outside
+        /// the repair data), which sigil builds made before Tome v3 can read. By default a new
+        /// unlocked Tome keeps its folder list inside the repair-protected body (Tome v3):
+        /// protection against accidental damage only; add --pass / --to against deliberate edits.
         #[arg(long = "old-tome-layout")]
         old_tome_layout: bool,
         #[arg(long)]
@@ -3033,6 +3034,14 @@ fn verify_cmd(
                     ),
                     None => "Tome  cut off (its body holds the member list)".to_string(),
                 }
+            }
+            // A protected plain Tome (v3) whose body cannot be restored: its list is in
+            // that body, so report the verdict (exit 2) as for a locked Warded Tome.
+            Err(_)
+                if sigil::tome_version(&input) == Some(3)
+                    && condition.unrecoverable_reason().is_some() =>
+            {
+                "folder  (the file list is inside the body, which cannot be restored)".to_string()
             }
             Err(e) => return Err(open_failure(&input, e.into())),
         };

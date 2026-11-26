@@ -43,10 +43,38 @@ working), in Glyph mode because the body already carries the Reed-Solomon parity
   work as for v1. Readers reject a body whose inner pack does not match the outer
   file count, trailing bytes, a truncated body, and any GCM / Merkle failure.
 - Still visible: the file count and the total ciphertext length.
-- Plain Tomes (no key) stay v1 with names in the clear. A pack whose only keys
-  are `--ward`s is refused unless `--ward-names-visible` is given (then it is v1, names
-  in the clear, with a warning); add `--pass` / `--to` to get v2. Every v1 pack,
-  including encrypted and ward-only ones written earlier, opens and lists as before.
+- Plain Tomes (no key) show their names to anyone. A new one is written as
+  a protected plain Tome (v3, below); `--old-tome-layout` still writes v1. A pack whose
+  only keys are `--ward`s is refused unless `--ward-names-visible` is given (names
+  readable without a key, with a warning); add `--pass` / `--to` to get v2. Every v1
+  pack, including encrypted and ward-only ones written earlier, opens and lists as before.
+
+## Protected plain Tomes (SGDR v3)
+
+A Tome made without `--pass` / `--to` uses the v2 layout without encryption:
+
+    "SGDR" | ver=3 | file count u32 LE | body length u64 LE | body
+
+`body` is one ordinary unencrypted `.sg1` (or an SGWK work pack when the folder list
+and members together are over the chunk size) sealed with the chosen mode. Its plaintext
+is the complete v1 Tome. So the folder list (count, names, star lengths) sits inside
+Reed-Solomon parity and is checked by the body's SHA-256 (and per-chunk SHA-256 and
+merkle root for a work pack) before anything is written. In a v1 Tome the list has no
+repair data. Members inside the body are sealed in Glyph mode, as in v2.
+
+- **Accidental damage only.** No key is involved, so nothing here stops a deliberate
+  forger: anyone can write a new, valid v3 Tome with other contents. Use a Ward
+  (`--pass` / `--to`) when edits by someone else matter.
+- Names, sizes and the tree are readable by anyone (`scry`, `ls`, `mount` need no key).
+- Readers reject a body whose inner pack does not match the outer count, trailing bytes,
+  a truncated body, and any SHA-256 / merkle failure. `mend` heals the body and rebuilds
+  a damaged body length or file count in the head from the file size and the healed body.
+- Size: on the three measured folder shapes, v3 was 8% to 48% smaller than v1 for many
+  small or deeply nested files (the list is compressed with the body) and at most 0.08%
+  larger for a few big files.
+- Older sigil builds refuse a v3 Tome without reading it ("unknown Tome version 3" from
+  `unseal` / `ls`; `scry` and `mend` report the Tome as too damaged); they never return
+  a wrong tree. Update sigil to open it, or write `--old-tome-layout` for an old reader.
 
 ### Sealing the names of an old pack (`sigil seal-folder-names`)
 

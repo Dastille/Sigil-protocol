@@ -232,7 +232,8 @@ fn damaged_tome_first_bytes_are_never_called_healthy() {
     );
     let warded = std::fs::read(d.join("warded.sg1")).expect("r");
     assert_eq!(&warded[..5], b"SGDR\x02", "Warded Tome");
-    for base in ["plain.sg1", "warded.sg1"] {
+    ok(&d, &["seal", "f", "-o", "protected.sg1"]);
+    for base in ["plain.sg1", "warded.sg1", "protected.sg1"] {
         let raw = std::fs::read(d.join(base)).expect("r");
         for byte in [0usize, 2, 3, 4] {
             let mut bad = raw.clone();
@@ -242,7 +243,13 @@ fn damaged_tome_first_bytes_are_never_called_healthy() {
             let o = sigil(&d, &["scry", &f]);
             let t = text(&o);
             assert_eq!(o.status.code(), Some(2), "{f}: {t}");
-            assert!(t.contains("Tome head damaged"), "{f}: {t}");
+            // An intact `SGDR` with an unknown version may be from a newer sigil.
+            let why = if byte == 4 {
+                "unknown Tome version"
+            } else {
+                "Tome head damaged"
+            };
+            assert!(t.contains(why), "{f}: {t}");
         }
     }
 }

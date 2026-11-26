@@ -215,6 +215,25 @@ name and length. A wrong guess may therefore only cause a refusal.
             4 repair skipped, nothing written; 130 stopped, nothing written;
             1 any other error.
 
+TOME LAYOUTS (SGDR)
+  A Tome is one file holding a folder. Every layout starts "SGDR" | ver u8 |
+  file count u32 LE. Readers MUST refuse a version they do not know and write
+  nothing ("unknown Tome version N").
+  ver=1  plain: then per member name_len u16 LE | name (UTF-8, '/'-separated)
+         | star_len u64 LE | star. The list itself has no repair data.
+  ver=2  Warded: body_len u64 LE | body. body is one encrypted Sigil (or an
+         SGWK work pack) whose plaintext is a complete ver=1 Tome.
+  ver=3  protected plain (default for a new Tome without a key):
+         as ver=2, but the body is not encrypted. The ver=1 list is checked
+         by the body's SHA-256 (per-chunk SHA-256 and merkle root for a work
+         pack) and covered by its Reed-Solomon parity. This is against
+         accidental damage (adversary F) only; without a key there is no
+         authentication, so it does not stop adversary A.
+  For ver=2 and 3, readers MUST refuse a body length that does not equal the
+  rest of the file, and an inner pack whose count differs from the outer one.
+  Mend MAY rebuild body_len from the file size and, for ver=3, the count from
+  the healed inner pack.
+
 THREAT MODEL
 This section states what a .sg1 protects, against whom, and what it does not.
 It describes the reference implementation (crate/sigil) as of November 2026

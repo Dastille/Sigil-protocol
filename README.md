@@ -460,6 +460,14 @@ A member larger than `--chunk` is stored as a large-file pack inside the Tome; `
 and `path` list it as `file`, like any other. Only a member whose name ends in `.sg1` or
 `.sgwk` is listed as `nest`.
 
+The list of file names and sizes is kept inside the Tome's repair data (Tome v3, the
+default for new Tomes), so `mend` repairs damage to it and a list that cannot be repaired is
+refused, never read as different names. Without a Ward this guards against accidental
+damage only, not against someone editing the file on purpose. Tomes made by earlier
+versions open as before. Older versions of sigil refuse a v3 Tome with an error; add
+`--old-tome-layout` to make one they can read (its list has no repair data). Layout:
+[docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md#protected-plain-tomes-sgdr-v3).
+
 An **encrypted** Tome (`--pass` or `--to`) hides its file names, folder
 layout and per-file sizes. There is no flag for this; it is always on. Without the
 key, `scry` shows only how many files there are and whether the pack is healthy:

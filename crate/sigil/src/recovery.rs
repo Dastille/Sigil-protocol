@@ -685,7 +685,8 @@ pub enum ArchiveKind {
     LargeFile,
     /// A Tome whose member names are in the clear.
     Tome,
-    /// A Warded Tome (member names and contents locked).
+    /// A Tome whose folder list sits inside a repair-protected body: a Warded Tome
+    /// (names and contents locked) or a protected plain Tome (v3, no key).
     WardedTome,
     /// A constellation folder or card.
     Constellation,

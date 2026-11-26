@@ -5,7 +5,7 @@
 | Word | Meaning |
 |---|---|
 | **Sigil** | One `.sg1` file: your file or folder plus its repair data and fingerprints. Also called a Sigil Archive. |
-| **Tome** | A Sigil Archive of a whole folder: one `.sg1` file that holds every file in that folder. |
+| **Tome** | A Sigil Archive of a whole folder: one `.sg1` file that holds every file in that folder. A new Tome keeps its list of file names inside the repair data (a protected Tome); `--old-tome-layout` writes the older layout, which older versions can read. |
 | **Codex** | A `name.sigil/` folder that keeps one thing together (a Vault, a Constellation, or a signed log), including its manifest and related files. Not a `.sg1` file, and not a Tome. The on-disk manifest is still named `CONTAINER`. |
 | **Inscribe / seal** | Make a Sigil from a file or folder (`sigil seal`). |
 | **De-scribe / unseal** | Get the original back from a Sigil (`sigil unseal`). |
