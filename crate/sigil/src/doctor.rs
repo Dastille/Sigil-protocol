@@ -310,13 +310,43 @@ pub(crate) fn health_bytes_with(bytes: &[u8], bounded: bool) -> Health {
     }
 }
 
-fn health_work_pack(path: &Path) -> Health {
-    let tmp = match crate::staging::TempFile::reserve("doctor-pack") {
-        Ok(t) => t,
-        Err(e) => return Health::Damaged(format!("scratch file: {e}")),
+/// Health of the star (a classic seal or a large-file pack) at `off..off + len` of
+/// `path`: a pack is checked in place one part at a time; a classic seal (one AES-GCM
+/// message, at most the `--chunk` it was sealed with) is read into memory.
+fn health_window(path: &Path, off: u64, len: u64) -> Health {
+    use crate::packhead::Src;
+    let mut file = match crate::packhead::FileSrc::open(path) {
+        Ok(f) => f,
+        Err(e) => return Health::Damaged(format!("cannot read: {e}")),
     };
-    let r = crate::work::mend_pack_path(path, tmp.path(), false);
-    drop(tmp);
+    let mut mag = [0u8; 4];
+    if len >= 4 && file.read_at(off, &mut mag).is_err() {
+        return Health::Damaged("cut off (incomplete copy)".into());
+    }
+    if mag == crate::work::WORK_MAGIC {
+        return match crate::packhead::SubSrc::new(&mut file, off, len) {
+            Ok(mut w) => health_pack_src(&mut w),
+            Err(e) => Health::Damaged(e.to_string()),
+        };
+    }
+    let mut star = vec![0u8; len as usize];
+    match file.read_at(off, &mut star) {
+        Ok(()) => health_bytes(&star),
+        Err(e) => Health::Damaged(e.to_string()),
+    }
+}
+
+fn health_work_pack(path: &Path) -> Health {
+    match crate::packhead::FileSrc::open(path) {
+        Ok(mut src) => health_pack_src(&mut src),
+        Err(e) => Health::Damaged(e.to_string()),
+    }
+}
+
+/// Health of a large-file pack: run the repair `sigil mend` would run, writing the
+/// healed copy nowhere (one star in memory at a time; no scratch file).
+fn health_pack_src<S: crate::packhead::Src>(src: &mut S) -> Health {
+    let r = crate::work::mend_pack_src_to(src, &mut std::io::sink(), false);
     match r {
         Ok(rep) if rep.mended.is_empty() && rep.head == crate::HeadSource::Intact => Health::Ok,
         Ok(rep) if rep.head != crate::HeadSource::Intact => Health::Mendable(format!(
@@ -337,43 +367,26 @@ pub(crate) fn health_file(path: &Path) -> Health {
         return health_work_pack(path);
     }
     if crate::is_sealed_dir_pack(path) {
-        // Sealed directory: members are inside the encrypted body; check the body.
-        return match crate::sealed_dir_body(path) {
+        // Sealed directory: members are inside the encrypted body; check the body in
+        // place (a large body one part at a time, never copied or held whole).
+        return match crate::sealed_dir_body_loc(path) {
             Err(e) => Health::Damaged(format!("Warded Tome unreadable: {e}")),
             Ok(None) => Health::Damaged("Warded Tome unreadable".into()),
-            Ok(Some((_, body))) if body.starts_with(&crate::work::WORK_MAGIC) => {
-                match crate::staging::TempFile::with_bytes("doctor-body", &body) {
-                    Ok(tmp) => health_work_pack(tmp.path()),
-                    Err(e) => Health::Damaged(format!("scratch write failed: {e}")),
-                }
-            }
-            Ok(Some((_, body))) => health_bytes(&body),
+            Ok(Some((_, off, len))) => health_window(path, off, len),
         };
     }
     if crate::is_dir_pack(path) {
-        let entries = match crate::list_dir_pack(path) {
+        let entries = match crate::folder::member_locs(path) {
             Ok(e) => e,
             Err(e) => return Health::Damaged(format!("Tome unreadable: {e}")),
         };
         let mut worst = Health::Ok;
-        for e in entries {
-            let star = match crate::read_dir_entry_star(path, &e.path) {
-                Ok(b) => b,
-                Err(err) => return Health::Damaged(format!("{}: {err}", e.path)),
-            };
-            let h = if star.starts_with(&crate::work::WORK_MAGIC) {
-                // A member that could not be checked is never reported healthy.
-                match crate::staging::TempFile::with_bytes("doctor-member", &star) {
-                    Ok(tmp) => health_work_pack(tmp.path()),
-                    Err(e) => Health::Damaged(format!("could not check (scratch file: {e})")),
-                }
-            } else {
-                health_bytes(&star)
-            };
+        for (rel, off, len) in entries {
+            let h = health_window(path, off, len);
             match (&h, &worst) {
-                (Health::Damaged(m), _) => return Health::Damaged(format!("{}: {m}", e.path)),
+                (Health::Damaged(m), _) => return Health::Damaged(format!("{rel}: {m}")),
                 (Health::Mendable(m), Health::Ok) => {
-                    worst = Health::Mendable(format!("{}: {m}", e.path))
+                    worst = Health::Mendable(format!("{rel}: {m}"))
                 }
                 _ => {}
             }

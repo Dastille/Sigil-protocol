@@ -116,6 +116,68 @@ impl Src for FileSrc {
     }
 }
 
+/// A window `[base, base + len)` of another source, read as a source of its own.
+///
+/// Lets a member stored inside a Tome (or a Warded Tome's locked body) be read in
+/// place, one bounded piece at a time, instead of being copied into memory whole.
+pub(crate) struct SubSrc<'a, S: Src> {
+    inner: &'a mut S,
+    base: u64,
+    len: u64,
+}
+
+impl<'a, S: Src> SubSrc<'a, S> {
+    /// The window `[base, base + len)` of `inner`; an error when it runs past the end.
+    pub(crate) fn new(inner: &'a mut S, base: u64, len: u64) -> Result<Self> {
+        if base.checked_add(len).is_none_or(|e| e > inner.size()) {
+            return Err(msg("read past the end of the pack"));
+        }
+        Ok(SubSrc { inner, base, len })
+    }
+}
+
+impl<S: Src> Src for SubSrc<'_, S> {
+    fn size(&self) -> u64 {
+        self.len
+    }
+    fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<()> {
+        if off
+            .checked_add(buf.len() as u64)
+            .is_none_or(|e| e > self.len)
+        {
+            return Err(msg("read past the end of the pack"));
+        }
+        self.inner.read_at(self.base + off, buf)
+    }
+}
+
+/// Bytes moved per step by [`copy_range`] (the most it holds in memory at once).
+pub(crate) const COPY_WINDOW: usize = 1 << 20;
+
+/// Copy `len` bytes starting at `off` of `src` into `w`, one [`COPY_WINDOW`] at a
+/// time. Memory stays at one window whatever `len` is; the loop runs at most
+/// `len / COPY_WINDOW + 1` times and stops early on Ctrl-C.
+pub(crate) fn copy_range<S: Src, W: std::io::Write>(
+    src: &mut S,
+    off: u64,
+    len: u64,
+    w: &mut W,
+) -> Result<()> {
+    if off.checked_add(len).is_none_or(|e| e > src.size()) {
+        return Err(msg("read past the end of the pack"));
+    }
+    let mut buf = vec![0u8; (len.min(COPY_WINDOW as u64)) as usize];
+    let mut done = 0u64;
+    while done < len {
+        crate::repair_ctl::check()?;
+        let n = (len - done).min(buf.len() as u64) as usize;
+        src.read_at(off + done, &mut buf[..n])?;
+        w.write_all(&buf[..n]).map_err(|e| msg(e.to_string()))?;
+        done += n as u64;
+    }
+    Ok(())
+}
+
 /// Where the pack head used for reading came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeadSource {

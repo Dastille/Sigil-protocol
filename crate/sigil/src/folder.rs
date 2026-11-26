@@ -19,6 +19,7 @@
 //! v1 packs (including every encrypted pack written before v2 existed) open unchanged.
 
 use crate::keys::{Identity, PublicIdentity};
+use crate::packhead::{self, Src};
 use crate::staging::Staging;
 use crate::{seal_kn_to, unseal_ex_keys, Mode, Result, DEFAULT_PIECE};
 use std::fs::{self, File};
@@ -244,9 +245,10 @@ fn inscribe_dir_any(
         t
     };
     let inner_len = fs::metadata(&inner.0).map_err(io)?.len();
-    let body = if inner_len <= chunk as u64 {
+    if inner_len <= chunk as u64 {
+        // A classic body is one in-memory seal; it is at most `chunk` bytes.
         let data = fs::read(&inner.0).map_err(io)?;
-        seal_kn_to(
+        let body = seal_kn_to(
             &data,
             mode,
             pass,
@@ -257,8 +259,16 @@ fn inscribe_dir_any(
             None,
             DEFAULT_PIECE,
             recipients,
-        )?
-    } else {
+        )?;
+        drop(inner);
+        let mut writer = BufWriter::new(File::create(output).map_err(io)?);
+        writer
+            .write_all(&encode_sealed(files.len() as u32, &body))
+            .map_err(io)?;
+        writer.flush().map_err(io)?;
+        return Ok((files.len() as u32, total));
+    }
+    {
         let packed = Scratch(scratch_beside(output, "sgdr-body"));
         crate::work::inscribe_path_to(
             &inner.0,
@@ -274,14 +284,17 @@ fn inscribe_dir_any(
             None,
             recipients,
         )?;
-        fs::read(&packed.0).map_err(io)?
-    };
-    drop(inner);
-    let mut writer = BufWriter::new(File::create(output).map_err(io)?);
-    writer
-        .write_all(&encode_sealed(files.len() as u32, &body))
-        .map_err(io)?;
-    writer.flush().map_err(io)?;
+        drop(inner);
+        // Large body: copy the work pack into place a window at a time, never whole.
+        let mut body = packhead::FileSrc::open(&packed.0)?;
+        let body_len = body.size();
+        let mut writer = BufWriter::new(File::create(output).map_err(io)?);
+        writer
+            .write_all(&encode_sealed_head(files.len() as u32, body_len))
+            .map_err(io)?;
+        packhead::copy_range(&mut body, 0, body_len, &mut writer)?;
+        writer.flush().map_err(io)?;
+    }
     Ok((files.len() as u32, total))
 }
 
@@ -311,9 +324,12 @@ fn write_v1<W: Write>(
         let size = path.metadata().map(|m| m.len()).unwrap_or(0);
         total += size;
         let file_pass = pass_for(&rel, pass, wards);
-        let star = if size <= chunk as u64 {
+        let pb = rel.as_bytes();
+        let nlen = (pb.len().min(65535)) as u16;
+        if size <= chunk as u64 {
+            // A classic member is one in-memory seal; it is at most `chunk` bytes.
             let data = fs::read(path).map_err(io)?;
-            seal_kn_to(
+            let star = seal_kn_to(
                 &data,
                 mode,
                 file_pass.as_deref(),
@@ -324,7 +340,13 @@ fn write_v1<W: Write>(
                 None,
                 DEFAULT_PIECE,
                 recipients,
-            )?
+            )?;
+            writer.write_all(&nlen.to_le_bytes()).map_err(io)?;
+            writer.write_all(&pb[..nlen as usize]).map_err(io)?;
+            writer
+                .write_all(&(star.len() as u64).to_le_bytes())
+                .map_err(io)?;
+            writer.write_all(&star).map_err(io)?;
         } else {
             let tmp = Scratch(scratch_beside(output, "member"));
             crate::work::inscribe_path_to(
@@ -341,27 +363,35 @@ fn write_v1<W: Write>(
                 None,
                 recipients,
             )?;
-            fs::read(&tmp.0).map_err(io)?
-        };
-        let pb = rel.as_bytes();
-        let nlen = (pb.len().min(65535)) as u16;
-        writer.write_all(&nlen.to_le_bytes()).map_err(io)?;
-        writer.write_all(&pb[..nlen as usize]).map_err(io)?;
-        writer
-            .write_all(&(star.len() as u64).to_le_bytes())
-            .map_err(io)?;
-        writer.write_all(&star).map_err(io)?;
+            // Large member: copy its work pack in a window at a time, never whole.
+            let mut star = packhead::FileSrc::open(&tmp.0)?;
+            let slen = star.size();
+            writer.write_all(&nlen.to_le_bytes()).map_err(io)?;
+            writer.write_all(&pb[..nlen as usize]).map_err(io)?;
+            writer.write_all(&slen.to_le_bytes()).map_err(io)?;
+            packhead::copy_range(&mut star, 0, slen, writer)?;
+        }
     }
     Ok(total)
 }
 
 fn encode_sealed(count: u32, body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(17 + body.len());
-    out.extend_from_slice(&DIR_MAGIC);
-    out.push(DIR_VER_SEALED);
-    out.extend_from_slice(&count.to_le_bytes());
-    out.extend_from_slice(&(body.len() as u64).to_le_bytes());
+    let mut out = Vec::with_capacity(SEALED_HEAD_LEN + body.len());
+    out.extend_from_slice(&encode_sealed_head(count, body.len() as u64));
     out.extend_from_slice(body);
+    out
+}
+
+/// Bytes before a Warded Tome's body: `SGDR | 2 | count u32 | body_len u64`.
+const SEALED_HEAD_LEN: usize = 17;
+
+/// The 17 bytes in front of a Warded Tome's body of `body_len` bytes.
+fn encode_sealed_head(count: u32, body_len: u64) -> [u8; SEALED_HEAD_LEN] {
+    let mut out = [0u8; SEALED_HEAD_LEN];
+    out[0..4].copy_from_slice(&DIR_MAGIC);
+    out[4] = DIR_VER_SEALED;
+    out[5..9].copy_from_slice(&count.to_le_bytes());
+    out[9..17].copy_from_slice(&body_len.to_le_bytes());
     out
 }
 
@@ -409,6 +439,263 @@ fn read_sealed_body<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
         ));
     }
     Ok(body)
+}
+
+/// For a sealed-directory (v2) pack: `Some((member_count, body_offset, body_len))`;
+/// `None` for v1. Same checks as [`sealed_dir_body`] (a cut-off body or bytes after
+/// it are refused) without reading the body.
+pub fn sealed_dir_body_loc(input: &Path) -> Result<Option<(u32, u64, u64)>> {
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
+    if ver != DIR_VER_SEALED {
+        return Ok(None);
+    }
+    let mut lb = [0u8; 8];
+    reader
+        .read_exact(&mut lb)
+        .map_err(|_| crate::Error::Msg(TRUNCATED_WARDED.into()))?;
+    let len = u64::from_le_bytes(lb);
+    let size = fs::metadata(input).map_err(io)?.len();
+    let avail = size.saturating_sub(SEALED_HEAD_LEN as u64);
+    if len > avail {
+        return Err(crate::Error::Msg(TRUNCATED_WARDED.into()));
+    }
+    if len < avail {
+        return Err(crate::Error::Msg(
+            "Warded Tome has extra bytes after its locked body (edited or damaged)".into(),
+        ));
+    }
+    Ok(Some((n, SEALED_HEAD_LEN as u64, len)))
+}
+
+/// Open a Warded Tome's body (`len` bytes at `off` of `tome`) and hand `f` its
+/// plaintext, the inner v1 pack, positioned just after the inner `SGDR | 1 | count`
+/// head (already checked against the outer `count`).
+///
+/// A large body (an SGWK work pack) is decrypted one chunk star at a time, so memory
+/// stays at one chunk whatever the Tome's size; after `f` returns, the rest of the body
+/// is read so the pack's total-length check runs before anything is trusted. A small
+/// body is one classic seal and is opened in memory as before (it is at most the
+/// `--chunk` it was sealed with). Fails closed on a wrong key or any tamper.
+#[allow(clippy::too_many_arguments)]
+fn with_inner<T>(
+    tome: &mut packhead::FileSrc,
+    count: u32,
+    off: u64,
+    len: u64,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+    f: impl FnOnce(&mut dyn Read) -> Result<T>,
+) -> Result<T> {
+    let mut body = packhead::SubSrc::new(tome, off, len)?;
+    let mut mag = [0u8; 4];
+    if len >= 4 {
+        body.read_at(0, &mut mag)?;
+    }
+    if mag == crate::work::WORK_MAGIC {
+        let l = packhead::layout(&mut body)?;
+        let mut r = crate::work::PackReader::new(&mut body, &l, pass, companions, identities);
+        let mut head = [0u8; 9];
+        r.read_exact(&mut head).map_err(io)?;
+        check_inner(count, &head)?;
+        let t = f(&mut r)?;
+        // The pack's total length is checked at its end: read to it before trusting `t`.
+        std::io::copy(&mut r, &mut std::io::sink()).map_err(io)?;
+        return Ok(t);
+    }
+    let mut b = vec![0u8; len as usize];
+    body.read_at(0, &mut b)?;
+    let inner = unseal_ex_keys(&b, pass, companions, identities)?;
+    drop(b);
+    check_inner(count, &inner)?;
+    let mut cur = Cursor::new(inner);
+    cur.set_position(9);
+    f(&mut cur)
+}
+
+/// Where the members of a plain (v1) pack are read from: the Tome file itself (members
+/// are then read in place), or a stream (a Warded Tome's decrypted body), whose large
+/// members are copied to a private scratch file one window at a time.
+enum V1Source<'a> {
+    /// A plain Tome on disk; `pos` is the next unread byte.
+    File { src: packhead::FileSrc, pos: u64 },
+    /// A stream; large members are spooled to scratch files named after `beside`
+    /// (beside the output) or in the system temp folder when `beside` is `None`.
+    Stream {
+        r: &'a mut dyn Read,
+        beside: Option<&'a Path>,
+    },
+}
+
+/// One member star of a plain (v1) pack.
+enum StarBytes {
+    /// A classic seal, read into memory (one AES-GCM message; never larger than the
+    /// bytes actually present).
+    Mem(Vec<u8>),
+    /// A large-file member in place in the Tome file: `(offset, length)`.
+    Window(u64, u64),
+    /// A large-file member copied to a scratch file (removed when `_file` drops).
+    Spool {
+        _file: SpoolFile,
+        src: packhead::FileSrc,
+    },
+}
+
+/// A spooled member's scratch file, removed when dropped.
+enum SpoolFile {
+    Beside(Scratch),
+    Temp(crate::staging::TempFile),
+}
+
+/// Error for a member cut off before its stated length.
+const TRUNCATED_MEMBER: &str = "truncated Tome (cut off mid-archive; incomplete copy or transfer)";
+
+impl V1Source<'_> {
+    /// Fill `buf` from the member list (names and lengths).
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+        match self {
+            V1Source::File { src, pos } => {
+                src.read_at(*pos, buf)
+                    .map_err(|_| crate::Error::Msg("failed to fill whole buffer".into()))?;
+                *pos += buf.len() as u64;
+                Ok(())
+            }
+            V1Source::Stream { r, .. } => r.read_exact(buf).map_err(io),
+        }
+    }
+
+    /// The next `len` bytes, as a member star (`want`) or skipped (`None`). A truncated
+    /// member is refused. Memory: a classic star, or one copy window for a large one.
+    fn star(&mut self, len: u64, want: bool) -> Result<Option<StarBytes>> {
+        match self {
+            V1Source::File { src, pos } => {
+                let start = *pos;
+                if start.checked_add(len).is_none_or(|e| e > src.size()) {
+                    return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
+                }
+                *pos = start + len;
+                if !want {
+                    return Ok(None);
+                }
+                let mut mag = [0u8; 4];
+                if len >= 4 {
+                    src.read_at(start, &mut mag)?;
+                }
+                if mag == crate::work::WORK_MAGIC {
+                    return Ok(Some(StarBytes::Window(start, len)));
+                }
+                let mut v = vec![0u8; len as usize];
+                src.read_at(start, &mut v)?;
+                Ok(Some(StarBytes::Mem(v)))
+            }
+            V1Source::Stream { r, beside } => {
+                if !want {
+                    let got = std::io::copy(&mut r.by_ref().take(len), &mut std::io::sink())
+                        .map_err(io)?;
+                    if got != len {
+                        return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
+                    }
+                    return Ok(None);
+                }
+                let mut head = Vec::with_capacity(4);
+                r.by_ref()
+                    .take(len.min(4))
+                    .read_to_end(&mut head)
+                    .map_err(io)?;
+                if head.as_slice() != crate::work::WORK_MAGIC {
+                    // Classic star: read the rest; `take` bounds it by what is present.
+                    let mut v = head;
+                    r.by_ref()
+                        .take(len - v.len() as u64)
+                        .read_to_end(&mut v)
+                        .map_err(io)?;
+                    if v.len() as u64 != len {
+                        return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
+                    }
+                    return Ok(Some(StarBytes::Mem(v)));
+                }
+                let (spool, file) = match beside {
+                    Some(b) => {
+                        let sc = Scratch(scratch_beside(b, "member-spool"));
+                        let f = crate::staging::create_private(&sc.0)?;
+                        (SpoolFile::Beside(sc), f)
+                    }
+                    None => {
+                        let t = crate::staging::TempFile::reserve("member-spool")?;
+                        let f = fs::OpenOptions::new()
+                            .write(true)
+                            .open(t.path())
+                            .map_err(io)?;
+                        (SpoolFile::Temp(t), f)
+                    }
+                };
+                let mut w = BufWriter::new(file);
+                w.write_all(&head).map_err(io)?;
+                let rest = len - head.len() as u64;
+                let got = copy_bounded(&mut r.by_ref().take(rest), &mut w)?;
+                if got != rest {
+                    return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
+                }
+                w.flush().map_err(io)?;
+                drop(w);
+                let path = match &spool {
+                    SpoolFile::Beside(sc) => sc.0.clone(),
+                    SpoolFile::Temp(t) => t.path().to_path_buf(),
+                };
+                let src = packhead::FileSrc::open(&path)?;
+                Ok(Some(StarBytes::Spool { _file: spool, src }))
+            }
+        }
+    }
+
+    /// Run `f` on a large-file member's bytes in place (a window of the Tome file or
+    /// its spooled copy). `Mem` stars are handled by the caller.
+    fn with_src<T>(
+        &mut self,
+        star: &mut StarBytes,
+        f: impl FnOnce(&mut DynSrc<'_>) -> Result<T>,
+    ) -> Result<T> {
+        match (self, star) {
+            (V1Source::File { src, .. }, StarBytes::Window(off, len)) => {
+                let mut w = packhead::SubSrc::new(src, *off, *len)?;
+                f(&mut DynSrc(&mut w))
+            }
+            (_, StarBytes::Spool { src, .. }) => f(&mut DynSrc(src)),
+            (_, StarBytes::Mem(v)) => f(&mut DynSrc(&mut packhead::MemSrc(v))),
+            _ => Err(crate::Error::Msg("member window without its Tome".into())),
+        }
+    }
+}
+
+/// A `&mut dyn Src` usable where a sized source is wanted.
+pub(crate) struct DynSrc<'a>(pub &'a mut dyn Src);
+
+impl Src for DynSrc<'_> {
+    fn size(&self) -> u64 {
+        self.0.size()
+    }
+    fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<()> {
+        self.0.read_at(off, buf)
+    }
+}
+
+/// Copy `r` into `w` one [`packhead::COPY_WINDOW`] at a time until `r` ends; returns
+/// the bytes copied. Stops on Ctrl-C. `r` must itself be bounded (a `take`).
+fn copy_bounded<R: Read + ?Sized, W: Write>(r: &mut R, w: &mut W) -> Result<u64> {
+    let mut buf = vec![0u8; packhead::COPY_WINDOW];
+    let mut total = 0u64;
+    loop {
+        crate::repair_ctl::check()?;
+        let n = match r.read(&mut buf) {
+            Ok(0) => return Ok(total),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(io(e)),
+        };
+        w.write_all(&buf[..n]).map_err(io)?;
+        total += n as u64;
+    }
 }
 
 /// For a sealed-directory (v2) pack: `Some((member_count, body))`; `None` for v1.
@@ -497,32 +784,72 @@ pub fn unseal_dir_only_keys(
     crate::refuse_empty_open_pass(pass)?;
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
+    drop(reader);
     if ver == DIR_VER_SEALED {
         if pass.is_none() && identities.is_empty() {
             return Err(crate::Error::Msg(HIDDEN_HINT.into()));
         }
-        let body = read_sealed_body(&mut reader)?;
-        let inner = open_body(n, &body, pass, companions, identities)?;
-        let mut cur = Cursor::new(inner);
-        let (_, n) = read_head(&mut cur, "not a Tome archive (SGDR)")?;
-        return unseal_v1_stream(&mut cur, n, dest, pass, companions, only, wards, identities);
+        let (count, off, len) = sealed_dir_body_loc(input)?
+            .ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
+        let mut tome = packhead::FileSrc::open(input)?;
+        let mut staged = Staging::new();
+        let got = with_inner(
+            &mut tome,
+            count,
+            off,
+            len,
+            pass,
+            companions,
+            identities,
+            |r| {
+                let mut src = V1Source::Stream {
+                    r,
+                    beside: Some(dest),
+                };
+                unseal_v1_members(
+                    &mut src,
+                    count,
+                    &mut staged,
+                    dest,
+                    pass,
+                    companions,
+                    only,
+                    wards,
+                    identities,
+                )
+            },
+        )?;
+        staged.commit()?;
+        return Ok(got);
     }
-    unseal_v1_stream(
-        &mut reader,
+    let mut src = V1Source::File {
+        src: packhead::FileSrc::open(input)?,
+        pos: 9,
+    };
+    let mut staged = Staging::new();
+    let got = unseal_v1_members(
+        &mut src,
         n,
+        &mut staged,
         dest,
         pass,
         companions,
         only,
         wards,
         identities,
-    )
+    )?;
+    staged.commit()?;
+    Ok(got)
 }
 
+/// Unseal the `n` members of a v1 pack from `src` into `staged` (the caller commits).
+/// One member is held at a time: a classic star in memory, a large-file member read in
+/// place or from a scratch copy, one chunk star at a time.
 #[allow(clippy::too_many_arguments)]
-fn unseal_v1_stream<R: Read>(
-    reader: &mut R,
+fn unseal_v1_members(
+    src: &mut V1Source<'_>,
     n: u32,
+    staged: &mut Staging,
     dest: &Path,
     pass: Option<&str>,
     companions: &[Vec<u8>],
@@ -531,52 +858,49 @@ fn unseal_v1_stream<R: Read>(
     identities: &[Identity],
 ) -> Result<u32> {
     // All-or-nothing: members land as part files and are renamed into place
-    // only after every wanted member has unsealed and verified.
-    let mut staged = Staging::new();
+    // only after every wanted member has unsealed and verified (by the caller).
     staged.make_dir(dest)?;
     let mut got = 0u32;
+    // `n` is untrusted, but every member reads at least 10 bytes, so a short file ends
+    // the loop with a truncation error long before `n` is reached.
     for _ in 0..n {
+        crate::repair_ctl::check()?;
         let mut lb = [0u8; 2];
-        reader.read_exact(&mut lb).map_err(io)?;
+        src.read_exact(&mut lb)?;
         let nlen = u16::from_le_bytes(lb) as usize;
         let mut name = vec![0u8; nlen];
-        reader.read_exact(&mut name).map_err(io)?;
+        src.read_exact(&mut name)?;
         let rel = String::from_utf8_lossy(&name).into_owned();
         if rel.contains("..") || Path::new(&rel).is_absolute() {
             return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
         let mut sl = [0u8; 8];
-        reader.read_exact(&mut sl).map_err(io)?;
+        src.read_exact(&mut sl)?;
         let slen = u64::from_le_bytes(sl);
-        let mut star = Vec::new();
-        reader
-            .by_ref()
-            .take(slen)
-            .read_to_end(&mut star)
-            .map_err(io)?;
-        if star.len() as u64 != slen {
-            return Err(crate::Error::Msg(
-                "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
-            ));
-        }
-        if !wanted(&rel, only) {
+        let want = wanted(&rel, only);
+        let Some(mut star) = src.star(slen, want)? else {
             continue;
-        }
+        };
         let out_path = dest.join(&rel);
         let file_pass = pass_for(&rel, pass, wards);
-        if star.starts_with(&crate::work::WORK_MAGIC) {
-            staged.write_with(&out_path, |w| {
-                crate::work::unseal_bytes_into(
-                    &star,
-                    w,
-                    file_pass.as_deref(),
-                    companions,
-                    identities,
-                )
-            })?;
-        } else {
-            let plain = unseal_ex_keys(&star, file_pass.as_deref(), companions, identities)?;
-            staged.write(&out_path, &plain)?;
+        match &star {
+            StarBytes::Mem(v) => {
+                let plain = unseal_ex_keys(v, file_pass.as_deref(), companions, identities)?;
+                staged.write(&out_path, &plain)?;
+            }
+            _ => {
+                src.with_src(&mut star, |s| {
+                    staged.write_with(&out_path, |w| {
+                        crate::work::unseal_src_into(
+                            s,
+                            w,
+                            file_pass.as_deref(),
+                            companions,
+                            identities,
+                        )
+                    })
+                })?;
+            }
         }
         got += 1;
     }
@@ -585,7 +909,6 @@ fn unseal_v1_stream<R: Read>(
             "nothing matched --only (run sigil scry on the Tome to see paths)".into(),
         ));
     }
-    staged.commit()?;
     Ok(got)
 }
 
@@ -680,32 +1003,52 @@ pub fn unseal_dir_mend_keys(
 /// Keyless mend of a sealed-directory (v2) pack: heal the body's torn shards and
 /// write the healed pack to `output` (via `.mend-part` + rename). Returns a one-line report.
 pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
-    let (n, body) =
-        sealed_dir_body(input)?.ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
-    let healed = if body.starts_with(&crate::work::WORK_MAGIC) {
+    let (n, off, len) =
+        sealed_dir_body_loc(input)?.ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
+    let mut tome = packhead::FileSrc::open(input)?;
+    let mut mag = [0u8; 4];
+    if len >= 4 {
+        tome.read_at(off, &mut mag)?;
+    }
+    let mut part = output.as_os_str().to_os_string();
+    part.push(".mend-part");
+    // Removed on any error; after the rename below there is nothing left to remove.
+    let part = Scratch(PathBuf::from(part));
+    let state = if mag == crate::work::WORK_MAGIC {
+        // Large body: heal it through scratch files, copying a window at a time.
         let src = Scratch(scratch_beside(output, "mend-body-in"));
+        {
+            let mut w = BufWriter::new(File::create(&src.0).map_err(io)?);
+            packhead::copy_range(&mut tome, off, len, &mut w)?;
+            w.flush().map_err(io)?;
+        }
         let dst = Scratch(scratch_beside(output, "mend-body-out"));
-        fs::write(&src.0, &body).map_err(io)?;
         crate::work::mend_pack_path(&src.0, &dst.0, false)?;
-        fs::read(&dst.0).map_err(io)?
+        drop(src);
+        let mut healed = packhead::FileSrc::open(&dst.0)?;
+        let hlen = healed.size();
+        let mut w = BufWriter::new(File::create(&part.0).map_err(io)?);
+        w.write_all(&encode_sealed_head(n, hlen)).map_err(io)?;
+        packhead::copy_range(&mut healed, 0, hlen, &mut w)?;
+        w.flush().map_err(io)?;
+        "ok"
     } else {
-        crate::pieces::mend_bytes(&body).map_err(|e| {
+        // A classic body is one in-memory seal (at most the `--chunk` it was sealed with).
+        let mut body = vec![0u8; len as usize];
+        tome.read_at(off, &mut body)?;
+        let healed = crate::pieces::mend_bytes(&body).map_err(|e| {
             crate::Error::Msg(format!(
                 "the locked body of this Warded Tome is too damaged to mend: {e}"
             ))
-        })?
+        })?;
+        fs::write(&part.0, encode_sealed(n, &healed)).map_err(io)?;
+        if crate::work::star_torn(&healed) {
+            "open"
+        } else {
+            "ok"
+        }
     };
-    let mut part = output.as_os_str().to_os_string();
-    part.push(".mend-part");
-    let part = PathBuf::from(part);
-    fs::write(&part, encode_sealed(n, &healed)).map_err(io)?;
-    fs::rename(&part, output).map_err(io)?;
-    let state = if crate::work::star_torn(&healed) && !healed.starts_with(&crate::work::WORK_MAGIC)
-    {
-        "open"
-    } else {
-        "ok"
-    };
+    fs::rename(&part.0, output).map_err(io)?;
     Ok(format!(
         "mended {} → {} (sealed Tome, {n} files, body merkle {state})",
         input.display(),
@@ -718,30 +1061,56 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
 /// same layout. All-or-nothing: if any damaged member cannot be healed (Merkle + true
 /// name checked), nothing is written and the error names that member.
 pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
-    let raw = fs::read(input).map_err(io)?;
-    let entries = parse_sgdr_entries(&raw)
+    let mut tome = packhead::FileSrc::open(input)?;
+    let entries = index_v1(&mut tome)
         .map_err(|e| crate::Error::Msg(format!("truncated or unreadable Tome index: {e}")))?;
-    drop(raw);
     let total = entries.len();
-    let mut healed_entries = Vec::with_capacity(total);
     let mut mended: Vec<String> = Vec::new();
     let mut soft_used = false;
-    for (rel, star) in entries {
-        if star.starts_with(&crate::work::WORK_MAGIC) {
+    let mut part = output.as_os_str().to_os_string();
+    part.push(".mend-part");
+    // Removed on any error (nothing is written to `output`); renamed into place at the end.
+    let part = Scratch(PathBuf::from(part));
+    let mut w = BufWriter::new(File::create(&part.0).map_err(io)?);
+    w.write_all(&DIR_MAGIC).map_err(io)?;
+    w.write_all(&[DIR_VER_PLAIN]).map_err(io)?;
+    w.write_all(&(total as u32).to_le_bytes()).map_err(io)?;
+    // One member at a time: a classic star in memory, a large-file member through
+    // scratch files a window at a time. `entries` came from a bounded index pass.
+    for (rel, off, len) in entries {
+        crate::repair_ctl::check()?;
+        let mut mag = [0u8; 4];
+        if len >= 4 {
+            tome.read_at(off, &mut mag)?;
+        }
+        if mag == crate::work::WORK_MAGIC {
             let src = Scratch(scratch_beside(output, "mend-member-in"));
             let dst = Scratch(scratch_beside(output, "mend-member-out"));
-            fs::write(&src.0, &star).map_err(io)?;
+            {
+                let mut sw = BufWriter::new(File::create(&src.0).map_err(io)?);
+                packhead::copy_range(&mut tome, off, len, &mut sw)?;
+                sw.flush().map_err(io)?;
+            }
             let r = crate::work::mend_pack_path(&src.0, &dst.0, soft).map_err(|e| {
                 crate::Error::Msg(format!("member '{rel}' is too damaged to mend: {e}"))
             })?;
+            drop(src);
             soft_used |= r.soft_used;
             if r.mended.is_empty() {
-                healed_entries.push((rel, star));
+                write_member_head(&mut w, &rel, len)?;
+                packhead::copy_range(&mut tome, off, len, &mut w)?;
             } else {
                 mended.push(rel.clone());
-                healed_entries.push((rel, fs::read(&dst.0).map_err(io)?));
+                let mut healed = packhead::FileSrc::open(&dst.0)?;
+                let hlen = healed.size();
+                write_member_head(&mut w, &rel, hlen)?;
+                packhead::copy_range(&mut healed, 0, hlen, &mut w)?;
             }
-        } else if crate::work::star_torn(&star) {
+            continue;
+        }
+        let mut star = vec![0u8; len as usize];
+        tome.read_at(off, &mut star)?;
+        if crate::work::star_torn(&star) {
             let (h, used) = crate::pieces::mend_bytes_ex(&star, soft).map_err(|e| {
                 crate::Error::Msg(format!("member '{rel}' is too damaged to mend: {e}"))
             })?;
@@ -752,16 +1121,14 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
             }
             soft_used |= used;
             mended.push(rel.clone());
-            healed_entries.push((rel, h));
-        } else {
-            healed_entries.push((rel, star));
+            star = h;
         }
+        write_member_head(&mut w, &rel, star.len() as u64)?;
+        w.write_all(&star).map_err(io)?;
     }
-    let mut part = output.as_os_str().to_os_string();
-    part.push(".mend-part");
-    let part = PathBuf::from(part);
-    fs::write(&part, encode_sgdr(&healed_entries)?).map_err(io)?;
-    fs::rename(&part, output).map_err(io)?;
+    w.flush().map_err(io)?;
+    drop(w);
+    fs::rename(&part.0, output).map_err(io)?;
     Ok(format!(
         "mended {} → {} (Tome, {total} files, {} healed{}{})",
         input.display(),
@@ -774,6 +1141,83 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
         },
         if soft_used { ", soft salvage" } else { "" }
     ))
+}
+
+/// Write one v1 member head (`name_len u16 | name | star_len u64`), exactly as
+/// [`encode_sgdr`] does.
+fn write_member_head<W: Write>(w: &mut W, rel: &str, star_len: u64) -> Result<()> {
+    let pb = rel.as_bytes();
+    let nlen = (pb.len().min(65535)) as u16;
+    w.write_all(&nlen.to_le_bytes()).map_err(io)?;
+    w.write_all(&pb[..nlen as usize]).map_err(io)?;
+    w.write_all(&star_len.to_le_bytes()).map_err(io)
+}
+
+/// Members of the plain (v1) Tome at `input` as `(path, star offset, star length)`,
+/// reading only the member heads (see [`index_v1`]).
+pub(crate) fn member_locs(input: &Path) -> Result<Vec<(String, u64, u64)>> {
+    index_v1(&mut packhead::FileSrc::open(input)?)
+}
+
+/// Members of the plain (v1) Tome in `src` as `(path, star offset, star length)`, with
+/// the same checks and messages as [`parse_sgdr_entries`], reading only the member
+/// heads (never a star). Bounded: every member needs at least 10 bytes of `src`.
+fn index_v1<S: Src>(src: &mut S) -> Result<Vec<(String, u64, u64)>> {
+    let size = src.size();
+    if size < 9 {
+        return Err(crate::Error::Msg(
+            "truncated Tome (too short to hold its header)".into(),
+        ));
+    }
+    let mut head = [0u8; 9];
+    src.read_at(0, &mut head)?;
+    if head[0..4] != DIR_MAGIC {
+        return Err(crate::Error::Msg("not a Tome archive (SGDR)".into()));
+    }
+    if head[4] == DIR_VER_SEALED {
+        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
+    }
+    if head[4] != DIR_VER_PLAIN {
+        return Err(crate::Error::Msg(format!(
+            "unknown Tome version {}",
+            head[4]
+        )));
+    }
+    let n = u32::from_le_bytes([head[5], head[6], head[7], head[8]]);
+    let mut off = 9u64;
+    let mut entries = Vec::with_capacity((n as u64).min(size / 10) as usize);
+    for _ in 0..n {
+        crate::repair_ctl::check()?;
+        if off + 2 > size {
+            return Err(crate::Error::Msg(
+                "truncated Tome (cut off inside member list)".into(),
+            ));
+        }
+        let mut lb = [0u8; 2];
+        src.read_at(off, &mut lb)?;
+        let nlen = u64::from(u16::from_le_bytes(lb));
+        off += 2;
+        if off + nlen + 8 > size {
+            return Err(crate::Error::Msg(
+                "truncated Tome (cut off inside member header)".into(),
+            ));
+        }
+        let mut name = vec![0u8; nlen as usize];
+        src.read_at(off, &mut name)?;
+        off += nlen;
+        let mut sl = [0u8; 8];
+        src.read_at(off, &mut sl)?;
+        off += 8;
+        let slen = u64::from_le_bytes(sl);
+        if slen > size - off {
+            return Err(crate::Error::Msg(
+                "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
+            ));
+        }
+        entries.push((String::from_utf8_lossy(&name).into_owned(), off, slen));
+        off += slen;
+    }
+    Ok(entries)
 }
 
 /// True for a plain (v1) folder pack: `SGDR` + version 1.
@@ -972,14 +1416,15 @@ pub fn scry_dir_keys(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<String> {
-    if let Some((n, body)) = sealed_dir_body(input)? {
-        let health = scry_body(input, &body)?;
+    if let Some((n, off, len)) = sealed_dir_body_loc(input)? {
+        let mut tome = packhead::FileSrc::open(input)?;
+        let health = scry_body_at(&mut tome, off, len)?;
         if pass.is_none() && identities.is_empty() {
             return Ok(format!("folder  {n} files (names hidden)\nbody  {health}"));
         }
-        let inner = open_body(n, &body, pass, companions, identities)?;
-        let mut entries = list_v1(&mut Cursor::new(&inner[..]))?;
-        fill_sizes_v1_bytes(&inner, &mut entries, pass, identities)?;
+        let entries = with_inner(&mut tome, n, off, len, pass, companions, identities, |r| {
+            list_v1_members(r, n, Some((pass, identities)))
+        })?;
         return Ok(format!("{}\nbody  {health}", render_listing(&entries)));
     }
     Ok(render_listing(&list_dir_pack(input)?))
@@ -1048,9 +1493,28 @@ pub fn dir_report(
     }
 }
 
-/// Scry line of a sealed body (written to a private scratch file: it is ciphertext).
-fn scry_body(_input: &Path, body: &[u8]) -> Result<String> {
-    let tmp = crate::staging::TempFile::with_bytes("scry-body", body)?;
+/// Scry line of the sealed body at `off..off + len` of `tome`, copied a window at a
+/// time to a private scratch file (it is ciphertext), never held in memory whole.
+fn scry_body_at(tome: &mut packhead::FileSrc, off: u64, len: u64) -> Result<String> {
+    let mut mag = [0u8; 4];
+    if len >= 4 {
+        tome.read_at(off, &mut mag)?;
+    }
+    if mag == crate::work::WORK_MAGIC {
+        // A large body's first Scry line is what its pack head says: read only the head
+        // (at most `packhead::MAX_HEAD` bytes), never the body.
+        let head_len = len.min(packhead::MAX_HEAD);
+        let mut head = vec![0u8; head_len as usize];
+        tome.read_at(off, &mut head)?;
+        let h = crate::work::read_head(&mut Cursor::new(head))?;
+        return Ok(crate::work::work_head_line(&h));
+    }
+    // A classic body is one seal of at most the `--chunk` it was sealed with: Scry it
+    // through a private scratch copy (ciphertext), as before.
+    let mut body = vec![0u8; len as usize];
+    tome.read_at(off, &mut body)?;
+    let tmp = crate::staging::TempFile::with_bytes("scry-body", &body)?;
+    drop(body);
     let line = crate::work::scry_path(tmp.path())?;
     // First line only: later lines (attestation lookup) would describe the scratch path.
     Ok(line.lines().next().unwrap_or_default().to_string())
@@ -1121,11 +1585,11 @@ pub fn list_dir_pack_keys(
     companions: &[Vec<u8>],
     identities: &[Identity],
 ) -> Result<Vec<DirEntry>> {
-    if let Some((n, body)) = sealed_dir_body(input)? {
-        let inner = open_body(n, &body, pass, companions, identities)?;
-        let mut entries = list_v1(&mut Cursor::new(&inner[..]))?;
-        fill_sizes_v1_bytes(&inner, &mut entries, pass, identities)?;
-        return Ok(entries);
+    if let Some((n, off, len)) = sealed_dir_body_loc(input)? {
+        let mut tome = packhead::FileSrc::open(input)?;
+        return with_inner(&mut tome, n, off, len, pass, companions, identities, |r| {
+            list_v1_members(r, n, Some((pass, identities)))
+        });
     }
     list_dir_pack(input)
 }
@@ -1135,8 +1599,26 @@ fn list_v1<R: Read>(reader: &mut R) -> Result<Vec<DirEntry>> {
     if ver == DIR_VER_SEALED {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
+    list_v1_members(reader, n, None)
+}
+
+/// Keys used to fill in the sizes of members whose label is locked.
+type SizeKeys<'a> = (Option<&'a str>, &'a [Identity]);
+
+/// List the `n` members of a v1 pack from `reader` (positioned after its head),
+/// peeking 1 KiB of each star and skipping the rest one 64 KiB window at a time.
+/// With `keys`, a member whose size is inside its lock is opened to read it (one
+/// member at a time: a classic star in memory, a large one through a scratch copy),
+/// as [`fill_sizes_v1_bytes`] does for an in-memory pack.
+fn list_v1_members<R: Read + ?Sized>(
+    reader: &mut R,
+    n: u32,
+    keys: Option<SizeKeys<'_>>,
+) -> Result<Vec<DirEntry>> {
+    let keys = keys.filter(|(p, ids)| !(p.is_none_or(str::is_empty) && ids.is_empty()));
     let mut entries = Vec::with_capacity((n as usize).min(4096));
     for _ in 0..n {
+        crate::repair_ctl::check()?;
         let mut lb = [0u8; 2];
         reader.read_exact(&mut lb).map_err(io)?;
         let nlen = u16::from_le_bytes(lb) as usize;
@@ -1151,14 +1633,22 @@ fn list_v1<R: Read>(reader: &mut R) -> Result<Vec<DirEntry>> {
         if peek_n > 0 {
             reader.read_exact(&mut peek).map_err(io)?;
         }
-        let orig = peek_orig(&peek);
+        let mut orig = peek_orig(&peek);
         let (nest, digest) = peek_nest(&peek, &path);
-        let mut left = slen.saturating_sub(peek_n as u64);
-        let mut buf = vec![0u8; 64 * 1024];
-        while left > 0 {
-            let take = left.min(buf.len() as u64) as usize;
-            reader.read_exact(&mut buf[..take]).map_err(io)?;
-            left -= take as u64;
+        let left = slen.saturating_sub(peek_n as u64);
+        match keys {
+            Some((pass, ids)) if orig.is_none() => {
+                orig = star_size_streamed(reader, peek, left, pass, ids)?;
+            }
+            _ => {
+                let mut left = left;
+                let mut buf = vec![0u8; 64 * 1024];
+                while left > 0 {
+                    let take = left.min(buf.len() as u64) as usize;
+                    reader.read_exact(&mut buf[..take]).map_err(io)?;
+                    left -= take as u64;
+                }
+            }
         }
         entries.push(DirEntry {
             path,
@@ -1168,6 +1658,76 @@ fn list_v1<R: Read>(reader: &mut R) -> Result<Vec<DirEntry>> {
         });
     }
     Ok(entries)
+}
+
+/// Size of the large-file member read from `r`, like [`crate::work::payload_label_keys`]:
+/// the head's total, or with a key the total inside the first chunk star's lock. `None`
+/// when it cannot be read (a damaged head is not rebuilt here; the listing then shows
+/// no size). The first star is read only when its framed length fits its pack's chunk.
+fn work_member_size<R: Read + ?Sized>(
+    r: &mut R,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Option<u64> {
+    let mut r = r;
+    let head = crate::work::read_head(&mut r).ok()?;
+    if !crate::work::total_hidden(&head) {
+        return Some(head.orig_total);
+    }
+    if pass.is_none_or(str::is_empty) && identities.is_empty() {
+        return None;
+    }
+    let mut lb = [0u8; 8];
+    r.read_exact(&mut lb).ok()?;
+    let star_len = u64::from_le_bytes(lb);
+    // Display only: a first star far larger than its chunk (with any repair budget and
+    // guard) is not read into memory; the listing then shows no size.
+    if star_len > 8 * u64::from(head.chunk_size) + (1 << 20) {
+        return None;
+    }
+    let mut star = Vec::new();
+    r.take(star_len).read_to_end(&mut star).ok()?;
+    if star.len() as u64 != star_len {
+        return None;
+    }
+    let meta = crate::unseal_meta_keys(&star, pass, &[], identities)
+        .ok()?
+        .1;
+    meta.map(|m| m.group_total)
+}
+
+/// Read the rest (`left` bytes) of a member star that starts with `peek`, and open its
+/// locked label for the size, as [`star_size_keys`] does. A large-file member goes
+/// through a private scratch copy (sealed bytes), never memory.
+fn star_size_streamed<R: Read + ?Sized>(
+    reader: &mut R,
+    peek: Vec<u8>,
+    left: u64,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Option<u64>> {
+    if peek.starts_with(&crate::work::WORK_MAGIC) {
+        // A large-file member's size is in its pack head, or (locked) in its first chunk
+        // star: read those in order from the stream, then skip the rest a window at a
+        // time. Nothing is copied to disk and at most one chunk star is in memory.
+        let mut rest = reader.take(left);
+        let size = {
+            let mut r = (&peek[..]).chain(&mut rest);
+            let size = work_member_size(&mut r, pass, identities);
+            copy_bounded(&mut r, &mut std::io::sink())?;
+            size
+        };
+        if rest.limit() != 0 {
+            return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
+        }
+        return Ok(size);
+    }
+    let mut star = peek;
+    reader.take(left).read_to_end(&mut star).map_err(io)?;
+    if (star.len() as u64) < left {
+        return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
+    }
+    Ok(star_size_keys(&star, pass, identities))
 }
 
 fn peek_orig(peek: &[u8]) -> Option<u64> {
@@ -2039,4 +2599,302 @@ pub fn dir_pick_stars(
     }
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     walk(&mut reader, picks)
+}
+
+/// Tomes are read one member (and one chunk star) at a time: these check that the
+/// streamed readers give the same bytes and the same refusals as before.
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sigil-folder-stream-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    fn files_under(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if dir.exists() {
+            walk(dir, &mut out).unwrap();
+        }
+        out
+    }
+
+    /// `src/` with a.txt, m/big.bin (300 kB, a work pack at a 64 KiB chunk) and z.txt.
+    fn tree(root: &Path) -> (PathBuf, Vec<u8>) {
+        let src = root.join("src");
+        fs::create_dir_all(src.join("m")).unwrap();
+        let big = noise(300_000, 7);
+        fs::write(src.join("a.txt"), b"alpha").unwrap();
+        fs::write(src.join("m/big.bin"), &big).unwrap();
+        fs::write(src.join("z.txt"), b"omega").unwrap();
+        (src, big)
+    }
+
+    fn check_tree(out: &Path, big: &[u8]) {
+        assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(fs::read(out.join("m/big.bin")).unwrap(), big);
+        assert_eq!(fs::read(out.join("z.txt")).unwrap(), b"omega");
+    }
+
+    #[test]
+    fn sealed_head_is_the_front_of_encode_sealed() {
+        let full = encode_sealed(3, b"body");
+        assert_eq!(&full[..SEALED_HEAD_LEN], &encode_sealed_head(3, 4));
+        assert_eq!(&full[SEALED_HEAD_LEN..], b"body");
+    }
+
+    #[test]
+    fn warded_tome_with_large_body_streams_and_fails_closed() {
+        let d = scratch("warded");
+        let (src, big) = tree(&d);
+        let pack = d.join("w.sg1");
+        inscribe_dir_to(
+            &src,
+            &pack,
+            Mode::Seal,
+            Some("pw"),
+            "",
+            &[],
+            64 * 1024,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let (n, off, len) = sealed_dir_body_loc(&pack).unwrap().unwrap();
+        assert_eq!((n, off), (3, SEALED_HEAD_LEN as u64));
+        let raw = fs::read(&pack).unwrap();
+        assert_eq!(
+            &raw[17..21],
+            &crate::work::WORK_MAGIC,
+            "body must be a work pack"
+        );
+        assert_eq!(len, raw.len() as u64 - 17);
+
+        let out = d.join("out");
+        assert_eq!(
+            unseal_dir_only_keys(&pack, &out, Some("pw"), &[], &[], &[], &[]).unwrap(),
+            3
+        );
+        check_tree(&out, &big);
+
+        // Listing with the key reads each locked size from the stream.
+        let listed = list_dir_pack_keys(&pack, Some("pw"), &[], &[]).unwrap();
+        let sizes: Vec<_> = listed.iter().map(|e| (e.path.clone(), e.orig)).collect();
+        assert!(sizes.iter().any(|(p, _)| p == "m/big.bin"), "{sizes:?}");
+        assert!(sizes.contains(&("a.txt".into(), Some(5))), "{sizes:?}");
+        let text = scry_dir_keys(&pack, None, &[], &[]).unwrap();
+        assert!(
+            text.contains("3 files (names hidden)") && text.contains("work  name="),
+            "{text}"
+        );
+
+        // Wrong key: refused, nothing written.
+        let o2 = d.join("o2");
+        assert!(unseal_dir_only_keys(&pack, &o2, Some("nope"), &[], &[], &[], &[]).is_err());
+        assert!(files_under(&o2).is_empty());
+
+        // Tamper beyond repair near the end of the body (after the members): refused,
+        // nothing written, even though earlier members already decrypted.
+        let mut bad = raw.clone();
+        let at = bad.len() - bad.len() / 5;
+        for b in &mut bad[at..at + 40_000] {
+            *b ^= 0x5a;
+        }
+        let badp = d.join("bad.sg1");
+        fs::write(&badp, &bad).unwrap();
+        let o3 = d.join("o3");
+        match unseal_dir_only_keys(&badp, &o3, Some("pw"), &[], &[], &[], &[]) {
+            Err(_) => assert!(files_under(&o3).is_empty()),
+            Ok(_) => check_tree(&o3, &big),
+        }
+
+        // Truncated: refused before anything is decrypted.
+        let cut = d.join("cut.sg1");
+        fs::write(&cut, &raw[..raw.len() - 100]).unwrap();
+        let e =
+            unseal_dir_only_keys(&cut, &d.join("o4"), Some("pw"), &[], &[], &[], &[]).unwrap_err();
+        assert!(e.to_string().contains("truncated Tome"), "{e}");
+        let extra = d.join("extra.sg1");
+        let mut more = raw.clone();
+        more.push(0);
+        fs::write(&extra, &more).unwrap();
+        assert!(
+            unseal_dir_only_keys(&extra, &d.join("o5"), Some("pw"), &[], &[], &[], &[])
+                .unwrap_err()
+                .to_string()
+                .contains("extra bytes")
+        );
+    }
+
+    #[test]
+    fn plain_tome_large_member_is_read_in_place_and_fails_closed() {
+        let d = scratch("plain");
+        let (src, big) = tree(&d);
+        let pack = d.join("p.sg1");
+        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        let raw = fs::read(&pack).unwrap();
+        let out = d.join("out");
+        assert_eq!(unseal_dir(&pack, &out, None, &[]).unwrap(), 3);
+        check_tree(&out, &big);
+
+        // --only skips the large member without reading it into memory.
+        let only = d.join("only");
+        assert_eq!(
+            unseal_dir_only(&pack, &only, None, &[], &["z.txt".into()], &[]).unwrap(),
+            1
+        );
+        assert_eq!(fs::read(only.join("z.txt")).unwrap(), b"omega");
+
+        // Cut inside the large member: refused, nothing written.
+        let cut = d.join("cut.sg1");
+        fs::write(&cut, &raw[..raw.len() / 2]).unwrap();
+        let o2 = d.join("o2");
+        let e = unseal_dir(&cut, &o2, None, &[]).unwrap_err();
+        assert!(e.to_string().contains("truncated Tome"), "{e}");
+        assert!(files_under(&o2).is_empty());
+
+        // Heavy damage inside the large member: refused with nothing written, or (when
+        // repair covers it) the exact bytes; never wrong bytes.
+        let mut bad = raw.clone();
+        let at = raw.len() / 2;
+        for b in &mut bad[at..at + 70_000] {
+            *b = 0;
+        }
+        let badp = d.join("bad.sg1");
+        fs::write(&badp, &bad).unwrap();
+        let o3 = d.join("o3");
+        match unseal_dir(&badp, &o3, None, &[]) {
+            Err(_) => assert!(files_under(&o3).is_empty()),
+            Ok(_) => check_tree(&o3, &big),
+        }
+    }
+
+    #[test]
+    fn mend_of_a_healthy_tome_is_byte_identical_and_heals_damage() {
+        let d = scratch("mend");
+        let (src, big) = tree(&d);
+        let pack = d.join("p.sg1");
+        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        let raw = fs::read(&pack).unwrap();
+        let same = d.join("same.sg1");
+        mend_plain_dir(&pack, &same, true).unwrap();
+        assert_eq!(fs::read(&same).unwrap(), raw);
+
+        // A burst inside the large member is healed; the healed Tome opens exactly.
+        let mut bad = raw.clone();
+        let at = raw.len() / 2;
+        for b in &mut bad[at..at + 2_000] {
+            *b ^= 0xff;
+        }
+        let badp = d.join("bad.sg1");
+        fs::write(&badp, &bad).unwrap();
+        let fixed = d.join("fixed.sg1");
+        let msg = mend_plain_dir(&badp, &fixed, true).unwrap();
+        assert!(msg.contains("1 healed"), "{msg}");
+        let out = d.join("out");
+        unseal_dir(&fixed, &out, None, &[]).unwrap();
+        check_tree(&out, &big);
+        assert!(!d.join("fixed.sg1.mend-part").exists());
+
+        // Warded Tome: the large body is healed through scratch files.
+        let w = d.join("w.sg1");
+        inscribe_dir_to(
+            &src,
+            &w,
+            Mode::Seal,
+            Some("pw"),
+            "",
+            &[],
+            64 * 1024,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let wraw = fs::read(&w).unwrap();
+        let wsame = d.join("wsame.sg1");
+        mend_sealed_dir(&w, &wsame).unwrap();
+        let mut wbad = wraw.clone();
+        let at = wraw.len() / 2;
+        for b in &mut wbad[at..at + 2_000] {
+            *b ^= 0xff;
+        }
+        let wbadp = d.join("wbad.sg1");
+        fs::write(&wbadp, &wbad).unwrap();
+        let wfixed = d.join("wfixed.sg1");
+        mend_sealed_dir(&wbadp, &wfixed).unwrap();
+        let wout = d.join("wout");
+        unseal_dir_only_keys(&wfixed, &wout, Some("pw"), &[], &[], &[], &[]).unwrap();
+        check_tree(&wout, &big);
+        assert_eq!(fs::read(&wfixed).unwrap(), fs::read(&wsame).unwrap());
+    }
+
+    #[test]
+    fn hostile_member_count_ends_at_the_file_end() {
+        let d = scratch("hostile");
+        let p = d.join("h.sg1");
+        let mut b = DIR_MAGIC.to_vec();
+        b.push(DIR_VER_PLAIN);
+        b.extend_from_slice(&u32::MAX.to_le_bytes());
+        b.extend_from_slice(&[0u8; 64]);
+        fs::write(&p, &b).unwrap();
+        let t0 = std::time::Instant::now();
+        assert!(unseal_dir(&p, &d.join("o"), None, &[]).is_err());
+        assert!(mend_plain_dir(&p, &d.join("m.sg1"), false).is_err());
+        assert!(!d.join("m.sg1").exists() && !d.join("m.sg1.mend-part").exists());
+        let insp =
+            crate::recovery::inspect_plain_tome(&p, &mut crate::recovery::ProbeBudget::disabled())
+                .unwrap();
+        assert!(insp.truncated.is_some());
+        // A member claiming more bytes than the file holds is refused, not buffered.
+        let mut c = DIR_MAGIC.to_vec();
+        c.push(DIR_VER_PLAIN);
+        c.extend_from_slice(&1u32.to_le_bytes());
+        c.extend_from_slice(&1u16.to_le_bytes());
+        c.push(b'x');
+        c.extend_from_slice(&u64::MAX.to_le_bytes());
+        c.extend_from_slice(b"SGWK");
+        let q = d.join("q.sg1");
+        fs::write(&q, &c).unwrap();
+        assert!(unseal_dir(&q, &d.join("o2"), None, &[])
+            .unwrap_err()
+            .to_string()
+            .contains("truncated Tome"));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn copy_range_and_sub_src_stay_in_bounds() {
+        let data = noise(3 * packhead::COPY_WINDOW + 17, 3);
+        let mut m = packhead::MemSrc(&data);
+        let mut out = Vec::new();
+        packhead::copy_range(&mut m, 5, data.len() as u64 - 5, &mut out).unwrap();
+        assert_eq!(out, &data[5..]);
+        assert!(packhead::copy_range(&mut m, 6, data.len() as u64 - 5, &mut Vec::new()).is_err());
+        assert!(packhead::SubSrc::new(&mut m, u64::MAX, 2).is_err());
+        let mut s = packhead::SubSrc::new(&mut m, 10, 100).unwrap();
+        assert_eq!(s.size(), 100);
+        let mut b = [0u8; 10];
+        s.read_at(90, &mut b).unwrap();
+        assert_eq!(&b, &data[100..110]);
+        assert!(s.read_at(91, &mut b).is_err());
+    }
 }
