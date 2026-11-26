@@ -58,9 +58,10 @@ through a pack left a half-written output file behind.
   own checks (length and SHA-256 or AEAD tag, Merkle binding after a repair); a file
   that fails is reported lost and nothing of it stays. Each name is first claimed
   with a new empty file (`create_new`, which never takes an existing file or folder),
-  then the checked part is moved over that claim: a taken name gets `.salvaged-N`. A v1 list name is used only when the file's own header confirms all
-  of it; otherwise the file goes under `recovered-names/` and the report gives the
-  list's name. A stored part of a large file found without its pack head is never
+  then the checked part is moved over that claim: a taken name gets `.salvaged-N`.
+  A v1 list name is used only when the file's own header confirms all of it;
+  otherwise the file goes under `recovered-names/` and the report gives the list's
+  name. A stored part of a large file found without its pack head is never
   written as if it were the whole file. Exit 0 only when every listed file came back
   under its own name; 7 when anything was lost, renamed or not tried; 2 when nothing
   was saved. The scan of a damaged list stops at 1,000,000 star markers per damaged

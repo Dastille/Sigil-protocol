@@ -253,6 +253,32 @@ fn truncated_tomes_save_what_is_whole_and_report_the_rest() {
 }
 
 #[test]
+fn a_cut_off_chunked_body_gives_back_the_files_in_its_front() {
+    let d = common::scratch("salvage-chunked");
+    let want = src(&d);
+    // Small chunks: the body is a chunked pack, so its front opens chunk by chunk.
+    seal(&d, "v3.sg1", &["--chunk", "65536"], false);
+    seal(&d, "v2.sg1", &["--chunk", "65536", "--pass", "pw"], false);
+    for (t, key) in [("v3.sg1", false), ("v2.sg1", true)] {
+        let raw = std::fs::read(d.join(t)).expect("r");
+        assert_eq!(&raw[17..21], b"SGWK", "{t}: body is chunked");
+        let cut = format!("cut-{t}");
+        std::fs::write(d.join(&cut), &raw[..raw.len() * 6 / 10]).expect("w");
+        let out = format!("o-{t}");
+        let mut a = vec!["unseal", "--salvage", cut.as_str(), "-o", out.as_str()];
+        if key {
+            a.extend_from_slice(&["--pass", "pw"]);
+        }
+        let o = sigil(&d, &a);
+        let msg = text(&o);
+        assert_eq!(code(&o), 7, "{t}: {msg}");
+        let (named, rec) = all_right(&d.join(&out), &want);
+        assert!(named >= 1 && rec == 0, "{t}: {msg}");
+        assert!(msg.contains("lost"), "{t}: {msg}");
+    }
+}
+
+#[test]
 fn never_overwrites_and_renames_with_a_clear_suffix() {
     let d = common::scratch("salvage-taken");
     let want = src(&d);

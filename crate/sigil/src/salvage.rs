@@ -362,6 +362,15 @@ fn salvage_body(cx: &mut Ctx<'_, '_>, input: &Path, keyed: bool) -> Result<()> {
                 "cannot be repaired or opened"
             }
         ));
+        // A large body is a chunked pack: the chunks that still open, in order from the
+        // start, hold the front of the folder list and every file stored there.
+        if let Some(k) = pack_prefix(cx, &body.0, &inner.0, body_pass)? {
+            cx.report.notes.push(format!(
+                "the body opens only up to chunk {k}; files stored in that front part are saved"
+            ));
+            cx.damage_seen = true;
+            return salvage_inner(cx, &inner.0);
+        }
         if keyed {
             return Ok(());
         }
@@ -374,10 +383,16 @@ fn salvage_body(cx: &mut Ctx<'_, '_>, input: &Path, keyed: bool) -> Result<()> {
         // Start inside the body, past the body's own star marker.
         return salvage_v1(cx, input, false, 17);
     }
+    salvage_inner(cx, &inner.0)
+}
+
+/// Salvage a body's inner v1 pack (whole, or the front part that opened): its list was
+/// checked with the body, so its names are used as they are.
+fn salvage_inner(cx: &mut Ctx<'_, '_>, inner: &Path) -> Result<()> {
     // The inner list's own head (checked with the body) has the true member count.
     {
         let mut h = [0u8; 9];
-        let mut isrc = packhead::FileSrc::open(&inner.0)?;
+        let mut isrc = packhead::FileSrc::open(inner)?;
         if isrc.size() >= 9
             && isrc.read_at(0, &mut h).is_ok()
             && h[0..4] == crate::folder::DIR_MAGIC
@@ -385,7 +400,74 @@ fn salvage_body(cx: &mut Ctx<'_, '_>, input: &Path, keyed: bool) -> Result<()> {
             cx.report.listed_count = Some(u32::from_le_bytes([h[5], h[6], h[7], h[8]]));
         }
     }
-    salvage_v1(cx, &inner.0, true, 9)
+    salvage_v1(cx, inner, true, 9)
+}
+
+/// Open a chunked body (`SGWK`) one chunk at a time from the start, each chunk with its
+/// own checks (repaired first when it can be), and write the plaintext to `out` until
+/// the first chunk that is missing or will not open. `Some(chunks)` when at least the
+/// front of the inner pack came back; `None` when nothing did (or the body is not a
+/// chunked pack).
+fn pack_prefix(
+    cx: &Ctx<'_, '_>,
+    body: &Path,
+    out: &Path,
+    pass: Option<&str>,
+) -> Result<Option<u32>> {
+    let mut src = packhead::FileSrc::open(body)?;
+    let size = src.size();
+    let mut hb = vec![0u8; usize::try_from(size.min(packhead::MAX_HEAD)).unwrap_or(0)];
+    src.read_at(0, &mut hb)?;
+    let mut cur = std::io::Cursor::new(&hb[..]);
+    let Ok(head) = crate::work::read_head(&mut cur) else {
+        return Ok(None);
+    };
+    let _ = fs::remove_file(out);
+    let mut w = BufWriter::new(crate::staging::create_private(out)?);
+    let mut off = cur.position();
+    let mut done = 0u32;
+    for _ in 0..head.stars {
+        if cx.limit().is_some() || off.saturating_add(8) > size {
+            break;
+        }
+        let mut lb = [0u8; 8];
+        src.read_at(off, &mut lb)?;
+        let len = u64::from_le_bytes(lb);
+        let Some(end) = (off + 8).checked_add(len).filter(|&e| e <= size) else {
+            break;
+        };
+        if len > MAX_CLASSIC_MEND {
+            break;
+        }
+        let mut star = vec![0u8; usize::try_from(len).unwrap_or(0)];
+        src.read_at(off + 8, &mut star)?;
+        let o = cx.opts;
+        let mut plain = crate::unseal_meta_keys(&star, pass, o.companions, o.identities).ok();
+        for soft in [false, true] {
+            if plain.is_some() {
+                break;
+            }
+            if let Ok((h, _)) = crate::pieces::mend_bytes_ex(&star, soft) {
+                plain = crate::unseal_meta_keys(&h, pass, o.companions, o.identities).ok();
+            }
+        }
+        let Some((p, _)) = plain else {
+            break;
+        };
+        w.write_all(&p).map_err(io)?;
+        done += 1;
+        off = end;
+    }
+    w.flush().map_err(io)?;
+    drop(w);
+    let mut h = [0u8; 9];
+    let mut isrc = packhead::FileSrc::open(out)?;
+    let ok = done > 0
+        && isrc.size() >= 9
+        && isrc.read_at(0, &mut h).is_ok()
+        && h[0..4] == crate::folder::DIR_MAGIC
+        && h[4] == 1;
+    Ok(ok.then_some(done))
 }
 
 /// Repair a star or pack file in scratch: `Some(healed)` when a repair was made. The
