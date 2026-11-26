@@ -200,6 +200,8 @@ struct Ctx<'a, 'o> {
     dest: PathBuf,
     report: SalvageReport,
     seq: usize,
+    /// Damage was seen in the list's shape (a skipped stretch, a cut-off end).
+    damage_seen: bool,
 }
 
 impl Ctx<'_, '_> {
@@ -239,6 +241,7 @@ fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<Sal
         dest: dest.to_path_buf(),
         report: SalvageReport::default(),
         seq: 0,
+        damage_seen: false,
     };
     let mut head = [0u8; 21];
     let size = fs::metadata(input).map_err(io)?.len();
@@ -257,6 +260,16 @@ fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<Sal
             cx.report.listed_count = Some(u32::from_le_bytes([head[5], head[6], head[7], head[8]]));
             salvage_body(&mut cx, input, ver == Some(2))?;
         }
+        _ if body_after_damaged_head(&head, size) => {
+            // The 17-byte head is outside the repair data; the body after it is intact
+            // enough to try. Its own checks decide; with a key given it is read as Warded.
+            cx.damage_seen = true;
+            cx.report.notes.push(
+                "the Tome's first bytes are damaged; its body is read with its own checks".into(),
+            );
+            let keyed = opts.pass.is_some() || !opts.identities.is_empty();
+            salvage_body(&mut cx, input, keyed)?;
+        }
         Some(v) => {
             return Err(crate::Error::Msg(format!(
                 "unknown Tome version {v}: made by a newer sigil, or damaged; nothing was written"
@@ -267,6 +280,7 @@ fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<Sal
             if crate::tome_guard::damaged_tome_head(input).is_some()
                 && crate::tome_guard::member_at(&mut packhead::FileSrc::open(input)?, 9)
             {
+                cx.damage_seen = true;
                 cx.report
                     .notes
                     .push("the Tome's first bytes are damaged; read as a plain Tome".into());
@@ -282,6 +296,22 @@ fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<Sal
     let mut report = cx.report;
     report.report_path = Some(write_report_file(dest, &report.text(input, dest))?);
     Ok(report)
+}
+
+/// A Tome head (first 17 bytes) that is damaged while a body star follows it and the
+/// stored body length still matches the file.
+fn body_after_damaged_head(head: &[u8; 21], size: u64) -> bool {
+    if head[0..4] == crate::folder::DIR_MAGIC && matches!(head[4], 1..=3) {
+        return false;
+    }
+    if size < 21 {
+        return false;
+    }
+    let blen = u64::from_le_bytes([
+        head[9], head[10], head[11], head[12], head[13], head[14], head[15], head[16],
+    ]);
+    let mag = &head[17..21];
+    blen == size - 17 && (mag == STAR_MAGIC || mag == crate::work::WORK_MAGIC)
 }
 
 /// Warded (v2) or protected (v3): restore the body (with repair if needed) to a private
@@ -333,57 +363,105 @@ fn salvage_body(cx: &mut Ctx<'_, '_>, input: &Path, keyed: bool) -> Result<()> {
         }
         // A protected plain body is not encrypted: look for member data in it directly.
         // Its folder list is not checked then, so names follow the plain-Tome rules.
+        cx.damage_seen = true;
         cx.report
             .notes
             .push("looking for member data in the unrepaired body directly".into());
         // Start inside the body, past the body's own star marker.
         return salvage_v1(cx, input, false, 17);
     }
+    // The inner list's own head (checked with the body) has the true member count.
+    {
+        let mut h = [0u8; 9];
+        let mut isrc = packhead::FileSrc::open(&inner.0)?;
+        if isrc.size() >= 9
+            && isrc.read_at(0, &mut h).is_ok()
+            && h[0..4] == crate::folder::DIR_MAGIC
+        {
+            cx.report.listed_count = Some(u32::from_le_bytes([h[5], h[6], h[7], h[8]]));
+        }
+    }
     salvage_v1(cx, &inner.0, true, 9)
 }
 
-/// Repair a star or pack file in scratch: `Some(healed)` when a repair was made.
+/// Repair a star or pack file in scratch: `Some(healed)` when a repair was made. The
+/// strict repair is tried first, then the soft one `mend --soft` uses (its result is
+/// still checked: Merkle binding of every shard and the true name, or the AEAD tag);
+/// whatever comes out is opened with the member's own checks before anything is kept.
 fn heal(star: &Path, dest: &Path) -> Result<Option<Scratch>> {
     let out = Scratch(crate::folder::scratch_beside(dest, "salvage-heal"));
     if crate::work::is_work_pack(star) {
-        return Ok(match crate::work::mend_pack_path(star, &out.0, false) {
-            Ok(_) => Some(out),
-            Err(_) => None,
-        });
+        for soft in [false, true] {
+            let _ = fs::remove_file(&out.0);
+            if crate::work::mend_pack_path(star, &out.0, soft).is_ok() {
+                return Ok(Some(out));
+            }
+            if crate::repair_ctl::stop_requested() {
+                break;
+            }
+        }
+        return Ok(None);
     }
     let len = fs::metadata(star).map_err(io)?.len();
     if len > MAX_CLASSIC_MEND {
         return Ok(None);
     }
     let bytes = fs::read(star).map_err(io)?;
-    match crate::pieces::mend_bytes_ex(&bytes, false) {
-        Ok((h, _)) => {
+    for soft in [false, true] {
+        if let Ok((h, _)) = crate::pieces::mend_bytes_ex(&bytes, soft) {
             let mut f = crate::staging::create_private(&out.0)?;
             f.write_all(&h).map_err(io)?;
-            Ok(Some(out))
+            return Ok(Some(out));
         }
-        Err(_) => Ok(None),
+        if crate::repair_ctl::stop_requested() {
+            break;
+        }
     }
+    Ok(None)
 }
 
-/// Walk a v1 pack (the Tome itself, or a body's inner pack when `checked`), restoring
-/// each member found.
+/// Walk a v1 pack (the Tome itself, or a body's inner pack when `checked`): open every
+/// member found into a private part file, then decide names and place them.
+///
+/// Names in a plain v1 list are not checked by anything but the 16 bytes each member's
+/// header keeps, the order Inscribe writes and the list's own shape. When the Tome shows
+/// no damage at all (every head clean, every member opening as stored, the count and
+/// the end of file right), list names are used as plain `unseal` would. Once any damage
+/// is seen, a list name is used only if the member's own header confirms all of it;
+/// every other member goes under `recovered-names/` and the report shows the list name.
 fn salvage_v1(cx: &mut Ctx<'_, '_>, path: &Path, checked: bool, start: u64) -> Result<()> {
     cx.report.list_checked = checked;
     let mut src = packhead::FileSrc::open(path)?;
     let size = src.size();
-    let found = find_members(cx, &mut src, size, checked, start)?;
-    // Names that break Inscribe's order or repeat: neither side is trusted.
-    let mut found = found;
+    let mut found = find_members(cx, &mut src, size, checked, start)?;
     if !checked {
         distrust_order(&mut found);
     }
+    let mut opened = Vec::with_capacity(found.len());
     for f in found {
         if let Some(w) = cx.limit() {
             cx.report.stopped = Some(w);
+            cx.damage_seen = true;
             break;
         }
-        restore_one(cx, &mut src, f)?;
+        cx.seq += 1;
+        let o = open_one(cx, &mut src, &f, cx.seq)?;
+        opened.push((f, o));
+    }
+    let structure_ok = !cx.damage_seen
+        && cx.report.listed_count == Some(opened.len() as u32)
+        && opened
+            .last()
+            .map_or(true, |(f, _)| f.star_off + f.star_len == size)
+        && opened
+            .iter()
+            .all(|(f, o)| f.trusted && !f.cut && o.part.is_some() && !o.healed);
+    let trust_list = checked || structure_ok;
+    if !trust_list {
+        cx.report.list_checked = false;
+    }
+    for (f, o) in opened {
+        place_one(cx, f, o, trust_list)?;
     }
     Ok(())
 }
@@ -468,6 +546,7 @@ fn find_members<S: Src>(
         // Not a clean member head here. A member whose star runs past the end of the
         // file (a cut-off copy)?
         if let Some((name, star_off)) = cut_head_at(src, pos, size) {
+            cx.damage_seen = true;
             cx.report
                 .notes
                 .push("the Tome is cut off inside its last member".into());
@@ -512,6 +591,7 @@ fn find_members<S: Src>(
         }
     }
     if damaged_stretches > 0 {
+        cx.damage_seen = true;
         cx.report.notes.push(format!(
             "{damaged_stretches} damaged stretch(es) of the folder list were skipped by finding the member data directly"
         ));
@@ -674,11 +754,76 @@ impl<S: Src> Src for SubSrc2<'_, S> {
     }
 }
 
-/// Unseal one member (repairing it in scratch first if needed) and write it, or record
-/// why not.
-fn restore_one<S: Src>(cx: &mut Ctx<'_, '_>, src: &mut S, f: Found) -> Result<()> {
-    cx.seq += 1;
-    let seq = cx.seq;
+/// One member opened (or not) into a private part file.
+struct Opened {
+    seq: usize,
+    part: Option<Scratch>,
+    /// It opened only after a repair.
+    healed: bool,
+    /// The name its own header keeps (first 16 bytes), when it keeps one.
+    prefix: Option<String>,
+    /// The header confirms the whole list name (not only its first 16 bytes).
+    whole_name: bool,
+    last_err: String,
+}
+
+/// Unseal one member (repairing it in scratch first if needed) into a part file.
+fn open_one<S: Src>(cx: &Ctx<'_, '_>, src: &mut S, f: &Found, seq: usize) -> Result<Opened> {
+    let mut o = Opened {
+        seq,
+        part: None,
+        healed: false,
+        prefix: None,
+        whole_name: false,
+        last_err: String::from("no key opened it"),
+    };
+    if f.cut {
+        return Ok(o);
+    }
+    let star = Scratch(crate::folder::scratch_beside(&cx.dest, "salvage-star"));
+    {
+        let mut w = BufWriter::new(crate::staging::create_private(&star.0)?);
+        packhead::copy_range(src, f.star_off, f.star_len, &mut w)?;
+        w.flush().map_err(io)?;
+    }
+    let (prefix, is_pack) = star_name_prefix(&star.0);
+    o.prefix = prefix;
+    if let (Some(n), Some(p), true) = (&f.listed, &o.prefix, f.trusted) {
+        // A plain star keeps its whole path when it fits in 16 bytes; a large-file pack
+        // keeps only its file name (`name.0000`), never the folders above it.
+        o.whole_name = if is_pack {
+            !n.contains('/') && format!("{n}.0000").len() <= 16
+        } else {
+            n.len() <= 16 && p == n
+        };
+    }
+    let keys = member_keys(cx.opts, f.listed.as_deref().filter(|_| f.trusted));
+    let mut healed: Option<Scratch> = None;
+    'outer: for attempt in 0..2 {
+        if attempt == 1 {
+            match heal(&star.0, &cx.dest)? {
+                Some(h) => healed = Some(h),
+                None => break,
+            }
+        }
+        let from = healed.as_ref().map_or(&star.0, |h| &h.0);
+        for k in &keys {
+            match unseal_part(cx, from, *k) {
+                Ok(p) => {
+                    o.part = Some(p);
+                    o.healed = attempt == 1;
+                    break 'outer;
+                }
+                Err(e) => o.last_err = e.to_string(),
+            }
+        }
+    }
+    Ok(o)
+}
+
+/// Name an opened member and link it into place, or record why it is lost.
+fn place_one(cx: &mut Ctx<'_, '_>, f: Found, o: Opened, trust_list: bool) -> Result<()> {
+    let seq = o.seq;
     let label = f.listed.clone().unwrap_or_else(|| {
         format!(
             "member {seq} (no readable name, data at byte {})",
@@ -692,54 +837,26 @@ fn restore_one<S: Src>(cx: &mut Ctx<'_, '_>, src: &mut S, f: Found) -> Result<()
         });
         return Ok(());
     }
-    let star = Scratch(crate::folder::scratch_beside(&cx.dest, "salvage-star"));
-    {
-        let mut w = BufWriter::new(crate::staging::create_private(&star.0)?);
-        packhead::copy_range(src, f.star_off, f.star_len, &mut w)?;
-        w.flush().map_err(io)?;
-    }
-    // Header prefix (for a recovered name) from the star as stored.
-    let prefix = star_name_prefix(&star.0);
-    // The member's final place: decided now, so the part file sits beside it.
-    let (rel, listed_ok) = match (&f.listed, f.trusted) {
-        (Some(n), true) if safe_rel(n) => (n.clone(), true),
-        _ => (recovered_rel(seq, prefix.as_deref()), false),
-    };
-    let keys = member_keys(cx.opts, f.listed.as_deref().filter(|_| listed_ok));
-    let mut last_err = String::from("no key opened it");
-    let mut part: Option<Scratch> = None;
-    let mut healed: Option<Scratch> = None;
-    'outer: for attempt in 0..2 {
-        if attempt == 1 {
-            match heal(&star.0, &cx.dest)? {
-                Some(h) => healed = Some(h),
-                None => break,
-            }
-        }
-        let from = healed.as_ref().map_or(&star.0, |h| &h.0);
-        for k in &keys {
-            match unseal_part(cx, from, *k) {
-                Ok(p) => {
-                    part = Some(p);
-                    break 'outer;
-                }
-                Err(e) => last_err = e.to_string(),
-            }
-        }
-    }
-    let Some(part) = part else {
+    let Some(part) = o.part else {
         cx.report.outcomes.push(Outcome::Lost {
             label,
-            why: format!("its data does not pass its own checks: {last_err}"),
+            why: format!("its data does not pass its own checks: {}", o.last_err),
         });
         return Ok(());
+    };
+    let listed_ok =
+        f.trusted && (trust_list || o.whole_name) && f.listed.as_deref().is_some_and(safe_rel);
+    let recovered = recovered_rel(seq, o.prefix.as_deref());
+    let rel = match (&f.listed, listed_ok) {
+        (Some(n), true) => n.clone(),
+        _ => recovered.clone(),
     };
     // Its own name, or (if that folder path cannot be made) a recovered name.
     let mut blocked = None;
     let mut path = place(cx, &part.0, &rel);
     if let (Err(e), true) = (&path, listed_ok) {
         blocked = Some(e.to_string());
-        path = place(cx, &part.0, &recovered_rel(seq, prefix.as_deref()));
+        path = place(cx, &part.0, &recovered);
     }
     let path = match path {
         Ok(p) => p,
@@ -755,32 +872,29 @@ fn restore_one<S: Src>(cx: &mut Ctx<'_, '_>, src: &mut S, f: Found) -> Result<()
         .strip_prefix(&cx.dest)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.display().to_string());
-    let outcome = if let Some(e) = blocked {
-        Outcome::Renamed {
-            listed: f.listed.clone(),
-            path: shown,
-            why: format!("its own folder path could not be made: {e}"),
-        }
+    let why = if let Some(e) = blocked {
+        Some(format!("its own folder path could not be made: {e}"))
     } else if listed_ok && shown == rel {
-        Outcome::Restored { path: shown }
+        None
     } else if listed_ok {
-        Outcome::Renamed {
-            listed: f.listed.clone(),
-            path: shown,
-            why: "that name was already taken in the output folder".into(),
-        }
+        Some("that name was already taken in the output folder".into())
+    } else if f.listed.is_none() {
+        Some("the folder list has no readable name for it".into())
+    } else if f.trusted {
+        Some(
+            "the Tome is damaged and this member's own header cannot confirm its whole name".into(),
+        )
     } else {
-        Outcome::Renamed {
+        Some("the damaged folder list's name for it could not be confirmed".into())
+    };
+    cx.report.outcomes.push(match why {
+        None => Outcome::Restored { path: shown },
+        Some(why) => Outcome::Renamed {
             listed: f.listed.clone(),
             path: shown,
-            why: if f.listed.is_some() {
-                "the damaged folder list's name for it could not be confirmed".into()
-            } else {
-                "the folder list has no readable name for it".into()
-            },
-        }
-    };
-    cx.report.outcomes.push(outcome);
+            why,
+        },
+    });
     Ok(())
 }
 
@@ -854,24 +968,33 @@ fn place(cx: &Ctx<'_, '_>, part: &Path, rel: &str) -> Result<PathBuf> {
     )))
 }
 
-/// The first 16 bytes of the name the star's own header keeps, if it keeps one.
-fn star_name_prefix(star: &Path) -> Option<String> {
-    let mut src = packhead::FileSrc::open(star).ok()?;
-    let n = usize::try_from(src.size().min(crate::tome_guard::STAR_PEEK as u64)).ok()?;
+/// The first 16 bytes of the name the star's own header keeps, if it keeps one, and
+/// whether the star is a large-file pack (whose first chunk star is named `name.0000`).
+fn star_name_prefix(star: &Path) -> (Option<String>, bool) {
+    let Ok(mut src) = packhead::FileSrc::open(star) else {
+        return (None, false);
+    };
+    let n = usize::try_from(src.size().min(crate::tome_guard::STAR_PEEK as u64)).unwrap_or(0);
     let mut head = vec![0u8; n];
-    src.read_at(0, &mut head).ok()?;
-    if head.starts_with(&crate::work::WORK_MAGIC) {
-        let l = packhead::layout(&mut src).ok()?;
-        let &(off, len) = l.stars.first()?;
-        let mut h = vec![0u8; usize::try_from(len.min(crate::tome_guard::STAR_PEEK as u64)).ok()?];
-        src.read_at(off, &mut h).ok()?;
-        let name = crate::tome_guard::header_name(&h)?;
-        return Some(
-            name.strip_suffix(".0000")
-                .map_or(name.clone(), str::to_string),
-        );
+    if src.read_at(0, &mut head).is_err() {
+        return (None, false);
     }
-    crate::tome_guard::header_name(&head)
+    if head.starts_with(&crate::work::WORK_MAGIC) {
+        let name = (|| {
+            let l = packhead::layout(&mut src).ok()?;
+            let &(off, len) = l.stars.first()?;
+            let peek = usize::try_from(len.min(crate::tome_guard::STAR_PEEK as u64)).ok()?;
+            let mut h = vec![0u8; peek];
+            src.read_at(off, &mut h).ok()?;
+            let name = crate::tome_guard::header_name(&h)?;
+            Some(
+                name.strip_suffix(".0000")
+                    .map_or(name.clone(), str::to_string),
+            )
+        })();
+        return (name, true);
+    }
+    (crate::tome_guard::header_name(&head), false)
 }
 
 /// `recovered-names/NNNN-<prefix>` (or `NNNN-unnamed`), made safe as one file name.
