@@ -73,6 +73,7 @@ mod rs;
 mod rs_ref;
 pub mod scrub;
 pub mod seglog;
+pub mod shown;
 pub mod status;
 
 /// Benchmark / oracle hooks for the RS codec (not a stable API).
@@ -90,6 +91,7 @@ mod race;
 mod show;
 mod soft_ratchet;
 mod staging;
+mod tome_guard;
 mod vault;
 mod work;
 
@@ -170,6 +172,7 @@ pub use pieces::{
 };
 pub use privacy::{FingerprintKey, Pad, SealMeta, SealOpts};
 pub use show::run_showing;
+pub use tome_guard::{damaged_tome_head, LIST_DAMAGED as FOLDER_LIST_DAMAGED};
 pub use vault::tip_seal_path as vault_tip_seal_path;
 pub use vault::{
     cold_here as vault_cold_here, commit_ex as vault_commit_ex,

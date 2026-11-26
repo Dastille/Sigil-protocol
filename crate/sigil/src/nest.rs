@@ -105,6 +105,19 @@ impl PathView {
 }
 
 impl PathView {
+    /// A copy with every stored name escaped for the terminal (see [`crate::shown`]).
+    pub fn shown(&self) -> PathView {
+        let mut v = self.clone();
+        for t in &mut v.trail {
+            *t = crate::shown::name(t);
+        }
+        for e in &mut v.entries {
+            e.path = crate::shown::name(&e.path);
+        }
+        v.payload_name = v.payload_name.map(|n| crate::shown::name(&n));
+        v
+    }
+
     pub fn breadcrumb(&self) -> String {
         if self.trail.is_empty() {
             return String::new();
@@ -115,7 +128,7 @@ impl PathView {
     pub fn format(&self) -> String {
         let mut out = String::new();
         out.push_str("trail  ");
-        out.push_str(&self.breadcrumb());
+        out.push_str(&crate::shown::name(&self.breadcrumb()));
         out.push('\n');
         out.push_str(&format!("kind   {}\n", self.kind.label()));
         if self.nest_payload {
@@ -123,7 +136,7 @@ impl PathView {
         }
         match &self.payload_name {
             Some(name) if self.kind == NestKind::Mark || self.kind == NestKind::Work => {
-                out.push_str(&format!("name   {name}\n"));
+                out.push_str(&format!("name   {}\n", crate::shown::name(name)));
             }
             None if self.kind == NestKind::Work => {
                 out.push_str("name   hidden (needs key)\n");
@@ -139,7 +152,7 @@ impl PathView {
                     } else {
                         out.push_str("file  ");
                     }
-                    out.push_str(&e.path);
+                    out.push_str(&crate::shown::name(&e.path));
                     if let Some(n) = e.orig {
                         out.push_str(&format!("  {n} bytes"));
                     }

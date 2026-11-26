@@ -312,7 +312,7 @@ doctor reports in `scrub.rs` / `doctor.rs`):
 |---:|---|---|
 | 0 | Done; or checked and fine | `seal`, `unseal`, `mend` succeeded; `scry` / `verify` ok (also when `needs repair` is printed and `live >= need`); `mend --scan` ran |
 | 1 | Error, or a key problem | wrong or missing passphrase or identity (`Wrong passphrase or key — this Sigil Archive is Warded`); `--ward-file` wrong/missing; unreadable input; `doctor` warnings |
-| 2 | Not recoverable / too damaged (nothing written), or a usage error | `scry` / `verify` `NOT recoverable`; `mend` could not repair; `unseal` / `open` on an unrecoverable archive; `gather` / `frost mend` short on pieces or mana; `doctor --scrub` found an uncorrectable Sigil; a refused option such as `--pass VALUE` |
+| 2 | Not recoverable / too damaged (nothing written), or a usage error | `scry` / `verify` `NOT recoverable`; `mend` could not repair; `unseal` / `open` on an unrecoverable archive; `gather` / `frost mend` short on pieces or mana; a plain Tome whose folder list is damaged (`folder list damaged: …`) or whose first bytes are damaged (`Tome head damaged`); `doctor --scrub` found an uncorrectable Sigil; a refused option such as `--pass VALUE` |
 | 3 | Nothing could be checked | `doctor --scrub` on Frost Rune pieces or a folder with no `.sg1`; `boot` found no Sigil |
 | 4 | Repair skipped, nothing written | `mend --max-secs` estimate too long; "no" at the `Keep going?` question; unattended repair estimated over 15 minutes |
 | 5 | Damaged, will not open as-is, and `sigil mend` repairs it (checked: the repair ran in memory and passed the full check) | `scry` / `verify` / `unseal` / `open` when `live < need` (e.g. scattered bit rot) |

@@ -419,6 +419,9 @@ pub fn assess_path(input: &Path, budget: &mut ProbeBudget) -> Result<Condition> 
 pub struct TomeInspection {
     /// Why the Tome ends early, when it does (members after that point are unknown).
     pub truncated: Option<String>,
+    /// Why the folder list (names, lengths, count) cannot be trusted, when it cannot.
+    /// Nothing is restored from such a copy; see [`crate::FOLDER_LIST_DAMAGED`].
+    pub list_damaged: Option<String>,
     /// Members that open as-is (healthy or torn), in Tome order.
     pub intact: Vec<String>,
     /// The members of `intact` that `sigil mend` would still tidy up.
@@ -436,6 +439,9 @@ pub struct TomeInspection {
 impl TomeInspection {
     /// The Tome's overall condition.
     pub fn condition(&self) -> Condition {
+        if let Some(why) = &self.list_damaged {
+            return Condition::Unrecoverable(why.clone());
+        }
         if let Some(why) = &self.truncated {
             return Condition::Unrecoverable(why.clone());
         }
@@ -463,6 +469,16 @@ impl TomeInspection {
 /// a plain Tome are not secret (they are stored in the clear); a Warded Tome is never
 /// read here.
 pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<TomeInspection> {
+    let mut t = inspect_plain_tome_members(input, budget)?;
+    if t.list_damaged.is_some() {
+        // A damaged list cannot vouch for any member, so none is offered as undamaged.
+        t.intact.clear();
+        t.torn.clear();
+    }
+    Ok(t)
+}
+
+fn inspect_plain_tome_members(input: &Path, budget: &mut ProbeBudget) -> Result<TomeInspection> {
     let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let mut head = [0u8; 9];
@@ -488,6 +504,7 @@ pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<Tome
     let mut file = packhead::FileSrc::open(input)?;
     let size = file.size();
     let mut pos = head.len() as u64;
+    let mut seen = crate::tome_guard::ListNames::default();
     // `n` is untrusted; every member needs at least 10 bytes, so a short file ends the
     // loop (as a truncation) long before `n` is reached.
     for i in 0..n {
@@ -513,14 +530,33 @@ pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<Tome
             return Ok(out);
         }
         pos += name.len() as u64 + 8;
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            out.list_damaged = Some(crate::tome_guard::damaged(why).to_string());
+            return Ok(out);
+        }
         let rel = String::from_utf8_lossy(&name).into_owned();
+        if let Err(e) = crate::tome_guard::check_unique(&mut seen, &rel) {
+            out.list_damaged = Some(e.to_string());
+            return Ok(out);
+        }
         let slen = u64::from_le_bytes(sl);
         // Where this star starts in the file: the 9-byte head plus what was read since.
         let start = pos;
         pos = start.saturating_add(slen);
         if start.checked_add(slen).is_none_or(|e| e > size) {
+            if crate::tome_guard::later_member(&mut file, start)? {
+                out.list_damaged = Some(
+                    crate::tome_guard::damaged(format!(
+                        "the stored length of '{}' runs past the end of the file, but later members are still there (a damaged length, not a cut-off copy)",
+                        crate::shown::name(&rel)
+                    ))
+                    .to_string(),
+                );
+                return Ok(out);
+            }
             out.truncated = Some(format!(
-                "truncated Tome (cut off inside '{rel}'; incomplete copy or transfer)"
+                "truncated Tome (cut off inside '{}'; incomplete copy or transfer)",
+                crate::shown::name(&rel)
             ));
             return Ok(out);
         }
@@ -530,14 +566,20 @@ pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<Tome
         if slen >= 4 {
             file.read_at(start, &mut mag)?;
         }
-        let condition = if mag == crate::work::WORK_MAGIC {
+        let (named, condition) = if mag == crate::work::WORK_MAGIC {
             let mut w = packhead::SubSrc::new(&mut file, start, slen)?;
-            assess_pack(&mut w, MendMode::Deep, budget)
+            let named = crate::tome_guard::check_pack(&rel, &mut w);
+            (named, assess_pack(&mut w, MendMode::Deep, budget))
         } else {
             let mut star = vec![0u8; slen as usize];
             file.read_at(start, &mut star)?;
-            assess_star(&star, MendMode::Deep, budget)
+            let named = crate::tome_guard::check_classic(&rel, &star);
+            (named, assess_star(&star, MendMode::Deep, budget))
         };
+        if let Err(e) = named {
+            out.list_damaged = Some(e.to_string());
+            return Ok(out);
+        }
         match condition {
             Condition::Healthy => out.intact.push(rel),
             Condition::Torn(_) => {
@@ -551,6 +593,9 @@ pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<Tome
             }
             Condition::Unrecoverable(w) => out.unrecoverable.push((rel, w)),
         }
+    }
+    if let Err(e) = crate::tome_guard::check_no_member_after(&mut file, pos, n) {
+        out.list_damaged = Some(e.to_string());
     }
     Ok(out)
 }

@@ -699,6 +699,10 @@ enum SpoolFile {
 /// Error for a member cut off before its stated length.
 const TRUNCATED_MEMBER: &str = "truncated Tome (cut off mid-archive; incomplete copy or transfer)";
 
+/// A member length that runs past the end of the file while later members follow.
+const LENGTH_PAST_END: &str =
+    "a member's stored length runs past the end of the file, but later members are still there (a damaged length, not a cut-off copy)";
+
 impl V1Source<'_> {
     /// Fill `buf` from the member list (names and lengths).
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
@@ -720,6 +724,9 @@ impl V1Source<'_> {
             V1Source::File { src, pos } => {
                 let start = *pos;
                 if start.checked_add(len).is_none_or(|e| e > src.size()) {
+                    if crate::tome_guard::later_member(src, start)? {
+                        return Err(crate::tome_guard::damaged(LENGTH_PAST_END));
+                    }
                     return Err(crate::Error::Msg(TRUNCATED_MEMBER.into()));
                 }
                 *pos = start + len;
@@ -794,6 +801,17 @@ impl V1Source<'_> {
                 let src = packhead::FileSrc::open(&path)?;
                 Ok(Some(StarBytes::Spool { _file: spool, src }))
             }
+        }
+    }
+
+    /// After the last of `count` members: refuse when another complete member follows
+    /// (a lowered count). A stream (a Warded Tome's authenticated inner list) is not checked.
+    fn after_members(&mut self, count: u32) -> Result<()> {
+        match self {
+            V1Source::File { src, pos } => {
+                crate::tome_guard::check_no_member_after(src, *pos, count)
+            }
+            V1Source::Stream { .. } => Ok(()),
         }
     }
 
@@ -1009,6 +1027,7 @@ fn unseal_v1_members(
     // only after every wanted member has unsealed and verified (by the caller).
     staged.make_dir(dest)?;
     let mut got = 0u32;
+    let mut seen = crate::tome_guard::ListNames::default();
     // `n` is untrusted, but every member reads at least 10 bytes, so a short file ends
     // the loop with a truncation error long before `n` is reached.
     for _ in 0..n {
@@ -1018,7 +1037,11 @@ fn unseal_v1_members(
         let nlen = u16::from_le_bytes(lb) as usize;
         let mut name = vec![0u8; nlen];
         src.read_exact(&mut name)?;
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            return Err(crate::tome_guard::damaged(why));
+        }
         let rel = String::from_utf8_lossy(&name).into_owned();
+        crate::tome_guard::check_unique(&mut seen, &rel)?;
         if rel.contains("..") || Path::new(&rel).is_absolute() {
             return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
@@ -1033,10 +1056,12 @@ fn unseal_v1_members(
         let file_pass = pass_for(&rel, pass, wards);
         match &star {
             StarBytes::Mem(v) => {
+                crate::tome_guard::check_classic(&rel, v)?;
                 let plain = unseal_ex_keys(v, file_pass.as_deref(), companions, identities)?;
                 staged.write(&out_path, &plain)?;
             }
             _ => {
+                src.with_src(&mut star, |s| crate::tome_guard::check_pack(&rel, s))?;
                 src.with_src(&mut star, |s| {
                     staged.write_with(&out_path, |w| {
                         crate::work::unseal_src_into(
@@ -1052,6 +1077,7 @@ fn unseal_v1_members(
         }
         got += 1;
     }
+    src.after_members(n)?;
     if !only.is_empty() && got == 0 {
         return Err(crate::Error::Msg(
             "nothing matched --only (run sigil scry on the Tome to see paths)".into(),
@@ -1212,8 +1238,14 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
 /// name checked), nothing is written and the error names that member.
 pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
     let mut tome = packhead::FileSrc::open(input)?;
-    let entries = index_v1(&mut tome)
-        .map_err(|e| crate::Error::Msg(format!("truncated or unreadable Tome index: {e}")))?;
+    let entries = index_v1(&mut tome).map_err(|e| {
+        let e = e.to_string();
+        if e.starts_with(crate::tome_guard::LIST_DAMAGED) {
+            crate::Error::Msg(e)
+        } else {
+            crate::Error::Msg(format!("truncated or unreadable Tome index: {e}"))
+        }
+    })?;
     let total = entries.len();
     let mut mended: Vec<String> = Vec::new();
     let mut soft_used = false;
@@ -1247,6 +1279,12 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
             drop(src);
             soft_used |= r.soft_used;
             if r.mended.is_empty() {
+                let mut win = packhead::SubSrc::new(&mut tome, off, len)?;
+                crate::tome_guard::check_pack(&rel, &mut win)?;
+            } else {
+                crate::tome_guard::check_pack(&rel, &mut packhead::FileSrc::open(&dst.0)?)?;
+            }
+            if r.mended.is_empty() {
                 write_member_head(&mut w, &rel, len)?;
                 packhead::copy_range(&mut tome, off, len, &mut w)?;
             } else {
@@ -1273,6 +1311,7 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
             mended.push(rel.clone());
             star = h;
         }
+        crate::tome_guard::check_classic(&rel, &star)?;
         write_member_head(&mut w, &rel, star.len() as u64)?;
         w.write_all(&star).map_err(io)?;
     }
@@ -1287,7 +1326,14 @@ pub fn mend_plain_dir(input: &Path, output: &Path, soft: bool) -> Result<String>
         if mended.is_empty() {
             String::new()
         } else {
-            format!(": {}", mended.join(", "))
+            format!(
+                ": {}",
+                mended
+                    .iter()
+                    .map(|m| crate::shown::name(m))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         },
         if soft_used { ", soft salvage" } else { "" }
     ))
@@ -1336,6 +1382,7 @@ fn index_v1<S: Src>(src: &mut S) -> Result<Vec<(String, u64, u64)>> {
     let n = u32::from_le_bytes([head[5], head[6], head[7], head[8]]);
     let mut off = 9u64;
     let mut entries = Vec::with_capacity((n as u64).min(size / 10) as usize);
+    let mut seen = crate::tome_guard::ListNames::default();
     for _ in 0..n {
         crate::repair_ctl::check()?;
         if off + 2 > size {
@@ -1354,19 +1401,28 @@ fn index_v1<S: Src>(src: &mut S) -> Result<Vec<(String, u64, u64)>> {
         }
         let mut name = vec![0u8; nlen as usize];
         src.read_at(off, &mut name)?;
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            return Err(crate::tome_guard::damaged(why));
+        }
         off += nlen;
         let mut sl = [0u8; 8];
         src.read_at(off, &mut sl)?;
         off += 8;
         let slen = u64::from_le_bytes(sl);
         if slen > size - off {
+            if crate::tome_guard::later_member(src, off)? {
+                return Err(crate::tome_guard::damaged(LENGTH_PAST_END));
+            }
             return Err(crate::Error::Msg(
                 "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
             ));
         }
-        entries.push((String::from_utf8_lossy(&name).into_owned(), off, slen));
+        let rel = String::from_utf8_lossy(&name).into_owned();
+        crate::tome_guard::check_unique(&mut seen, &rel)?;
+        entries.push((rel, off, slen));
         off += slen;
     }
+    crate::tome_guard::check_no_member_after(src, off, n)?;
     Ok(entries)
 }
 
@@ -1406,6 +1462,7 @@ fn restore_entries(
         if rel.contains("..") || Path::new(&rel).is_absolute() {
             return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
+        crate::tome_guard::check_star_bytes(&rel, &star)?;
         if wanted(&rel, only) {
             let file_pass = pass_for(&rel, pass, wards);
             if star.starts_with(&crate::work::WORK_MAGIC) {
@@ -1483,6 +1540,7 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     let mut off = 9usize;
     // `n` is untrusted: each entry needs >= 10 bytes, so never pre-allocate beyond that.
     let mut entries = Vec::with_capacity((n as usize).min(raw.len() / 10));
+    let mut seen = crate::tome_guard::ListNames::default();
     for _ in 0..n {
         if off + 2 > raw.len() {
             return Err(crate::Error::Msg(
@@ -1497,7 +1555,11 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
                 "truncated Tome (cut off inside member header)".into(),
             ));
         }
+        if let Some(why) = crate::tome_guard::bad_name(&raw[off..off + nlen]) {
+            return Err(crate::tome_guard::damaged(why));
+        }
         let name = String::from_utf8_lossy(&raw[off..off + nlen]).into_owned();
+        crate::tome_guard::check_unique(&mut seen, &name)?;
         off += nlen;
         let slen = usize::try_from(u64::from_le_bytes(
             raw[off..off + 8].try_into().map_err(crate::short_field)?,
@@ -1505,6 +1567,9 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         .unwrap_or(usize::MAX);
         off += 8;
         if slen > raw.len() - off {
+            if crate::tome_guard::later_member(&mut packhead::MemSrc(raw), off as u64)? {
+                return Err(crate::tome_guard::damaged(LENGTH_PAST_END));
+            }
             return Err(crate::Error::Msg(
                 "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
             ));
@@ -1513,6 +1578,7 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         off += slen;
         entries.push((name, star));
     }
+    crate::tome_guard::check_no_member_after(&mut packhead::MemSrc(raw), off as u64, n)?;
     Ok(entries)
 }
 
@@ -1612,7 +1678,7 @@ pub fn dir_report(
                 .iter()
                 .chain(i.repairable.iter().map(|(r, _)| r))
                 .chain(i.unconfirmed.iter().map(|(r, _)| r))
-                .cloned()
+                .map(|r| crate::shown::name(r))
                 .collect::<Vec<_>>()
                 .join(", "),
             None => "Warded Tome body".into(),
@@ -1694,7 +1760,7 @@ fn render_listing(entries: &[DirEntry]) -> String {
     let mut out = format!("folder  files={} dirs={}\n", entries.len(), dirs.len());
     for d in &dirs {
         out.push_str("dir   ");
-        out.push_str(d);
+        out.push_str(&crate::shown::name(d));
         out.push('\n');
     }
     for e in entries {
@@ -1703,7 +1769,7 @@ fn render_listing(entries: &[DirEntry]) -> String {
         } else {
             out.push_str("file  ");
         }
-        out.push_str(&e.path);
+        out.push_str(&crate::shown::name(&e.path));
         if let Some(n) = e.orig {
             out.push_str(&format!("  {n} bytes"));
         }
@@ -3310,7 +3376,12 @@ mod stream_tests {
         let insp =
             crate::recovery::inspect_plain_tome(&p, &mut crate::recovery::ProbeBudget::disabled())
                 .unwrap();
-        assert!(insp.truncated.is_some());
+        // Zero bytes read as an empty name: folder-list damage, never healthy.
+        assert!(insp.truncated.is_some() || insp.list_damaged.is_some());
+        assert!(matches!(
+            insp.condition(),
+            crate::recovery::Condition::Unrecoverable(_)
+        ));
         // A member claiming more bytes than the file holds is refused, not buffered.
         let mut c = DIR_MAGIC.to_vec();
         c.push(DIR_VER_PLAIN);
