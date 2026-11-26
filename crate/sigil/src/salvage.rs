@@ -549,6 +549,26 @@ fn find_members<S: Src>(
         // file (a cut-off copy)?
         if let Some((name, star_off)) = cut_head_at(src, pos, size) {
             cx.damage_seen = true;
+            // A clean member head further on means the stored length is damaged, not
+            // the file cut: the member's data ends where that head starts.
+            match resync(cx, src, star_off, size)? {
+                Resync::Member { next, .. } => {
+                    damaged_stretches += 1;
+                    out.push(Found {
+                        listed: String::from_utf8(name).ok(),
+                        star_off,
+                        star_len: next - star_off,
+                        trusted: false,
+                        cut: false,
+                    });
+                    pos = next;
+                    continue;
+                }
+                Resync::Stopped(why) => {
+                    cx.report.stopped = Some(why);
+                }
+                Resync::Nothing | Resync::OrphanToEnd(_) => {}
+            }
             cx.report
                 .notes
                 .push("the Tome is cut off inside its last member".into());

@@ -209,6 +209,23 @@ fn damaged_v1_list_saves_every_member_and_marks_unconfirmed_names() {
 }
 
 #[test]
+fn a_damaged_stored_length_is_not_taken_for_a_cut_off_end() {
+    let d = common::scratch("salvage-len");
+    let want = src(&d);
+    seal(&d, "v1.sg1", &[], true);
+    let mut raw = std::fs::read(d.join("v1.sg1")).expect("r");
+    let e = entry_of(&raw, "a.txt");
+    // The top byte of a.txt's stored length: it now runs far past the end of the file.
+    raw[e + 2 + 5 + 7] ^= 0x10;
+    std::fs::write(d.join("x.sg1"), &raw).expect("w");
+    let o = sigil(&d, &["unseal", "--salvage", "x.sg1", "-o", "o"]);
+    let msg = text(&o);
+    assert_eq!(code(&o), 7, "{msg}");
+    let (named, rec) = all_right(&d.join("o"), &want);
+    assert_eq!(named + rec, 10, "every member saved: {msg}");
+}
+
+#[test]
 fn truncated_tomes_save_what_is_whole_and_report_the_rest() {
     let d = common::scratch("salvage-trunc");
     let want = src(&d);
