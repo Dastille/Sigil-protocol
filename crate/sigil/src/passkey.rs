@@ -145,7 +145,7 @@ fn kek(prf_input: &[u8; 32], prf_output: &[u8; 32]) -> Result<Zeroizing<[u8; 32]
 
 fn rand<const N: usize>() -> Result<[u8; N]> {
     let mut b = [0u8; N];
-    getrandom::getrandom(&mut b).map_err(|e| Error::Msg(e.to_string()))?;
+    crate::getrandom(&mut b)?;
     Ok(b)
 }
 

@@ -2097,7 +2097,7 @@ fn seal_segment(
     pass: Option<&str>,
     recipients: &[PublicIdentity],
 ) -> Result<(Vec<u8>, Option<[u8; 32]>)> {
-    let data: &[u8] = &pad_plain(log, data);
+    let data: &[u8] = &pad_plain(log, data)?;
     // Per-segment keys: the segment is sealed to its own fresh key; --pass / --to only wrap that
     // key into the key ring. Without them there would be nowhere to keep it, so refuse first.
     if log.segkeys {
@@ -2698,10 +2698,11 @@ pub fn padme(len: usize) -> usize {
 /// body is compressed *before* padding and the fill is random, so the star's own deflate finds
 /// nothing to shrink and the sealed size depends only on the bucket. The INDEX box keeps the real
 /// size and SHA-256 of `data`, which [`unpad`]'s caller checks. Not a cipher: the star encrypts it.
-pub(crate) fn pad_plain<'a>(log: &Log, data: &'a [u8]) -> std::borrow::Cow<'a, [u8]> {
+/// Fails (nothing is padded or written) if the system random number generator is unavailable.
+pub(crate) fn pad_plain<'a>(log: &Log, data: &'a [u8]) -> Result<std::borrow::Cow<'a, [u8]>> {
     use std::io::Write;
     if !log.pad {
-        return std::borrow::Cow::Borrowed(data);
+        return Ok(std::borrow::Cow::Borrowed(data));
     }
     let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
     let z = enc.write_all(data).ok().and_then(|_| enc.finish().ok());
@@ -2716,10 +2717,11 @@ pub(crate) fn pad_plain<'a>(log: &Log, data: &'a [u8]) -> std::borrow::Cow<'a, [
     v.extend_from_slice(&(body.len() as u64).to_be_bytes());
     v.extend_from_slice(body);
     let mut fill = vec![0u8; want - used];
-    // random fill keeps the star's deflate from shrinking it; zeros only if the OS RNG fails
-    let _ = getrandom::getrandom(&mut fill);
+    // random fill keeps the star's deflate from shrinking it (zeros would compress and show
+    // the entry's size), so a failing random source refuses the append
+    crate::getrandom(&mut fill)?;
     v.extend_from_slice(&fill);
-    std::borrow::Cow::Owned(v)
+    Ok(std::borrow::Cow::Owned(v))
 }
 
 /// Undo [`pad_plain`] for an opened entry of a padded log. Bytes that already are the entry

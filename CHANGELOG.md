@@ -4,6 +4,24 @@
 
 The first release will be **v0.9.0**. This tree is not 1.0.
 
+### Security
+
+- Salts, nonces and content keys for new seals, and new identity keys, now come from the
+  operating system's secure random number generator through the `getrandom` crate (the
+  `getrandom` system call on Linux, `BCryptGenRandom` on Windows, `getentropy` on macOS).
+  Earlier builds read `/dev/urandom` and, if it could not be opened or read, silently kept
+  all-zero bytes. `/dev/urandom` does not exist on Windows, so an encrypted seal made by a
+  Windows build of earlier code had an all-zero content key and gave no protection. No
+  Windows build was ever published. Now a failing random source refuses the seal, key or
+  log append with a clear error, and nothing is written.
+- `scry` warns when a seal (or a large-file pack's first star) has an all-zero salt or
+  nonce, the mark of a seal made while the random source was failing. No format change.
+- A large-file pack and a plain Tome are written through a hidden part file renamed into
+  place at the end, so a seal that fails part way leaves no partial output.
+- A padded log refuses an append when the random source fails, instead of padding with
+  zeros (zeros would compress and show the entry's size).
+- Library: `rain_lane()` returns `Result<u8>` (it fails when the random source fails).
+
 ### Version
 
 - The crate and `sigil --version` now report `0.9.0`. The `.sg1` format version is unchanged.

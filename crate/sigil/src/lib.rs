@@ -69,6 +69,7 @@ pub mod readdata;
 pub mod recovery;
 pub mod repair_ctl;
 pub mod repair_scan;
+mod rng;
 mod rs;
 mod rs_ref;
 pub mod scrub;
@@ -209,10 +210,17 @@ pub use work::{
 
 pub const DEFAULT_PIECE: u32 = 4 * 1024 * 1024;
 
-pub fn rain_lane() -> u8 {
+pub(crate) use rng::getrandom;
+#[cfg(test)]
+pub(crate) use rng::set_test_random_seed;
+pub use rng::weak_random_warning;
+
+/// A random starting part number (16..=215) for a new rain lane, so two senders rarely
+/// overlap. Fails if the system random number generator is unavailable.
+pub fn rain_lane() -> Result<u8> {
     let mut b = [0u8; 1];
-    getrandom(&mut b);
-    16 + (b[0] % 200)
+    getrandom(&mut b)?;
+    Ok(16 + (b[0] % 200))
 }
 /// Legacy passphrase KDF work factor (PBKDF2-HMAC-SHA256). Not stored in files, so it can
 /// never change for existing seals: used only to *read* legacy Ward / KIND_PASS wraps.
@@ -648,12 +656,12 @@ pub fn seal_kn_mds_to_opts(
     let digest = sha256(data);
     let mut salt = [0u8; 16];
     let mut nonce = [0u8; 12];
-    getrandom(&mut salt);
-    getrandom(&mut nonce);
+    getrandom(&mut salt)?;
+    getrandom(&mut nonce)?;
     let (body, compressed) = maybe_deflate(data);
     let entropy_milli = (shannon(data) * 1000.0).round() as u32;
     let mut cek = zeroize::Zeroizing::new([0u8; 32]);
-    getrandom(&mut cek[..]);
+    getrandom(&mut cek[..])?;
     // SGTO v3: the same wrap block is written twice, after the Keystone and as a tail spare.
     let sgto_block = keys::mark_spared(&keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?)?;
     let fp_key = privacy::fingerprint_key(&cek, &salt, &opts.fingerprint)?;
@@ -879,8 +887,8 @@ fn seal_plain(
     let digest = sha256(data);
     let mut salt = [0u8; 16];
     let mut nonce = [0u8; 12];
-    getrandom(&mut salt);
-    getrandom(&mut nonce);
+    getrandom(&mut salt)?;
+    getrandom(&mut nonce)?;
     let (body, compressed) = maybe_deflate(data);
     let folded = chaos::fold(&body, &salt);
     let shards = if matches!(mode, Mode::Glyph) {
@@ -1257,39 +1265,6 @@ pub(crate) fn shannon_counts(c: &[u64; 256], len: u64) -> f64 {
         h -= p * p.log2();
     }
     h
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_RANDOM_SEED: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-}
-
-/// Tests only: make salts, nonces and keys drawn on this thread come from a fixed
-/// sequence (`Some(seed)`) so a test's sealed bytes, and every count measured on them,
-/// are the same on every run; `None` goes back to the system source.
-#[cfg(test)]
-pub(crate) fn set_test_random_seed(seed: Option<u64>) {
-    TEST_RANDOM_SEED.with(|c| c.set(seed));
-}
-
-pub(crate) fn getrandom(buf: &mut [u8]) {
-    #[cfg(test)]
-    if let Some(mut x) = TEST_RANDOM_SEED.with(|c| c.get()) {
-        for b in buf.iter_mut() {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            *b = x as u8;
-        }
-        TEST_RANDOM_SEED.with(|c| c.set(Some(x | 1)));
-        return;
-    }
-    // Prefer getrandom if present; fall back to /dev/urandom.
-    if let Ok(f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read as _;
-        let mut f = f;
-        let _ = f.read_exact(buf);
-    }
 }
 
 #[cfg(test)]

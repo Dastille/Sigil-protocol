@@ -1449,8 +1449,8 @@ pub(crate) fn seal(
     if !use_to {
         let len = std::fs::metadata(input).map_err(io)?.len();
         let (k, n) = crate::choose_kn(mode, len, piece_bytes, shards);
-        crate::getrandom(&mut salt);
-        crate::getrandom(&mut nonce);
+        crate::getrandom(&mut salt)?;
+        crate::getrandom(&mut nonce)?;
         let ip = read_input(input, None, output)?;
         if ip.len != len {
             return Err(msg(
@@ -1498,10 +1498,10 @@ pub(crate) fn seal(
         )?;
         return Ok(Some(ip.len));
     }
-    crate::getrandom(&mut salt);
-    crate::getrandom(&mut nonce);
+    crate::getrandom(&mut salt)?;
+    crate::getrandom(&mut nonce)?;
     let mut cek = zeroize::Zeroizing::new([0u8; 32]);
-    crate::getrandom(&mut cek[..]);
+    crate::getrandom(&mut cek[..])?;
     let sgto_block = keys::mark_spared(&keys::build_sgto(&cek, recipients, pass_nonempty, &salt)?)?;
     let fp_key = privacy::fingerprint_key(&cek, &salt, &opts.fingerprint)?;
     let ip = read_input(input, Some(&fp_key), output)?;
