@@ -14,7 +14,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare Sig
 | **Mount** | Apps see normal paths over a tip / bare `.sg1` / SGDR pack / segment log | Seal/log untouched; cleartext in RAM (FUSE) or an export tree |
 | **Path / nest** | Breadcrumb walk into nested `.sg1` layers inside a pack or Sigil | Outer Sigil unchanged; optional extract to a temp path |
 
-A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CONTAINER.md](CONTAINER.md#names-not-hashes-ls-mount).
+A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CODEX.md](CODEX.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
 
 `vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR Tome; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.

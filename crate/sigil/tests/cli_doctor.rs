@@ -98,7 +98,7 @@ fn healthy_vault_and_constellation_exit_zero_and_json() {
     assert!(
         o.contains("result: healthy")
             && o.contains("verified 3 member(s)")
-            && o.contains("`name.sigil/` folder, format 1"),
+            && o.contains("Codex, format 1"),
         "{o}"
     );
     let (c, o) = doc(&dir, &["Sky"]);
@@ -269,7 +269,7 @@ fn old_layouts_warn_and_fix_tidies() {
     let (code, o) = doc(&dir, &["n.txt", "--fix"]);
     assert_eq!(code, 0, "{o}");
     assert!(
-        o.contains("fixed: tidied") && o.contains("`name.sigil/` folder, format 1"),
+        o.contains("fixed: tidied") && o.contains("Codex, format 1"),
         "{o}"
     );
     assert!(c.join("CONTAINER").is_file() && !old.exists());

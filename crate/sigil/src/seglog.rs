@@ -158,7 +158,7 @@ impl Log {
         let m = container::read_manifest(dir)?;
         if m.kind != KIND {
             return Err(err(format!(
-                "{} is a {} `name.sigil/` folder, not a segment log",
+                "{} is a {} Codex, not a segment log",
                 dir.display(),
                 m.kind
             )));

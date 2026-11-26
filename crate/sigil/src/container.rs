@@ -1,4 +1,4 @@
-//! Tidy container: one `name.sigil/` folder per thing (vault or constellation).
+//! Codex: one `name.sigil/` folder per thing (vault or constellation).
 //!
 //! ```text
 //! notes.txt.sigil/            (vault)            Sky.sigil/          (constellation)
@@ -11,8 +11,8 @@
 //! `CONTAINER` is a tiny `key=value` manifest; the first line is `sigil-container=1`.
 //! Unknown keys are ignored (additive). A higher major version is refused clearly.
 //! Old layouts (`<live>.sgv/` sidecars, flat constellation folders) keep opening forever;
-//! `sigil tidy` moves them into a container without rewriting any `.sg1` byte.
-//! See `docs/CONTAINER.md`.
+//! `sigil tidy` moves them into a Codex without rewriting any `.sg1` byte.
+//! See `docs/CODEX.md`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,6 +28,15 @@ pub const VERSIONS_DIR: &str = "versions";
 pub const COLD_DIR: &str = "cold";
 /// Stars that could not be filed by fingerprint (no readable digest) keep their old name here.
 pub const BY_NAME_DIR: &str = "by-name";
+
+/// People-facing name for a machine `layout` value.
+/// The JSON key `layout` and the value `"container"` stay unchanged.
+pub fn layout_label(layout: &str) -> &str {
+    match layout {
+        "container" => "Codex",
+        other => other,
+    }
+}
 
 fn err(s: impl Into<String>) -> crate::Error {
     crate::Error::Msg(s.into())
@@ -97,7 +106,7 @@ impl Manifest {
             version.ok_or_else(|| err("not a sigil CONTAINER (missing sigil-container=)"))?;
         if version > CONTAINER_VERSION {
             return Err(err(format!(
-                "`name.sigil/` layout {version} is newer than this sigil understands ({CONTAINER_VERSION}); upgrade sigil"
+                "Codex layout {version} is newer than this sigil understands ({CONTAINER_VERSION}); upgrade sigil"
             )));
         }
         Ok(Manifest {
@@ -152,7 +161,7 @@ pub fn ensure(dir: &Path, kind: &str, name: &str) -> Result<()> {
         let m = read_manifest(dir)?;
         if m.kind != kind {
             return Err(err(format!(
-                "{} is a {} `name.sigil/` folder, not a {kind}; refusing to mix them",
+                "{} is a {} Codex, not a {kind}; refusing to mix them",
                 dir.display(),
                 m.kind
             )));
@@ -610,7 +619,7 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
                 let old = crate::vault::seal_path_in(&plan.from, &v.seal);
                 if old.is_file() && !p.is_file() {
                     return Err(err(format!(
-                        "version v{} missing in the `name.sigil/` folder; refusing",
+                        "version v{} missing in the Codex; refusing",
                         v.n
                     )));
                 }
@@ -624,7 +633,7 @@ pub fn tidy(path: &Path, opts: &TidyOpts<'_>) -> Result<TidyReport> {
                 (Ok(old), Ok(new)) => {
                     if new.len() > old.len() {
                         return Err(err(format!(
-                            "the `name.sigil/` folder would miss stars the old folder had ({}); refusing",
+                            "the Codex would miss stars the old folder had ({}); refusing",
                             new.join(", ")
                         )));
                     }

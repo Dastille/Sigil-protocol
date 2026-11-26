@@ -1,11 +1,12 @@
 # Archives and the signed log
 
-*Version 1.0, 23 November 2026. Output captured from Sigil built from the main branch on 23 November 2026.*
+*Version 1.1, 26 November 2026. Output captured from Sigil built from the main branch; the Codex wording in the verify line was updated on 26 November 2026.*
 
 A **segment log** is an archive that only grows. Each time you back up a folder, Sigil
 wraps every new or changed file as its own Sigil (a **segment**) and adds a line to the
 log's list (the **INDEX**). Old entries are never rewritten. If the log is **signed**, a key
-you hold vouches for every addition, so you can later prove the archive was not altered.
+you hold vouches for every addition, so you can later prove the archive was not altered. The log itself lives in a
+**Codex** (`backup.sigil/` folder), not in a Tome (a single `.sg1` of a whole folder).
 
 ## Make a signing key and a log
 
@@ -79,7 +80,7 @@ with `sigil log verify backup --anchor 3:<root>`.
 
 ```
 $ sigil log verify backup --signer signer.sgk.pub
-log verify backup.sigil (log, `name.sigil/` folder, 3 segment(s), signed format 1)
+log verify backup.sigil (log, Codex, 3 segment(s), signed format 1)
 verified 3 member(s)
 result: healthy
 ```

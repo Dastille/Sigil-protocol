@@ -942,8 +942,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BootCmd,
     },
-    /// Move an old-layout vault (`x.sgv/`) or flat constellation folder into a tidy
-    /// `name.sigil/` folder. Copies, verifies fingerprints, then removes the old files.
+    /// Move an old-layout vault (`x.sgv/`) or flat constellation folder into a Codex
+    /// (`name.sigil/` folder). Copies, verifies fingerprints, then removes the old files.
     Tidy {
         /// Vault live path / `.sgv` chart dir, or constellation folder
         path: PathBuf,
@@ -965,8 +965,8 @@ enum Cmd {
         #[arg(long = "identity")]
         identity: Vec<PathBuf>,
     },
-    /// Reclaim orphan stars / versions and abandoned temp files from a `name.sigil/` folder (report-only
-    /// unless --apply). Never deletes anything the card / CHART lists, nor cold/ folders (Frost Rune).
+    /// Reclaim orphan stars / versions and abandoned temp files from a Codex (`name.sigil/` folder)
+    /// (report-only unless --apply). Never deletes anything the card / CHART lists, nor cold/ folders (Frost Rune).
     Gc {
         /// Vault live path / `.sigil` / `.sgv`, or constellation folder / `.sigil`
         path: PathBuf,
@@ -1033,7 +1033,7 @@ enum Cmd {
         temp_age: u64,
     },
     /// Append-only segment log: each append seals one batch as an immutable segment star,
-    /// chained in a Merkle/hash-chained INDEX (optionally Ed25519-signed). Lives in `name.sigil/`.
+    /// chained in a Merkle/hash-chained INDEX (optionally Ed25519-signed). Lives in a Codex (`name.sigil/` folder).
     Log {
         #[command(subcommand)]
         cmd: LogCmd,
@@ -1100,7 +1100,7 @@ enum Cmd {
     },
     /// FUSE mount (read-only) or export-dir of a .sg1 / SGDR pack, vault tip, or segment log. Alias: fuse.
     /// Durable seal / log is never rewritten. Use --export-dir --writable for a dirty cleartext vault tree.
-    /// A `kind=log` `name.sigil/` folder mounts as one file per live segment (tombstones omitted).
+    /// A `kind=log` Codex (`name.sigil/` folder) mounts as one file per live segment (tombstones omitted).
     #[command(visible_alias = "fuse")]
     Mount {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr. Needs
@@ -1226,8 +1226,8 @@ enum IdentityCmd {
 
 #[derive(Subcommand)]
 enum VaultCmd {
-    /// Start tracking a live file or folder: create `<path>.sgv/` chart + seal v1. Alias: init.
-    /// A folder becomes a folder vault (each version is an SGDR pack).
+    /// Start tracking a live file or folder: create a Codex (`<path>.sigil/` folder) and seal v1. Alias: init.
+    /// A folder becomes a folder vault (each version is a Tome). An existing `.sgv/` sidecar keeps being used until `sigil tidy`.
     #[command(visible_alias = "init")]
     Track {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
@@ -1358,7 +1358,7 @@ enum VaultCmd {
         /// Light retention: allow dropping seals without --cold (discards history)
         #[arg(long = "force-drop")]
         force_drop: bool,
-        /// Archive into this `name.sigil/` folder's own `cold/` folder (tidy `name.sigil/` folders only)
+        /// Archive into this Codex's own `cold/` folder (a Codex / `name.sigil/` folder only)
         #[arg(long = "cold-here", conflicts_with = "cold")]
         cold_here: bool,
     },
@@ -1376,7 +1376,7 @@ enum VaultCmd {
         /// Archive the seal under DIR/vN/ first (Frost Rune placement or plain .sg1)
         #[arg(long)]
         cold: Option<PathBuf>,
-        /// Archive into this `name.sigil/` folder's own `cold/` folder (tidy `name.sigil/` folders only)
+        /// Archive into this Codex's own `cold/` folder (a Codex / `name.sigil/` folder only)
         #[arg(long = "cold-here", conflicts_with = "cold")]
         cold_here: bool,
         /// Discard without a cold folder (light retention)
@@ -1503,7 +1503,7 @@ enum BootCmd {
 
 #[derive(Subcommand)]
 enum LogCmd {
-    /// Create an empty signed log (`PATH` or `PATH.sigil`). With --identity every append must be signed by that key.
+    /// Create an empty signed log as a Codex (`PATH` or `PATH.sigil`). With --identity every append must be signed by that key.
     Init {
         path: PathBuf,
         /// Identity (.sgk) whose Ed25519 key signs HEAD; pinned in the manifest. Omit for an unsigned log
@@ -2308,11 +2308,12 @@ enum LogCmd {
 #[derive(Subcommand)]
 enum SkyCmd {
     /// Wrap a file (or a folder of files) as a star and put it on the list. Skips bytes you already have.
+    /// A new constellation is created as a Codex (`name.sigil/` folder).
     Add {
         /// Machine-readable result on stdout (one JSON line); human lines go to stderr
         #[arg(long)]
         json: bool,
-        /// Folder that holds the card and the stars
+        /// Codex (`name.sigil/` folder) or old flat folder that holds the card and the stars
         sky: PathBuf,
         /// File or folder to add
         input: PathBuf,
@@ -6924,7 +6925,7 @@ fn run_log(cmd: LogCmd) -> Result<(), Box<dyn std::error::Error>> {
                         kind: "log".into(),
                         root: dir,
                         layout: format!(
-                            "`name.sigil/` folder, {} segment(s){}{}",
+                            "Codex, {} segment(s){}{}",
                             c.segments,
                             if c.signed {
                                 if c.handovers > 0 {

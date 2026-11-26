@@ -223,5 +223,5 @@ fn signed_and_segment_key_logs() {
     // a container is not a pile
     ok(&d, &["log", "init", "plain"]);
     let e = fails(&d, &["log", "adopt", "plain", "keyed.sigil"]);
-    assert!(e.contains("already a sigil container"), "{e}");
+    assert!(e.contains("already a Codex"), "{e}");
 }

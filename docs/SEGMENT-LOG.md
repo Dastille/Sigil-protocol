@@ -1,6 +1,6 @@
 # Segment log (`sigil log …`)
 
-A segment log lives in a `name.sigil/` folder (`kind=log` in the on-disk `CONTAINER` manifest).
+A segment log lives in a Codex (`name.sigil/` folder; `kind=log` in the on-disk `CONTAINER` manifest).
 This page describes that on-disk layout and the `sigil log` commands.
 
 ## Abstract
@@ -22,14 +22,14 @@ keeps (see "Prior work" and "Threat model").
 Status: **slice 1 shipped** (append, ls, read, verify, mend, gc / doctor support),
 **slice 2 shipped** (tombstones + compaction, `log=2`), **slice 3 shipped** (opt-in per-segment
 keys and crypto-shredding, `log=3`), and **log mount shipped** (`sigil mount` / `--export-dir` of a
-`kind=log` container), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
+`kind=log` Codex), **`log adopt` shipped** (tidy a loose pile of `.sg1` stars into a log), and **inclusion proofs
 shipped** (`log prove` / `log check-proof`: an offline receipt that one entry is in the log), and **signer
 rotation shipped** (`log rotate-signer`, `log=4`: hand a signed log over to a new key), and **adding a
 signer later shipped** (`log add-signer`: pin a first key on a log created unsigned), and **folder
 backup shipped** (`log add LOG DIR`: seal only the files that are new or changed since the last add), and the
 **private INDEX shipped** (`log init --private-index`, `log=5`: sizes, SHA-256s and file names sealed in the
 INDEX). Approved 2026-10-06 as a general-purpose mode (not tied to any one
-application); built after the tidy-container track. Roll-up **cards** shipped as an MVP (`log card` / `log check-card`,
+application); built after the Codex track. Roll-up **cards** shipped as an MVP (`log card` / `log check-card`,
 see "Cards"); INDEX roll-up / pruning stays **deferred** (see the end).
 
 A segment log is an **append-only, tamper-evident sequence of sealed batches**. Each
@@ -38,7 +38,7 @@ database change-set, a batch of sensor readings — as an **immutable segment st
 `.sg1`), and extends a hash-chained, Merkle-rooted index. Nothing is ever rewritten in place.
 
 Strictly additive: the `.sg1` byte layout is unchanged, plain `.sg1` files keep opening forever,
-and the container format stays `sigil-container=1` (a log is just `kind=log` plus a few extra
+and the on-disk format stays `sigil-container=1` (a log is just `kind=log` plus a few extra
 manifest keys). A sigil without log support does not recognise the kind (its `gc` / `doctor` refuse it as "not a vault or constellation"); upgrade rather than point older tools at a log.
 
 **Log format versions.** `log=1` (slice 1) = segment entries only. `log=2` (slice 2) = the INDEX
@@ -72,7 +72,7 @@ seq 1 is an `op=epoch` line naming the archived log it continues (see "Epoch rol
 ## Layout
 
 ```text
-events.sigil/                       one container per log
+events.sigil/                       one Codex per log
   CONTAINER                         sigil-container=1  kind=log  name=events
                                     log=1 (2, 3 or 4, see below)  log-id=<32 hex>  [signer=<64 hex Ed25519 key>]
   INDEX                             sigil-log-index=1, then one chained line per segment
@@ -419,7 +419,7 @@ sigil log shred events --seq 2 --reason "erasure request 42"
 encrypt-to path, to an identity derived from that key — no new cipher, no new seal layout; a
 segment is still an ordinary `.sg1`). The key is then **wrapped with the existing SGTO machinery**
 (X25519 `--to` recipients and/or a `--pass` passphrase, exactly what `sigil seal --to` / `--pass`
-do) and stored in a small **key ring**, a separate member of the container:
+do) and stored in a small **key ring**, a separate member of the Codex:
 
 ```text
 events.sigil/
@@ -617,7 +617,7 @@ sigil log adopt daily a.sg1 b.sg1 --keep   # explicit files, in the order given;
   as for every entry).
 * **Checks.** A file that is not a star, or whose ECC check finds damage, is **left in place** and
   listed (exit code 1); a repairable one says to run `sigil mend FILE` first. Folders that are
-  already `name.sigil/` folders, and stars inside one, are refused (adopt is for loose stars).
+  already a Codex (`name.sigil/` folder), and stars inside one, are refused (adopt is for loose stars).
 * **Crash-safe order:** segments written as unindexed files (each read back) → INDEX lines
   appended in one write (the commit point) → HEAD → originals removed last. Before the commit a
   crash leaves only unindexed leftovers (`gc` reclaims them, the next append overwrites them).
@@ -676,15 +676,15 @@ log add photos.sigil from Photos: added 1, changed 1, unchanged 2, missing 1, sk
   `--mode`, `--pass`, `--to`; in a `--segment-keys` log its own key), and its INDEX line is an
   ordinary segment line plus the additive `path=` key. Nothing else changes: no new entry type,
   no manifest bump (the log stays `log=1` unless it already was newer), no new files in the
-  container, `.sg1` layout untouched. `read --seq`, `verify`, `mend`, `prove` / `check-proof
+  Codex, `.sg1` layout untouched. `read --seq`, `verify`, `mend`, `prove` / `check-proof
   --file`, `tombstone`, `compact` and `mount` treat these entries like any other; `log ls` also
   shows each entry's path. One file per segment keeps memory to **one file at a time** (the file is
   sealed in memory, so very large single files need that much RAM; streaming is a later slice) and
   lets a single file be read back, proved, tombstoned or shredded on its own.
 * **Walk.** `DIR` is walked recursively; files are taken in **byte order of their relative path**
   (stable on every run and machine). Symlinks are never followed; symlinks, devices, pipes, sockets
-  and nested `name.sigil/` folders (including the log itself, if it lives inside `DIR`) are **skipped and
-  listed** (`skipped-special`). Empty folders are not recorded. A `DIR` inside a sigil container is
+  and nested Codex folders (including the log itself, if it lives inside `DIR`) are **skipped and
+  listed** (`skipped-special`). Empty folders are not recorded. A `DIR` inside a Codex is
   refused. A file that cannot be read is listed and not added, and the exit code is 1. Output
   shows names with control characters escaped (`\n`), so a file name cannot fake extra lines.
 * **What counts as already sealed.** For every path, the latest entry **the HEAD vouches for**
@@ -1052,11 +1052,11 @@ misreading it.
 | Private INDEX: wrong `--pass` / `--identity` | the index key does not unwrap → refused (`index-key` in verify); never a silent keyless fallback |
 | Private INDEX: a receipt with a forged or swapped `entry-key=` | key commitment mismatch → `check-proof` exit 2 |
 | Private INDEX: plaintext line inserted, or `privindex=1` removed from the manifest | `index-private` / `log-format` error, keyless |
-| Private INDEX: `IXKEY.sg1` lost | `ixkey-missing` (error); sizes and names cannot be opened, the segments still open with their own keys. Keep copies of the whole container |
-| Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, Frost Rune cold folder) of the container |
+| Private INDEX: `IXKEY.sg1` lost | `ixkey-missing` (error); sizes and names cannot be opened, the segments still open with their own keys. Keep copies of the whole Codex |
+| Availability | ECC inside each segment; across segments sigil adds none — keep a second copy (`rsync`, atlas, Frost Rune cold folder) of the Codex |
 
 Unauthorised concurrent writers are not a security feature: `LOG.lock` is advisory and local. One
-writer at a time; do not put the container on a filesystem without atomic `rename` / `create_new`.
+writer at a time; do not put the Codex on a filesystem without atomic `rename` / `create_new`.
 
 ## Reader and writer roles (signed logs)
 
@@ -1538,7 +1538,7 @@ sigil log verify events --signer me.pub
 
 ## Mount (read-only view of a log)
 
-`sigil mount` (and `--export-dir`) of a `kind=log` container shows **one file per live segment**.
+`sigil mount` (and `--export-dir`) of a `kind=log` Codex shows **one file per live segment**.
 Same keys as `log read`: `--pass` / `--identity` unwrap sealed batches (and per-segment key rings);
 missing keys fail with a clear error when a file is opened (or when export materializes it).
 

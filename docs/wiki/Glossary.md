@@ -1,10 +1,12 @@
 # Glossary
 
-*Version 1.0, 23 November 2026. Sigil's own names first, then the general terms they rest on.*
+*Version 1.1, 26 November 2026. Sigil's own names first, then the general terms they rest on.*
 
 | Word | Meaning |
 |---|---|
-| **Sigil** | One `.sg1` file: your file or folder plus its repair data and fingerprints. |
+| **Sigil** | One `.sg1` file: your file or folder plus its repair data and fingerprints. Also called a Sigil Archive. |
+| **Tome** | A Sigil Archive of a whole folder: one `.sg1` file that holds every file in that folder. |
+| **Codex** | A `name.sigil/` folder that keeps one thing together (a Vault, a Constellation, or a signed log), including its manifest and related files. Not a `.sg1` file, and not a Tome. The on-disk manifest is still named `CONTAINER`. |
 | **Inscribe / seal** | Make a Sigil from a file or folder (`sigil seal`). |
 | **De-scribe / unseal** | Get the original back from a Sigil (`sigil unseal`). |
 | **Scry / verify** | Check a Sigil's health without changing it. |

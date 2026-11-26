@@ -60,7 +60,7 @@ Chart fields (backward compatible): `retention=full` or `retention=light` plus `
 ./sigil vault prune ./notes.txt --keep 3 --force-drop
 ```
 
-`--cold-here` is shorthand for the `name.sigil/` folder's own `<name>.sigil/cold/` (tidy `name.sigil/` folders only; see [CONTAINER.md](CONTAINER.md)). To drop one specific old version rather than the oldest N: `sigil vault remove ./notes.txt --version 2` (never the tip; light retention needs `--cold`/`--cold-here` or `--force-drop`). `sigil gc` never touches Frost Rune cold folders.
+`--cold-here` is shorthand for the Codex's own `<name>.sigil/cold/` (a Codex only; see [CODEX.md](CODEX.md)). To drop one specific old version rather than the oldest N: `sigil vault remove ./notes.txt --version 2` (never the tip; light retention needs `--cold`/`--cold-here` or `--force-drop`). `sigil gc` never touches Frost Rune cold folders.
 
 Each pruned seal lands under `DIR/vN/`:
 
