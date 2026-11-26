@@ -14,6 +14,13 @@ errors inside each piece instead of throwing the piece away; in a test on a 2.2 
 2 000 flipped bits spread over every piece were repaired exactly. Heavy damage is refused,
 never guessed.
 
+**How much memory does Sigil need for a big file?**
+Not the size of the file. Sealing, opening, `scry` and the usual `mend` read a big file a
+piece at a time: a 2 GiB file sealed as one Sigil peaked at about 40 MiB in each of these
+steps (it used to take 12 to 18 GiB). Opening a Warded file reads it twice, once to check it
+and once to decrypt, so it takes a little longer. The deeper repair for scattered bit rot
+(the step `mend` tries when the quick repair is not enough) still loads the whole file.
+
 **Can a repair ever give me a wrong file?**
 Sigil keeps a repaired file only if it matches the fingerprints stored when the Sigil was
 made (a hash tree over the pieces, and for an unlocked Sigil a SHA-256 fingerprint of the
