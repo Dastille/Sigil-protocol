@@ -764,6 +764,8 @@ struct Opened {
     prefix: Option<String>,
     /// The header confirms the whole list name (not only its first 16 bytes).
     whole_name: bool,
+    /// A plain star named like one chunk of a large-file pack (`name.0003`).
+    chunk_like: bool,
     last_err: String,
 }
 
@@ -775,6 +777,7 @@ fn open_one<S: Src>(cx: &Ctx<'_, '_>, src: &mut S, f: &Found, seq: usize) -> Res
         healed: false,
         prefix: None,
         whole_name: false,
+        chunk_like: false,
         last_err: String::from("no key opened it"),
     };
     if f.cut {
@@ -787,6 +790,7 @@ fn open_one<S: Src>(cx: &Ctx<'_, '_>, src: &mut S, f: &Found, seq: usize) -> Res
         w.flush().map_err(io)?;
     }
     let (prefix, is_pack) = star_name_prefix(&star.0);
+    o.chunk_like = !is_pack && prefix.as_deref().is_some_and(chunk_name);
     o.prefix = prefix;
     if let (Some(n), Some(p), true) = (&f.listed, &o.prefix, f.trusted) {
         // A plain star keeps its whole path when it fits in 16 bytes; a large-file pack
@@ -844,6 +848,15 @@ fn place_one(cx: &mut Ctx<'_, '_>, f: Found, o: Opened, trust_list: bool) -> Res
         });
         return Ok(());
     };
+    if o.chunk_like && !(f.trusted && f.listed.is_some()) {
+        // Found without a list entry of its own: most likely one part of a large file
+        // whose pack head is damaged. Written alone it would look like the whole file.
+        cx.report.outcomes.push(Outcome::Lost {
+            label,
+            why: "it looks like one part of a large file whose pack head is damaged; a part is never written as if it were the file".into(),
+        });
+        return Ok(());
+    }
     let listed_ok =
         f.trusted && (trust_list || o.whole_name) && f.listed.as_deref().is_some_and(safe_rel);
     let recovered = recovered_rel(seq, o.prefix.as_deref());
@@ -995,6 +1008,12 @@ fn star_name_prefix(star: &Path) -> (Option<String>, bool) {
         return (name, true);
     }
     (crate::tome_guard::header_name(&head), false)
+}
+
+/// A header name ending in a large-file chunk number (`.0000` to `.9999`).
+fn chunk_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    b.len() >= 5 && b[b.len() - 5] == b'.' && b[b.len() - 4..].iter().all(u8::is_ascii_digit)
 }
 
 /// `recovered-names/NNNN-<prefix>` (or `NNNN-unnamed`), made safe as one file name.
