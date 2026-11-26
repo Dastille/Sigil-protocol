@@ -1951,6 +1951,7 @@ fn list_v1_members<R: Read + ?Sized>(
 ) -> Result<Vec<DirEntry>> {
     let keys = keys.filter(|(p, ids)| !(p.is_none_or(str::is_empty) && ids.is_empty()));
     let mut entries = Vec::with_capacity((n as usize).min(4096));
+    let mut seen = crate::tome_guard::ListNames::default();
     for _ in 0..n {
         crate::repair_ctl::check()?;
         let mut lb = [0u8; 2];
@@ -1958,7 +1959,11 @@ fn list_v1_members<R: Read + ?Sized>(
         let nlen = u16::from_le_bytes(lb) as usize;
         let mut name = vec![0u8; nlen];
         reader.read_exact(&mut name).map_err(io)?;
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            return Err(crate::tome_guard::damaged(why));
+        }
         let path = String::from_utf8_lossy(&name).into_owned();
+        crate::tome_guard::check_unique(&mut seen, &path)?;
         let mut sl = [0u8; 8];
         reader.read_exact(&mut sl).map_err(io)?;
         let slen = u64::from_le_bytes(sl);
@@ -2268,12 +2273,18 @@ pub(crate) fn locate_entry_star<R: Read + Seek>(
         )
     };
     let mut pos = 9u64;
+    let mut seen = crate::tome_guard::ListNames::default();
     for _ in 0..n {
         let mut lb = [0u8; 2];
         reader.read_exact(&mut lb).map_err(|_| truncated())?;
         let nlen = u16::from_le_bytes(lb) as usize;
         let mut name = vec![0u8; nlen];
         reader.read_exact(&mut name).map_err(|_| truncated())?;
+        // The members before (and at) the one wanted get the same list checks as unseal.
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            return Err(crate::tome_guard::damaged(why));
+        }
+        crate::tome_guard::check_unique(&mut seen, &String::from_utf8_lossy(&name))?;
         let mut sl = [0u8; 8];
         reader.read_exact(&mut sl).map_err(|_| truncated())?;
         let slen = u64::from_le_bytes(sl);
