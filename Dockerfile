@@ -40,7 +40,7 @@ RUN set -eu; \
 
 FROM gcr.io/distroless/static-debian12@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime
 
-ARG SIGIL_VERSION=1.0.0
+ARG SIGIL_VERSION=0.9.0
 ARG SIGIL_GIT_COMMIT=unknown
 
 LABEL org.opencontainers.image.title="sigil" \

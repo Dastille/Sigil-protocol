@@ -132,7 +132,7 @@ To double-check the repaired copy: sigil verify rot.mended.sg1
 ```
 
 `sigil --version` prints the version and the git commit it was built from, e.g.
-`sigil 1.0.0 (commit 1a2b3c4)` (`-dirty` after the SHA if the checkout had
+`sigil 0.9.0 (commit 1a2b3c4)` (`-dirty` after the SHA if the checkout had
 uncommitted changes, `unknown` when built without git, e.g. from a source tarball).
 
 ### Repair: mend

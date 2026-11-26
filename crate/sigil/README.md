@@ -1,6 +1,6 @@
 # sigil
 
-Rust command for Sigil. Same `.sg1` bytes as the lab. **No size cap** on this command. v1.0.
+Rust command for Sigil. Same `.sg1` bytes as the lab. **No size cap** on this command. v0.9.
 
 **Build (Linux or Windows — same source)**
 

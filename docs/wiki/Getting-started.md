@@ -18,7 +18,7 @@ This puts the `sigil` program in your personal program folder (`~/.cargo/bin`). 
 
 ```
 $ sigil --version
-sigil 1.0.0 (commit 1a2b3c4)
+sigil 0.9.0 (commit 1a2b3c4)
 ```
 
 The part in brackets says exactly which version of the code you have.
