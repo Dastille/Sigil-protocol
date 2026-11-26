@@ -44,23 +44,166 @@ fn io(e: std::io::Error) -> crate::Error {
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    walk_noting(dir, dir, out, &mut None)
+}
+
+/// Why a path under a folder was not packed into a Tome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkipReason {
+    /// A file whose name starts with `.` (dotfiles are not stored).
+    HiddenFile,
+    /// A folder whose name starts with `.`; it is not entered, so nothing under it is stored.
+    HiddenFolder,
+    /// Not a regular file or folder: a named pipe, socket or device.
+    Special,
+    /// A symbolic link whose target does not exist (links to files and folders are followed).
+    BrokenLink,
+    /// A folder with nothing stored under it (a Tome keeps files, not empty folders).
+    EmptyFolder,
+}
+
+impl SkipReason {
+    /// Short label for reports.
+    pub fn label(self) -> &'static str {
+        match self {
+            SkipReason::HiddenFile => "hidden file",
+            SkipReason::HiddenFolder => "hidden folder",
+            SkipReason::Special => "special file",
+            SkipReason::BrokenLink => "broken link",
+            SkipReason::EmptyFolder => "empty folder",
+        }
+    }
+}
+
+/// One path a folder Inscribe left out, relative to the folder (`/` separators).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Skipped {
+    /// Path relative to the packed folder.
+    pub rel: String,
+    /// Why it was left out.
+    pub reason: SkipReason,
+}
+
+/// Most skipped paths kept by name in a [`SkipReport`]; the rest are only counted, so
+/// a folder with millions of dotfiles cannot exhaust memory. The count stays exact.
+pub const MAX_SKIPS_LISTED: usize = 10_000;
+
+/// Everything a folder Inscribe of the same folder leaves out, from [`tree_skips`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SkipReport {
+    /// The first [`MAX_SKIPS_LISTED`] skipped paths, in walk order.
+    pub listed: Vec<Skipped>,
+    /// Exact number of skipped paths (may exceed `listed.len()`).
+    pub total: u64,
+    /// Regular files that will be stored and have an executable bit set. Permissions
+    /// are not stored, so these restore without it.
+    pub executables: u64,
+}
+
+impl SkipReport {
+    fn note(&mut self, root: &Path, path: &Path, reason: SkipReason) {
+        self.total += 1;
+        if self.listed.len() < MAX_SKIPS_LISTED {
+            self.listed.push(Skipped {
+                rel: rel(root, path),
+                reason,
+            });
+        }
+    }
+
+    /// Skipped paths per reason, in [`SkipReason`] order, zero counts omitted. Counts only
+    /// the listed paths; `total` is exact.
+    pub fn counts(&self) -> Vec<(SkipReason, u64)> {
+        let order = [
+            SkipReason::HiddenFile,
+            SkipReason::HiddenFolder,
+            SkipReason::Special,
+            SkipReason::BrokenLink,
+            SkipReason::EmptyFolder,
+        ];
+        order
+            .iter()
+            .map(|r| (*r, self.listed.iter().filter(|s| s.reason == *r).count() as u64))
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+}
+
+/// What a folder Inscribe of `root` would leave out: dotfiles and dot-folders, special
+/// files, broken links and empty folders. Uses the same walk as the Inscribe itself, so
+/// the report matches what is packed. Reads directory entries and metadata only.
+pub fn tree_skips(root: &Path) -> Result<SkipReport> {
+    let mut files = Vec::new();
+    let mut report = Some(SkipReport::default());
+    walk_noting(root, root, &mut files, &mut report)?;
+    Ok(report.unwrap_or_default())
+}
+
+/// The folder walk every Inscribe uses (sorted, dot-names skipped, links followed),
+/// noting each left-out path in `skips` when it is `Some`. Returns nothing extra so
+/// the packed list is identical with or without a report.
+fn walk_noting(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    skips: &mut Option<SkipReport>,
+) -> Result<()> {
     let rd = fs::read_dir(dir).map_err(io)?;
     let mut ents: Vec<_> = rd.collect::<std::io::Result<Vec<_>>>().map_err(io)?;
     ents.sort_by_key(|e| e.file_name());
+    let before = out.len();
     for e in ents {
         let p = e.path();
         let name = e.file_name();
         let name = name.to_string_lossy();
         if name.starts_with('.') {
+            if let Some(r) = skips.as_mut() {
+                let reason = if p.is_dir() {
+                    SkipReason::HiddenFolder
+                } else {
+                    SkipReason::HiddenFile
+                };
+                r.note(root, &p, reason);
+            }
             continue;
         }
         if p.is_dir() {
-            walk(&p, out)?;
+            walk_noting(root, &p, out, skips)?;
         } else if p.is_file() {
+            if let Some(r) = skips.as_mut() {
+                if is_executable(&p) {
+                    r.executables += 1;
+                }
+            }
             out.push(p);
+        } else if let Some(r) = skips.as_mut() {
+            // Neither a file nor a folder once links are followed.
+            let reason = match fs::symlink_metadata(&p) {
+                Ok(m) if m.file_type().is_symlink() => SkipReason::BrokenLink,
+                _ => SkipReason::Special,
+            };
+            r.note(root, &p, reason);
+        }
+    }
+    if out.len() == before && dir != root {
+        if let Some(r) = skips.as_mut() {
+            r.note(root, dir, SkipReason::EmptyFolder);
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(p)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_p: &Path) -> bool {
+    false
 }
 
 fn rel(root: &Path, file: &Path) -> String {
@@ -1765,10 +1908,17 @@ pub fn looks_like_nest_name(path: &str) -> bool {
 }
 
 /// Peek nest flag + true-name digest from the first bytes of a star.
+///
+/// A star that starts with the SGWK magic is how a Tome stores any member larger
+/// than its `--chunk` (a large-file member), so the magic alone says nothing about
+/// whether the member's *content* is a seal: such a member is a nest only when its
+/// name says so (`.sg1` / `.sgwk`), like any other member.
 fn peek_nest(peek: &[u8], path: &str) -> (bool, Option<[u8; 32]>) {
     let mut nest = looks_like_nest_name(path);
     let mut digest = None;
-    if peek.starts_with(&crate::work::WORK_MAGIC) || peek.starts_with(&DIR_MAGIC) {
+    if peek.starts_with(&crate::work::WORK_MAGIC) {
+        // Large-file member: the name check above is the only signal.
+    } else if peek.starts_with(&DIR_MAGIC) {
         nest = true;
     } else if let Ok((h, _, _)) = crate::locate_header(peek) {
         digest = Some(h.digest);
@@ -2319,6 +2469,145 @@ mod tests {
         )
         .unwrap();
         w.flush().unwrap();
+    }
+
+    /// The skip report names every path a Tome leaves out, and the packed list is the
+    /// same with or without a report (the vault tree digest relies on that walk).
+    #[cfg(unix)]
+    #[test]
+    fn tree_skips_lists_everything_left_out() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("skips");
+        let src = root.join("src");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(src.join(".git/objects")).unwrap();
+        fs::create_dir_all(src.join("empty")).unwrap();
+        fs::create_dir_all(src.join("only-dots")).unwrap();
+        fs::write(src.join("a.txt"), b"a").unwrap();
+        fs::write(src.join("sub/b.txt"), b"b").unwrap();
+        fs::write(src.join(".env"), b"x").unwrap();
+        fs::write(src.join(".git/objects/o"), b"x").unwrap();
+        fs::write(src.join("only-dots/.keep"), b"").unwrap();
+        fs::write(src.join("run.sh"), b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(src.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("nowhere", src.join("dangling")).unwrap();
+        std::os::unix::fs::symlink("a.txt", src.join("good-link")).unwrap();
+        let _sock = std::os::unix::net::UnixListener::bind(src.join("sock")).unwrap();
+        let rep = tree_skips(&src).unwrap();
+        let got: Vec<(String, SkipReason)> =
+            rep.listed.iter().map(|s| (s.rel.clone(), s.reason)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (".env".into(), SkipReason::HiddenFile),
+                (".git".into(), SkipReason::HiddenFolder),
+                ("dangling".into(), SkipReason::BrokenLink),
+                ("empty".into(), SkipReason::EmptyFolder),
+                ("only-dots/.keep".into(), SkipReason::HiddenFile),
+                ("only-dots".into(), SkipReason::EmptyFolder),
+                ("sock".into(), SkipReason::Special),
+            ]
+        );
+        assert_eq!(rep.total, 7);
+        assert_eq!(rep.executables, 1);
+        assert_eq!(rep.counts().iter().map(|c| c.1).sum::<u64>(), 7);
+        // Same packed list as the plain walk (and so as the vault tree digest).
+        let packed: Vec<String> = tree_files(&src).unwrap().into_iter().map(|f| f.0).collect();
+        assert_eq!(packed, vec!["a.txt", "good-link", "run.sh", "sub/b.txt"]);
+        let pack = root.join("t.sg1");
+        let (n, _) = inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 0, &[]).unwrap();
+        assert_eq!(n, 4);
+        let listed: Vec<String> = list_dir_pack(&pack).unwrap().into_iter().map(|e| e.path).collect();
+        assert_eq!(listed, packed);
+        // A clean folder reports nothing.
+        let clean = tree_skips(&src.join("sub")).unwrap();
+        assert_eq!(clean, SkipReport::default());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Past [`MAX_SKIPS_LISTED`] names the report only counts, and the count stays exact.
+    #[test]
+    fn tree_skips_caps_the_list_but_not_the_count() {
+        let root = scratch("skips-cap");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("keep.txt"), b"k").unwrap();
+        let n = MAX_SKIPS_LISTED + 7;
+        for i in 0..n {
+            fs::write(root.join(format!(".d{i:06}")), b"").unwrap();
+        }
+        let rep = tree_skips(&root).unwrap();
+        assert_eq!(rep.listed.len(), MAX_SKIPS_LISTED);
+        assert_eq!(rep.total, n as u64);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A large-file member (stored as an SGWK pack because it is over `--chunk`) is a
+    /// plain file in every listing, plain or Warded; only a member whose name says
+    /// it is a seal (`.sg1`) is a nest, large or not. Regression: every large member
+    /// used to be listed as `nest`.
+    #[test]
+    fn large_member_is_a_file_not_a_nest() {
+        let root = scratch("large-not-nest");
+        let src = root.join("src");
+        fs::create_dir_all(src.join("m")).unwrap();
+        fs::write(src.join("a.txt"), b"alpha").unwrap();
+        fs::write(src.join("m/big.bin"), noise(200_000)).unwrap();
+        // A real nested seal that is itself larger than the Tome's chunk.
+        let loose = root.join("loose.bin");
+        fs::write(&loose, noise(150_000)).unwrap();
+        crate::work::inscribe_path(
+            &loose,
+            &src.join("inner.sg1"),
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            DEFAULT_PIECE,
+            crate::work::DEFAULT_OVERTURE_MB,
+            None,
+        )
+        .unwrap();
+        assert!(fs::metadata(src.join("inner.sg1")).unwrap().len() > 64 * 1024);
+        let flags = |entries: Vec<DirEntry>| -> Vec<(String, bool)> {
+            entries.into_iter().map(|e| (e.path, e.nest)).collect()
+        };
+        let want = vec![
+            ("a.txt".to_string(), false),
+            ("inner.sg1".to_string(), true),
+            ("m/big.bin".to_string(), false),
+        ];
+        let plain = root.join("plain.sg1");
+        inscribe_dir(&src, &plain, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        let raw = fs::read(&plain).unwrap();
+        let big_star = parse_sgdr_entries(&raw)
+            .unwrap()
+            .into_iter()
+            .find(|(r, _)| r == "m/big.bin")
+            .unwrap()
+            .1;
+        assert!(big_star.starts_with(&crate::work::WORK_MAGIC), "stored large");
+        assert_eq!(flags(list_dir_pack(&plain).unwrap()), want);
+        let report = scry_dir(&plain).unwrap();
+        assert!(report.contains("file  m/big.bin"), "{report}");
+        assert!(report.contains("nest  inner.sg1"), "{report}");
+        assert!(!report.contains("nest  m/big.bin"), "{report}");
+        let warded = root.join("warded.sg1");
+        inscribe_dir(
+            &src,
+            &warded,
+            Mode::Seal,
+            Some("pw"),
+            "",
+            &[],
+            64 * 1024,
+            &[],
+        )
+        .unwrap();
+        let listed = list_dir_pack_keys(&warded, Some("pw"), &[], &[]).unwrap();
+        assert_eq!(flags(listed), want);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
