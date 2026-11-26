@@ -251,10 +251,20 @@ fn sealed_folder_fails_closed_on_wrong_key_tamper_and_truncation() {
 #[test]
 fn plain_folder_pack_is_unchanged() {
     let d = scratch("plain");
-    ok(&sigil(&d, &["seal", "-o", "p.sg1", "album"]));
+    // The older layout is still written on request and still lists without a key.
+    ok(&sigil(
+        &d,
+        &["seal", "--old-tome-layout", "-o", "p.sg1", "album"],
+    ));
     let raw = std::fs::read(d.join("p.sg1")).unwrap();
     assert_eq!(&raw[0..5], b"SGDR\x01");
     let s = ok(&sigil(&d, &["scry", "p.sg1"]));
+    assert!(s.contains("file  private-sub/tax-return-2025.pdf"), "{s}");
+    // A new unlocked Tome keeps its list in the protected body (v3); no key needed.
+    ok(&sigil(&d, &["seal", "-o", "p3.sg1", "album"]));
+    let raw = std::fs::read(d.join("p3.sg1")).unwrap();
+    assert_eq!(&raw[0..5], b"SGDR\x03");
+    let s = ok(&sigil(&d, &["scry", "p3.sg1"]));
     assert!(s.contains("file  private-sub/tax-return-2025.pdf"), "{s}");
     let _ = std::fs::remove_dir_all(&d);
 }

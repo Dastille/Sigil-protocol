@@ -174,6 +174,7 @@ fn ward_names_visible_is_an_explicit_opt_in_with_a_warning() {
             "--ward",
             WARD,
             "--ward-names-visible",
+            "--old-tome-layout",
             "-o",
             "v.sg1",
             "album",

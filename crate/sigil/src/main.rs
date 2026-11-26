@@ -4648,6 +4648,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Cmd::Mend { input, .. }
+            if sigil::tome_version(&input).is_some_and(|v| !(1..=3).contains(&v)) =>
+        {
+            // Never guess at a Tome layout this build does not know (it would be read as
+            // a damaged large-file pack and the message would mislead).
+            let v = sigil::tome_version(&input).unwrap_or(0);
+            return Err(format!(
+                "could not repair {}: unknown Tome version {v}: made by a newer sigil, or damaged (update sigil and try again). Nothing was written.",
+                input.display()
+            )
+            .into());
+        }
         Cmd::Mend {
             input,
             more,

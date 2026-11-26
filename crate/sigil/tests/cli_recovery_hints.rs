@@ -458,7 +458,7 @@ fn tome_member_rot_dead_member_and_truncation() {
     let beta = noise(60_000, 0x5555_2222);
     fs::write(d.join("box/alpha.txt"), &alpha).unwrap();
     fs::write(d.join("box/beta.bin"), &beta).unwrap();
-    ok(&d, &["seal", "-o", "tome.sg1", "box"]);
+    ok(&d, &["seal", "--old-tome-layout", "-o", "tome.sg1", "box"]);
     let raw = fs::read(d.join("tome.sg1")).unwrap();
     let star = sigil::read_dir_entry_star(&d.join("tome.sg1"), "beta.bin").unwrap();
     let at = raw
