@@ -471,6 +471,11 @@ enum Cmd {
         /// Without it those paths are listed on stderr and the Tome is written.
         #[arg(long = "fail-on-skip")]
         fail_on_skip: bool,
+        /// Folder only, no --pass / --to: write the older Tome layout (folder list outside the
+        /// repaired body), which sigil versions before 0.9.0 can read. By default a new
+        /// unlocked Tome keeps its folder list inside the repair-protected body (Tome v3).
+        #[arg(long = "old-tome-layout")]
+        old_tome_layout: bool,
         #[arg(long)]
         covenant: Option<String>,
         #[arg(long = "bind")]
@@ -3026,7 +3031,7 @@ fn verify_cmd(
                         "Tome  cut off; {} undamaged member(s) before the cut",
                         t.intact.len()
                     ),
-                    None => "Warded Tome  cut off (member names are hidden)".to_string(),
+                    None => "Tome  cut off (its body holds the member list)".to_string(),
                 }
             }
             Err(e) => return Err(open_failure(&input, e.into())),
@@ -3757,6 +3762,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ward_file,
             ward_names_visible,
             fail_on_skip,
+            old_tome_layout,
             covenant,
             bind,
             chunk,
@@ -3782,6 +3788,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let recipients = load_recipients(&to)?;
             if fail_on_skip && !input.is_dir() {
                 return Err("--fail-on-skip applies to a folder Inscribe only".into());
+            }
+            if old_tome_layout && (!input.is_dir() || pass.is_some() || !recipients.is_empty()) {
+                return Err(
+                    "--old-tome-layout applies to a folder Inscribe without --pass / --to only"
+                        .into(),
+                );
             }
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
             {
@@ -3866,17 +3878,32 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     inscribe_dir_to
                 };
-                let (n, orig) = seal_dir(
-                    &input,
-                    &output,
-                    mode.into(),
-                    pass.as_deref(),
-                    cov,
-                    &geas,
-                    chunk,
-                    &wards,
-                    &recipients,
-                )?;
+                let (n, orig) = if old_tome_layout {
+                    seal_dir(
+                        &input,
+                        &output,
+                        mode.into(),
+                        pass.as_deref(),
+                        cov,
+                        &geas,
+                        chunk,
+                        &wards,
+                        &recipients,
+                    )?
+                } else {
+                    sigil::inscribe_dir_protected(
+                        &input,
+                        &output,
+                        mode.into(),
+                        pass.as_deref(),
+                        cov,
+                        &geas,
+                        chunk,
+                        &wards,
+                        &recipients,
+                        ward_names_visible,
+                    )?
+                };
                 say!(
                     "folder {n} files, {orig} bytes → {}{}{}",
                     output.display(),

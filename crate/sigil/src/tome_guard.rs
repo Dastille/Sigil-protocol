@@ -306,7 +306,7 @@ pub fn damaged_tome_head(path: &std::path::Path) -> Option<String> {
         .zip(crate::folder::DIR_MAGIC.iter())
         .map(|(a, b)| (a ^ b).count_ones())
         .sum();
-    let known = head[4] == 1 || head[4] == 2;
+    let known = (1..=3).contains(&head[4]);
     if !((flips == 0 && !known) || (flips > 0 && flips <= 2 && known)) {
         return None;
     }

@@ -635,7 +635,7 @@ pub fn assess_tome(
             file.read_at(off, &mut body)?;
             assess_star(&body, MendMode::Deep, budget)
         };
-        return Ok((c.within("Warded Tome body"), None));
+        return Ok((c.within("Tome body"), None));
     }
     let insp = inspect_plain_tome(input, budget)?;
     Ok((insp.condition(), Some(insp)))
