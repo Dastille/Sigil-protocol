@@ -221,10 +221,11 @@ fn healthy(bytes: &[u8]) -> bool {
 
 /// Scrub one mark. Never writes unless the repaired bytes pass every check.
 pub fn scrub_file(path: &Path) -> Result<ScrubOutcome> {
-    let data = fs::read(path).map_err(io)?;
-    if data.starts_with(&crate::work::WORK_MAGIC) {
+    // A work pack is skipped on its magic alone, without reading the (large) file.
+    if crate::work::is_work_pack(path) {
         return Ok(ScrubOutcome::Skipped("work pack (use `sigil mend`)".into()));
     }
+    let data = fs::read(path).map_err(io)?;
     if crate::verify(&data).is_err() {
         // No header we can read: mend may still find one; otherwise uncorrectable.
         if crate::mend_bytes_ex(&data, true).is_err() {

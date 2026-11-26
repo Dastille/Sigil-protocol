@@ -48,7 +48,8 @@ pub fn attest_unlocking(
 ) -> Result<std::path::PathBuf> {
     let seed = zeroize::Zeroizing::new(load_seed(key, pass)?);
     let sk = SigningKey::from_bytes(&seed);
-    let hash = sha256(&std::fs::read(mark).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    // Hashed a window at a time: an archive can be far larger than memory.
+    let hash = crate::sha256_path(mark)?;
     let sig = sk.sign(&hash);
     let mut out = Vec::with_capacity(4 + 32 + 64);
     out.extend_from_slice(&SIG_MAGIC);
@@ -80,7 +81,8 @@ pub fn verify_attestation(mark: &Path) -> Result<String> {
         Ok(v) => v,
         Err(_) => return Ok("attestation: FAILED — bad public key in .sig".into()),
     };
-    let hash = sha256(&std::fs::read(mark).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    // Hashed a window at a time: an archive can be far larger than memory.
+    let hash = crate::sha256_path(mark)?;
     match vk.verify(&hash, &Signature::from_bytes(&sg)) {
         Ok(()) => Ok(format!("attestation: good  pubkey={}", hex::encode(pk))),
         Err(_) => Ok("attestation: FAILED — file or .sig was changed".into()),

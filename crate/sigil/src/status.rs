@@ -136,7 +136,7 @@ pub fn scry_status_assessed(
     };
     let bad = if crate::is_dir_pack(input) {
         st.kind = "folder-pack";
-        if let Some((n, _)) = crate::sealed_dir_body(input)? {
+        if let Some((n, _, _)) = crate::sealed_dir_body_loc(input)? {
             st.members = Some(u64::from(n));
             st.encrypted = Some(true);
         } else {

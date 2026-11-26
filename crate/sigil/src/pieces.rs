@@ -819,7 +819,7 @@ fn checked_shards(h: &Header, payload: &[u8]) -> Option<Vec<Vec<u8>>> {
     if !h.encrypted() {
         let unfolded = crate::chaos::unfold(payload, &h.salt);
         let plain = if h.compressed() {
-            inflate_local(&unfolded).ok()?
+            inflate_local(&unfolded, h.orig_len).ok()?
         } else {
             unfolded
         };
@@ -830,13 +830,19 @@ fn checked_shards(h: &Header, payload: &[u8]) -> Option<Vec<Vec<u8>>> {
     Some(shards)
 }
 
-fn inflate_local(data: &[u8]) -> Result<Vec<u8>> {
+/// Inflate `data`, stopping one byte past `want` (the stated length), so a deflate
+/// bomb is refused without first growing to its full size.
+fn inflate_local(data: &[u8], want: u64) -> Result<Vec<u8>> {
     use flate2::read::DeflateDecoder;
     use std::io::Read;
-    let mut d = DeflateDecoder::new(data);
+    let d = DeflateDecoder::new(data);
     let mut out = Vec::new();
-    d.read_to_end(&mut out)
+    d.take(want.saturating_add(1))
+        .read_to_end(&mut out)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    if out.len() as u64 > want {
+        return Err(crate::Error::Msg("length mismatch".into()));
+    }
     Ok(out)
 }
 

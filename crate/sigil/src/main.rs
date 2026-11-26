@@ -6,7 +6,7 @@ use sigil::{
     is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_kit, mend_scan,
     overture_report, path_extract_keys, path_walk_keys, place_kit, prepare_boot, resolve_recipient,
     run_bakeoff, run_mount_keys, run_open_keys, run_showing, scatter_pieces, seal_kn_mds_to_opts,
-    sha256, sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
+    sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
     unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
     vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
     vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
@@ -2453,7 +2453,8 @@ impl From<ModeArg> for Mode {
 }
 
 fn binds(paths: &[PathBuf]) -> Result<Vec<[u8; 32]>, Box<dyn std::error::Error>> {
-    paths.iter().map(|p| Ok(sha256(&fs::read(p)?))).collect()
+    // Hashed a window at a time, never read whole.
+    paths.iter().map(|p| Ok(sha256_path(p)?)).collect()
 }
 
 const EMPTY_PASS: &str =
@@ -3603,7 +3604,7 @@ fn mend_hints(input: &Path, quick_only: bool, intact: Vec<String>) -> Vec<String
         .is_ok_and(|t| t.truncated.is_some());
     let cut = cut
         || (matches!(kind, sigil::recovery::ArchiveKind::WardedTome)
-            && sigil::sealed_dir_body(input).is_err());
+            && sigil::sealed_dir_body_loc(input).is_err());
     let situation = if cut {
         sigil::recovery::Situation::Truncated
     } else {

@@ -480,39 +480,61 @@ pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<Tome
     let mut cnt = [0u8; 4];
     cnt.copy_from_slice(&head[5..9]);
     let n = u32::from_le_bytes(cnt);
+    drop(reader);
+    let mut file = packhead::FileSrc::open(input)?;
+    let size = file.size();
+    let mut pos = head.len() as u64;
+    // `n` is untrusted; every member needs at least 10 bytes, so a short file ends the
+    // loop (as a truncation) long before `n` is reached.
     for i in 0..n {
+        crate::repair_ctl::check()?;
         let mut lb = [0u8; 2];
-        if reader.read_exact(&mut lb).is_err() {
+        if file.read_at(pos, &mut lb).is_err() {
             out.truncated = Some(format!(
                 "truncated Tome (cut off at member {} of {n})",
                 i + 1
             ));
             return Ok(out);
         }
+        pos += 2;
         let mut name = vec![0u8; usize::from(u16::from_le_bytes(lb))];
         let mut sl = [0u8; 8];
-        if reader.read_exact(&mut name).is_err() || reader.read_exact(&mut sl).is_err() {
+        if file.read_at(pos, &mut name).is_err()
+            || file.read_at(pos + name.len() as u64, &mut sl).is_err()
+        {
             out.truncated = Some(format!(
                 "truncated Tome (cut off at member {} of {n})",
                 i + 1
             ));
             return Ok(out);
         }
+        pos += name.len() as u64 + 8;
         let rel = String::from_utf8_lossy(&name).into_owned();
         let slen = u64::from_le_bytes(sl);
-        let mut star = Vec::new();
-        reader
-            .by_ref()
-            .take(slen)
-            .read_to_end(&mut star)
-            .map_err(io)?;
-        if (star.len() as u64) < slen {
+        // Where this star starts in the file: the 9-byte head plus what was read since.
+        let start = pos;
+        pos = start.saturating_add(slen);
+        if start.checked_add(slen).is_none_or(|e| e > size) {
             out.truncated = Some(format!(
                 "truncated Tome (cut off inside '{rel}'; incomplete copy or transfer)"
             ));
             return Ok(out);
         }
-        match assess_star(&star, MendMode::Deep, budget) {
+        // A large-file member is assessed in place, one part at a time; a classic star
+        // (one AES-GCM message) is read into memory as before.
+        let mut mag = [0u8; 4];
+        if slen >= 4 {
+            file.read_at(start, &mut mag)?;
+        }
+        let condition = if mag == crate::work::WORK_MAGIC {
+            let mut w = packhead::SubSrc::new(&mut file, start, slen)?;
+            assess_pack(&mut w, MendMode::Deep, budget)
+        } else {
+            let mut star = vec![0u8; slen as usize];
+            file.read_at(start, &mut star)?;
+            assess_star(&star, MendMode::Deep, budget)
+        };
+        match condition {
             Condition::Healthy => out.intact.push(rel),
             Condition::Torn(_) => {
                 out.intact.push(rel.clone());
@@ -535,7 +557,7 @@ pub fn assess_tome(
     input: &Path,
     budget: &mut ProbeBudget,
 ) -> Result<(Condition, Option<TomeInspection>)> {
-    let sealed = match crate::sealed_dir_body(input) {
+    let sealed = match crate::sealed_dir_body_loc(input) {
         Ok(s) => s,
         Err(e) if e.to_string().starts_with("truncated Tome") => {
             // A cut-off Warded body: report the truncation, never any member name.
@@ -548,9 +570,23 @@ pub fn assess_tome(
         }
         Err(e) => return Err(e),
     };
-    if let Some((_, body)) = sealed {
-        let c = assess_star(&body, MendMode::QuickOnly, budget).within("Warded Tome body");
-        return Ok((c, None));
+    if let Some((_, off, len)) = sealed {
+        // A large body is assessed in place, one part at a time; a classic body (one
+        // AES-GCM message) is read into memory as before.
+        let mut file = packhead::FileSrc::open(input)?;
+        let mut mag = [0u8; 4];
+        if len >= 4 {
+            file.read_at(off, &mut mag)?;
+        }
+        let c = if mag == crate::work::WORK_MAGIC {
+            let mut w = packhead::SubSrc::new(&mut file, off, len)?;
+            assess_pack(&mut w, MendMode::QuickOnly, budget)
+        } else {
+            let mut body = vec![0u8; len as usize];
+            file.read_at(off, &mut body)?;
+            assess_star(&body, MendMode::QuickOnly, budget)
+        };
+        return Ok((c.within("Warded Tome body"), None));
     }
     let insp = inspect_plain_tome(input, budget)?;
     Ok((insp.condition(), Some(insp)))

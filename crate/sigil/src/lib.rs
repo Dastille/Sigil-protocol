@@ -124,8 +124,8 @@ pub use folder::{
     dir_report, inscribe_dir, inscribe_dir_to, inscribe_dir_to_names_visible, is_dir_pack,
     is_plain_dir_pack, is_sealed_dir_pack, list_dir_pack, list_dir_pack_keys, looks_like_nest_name,
     mend_plain_dir, mend_sealed_dir, read_dir_entry_star, scry_dir, scry_dir_checked,
-    scry_dir_keys, seal_dir_names, sealed_dir_body, unseal_dir, unseal_dir_mend_keys,
-    unseal_dir_only, unseal_dir_only_keys, DirEntry, SealNamesReport,
+    scry_dir_keys, seal_dir_names, sealed_dir_body, sealed_dir_body_loc, unseal_dir,
+    unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry, SealNamesReport,
 };
 pub use fountain::{
     deluge_answer_report, deluge_fountain, deluge_fountain_opts, deluge_fountain_report,
@@ -346,11 +346,18 @@ fn maybe_deflate(data: &[u8]) -> (Vec<u8>, bool) {
     }
 }
 
-fn inflate(data: &[u8]) -> Result<Vec<u8>> {
-    let mut dec = DeflateDecoder::new(data);
+/// Inflate `data`, stopping one byte past `want` (the length the header states): a
+/// stream that inflates to more is refused as a length mismatch without first growing
+/// to its full size (a deflate bomb in an unencrypted seal).
+fn inflate(data: &[u8], want: u64) -> Result<Vec<u8>> {
+    let dec = DeflateDecoder::new(data);
     let mut out = Vec::new();
-    dec.read_to_end(&mut out)
+    dec.take(want.saturating_add(1))
+        .read_to_end(&mut out)
         .map_err(|e| Error::Msg(e.to_string()))?;
+    if out.len() as u64 > want {
+        return Err(Error::Msg("length mismatch".into()));
+    }
     Ok(out)
 }
 
@@ -1049,7 +1056,7 @@ fn unseal_meta(
         let end = off + meta.body_len as usize;
         let unfolded = chaos::unfold(&folded[off..end], &h.salt);
         let plain = if meta.compressed {
-            inflate(&unfolded)?
+            inflate(&unfolded, meta.orig_len)?
         } else {
             unfolded
         };
@@ -1070,7 +1077,7 @@ fn unseal_meta(
     }
     let unfolded = chaos::unfold(&folded, &h.salt);
     let plain = if h.compressed() {
-        inflate(&unfolded)?
+        inflate(&unfolded, h.orig_len)?
     } else {
         unfolded
     };
@@ -2558,5 +2565,21 @@ mod kdf_tests {
             fix_sgto_crc(&mut g, off, len);
             assert!(unseal(&g, Some(PASS)).is_err(), "byte {o}");
         }
+    }
+}
+
+#[cfg(test)]
+mod inflate_cap_tests {
+    use super::*;
+
+    /// A stream that inflates far past the stated length is refused at that length.
+    #[test]
+    fn inflate_stops_at_the_stated_length() {
+        let big = vec![0u8; 16 << 20];
+        let (z, ok) = maybe_deflate(&big);
+        assert!(ok && z.len() < 64 << 10, "deflated to {}", z.len());
+        assert_eq!(inflate(&z, big.len() as u64).unwrap(), big);
+        assert!(inflate(&z, 1000).is_err());
+        assert!(inflate(&z, big.len() as u64 - 1).is_err());
     }
 }

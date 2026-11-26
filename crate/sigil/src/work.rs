@@ -1071,77 +1071,17 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
     let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
     let mut src = packhead::FileSrc::open(input)?;
     let l = mend_layout(&mut src)?;
-    let n = l.head.stars;
-    let facets = l.facets().map(<[[u8; 32]]>::to_vec);
-    let mut trailer = vec![0u8; (src.size() - l.trailer_off) as usize];
-    src.read_at(l.trailer_off, &mut trailer)?;
-
     // Heal + write to a temp file beside the output.
     let mut tmp = output.as_os_str().to_os_string();
     tmp.push(".mend-part");
     let tmp = std::path::PathBuf::from(tmp);
     let result = (|| -> Result<PackMendReport> {
         let mut w = BufWriter::new(File::create(&tmp).map_err(io)?);
-        w.write_all(&l.head_bytes).map_err(io)?;
-        let mut pos = l.head_bytes.len() as u64;
-        let mut mended = Vec::new();
-        let mut soft_used = false;
-        let mut guards_restored = 0u32;
-        for (i, &(start, len)) in l.stars.iter().enumerate() {
-            // Ctrl-C: stop between stars; the error path below removes the temp file.
-            crate::repair_ctl::check()?;
-            crate::repair_ctl::set_progress(i as u64, l.stars.len() as u64);
-            let i = i as u32;
-            let mut star = vec![0u8; len as usize];
-            src.read_at(start, &mut star)?;
-            if l.guarded {
-                if packhead::guard_of_star(&star).is_none() {
-                    guards_restored += 1;
-                }
-                // Heal the seal alone; a fresh guard is written after it below.
-                let seal_len = packhead::seal_part(&star).len();
-                star.truncate(seal_len);
-            }
-            if let Some((healed, used_soft)) = mend_chunk_star(i, n, &star, soft)? {
-                star = healed;
-                soft_used |= used_soft;
-                mended.push(i);
-            }
-            if let Some(f) = &facets {
-                let (h, _, _) = crate::locate_header(&star)?;
-                if h.digest != f[i as usize] {
-                    return Err(crate::Error::Msg(format!(
-                        "chunk star {i} true-name does not match the pack facet (swapped star or damaged trailer); refusing"
-                    )));
-                }
-            }
-            if l.guarded {
-                pos = write_star(&mut w, pos, i, &star, &l.head_bytes, &l.pack_id)?;
-            } else {
-                w.write_all(&(star.len() as u64).to_le_bytes())
-                    .map_err(io)?;
-                w.write_all(&star).map_err(io)?;
-            }
-        }
-        match (&facets, l.facets_rebuilt) {
-            (Some(f), true) => w.write_all(&facet_trailer(f)).map_err(io)?,
-            _ => w.write_all(&trailer).map_err(io)?,
-        }
+        let rep = mend_pack_layout_to(&mut src, &l, &mut w, soft)?;
         w.flush().map_err(io)?;
         w.get_ref().sync_all().map_err(io)?;
         crate::repair_ctl::check()?;
-        crate::repair_ctl::set_progress(l.stars.len() as u64, l.stars.len() as u64);
-        Ok(PackMendReport {
-            stars: n,
-            mended,
-            soft_used,
-            facets_checked: facets.is_some(),
-            bytes: 0,
-            head: l.source,
-            facets_rebuilt: l.facets_rebuilt,
-            guards_restored,
-            framing_rebuilt: l.framing_rebuilt,
-        })
+        Ok(rep)
     })();
     drop(src);
     match result {
@@ -1158,6 +1098,90 @@ pub fn mend_pack_path(input: &Path, output: &Path, soft: bool) -> Result<PackMen
             Err(e)
         }
     }
+}
+
+/// The repair of [`mend_pack_path`] for the pack in `src`, writing the healed pack to
+/// `w` (`std::io::sink()` to only check what a mend would do). Reads one star at a
+/// time; the trailer is copied through a bounded window. `bytes` in the report is 0.
+pub(crate) fn mend_pack_src_to<S: Src, W: Write>(
+    src: &mut S,
+    w: &mut W,
+    soft: bool,
+) -> Result<PackMendReport> {
+    let l = mend_layout(src)?;
+    mend_pack_layout_to(src, &l, w, soft)
+}
+
+/// [`mend_pack_src_to`] for a pack already laid out as `l` (by [`mend_layout`]).
+fn mend_pack_layout_to<S: Src, W: Write>(
+    src: &mut S,
+    l: &PackLayout,
+    w: &mut W,
+    soft: bool,
+) -> Result<PackMendReport> {
+    let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
+    let n = l.head.stars;
+    let facets = l.facets().map(<[[u8; 32]]>::to_vec);
+    // The trailer is copied through a bounded window below, never read whole: a
+    // damaged or hostile pack can make "the trailer" most of the file.
+    let trailer_len = src.size().saturating_sub(l.trailer_off);
+    w.write_all(&l.head_bytes).map_err(io)?;
+    let mut pos = l.head_bytes.len() as u64;
+    let mut mended = Vec::new();
+    let mut soft_used = false;
+    let mut guards_restored = 0u32;
+    for (i, &(start, len)) in l.stars.iter().enumerate() {
+        // Ctrl-C: stop between stars; the caller removes any partial output.
+        crate::repair_ctl::check()?;
+        crate::repair_ctl::set_progress(i as u64, l.stars.len() as u64);
+        let i = i as u32;
+        let mut star = vec![0u8; len as usize];
+        src.read_at(start, &mut star)?;
+        if l.guarded {
+            if packhead::guard_of_star(&star).is_none() {
+                guards_restored += 1;
+            }
+            // Heal the seal alone; a fresh guard is written after it below.
+            let seal_len = packhead::seal_part(&star).len();
+            star.truncate(seal_len);
+        }
+        if let Some((healed, used_soft)) = mend_chunk_star(i, n, &star, soft)? {
+            star = healed;
+            soft_used |= used_soft;
+            mended.push(i);
+        }
+        if let Some(f) = &facets {
+            let (h, _, _) = crate::locate_header(&star)?;
+            if h.digest != f[i as usize] {
+                return Err(crate::Error::Msg(format!(
+                    "chunk star {i} true-name does not match the pack facet (swapped star or damaged trailer); refusing"
+                )));
+            }
+        }
+        if l.guarded {
+            pos = write_star(w, pos, i, &star, &l.head_bytes, &l.pack_id)?;
+        } else {
+            w.write_all(&(star.len() as u64).to_le_bytes())
+                .map_err(io)?;
+            w.write_all(&star).map_err(io)?;
+        }
+    }
+    match (&facets, l.facets_rebuilt) {
+        (Some(f), true) => w.write_all(&facet_trailer(f)).map_err(io)?,
+        _ => packhead::copy_range(src, l.trailer_off, trailer_len, w)?,
+    }
+    crate::repair_ctl::set_progress(l.stars.len() as u64, l.stars.len() as u64);
+    Ok(PackMendReport {
+        stars: n,
+        mended,
+        soft_used,
+        facets_checked: facets.is_some(),
+        bytes: 0,
+        head: l.source,
+        facets_rebuilt: l.facets_rebuilt,
+        guards_restored,
+        framing_rebuilt: l.framing_rebuilt,
+    })
 }
 
 /// Outcome of [`mend_pack_to`].
@@ -1452,18 +1476,86 @@ fn unseal_pack_stream<S: Src, W: Write>(
     identities: &[Identity],
 ) -> Result<u64> {
     let io = |e: std::io::Error| crate::Error::Msg(e.to_string());
-    let n = l.head.stars;
-    let facets = l.facets();
-    let mut written = 0u64;
-    let mut star0: Option<crate::privacy::SealMeta> = None;
-    for (i, &(off, len)) in l.stars.iter().enumerate() {
+    let mut r = PackReader::new(src, l, pass, companions, identities);
+    while let Some(plain) = r.next_star()? {
+        writer.write_all(&plain).map_err(io)?;
+    }
+    Ok(r.written)
+}
+
+/// The plaintext of an SGWK pack, read one chunk star at a time.
+///
+/// Holds one star and its plaintext in memory (the pack's chunk size), whatever the
+/// pack's total. Each star is checked as [`unseal_pack_stream`] checks it (its own
+/// length + SHA-256, the SGFC facet true-name), and the pack's total length is
+/// checked when the last star has been read: a reader that stops before
+/// end-of-file has not seen that check, so callers must read to the end before
+/// trusting the whole.
+pub(crate) struct PackReader<'a, S: Src> {
+    src: &'a mut S,
+    l: &'a PackLayout,
+    pass: Option<&'a str>,
+    companions: &'a [Vec<u8>],
+    identities: &'a [Identity],
+    next: usize,
+    star0: Option<crate::privacy::SealMeta>,
+    written: u64,
+    buf: Vec<u8>,
+    pos: usize,
+    done: bool,
+}
+
+impl<'a, S: Src> PackReader<'a, S> {
+    /// A reader over the pack laid out as `l` in `src`.
+    pub(crate) fn new(
+        src: &'a mut S,
+        l: &'a PackLayout,
+        pass: Option<&'a str>,
+        companions: &'a [Vec<u8>],
+        identities: &'a [Identity],
+    ) -> Self {
+        PackReader {
+            src,
+            l,
+            pass,
+            companions,
+            identities,
+            next: 0,
+            star0: None,
+            written: 0,
+            buf: Vec::new(),
+            pos: 0,
+            done: false,
+        }
+    }
+
+    /// The next star's plaintext, or `None` after the last star once the pack's
+    /// total length has been checked. One star per call; at most `stars` calls.
+    fn next_star(&mut self) -> Result<Option<Vec<u8>>> {
+        let n = self.l.head.stars;
+        let i = self.next;
+        let Some(&(off, len)) = self.l.stars.get(i) else {
+            if !self.done {
+                self.done = true;
+                let expect = expect_total(&self.l.head, self.star0.as_ref())?;
+                if self.written != expect {
+                    return Err(crate::Error::Msg(format!(
+                        "work length mismatch: got {} expected {expect}",
+                        self.written
+                    )));
+                }
+            }
+            return Ok(None);
+        };
+        self.next += 1;
         let mut star = vec![0u8; len as usize];
-        src.read_at(off, &mut star).map_err(|_| {
+        self.src.read_at(off, &mut star).map_err(|_| {
             crate::Error::Msg(format!("work pack truncated inside star {i} of {n}"))
         })?;
-        let (plain, meta) = crate::unseal_meta_keys(&star, pass, companions, identities)
-            .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
-        if let Some(f) = facets {
+        let (plain, meta) =
+            crate::unseal_meta_keys(&star, self.pass, self.companions, self.identities)
+                .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
+        if let Some(f) = self.l.facets() {
             if crate::locate_header(&star)?.0.digest != f[i] {
                 return Err(crate::Error::Msg(format!(
                     "chunk star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
@@ -1471,18 +1563,56 @@ fn unseal_pack_stream<S: Src, W: Write>(
             }
         }
         if i == 0 {
-            star0 = meta;
+            self.star0 = meta;
         }
-        writer.write_all(&plain).map_err(io)?;
-        written += plain.len() as u64;
+        self.written += plain.len() as u64;
+        Ok(Some(plain))
     }
-    let expect = expect_total(&l.head, star0.as_ref())?;
-    if written != expect {
-        return Err(crate::Error::Msg(format!(
-            "work length mismatch: got {written} expected {expect}"
-        )));
+}
+
+impl<S: Src> Read for PackReader<'_, S> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        // Skips empty stars; bounded by the star count (one star per pass).
+        while self.pos == self.buf.len() {
+            match self.next_star() {
+                Ok(Some(p)) => {
+                    self.buf = p;
+                    self.pos = 0;
+                }
+                Ok(None) => return Ok(0),
+                Err(e) => return Err(std::io::Error::other(e.to_string())),
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
     }
-    Ok(written)
+}
+
+/// Unseal the seal or SGWK pack held in `src` into `writer`, with the same checks and
+/// fallbacks as [`unseal_bytes_into`]. An SGWK pack is streamed one star at a time; a
+/// classic seal is one AES-GCM message, so it is read whole (its size is what it was
+/// sealed with, at most the `--chunk` of the Tome or pack that holds it).
+pub(crate) fn unseal_src_into<S: Src, W: Write>(
+    src: &mut S,
+    writer: &mut W,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<u64> {
+    crate::refuse_empty_open_pass(pass)?;
+    let mut mag = [0u8; 4];
+    if src.size() >= 4 {
+        src.read_at(0, &mut mag)?;
+    }
+    if mag == WORK_MAGIC {
+        let l = packhead::layout(src)?;
+        return unseal_pack_stream(src, &l, writer, pass, companions, identities);
+    }
+    let mut data = vec![0u8; src.size() as usize];
+    src.read_at(0, &mut data)?;
+    unseal_bytes_into(&data, writer, pass, companions, identities)
 }
 
 /// Write `output` all-or-nothing: bytes go to `<output>.sigil-part`, which is
@@ -1705,6 +1835,30 @@ pub fn path_report(text: String, condition: &crate::recovery::Condition) -> Stri
     }
 }
 
+/// First Scry line of a large-file pack: what its head says (name and total shown as
+/// `(locked)` when the pack hides them).
+pub(crate) fn work_head_line(head: &WorkHead) -> String {
+    let hidden = total_hidden(head);
+    format!(
+        "work  name={} orig={} chunk={} stars={} overture={}/{} (first ~{} MiB to start)",
+        if hidden {
+            "(locked)"
+        } else {
+            head.name.as_str()
+        },
+        if hidden {
+            "(locked)".to_string()
+        } else {
+            head.orig_total.to_string()
+        },
+        head.chunk_size,
+        head.stars,
+        head.overture,
+        head.stars,
+        (head.overture as u64 * head.chunk_size as u64) / (1024 * 1024)
+    )
+}
+
 pub fn scry_path(input: &Path) -> Result<String> {
     let mut f = File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     let mut mag = [0u8; 4];
@@ -1715,25 +1869,7 @@ pub fn scry_path(input: &Path) -> Result<String> {
         let mut reader =
             BufReader::new(File::open(input).map_err(|e| crate::Error::Msg(e.to_string()))?);
         let head = read_head(&mut reader)?;
-        let hidden = total_hidden(&head);
-        let mut s = format!(
-            "work  name={} orig={} chunk={} stars={} overture={}/{} (first ~{} MiB to start)",
-            if hidden {
-                "(locked)"
-            } else {
-                head.name.as_str()
-            },
-            if hidden {
-                "(locked)".to_string()
-            } else {
-                head.orig_total.to_string()
-            },
-            head.chunk_size,
-            head.stars,
-            head.overture,
-            head.stars,
-            (head.overture as u64 * head.chunk_size as u64) / (1024 * 1024)
-        );
+        let mut s = work_head_line(&head);
         drop(reader);
         if let Ok(facets) = scry_facets(input) {
             for f in facets {
