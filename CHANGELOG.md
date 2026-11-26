@@ -20,6 +20,30 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   (a `.sg1` of a whole folder). The on-disk `CONTAINER` manifest and the JSON value
   `"layout":"container"` are unchanged.
 
+### Memory
+
+- Tomes and Warded Tomes no longer load a member or the locked body into memory whole.
+  `seal`, `unseal`, `list`, `scry`, `mend`, `status`, `doctor` and the repair assessment read
+  large members in place or one chunk star at a time, and copy them 1 MiB at a time. The
+  `.sg1` and Tome layouts are unchanged. With a fixed random source, seals of files and
+  unencrypted Tomes are byte-identical to the previous build, and mend output is
+  byte-identical for all Tomes.
+- Measured peak RSS on a Tome holding one 2 GiB file and 20 small files (before -> after):
+  plain Tome seal 2.7 GiB -> 32 MiB, scry 2.7 GiB -> 15 MiB, unseal 2.7 GiB -> 39 MiB,
+  mend 5.4 GiB -> 42 MiB; Warded Tome seal 5.4 GiB -> 43 MiB, scry 2.7 GiB -> 13 MiB,
+  unseal 6.7 GiB -> 66 MiB, mend 8.0 GiB -> 35 MiB. Wall times stayed within about 10%
+  (most steps slightly faster). A plain 2 GiB file (large-file pack) was already bounded and
+  is unchanged (15-43 MiB).
+- `doctor` no longer writes a full mended copy of a large-file pack to the temp folder.
+- Inflating a classic seal stops at the length its header states, so a small seal whose
+  deflate stream would grow far larger is refused without first using that memory.
+- `scrub` skips a large-file pack without reading it; `attest`, attestation checks and
+  `--bind` hash files in a stream.
+- Still whole-file: a classic single seal (a file at or below `--chunk`, or forced with a
+  larger `--chunk`, `--mds` or `--pad`). One AES-GCM message and one deflate stream cover
+  the whole body; bounding it needs a codec rewrite, planned separately. A 2 GiB file forced
+  into one classic seal peaked at about 12 GiB to seal and 18 GiB to mend.
+
 ### Repair
 
 - `mend` and `unseal` rebuild damaged length prefixes in a large-file pack
