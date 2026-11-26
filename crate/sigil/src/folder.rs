@@ -81,7 +81,7 @@ pub(crate) fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
 }
 
 /// A sibling scratch path for `output` that no concurrent writer will pick.
-fn scratch_beside(output: &Path, tag: &str) -> PathBuf {
+pub(crate) fn scratch_beside(output: &Path, tag: &str) -> PathBuf {
     let mut r = [0u8; 8];
     // Only a uniqueness token; fall back to the pid if the RNG is unavailable.
     let token = match getrandom::getrandom(&mut r) {
@@ -96,7 +96,7 @@ fn scratch_beside(output: &Path, tag: &str) -> PathBuf {
 }
 
 /// Removes a scratch file when dropped (success or error).
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);

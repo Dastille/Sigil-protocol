@@ -17,6 +17,7 @@ mod attest;
 mod boot;
 mod cdc;
 mod chaos;
+mod classic;
 mod constellation;
 pub mod container;
 pub mod doctor;
@@ -111,6 +112,10 @@ pub use boot::{
 pub use cdc::{
     chunk_file_ranges, chunk_owned, chunk_ranges, ChunkRange, Profile as CdcProfile,
     DEDUP as CDC_DEDUP, FLOOR as CDC_FLOOR, MEDIA as CDC_MEDIA,
+};
+pub use classic::{
+    mend_plan as classic_mend_plan, mend_run as classic_mend_run, MendDone as ClassicMendDone,
+    MendPlan as ClassicMendPlan,
 };
 pub use constellation::{
     add_to_constellation, is_atlas_file, is_constellation_dir, is_constellation_input,
@@ -362,7 +367,7 @@ fn inflate(data: &[u8], want: u64) -> Result<Vec<u8>> {
 }
 
 /// Why an empty passphrase is refused when sealing.
-const EMPTY_PASS_SEAL: &str = "an empty passphrase (or one that is only spaces) is refused: it would not protect anything (leave out the passphrase for an unencrypted file)";
+pub(crate) const EMPTY_PASS_SEAL: &str = "an empty passphrase (or one that is only spaces) is refused: it would not protect anything (leave out the passphrase for an unencrypted file)";
 
 /// Why an empty passphrase is refused when opening.
 const EMPTY_PASS_OPEN: &str = "an empty passphrase (or one that is only spaces) is refused: it is never the same as no passphrase (leave out the passphrase to open an unencrypted file, or give the real one)";
@@ -390,7 +395,7 @@ pub(crate) fn refuse_empty_open_pass(pass: Option<&str>) -> Result<()> {
 }
 
 /// Legacy Ward key (read path only).
-fn derive_key(pass: &str, salt: &[u8]) -> [u8; 32] {
+pub(crate) fn derive_key(pass: &str, salt: &[u8]) -> [u8; 32] {
     let mut key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(pass.as_bytes(), salt, PBKDF2_ITERS, &mut key);
     key
@@ -726,6 +731,90 @@ pub fn seal_kn_mds_to_opts(
         geas,
         &shards,
     ))
+}
+
+/// Seal the file at `input` into `output` as one classic seal (the layout
+/// [`seal_kn_mds_to_opts`] writes, byte for byte), reading and writing a bounded window at
+/// a time instead of holding the file in memory. Falls back to the in-memory encoder for
+/// an MDS backend without a column matrix. Returns the input length.
+// Justification: see `seal_kn_mds_to`.
+#[allow(clippy::too_many_arguments)]
+pub fn seal_file_classic(
+    input: &std::path::Path,
+    output: &std::path::Path,
+    mode: Mode,
+    pass: Option<&str>,
+    name: &str,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    shards: Option<u8>,
+    piece_bytes: u32,
+    mds_be: &dyn mds::MdsBackend,
+    recipients: &[keys::PublicIdentity],
+    opts: &privacy::SealOpts,
+) -> Result<u64> {
+    if let Some(n) = classic::seal(
+        input,
+        output,
+        mode,
+        pass,
+        name,
+        false,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        mds_be,
+        recipients,
+        opts,
+    )? {
+        return Ok(n);
+    }
+    let data = std::fs::read(input).map_err(|e| Error::Msg(e.to_string()))?;
+    let sg1 = seal_kn_mds_to_opts(
+        &data,
+        mode,
+        pass,
+        name,
+        false,
+        covenant,
+        geas,
+        shards,
+        piece_bytes,
+        mds_be,
+        recipients,
+        opts,
+    )?;
+    std::fs::write(output, &sg1).map_err(|e| Error::Msg(e.to_string()))?;
+    Ok(data.len() as u64)
+}
+
+/// Open the classic seal at `input` into `out` a bounded window at a time, with the checks
+/// and errors of [`unseal_ex_keys`]; the whole plaintext is verified before the first byte
+/// is written to `out`. `Ok(None)`: not a classic seal with intact framing (open it in
+/// memory). Scratch files, if a damaged part must be rebuilt, go beside `beside`.
+pub fn unseal_file_classic_verified<W: std::io::Write>(
+    input: &std::path::Path,
+    out: &mut W,
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[keys::Identity],
+    beside: &std::path::Path,
+) -> Result<Option<u64>> {
+    if !classic::is_clean(input)? {
+        return Ok(None);
+    }
+    classic::open(
+        input,
+        out,
+        pass,
+        companions,
+        &*mds::default_backend(),
+        identities,
+        beside,
+        true,
+    )
+    .map(|o| o.map(|o| o.len))
 }
 
 /// Keystone + optional SGTO + optional vow + ember-framed shards (+ SGTS spare + SGKT trailer).
@@ -1141,16 +1230,22 @@ pub fn verify(file: &[u8]) -> Result<(Header, bool, usize, usize, bool)> {
 }
 
 fn shannon(data: &[u8]) -> f64 {
-    if data.is_empty() {
-        return 0.0;
-    }
-    let mut c = [0u32; 256];
+    let mut c = [0u64; 256];
     for &b in data {
         c[b as usize] += 1;
     }
-    let len = data.len() as f64;
+    shannon_counts(&c, data.len() as u64)
+}
+
+/// [`shannon`] from byte counts (`c[b]` = how many times byte `b` occurs in `len` bytes),
+/// so a file can be measured a piece at a time. Same arithmetic, same result.
+pub(crate) fn shannon_counts(c: &[u64; 256], len: u64) -> f64 {
+    if len == 0 {
+        return 0.0;
+    }
+    let len = len as f64;
     let mut h = 0.0;
-    for n in c {
+    for &n in c {
         if n == 0 {
             continue;
         }
@@ -1173,7 +1268,7 @@ pub(crate) fn set_test_random_seed(seed: Option<u64>) {
     TEST_RANDOM_SEED.with(|c| c.set(seed));
 }
 
-fn getrandom(buf: &mut [u8]) {
+pub(crate) fn getrandom(buf: &mut [u8]) {
     #[cfg(test)]
     if let Some(mut x) = TEST_RANDOM_SEED.with(|c| c.get()) {
         for b in buf.iter_mut() {

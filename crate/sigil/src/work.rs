@@ -263,21 +263,22 @@ pub fn inscribe_path_to(
     } else {
         let chunk = chunk.max(64 * 1024);
         if orig <= chunk as u64 {
-            let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            let out = seal_kn_to(
-                &data,
+            // One classic seal, written a window at a time (same bytes as `seal_kn_to`).
+            let n = crate::seal_file_classic(
+                input,
+                output,
                 mode,
                 pass,
                 &name,
-                false,
                 covenant,
                 geas,
                 shards,
                 piece_bytes,
+                &*crate::mds::default_backend(),
                 recipients,
+                &crate::privacy::SealOpts::default(),
             )?;
-            std::fs::write(output, out).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            return Ok((orig, 1, false));
+            return Ok((n, 1, false));
         }
         let mut r = Vec::new();
         let mut off = 0u64;
@@ -1373,6 +1374,26 @@ pub fn unseal_path_keys(
             unseal_pack_stream(&mut src, &l, writer, pass, companions, identities)
         });
     }
+    // A classic seal with intact framing is opened a window at a time (same checks).
+    if crate::classic::is_clean(input)? {
+        return write_atomic(output, |w| {
+            match crate::classic::open(
+                input,
+                w,
+                pass,
+                companions,
+                &*crate::mds::default_backend(),
+                identities,
+                output,
+                false,
+            )? {
+                Some(o) => Ok(o.len),
+                None => Err(crate::Error::Msg(
+                    "the archive changed while it was being opened".into(),
+                )),
+            }
+        });
+    }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // unseal_ex_keys checks length + SHA-256 against the header and refuses a
     // buffer holding more than one seal (damaged pack head).
@@ -1891,8 +1912,13 @@ pub fn scry_path(input: &Path) -> Result<String> {
     }
     drop(f);
     let _ = packhead::recover_path_result(input)?;
-    let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let (h, merkle_ok, live, k, recovered) = crate::verify(&data)?;
+    let (h, merkle_ok, live, k, recovered) = match crate::classic::verify_path(input)? {
+        Some(v) => v,
+        None => {
+            let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            crate::verify(&data)?
+        }
+    };
     let mut s = if h.private_label() {
         // v3: name, size, SHA-256 and entropy are inside the lock; shown only after unlock.
         format!(

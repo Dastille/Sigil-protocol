@@ -18,6 +18,16 @@ pub trait MdsBackend: Send + Sync {
         k: usize,
         payload_len: usize,
     ) -> Result<Vec<u8>, Error>;
+    /// The `(n - k) x k` row-major matrix that maps the k data shards to the parity shards
+    /// (byte column by byte column), so a big payload can be encoded a column window at a
+    /// time with the same bytes as [`MdsBackend::encode`].
+    /// The default refuses, so a backend that cannot give its matrix is simply used whole.
+    fn parity_matrix(&self, k: usize, n: usize) -> Result<Vec<u8>, Error> {
+        Err(Error::Msg(format!(
+            "{}: no column matrix for k={k} n={n}",
+            self.name()
+        )))
+    }
 }
 
 /// Production Vandermonde RS (existing `rs::encode_shards` / `decode_shards`).
@@ -38,6 +48,9 @@ impl MdsBackend for VandermondeRs {
         payload_len: usize,
     ) -> Result<Vec<u8>, Error> {
         rs::decode_shards(shards, k, payload_len, true)
+    }
+    fn parity_matrix(&self, k: usize, n: usize) -> Result<Vec<u8>, Error> {
+        rs::parity_matrix(k, n)
     }
 }
 
@@ -117,6 +130,10 @@ impl CauchyRs {
 impl MdsBackend for CauchyRs {
     fn name(&self) -> &'static str {
         "cauchy"
+    }
+
+    fn parity_matrix(&self, k: usize, n: usize) -> Result<Vec<u8>, Error> {
+        self.matrix(k, n)
     }
 
     fn encode(&self, payload: &[u8], k: usize, n: usize) -> Result<Vec<Vec<u8>>, Error> {

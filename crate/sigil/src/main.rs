@@ -198,6 +198,13 @@ fn unseal_to_stdout(
     if star.is_some() || from_mb.is_some() || to_mb.is_some() {
         return Err("--star / --from-mb / --to-mb are for a large-file pack".into());
     }
+    // A classic seal with intact framing: checked whole first, then written a window at a
+    // time (nothing reaches stdout unless the whole file checks out).
+    if let Some(n) =
+        sigil::unseal_file_classic_verified(input, &mut out, pass, companions, identities, input)?
+    {
+        return Ok(n);
+    }
     let data = fs::read(input)?;
     let plain = sigil::unseal_ex_keys(&data, pass, companions, identities)?;
     out.write_all(&plain)?;
@@ -3739,14 +3746,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             .into(),
                     );
                 }
-                let data = fs::read(&input)?;
                 let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                let sg1 = seal_kn_mds_to_opts(
-                    &data,
+                let orig = sigil::seal_file_classic(
+                    &input,
+                    &output,
                     mode.into(),
                     pass.as_deref(),
                     name,
-                    false,
                     cov,
                     &geas,
                     shards,
@@ -3755,10 +3761,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &recipients,
                     &seal_opts,
                 )?;
-                fs::write(&output, &sg1)?;
                 say!(
                     "inscribed {} bytes → {} (mds {}{})",
-                    data.len(),
+                    orig,
                     output.display(),
                     mds_be.name(),
                     if recipients.is_empty() {
@@ -3872,14 +3877,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 }
-                let data = fs::read(&input)?;
                 let name = input.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                let sg1 = seal_kn_mds_to_opts(
-                    &data,
+                let orig = sigil::seal_file_classic(
+                    &input,
+                    &output,
                     mode.into(),
                     pass.as_deref(),
                     name,
-                    false,
                     cov,
                     &geas,
                     shards,
@@ -3888,10 +3892,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &recipients,
                     &seal_opts,
                 )?;
-                fs::write(&output, &sg1)?;
                 say!(
                     "inscribed {} bytes → {} (encrypt-to {} recipient{})",
-                    data.len(),
+                    orig,
                     output.display(),
                     recipients.len(),
                     if recipients.len() == 1 { "" } else { "s" },
@@ -4742,29 +4745,77 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Ok(false) => {}
             }
-            let data = fs::read(&input)?;
-            let mut est = None;
             // Scan → estimate → decide. A scan error is not a verdict: mend still tries.
-            if let Ok(rep) = sigil::repair_scan::scan_bytes(&data) {
-                json_extra(&format!(",\"scan\":{}", rep.json()));
-                let asked = match max_secs {
-                    Some(limit) => {
-                        mend_time_gate(&input, &rep, limit)?;
-                        false
-                    }
-                    None => mend_wait_gate(&input, &rep, yes)?,
-                };
-                // From here Ctrl-C stops safely (after any question, so it still quits there).
-                install_stop_handler();
-                if asked {
-                    say!("Working on it now. Ctrl-C stops without touching the original.");
-                } else if rep.est_secs >= MEND_TELL_SECS {
-                    say!(
+            let gate =
+                |rep: &sigil::repair_scan::RepairScan| -> Result<f64, Box<dyn std::error::Error>> {
+                    json_extra(&format!(",\"scan\":{}", rep.json()));
+                    let asked = match max_secs {
+                        Some(limit) => {
+                            mend_time_gate(&input, rep, limit)?;
+                            false
+                        }
+                        None => mend_wait_gate(&input, rep, yes)?,
+                    };
+                    // From here Ctrl-C stops safely (after any question, so it still quits there).
+                    install_stop_handler();
+                    if asked {
+                        say!("Working on it now. Ctrl-C stops without touching the original.");
+                    } else if rep.est_secs >= MEND_TELL_SECS {
+                        say!(
                         "{}\nWorking on it now. Nothing is written until the result passes the full check, and Ctrl-C stops without touching the original.",
                         rep.describe()
                     );
+                    }
+                    Ok(rep.est_secs)
+                };
+            let mut tmp = output.as_os_str().to_os_string();
+            tmp.push(".mend-part");
+            let tmp = PathBuf::from(tmp);
+            let mut est = None;
+            let mut scanned = false;
+            // A classic seal with intact framing is mended a window at a time; only the
+            // deeper (soft) repair still needs the whole file in memory.
+            if let Some((plan, rep)) = sigil::classic_mend_plan(&input, &output)? {
+                est = Some(gate(&rep)?);
+                scanned = true;
+                let watch = RepairWatch::start(est);
+                let result = sigil::classic_mend_run(plan, &tmp, try_soft);
+                drop(watch);
+                mend_stop_gate(&input)?;
+                match result {
+                    Ok(Some(done)) => {
+                        persist_mend(&tmp, &output)?;
+                        let (live, k, n) = (done.live, done.k, done.header.n);
+                        json_extra(&format!(
+                            ",\"kind\":\"mark\",\"live\":{live},\"n\":{n},\"need\":{k},\"merkle\":{},\"soft_salvage\":false",
+                            done.merkle_ok
+                        ));
+                        say!(
+                            "mended {} → {} (live {live}/{n}, need {k}, merkle {ok})",
+                            input.display(),
+                            output.display(),
+                            ok = if done.merkle_ok { "ok" } else { "open" },
+                        );
+                        mend_guidance(&output, false, auto_soft, done.header.encrypted());
+                        return Ok(());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = fs::remove_file(&tmp);
+                        let msg = mend_failed(&input, &e.to_string());
+                        return Err(hinted_err(
+                            msg,
+                            mend_hints(&input, !try_soft, Vec::new()),
+                            2,
+                        ));
+                    }
                 }
-                est = Some(rep.est_secs);
+            }
+            let data = fs::read(&input)?;
+            if !scanned {
+                if let Ok(rep) = sigil::repair_scan::scan_bytes(&data) {
+                    est = Some(gate(&rep)?);
+                }
             }
             let watch = RepairWatch::start(est);
             let result = mend_bytes_ex(&data, try_soft);
@@ -4789,9 +4840,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     ));
                 }
             };
-            let mut tmp = output.as_os_str().to_os_string();
-            tmp.push(".mend-part");
-            let tmp = PathBuf::from(tmp);
             fs::write(&tmp, &healed)?;
             persist_mend(&tmp, &output)?;
             let (h, merkle_ok, live, k, _) = sigil::verify(&healed)?;

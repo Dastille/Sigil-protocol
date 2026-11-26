@@ -89,6 +89,47 @@ impl Unfolder {
     }
 }
 
+/// [`fold`] a piece at a time, for sealing a big payload without holding it (or its three
+/// masks) in memory. Feed consecutive pieces of even length (only the last may be odd); the
+/// concatenated output equals `fold(whole, salt)`.
+pub struct Folder {
+    pi: Logistic,
+    phi: Logistic,
+    log: Logistic,
+    prime: u8,
+}
+
+impl Folder {
+    /// Start folding a payload sealed with `salt`.
+    pub fn new(salt: &[u8; 16]) -> Self {
+        let s0 = u32::from_be_bytes([salt[0], salt[1], salt[2], salt[3]]);
+        let s1 = u32::from_be_bytes([salt[4], salt[5], salt[6], salt[7]]);
+        let s2 = u32::from_be_bytes([salt[8], salt[9], salt[10], salt[11]]);
+        Folder {
+            pi: Logistic::new(mix32(PI_SEED, s0)),
+            phi: Logistic::new(mix32(PHI_SEED, s1)),
+            log: Logistic::new(mix32(E_SEED, s2)),
+            prime: PRIMES[salt[12] as usize % PRIMES.len()],
+        }
+    }
+
+    /// Fold `data` in place (the next piece of the payload).
+    pub fn fold_in_place(&mut self, data: &mut [u8]) {
+        for b in data.iter_mut() {
+            let v = gf::mul(*b ^ self.pi.next_byte(), self.prime);
+            *b = v ^ self.phi.next_byte();
+        }
+        let mut i = 0;
+        while i + 1 < data.len() {
+            data.swap(i, i + 1);
+            i += 2;
+        }
+        for b in data.iter_mut() {
+            *b ^= self.log.next_byte();
+        }
+    }
+}
+
 fn logistic_mask(seed: u32, size: usize) -> Vec<u8> {
     let mut x = (seed as f64) / 4_294_967_296.0;
     if x < 1e-9 {
@@ -188,6 +229,15 @@ mod unfolder_tests {
                     assert_eq!(got, whole, "len {len} chunk {chunk}");
                 }
                 assert_eq!(unfold(&fold(&data, &salt), &salt), data);
+                let folded = fold(&data, &salt);
+                for chunk in [2usize, 6, 64, 4096] {
+                    let mut f = Folder::new(&salt);
+                    let mut got = data.clone();
+                    for piece in got.chunks_mut(chunk) {
+                        f.fold_in_place(piece);
+                    }
+                    assert_eq!(got, folded, "fold len {len} chunk {chunk}");
+                }
             }
         }
     }
