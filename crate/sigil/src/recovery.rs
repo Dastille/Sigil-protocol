@@ -142,7 +142,7 @@ enum Probe {
 pub enum MendMode {
     /// Quick repair, then the deeper repair for bit rot (plain `sigil mend`).
     Deep,
-    /// Quick repair only (`--hard-only`, and the body of a Warded Tome).
+    /// Quick repair only (`--hard-only`).
     QuickOnly,
 }
 
@@ -555,8 +555,8 @@ pub fn inspect_plain_tome(input: &Path, budget: &mut ProbeBudget) -> Result<Tome
     Ok(out)
 }
 
-/// Assess a Tome. A Warded Tome's body is assessed with the quick repair only, because
-/// that is the repair `sigil mend` runs on it; its member names are never read.
+/// Assess a Tome. A Warded Tome's body is assessed with the quick repair and then the
+/// deeper bit-rot repair, the same as `sigil mend` runs on it; its member names are never read.
 pub fn assess_tome(
     input: &Path,
     budget: &mut ProbeBudget,
@@ -584,11 +584,11 @@ pub fn assess_tome(
         }
         let c = if mag == crate::work::WORK_MAGIC {
             let mut w = packhead::SubSrc::new(&mut file, off, len)?;
-            assess_pack(&mut w, MendMode::QuickOnly, budget)
+            assess_pack(&mut w, MendMode::Deep, budget)
         } else {
             let mut body = vec![0u8; len as usize];
             file.read_at(off, &mut body)?;
-            assess_star(&body, MendMode::QuickOnly, budget)
+            assess_star(&body, MendMode::Deep, budget)
         };
         return Ok((c.within("Warded Tome body"), None));
     }

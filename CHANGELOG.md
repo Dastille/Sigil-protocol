@@ -97,6 +97,14 @@ The first release will be **v0.9.0**. This tree is not 1.0.
 
 ### Repair
 
+- `sigil mend` on a Warded Tome now runs the deeper bit-rot repair on its locked body when the
+  quick repair fails, as it already did for a single `.sg1` and for the members of a plain Tome.
+  Scattered bit flips that touch every part of the body used to leave a Warded Tome
+  unrepairable even at one flipped bit in 100,000; with Reflection or Seal, copies with up to
+  about one flipped bit in 10,000 are now healed (measured on three test folders). `--hard-only`
+  keeps the quick repair only. `scry` assesses the body with the same repair, so it reports
+  exit 5 (repairable) instead of 2 for such copies. The format is unchanged.
+
 - `mend` and `unseal` rebuild damaged length prefixes in a large-file pack
   (the 8-byte length in front of each chunk star) when every star confirms
   against the facet list and any intact pack-head guard. Decoder-only: the

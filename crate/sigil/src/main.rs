@@ -4718,11 +4718,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-        Cmd::Mend { input, output, .. } if sigil::is_sealed_dir_pack(&input) => {
+        Cmd::Mend {
+            input,
+            output,
+            soft,
+            hard_only,
+            ..
+        } if sigil::is_sealed_dir_pack(&input) => {
             let output = mend_output(&input, output)?;
             json_extra(",\"kind\":\"sealed-folder-pack\"");
-            let msg = sigil::mend_sealed_dir(&input, &output).map_err(|e| {
-                damage_failure(e.to_string(), mend_hints(&input, false, Vec::new()))
+            let msg = sigil::mend_sealed_dir(&input, &output, soft || !hard_only).map_err(|e| {
+                damage_failure(
+                    e.to_string(),
+                    mend_hints(&input, hard_only && !soft, Vec::new()),
+                )
             })?;
             say!("{msg}");
         }

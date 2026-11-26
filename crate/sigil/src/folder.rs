@@ -1150,7 +1150,9 @@ pub fn unseal_dir_mend_keys(
 
 /// Keyless mend of a sealed-directory (v2) pack: heal the body's torn shards and
 /// write the healed pack to `output` (via `.mend-part` + rename). Returns a one-line report.
-pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
+/// `soft` adds the deeper bit-rot repair (as plain `sigil mend` does for a single
+/// `.sg1` and for plain Tome members) when the quick repair fails.
+pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
     let (n, off, len) =
         sealed_dir_body_loc(input)?.ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
     let mut tome = packhead::FileSrc::open(input)?;
@@ -1171,7 +1173,7 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
             w.flush().map_err(io)?;
         }
         let dst = Scratch(scratch_beside(output, "mend-body-out"));
-        crate::work::mend_pack_path(&src.0, &dst.0, false)?;
+        crate::work::mend_pack_path(&src.0, &dst.0, soft)?;
         drop(src);
         let mut healed = packhead::FileSrc::open(&dst.0)?;
         let hlen = healed.size();
@@ -1184,7 +1186,7 @@ pub fn mend_sealed_dir(input: &Path, output: &Path) -> Result<String> {
         // A classic body is one in-memory seal (at most the `--chunk` it was sealed with).
         let mut body = vec![0u8; len as usize];
         tome.read_at(off, &mut body)?;
-        let healed = crate::pieces::mend_bytes(&body).map_err(|e| {
+        let (healed, _) = crate::pieces::mend_bytes_ex(&body, soft).map_err(|e| {
             crate::Error::Msg(format!(
                 "the locked body of this Warded Tome is too damaged to mend: {e}"
             ))
@@ -3222,7 +3224,7 @@ mod stream_tests {
         .unwrap();
         let wraw = fs::read(&w).unwrap();
         let wsame = d.join("wsame.sg1");
-        mend_sealed_dir(&w, &wsame).unwrap();
+        mend_sealed_dir(&w, &wsame, false).unwrap();
         let mut wbad = wraw.clone();
         let at = wraw.len() / 2;
         for b in &mut wbad[at..at + 2_000] {
@@ -3231,11 +3233,65 @@ mod stream_tests {
         let wbadp = d.join("wbad.sg1");
         fs::write(&wbadp, &wbad).unwrap();
         let wfixed = d.join("wfixed.sg1");
-        mend_sealed_dir(&wbadp, &wfixed).unwrap();
+        mend_sealed_dir(&wbadp, &wfixed, false).unwrap();
         let wout = d.join("wout");
         unseal_dir_only_keys(&wfixed, &wout, Some("pw"), &[], &[], &[], &[]).unwrap();
         check_tree(&wout, &big);
         assert_eq!(fs::read(&wfixed).unwrap(), fs::read(&wsame).unwrap());
+    }
+
+    /// Scattered bit rot touches every shard of a Warded Tome's locked body, so the quick
+    /// repair (whole shards that pass their CRC) has nothing to work with. The deeper
+    /// repair that plain `sigil mend` uses for a single `.sg1` must also heal the body.
+    #[test]
+    fn warded_tome_scattered_bit_rot_needs_and_gets_the_deep_repair() {
+        let d = scratch("warded-bitrot");
+        let src = d.join("src");
+        fs::create_dir_all(src.join("a/b")).unwrap();
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut want = Vec::new();
+        for i in 0..6 {
+            let bytes: Vec<u8> = (0..30_000)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x as u8
+                })
+                .collect();
+            let rel = format!("a/b/f{i}.bin");
+            fs::write(src.join(&rel), &bytes).unwrap();
+            want.push((rel, bytes));
+        }
+        for (mode, body_chunk) in [(Mode::Reflection, 4 * 1024 * 1024), (Mode::Seal, 64 * 1024)] {
+            let w = d.join("w.sg1");
+            let _ = fs::remove_file(&w);
+            inscribe_dir_to(&src, &w, mode, Some("pw"), "", &[], body_chunk, &[], &[]).unwrap();
+            let mut bad = fs::read(&w).unwrap();
+            // One flipped bit every 3001 bytes of the body: every shard gets hit.
+            let mut at = SEALED_HEAD_LEN + 1000;
+            while at < bad.len() {
+                bad[at] ^= 0x10;
+                at += 3001;
+            }
+            let badp = d.join("bad.sg1");
+            fs::write(&badp, &bad).unwrap();
+            let quick = d.join("quick.sg1");
+            let _ = fs::remove_file(&quick);
+            assert!(mend_sealed_dir(&badp, &quick, false).is_err(), "{mode:?}");
+            assert!(!quick.exists());
+            let fixed = d.join("fixed.sg1");
+            let _ = fs::remove_file(&fixed);
+            mend_sealed_dir(&badp, &fixed, true).unwrap();
+            let out = d.join("out");
+            let _ = fs::remove_dir_all(&out);
+            unseal_dir_only_keys(&fixed, &out, Some("pw"), &[], &[], &[], &[]).unwrap();
+            for (rel, bytes) in &want {
+                assert_eq!(&fs::read(out.join(rel)).unwrap(), bytes, "{mode:?} {rel}");
+            }
+            let n = fs::read_dir(out.join("a/b")).unwrap().count();
+            assert_eq!(n, want.len());
+        }
     }
 
     #[test]
