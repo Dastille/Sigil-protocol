@@ -29,8 +29,9 @@ const WHOLE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Decoded chunk stars kept between reads (each is one star, at most the pack's
 /// `--chunk`, 4 MiB by default). Shared by large-file members and a large Warded
-/// Tome's body, so a member star read through the body keeps both warm.
-const STAR_CACHE: usize = 6;
+/// Tome's body: three is the fewest that keep a member star and the two body stars
+/// it may straddle, so sequential reads decode each star once.
+const STAR_CACHE: usize = 3;
 
 /// Star-cache key of a large Warded Tome's body (inode numbers start at 1).
 const BODY_KEY: u64 = 0;
@@ -1843,6 +1844,173 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// Read `path` through the VFS in odd-sized pieces that cross star boundaries.
+    fn read_in_pieces(vfs: &VaultFs, path: &str, total: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let step = 50_001;
+        while out.len() < total {
+            let got = vfs.read_range(path, out.len() as u64, step).unwrap();
+            assert!(!got.is_empty(), "short read at {}", out.len());
+            out.extend_from_slice(&got);
+        }
+        assert!(vfs.read_range(path, total as u64, 10).unwrap().is_empty());
+        out
+    }
+
+    /// A Tome (plain and Warded, the Warded one with a large body) whose big member is
+    /// stored as a large-file pack: reads in pieces, whole, and an export all give the
+    /// member's bytes, and only stars are held, never the member.
+    #[test]
+    fn large_members_read_in_pieces() {
+        let d = tmp("pieces");
+        let src = d.join("src");
+        fs::create_dir_all(src.join("m")).unwrap();
+        let big = noise(700_000, 11);
+        fs::write(src.join("m/big.bin"), &big).unwrap();
+        fs::write(src.join("small.txt"), b"small").unwrap();
+        for (tag, pass) in [("plain", None), ("warded", Some("pw"))] {
+            let pack = d.join(format!("{tag}.sg1"));
+            inscribe_dir(&src, &pack, Mode::Seal, pass, "", &[], 64 * 1024, &[]).unwrap();
+            let before = crate::sha256_path(&pack).unwrap();
+            let vfs = VaultFs::open(&pack, pass, &[], false).unwrap();
+            assert_eq!(
+                vfs.sealed_body.is_some(),
+                pass.is_some(),
+                "{tag}: large body"
+            );
+            assert!(vfs.sealed_inner.is_none(), "{tag}: body never held whole");
+            assert_eq!(
+                vfs.file_size("m/big.bin").unwrap(),
+                big.len() as u64,
+                "{tag}"
+            );
+            assert_eq!(read_in_pieces(&vfs, "m/big.bin", big.len()), big, "{tag}");
+            assert_eq!(
+                vfs.read_range("m/big.bin", 65_530, 20).unwrap(),
+                &big[65_530..65_550]
+            );
+            assert_eq!(&vfs.read_file("m/big.bin").unwrap()[..], &big[..], "{tag}");
+            assert_eq!(&vfs.read_file("small.txt").unwrap()[..], b"small", "{tag}");
+            let mut copy = Vec::new();
+            assert_eq!(
+                vfs.copy_file_to("m/big.bin", &mut copy).unwrap(),
+                big.len() as u64
+            );
+            assert_eq!(copy, big);
+            let dest = d.join(format!("{tag}-out"));
+            assert_eq!(vfs.export_dir(&dest).unwrap(), 2);
+            assert_eq!(fs::read(dest.join("m/big.bin")).unwrap(), big, "{tag}");
+            assert_eq!(fs::read(dest.join("small.txt")).unwrap(), b"small", "{tag}");
+            // A fresh VFS exports on one streamed pass (nothing opened beforehand).
+            let fresh = VaultFs::open(&pack, pass, &[], false).unwrap();
+            let dest2 = d.join(format!("{tag}-out2"));
+            assert_eq!(fresh.export_dir(&dest2).unwrap(), 2);
+            assert_eq!(fs::read(dest2.join("m/big.bin")).unwrap(), big, "{tag}");
+            let held = vfs.lock_cache().stars.len();
+            assert!(held <= STAR_CACHE, "{tag}: {held} stars held");
+            assert_eq!(
+                crate::sha256_path(&pack).unwrap(),
+                before,
+                "{tag}: seal unchanged"
+            );
+        }
+        // A single file sealed as a large-file pack.
+        let single = d.join("single.sg1");
+        crate::work::inscribe_path(
+            &src.join("m/big.bin"),
+            &single,
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            crate::DEFAULT_PIECE,
+            crate::work::DEFAULT_OVERTURE_MB,
+            None,
+        )
+        .unwrap();
+        let vfs = VaultFs::open(&single, None, &[], false).unwrap();
+        assert_eq!(read_in_pieces(&vfs, "big.bin", big.len()), big);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Damage fails closed: a star changed after the member was opened is refused when
+    /// read (never served as wrong bytes), and a member damaged beforehand exports
+    /// nothing (no file, no part file).
+    #[test]
+    fn changed_or_damaged_large_member_is_refused() {
+        let d = tmp("pieces-bad");
+        let src = d.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let big = noise(500_000, 23);
+        fs::write(src.join("big.bin"), &big).unwrap();
+        let pack = d.join("t.sg1");
+        // Glyph mode carries no parity, so any change is beyond repair.
+        inscribe_dir(&src, &pack, Mode::Glyph, None, "", &[], 64 * 1024, &[]).unwrap();
+        let vfs = VaultFs::open(&pack, None, &[], false).unwrap();
+        // Open the member (full check) and read its first piece.
+        assert_eq!(vfs.read_range("big.bin", 0, 100).unwrap(), &big[..100]);
+        // Change bytes inside a later star, in place.
+        let mut raw = fs::read(&pack).unwrap();
+        let at = raw.len() * 3 / 4;
+        for b in &mut raw[at..at + 64] {
+            *b ^= 0x5a;
+        }
+        fs::write(&pack, &raw).unwrap();
+        let tail_off = (big.len() * 3 / 4) as u64;
+        let mut refused = false;
+        for off in (tail_off.saturating_sub(70_000)..big.len() as u64).step_by(30_000) {
+            match vfs.read_range("big.bin", off, 30_000) {
+                Ok(got) => {
+                    let o = off as usize;
+                    assert_eq!(got, &big[o..o + got.len()], "wrong bytes served at {off}");
+                }
+                Err(_) => refused = true,
+            }
+        }
+        assert!(refused, "a changed star was never refused");
+        // A fresh view of the damaged Tome: export writes nothing for the member.
+        let fresh = VaultFs::open(&pack, None, &[], false).unwrap();
+        let dest = d.join("out");
+        assert!(fresh.export_dir(&dest).is_err());
+        assert!(!dest.join("big.bin").exists());
+        assert!(!dest.join("big.bin.sigil-part").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Whole-held members are dropped oldest first past the cache budget, but the one
+    /// being read always stays (a member larger than the budget still opens).
+    #[test]
+    fn whole_cache_is_bounded_but_keeps_the_newest() {
+        let mut c = Cache::default();
+        let big = Arc::new(vec![0u8; (WHOLE_CACHE_BYTES / 2 + 1) as usize]);
+        c.keep_whole(10, &big);
+        c.keep_whole(11, &big);
+        assert!(!c.bodies.contains_key(&10) && c.bodies.contains_key(&11));
+        let huge = Arc::new(vec![0u8; (WHOLE_CACHE_BYTES + 1) as usize]);
+        c.keep_whole(12, &huge);
+        assert!(c.bodies.contains_key(&12) && c.bodies.len() == 1);
+        assert_eq!(c.whole_bytes, huge.len() as u64);
+        for i in 0..20 {
+            c.keep_star((1, i), Arc::new(vec![1u8; 8]));
+        }
+        assert_eq!(c.stars.len(), STAR_CACHE);
+        assert!(c.star((1, 19)).is_some() && c.star((1, 0)).is_none());
     }
 
     #[test]

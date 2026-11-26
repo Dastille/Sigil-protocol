@@ -1,5 +1,5 @@
 //! Peak memory of `sigil` on a Tome with one large member stays near one chunk, not the
-//! member's size: seal, scry, unseal and mend, for a plain and a Warded Tome. The same
+//! member's size: seal, scry, unseal, mount export and mend, for a plain and a Warded Tome. The same
 //! holds for a single file sealed whole (one classic seal, no chunking).
 //! Measured as the child's peak resident set (`wait4` rusage), Linux only.
 #![cfg(target_os = "linux")]
@@ -124,6 +124,11 @@ fn measure(member: usize) -> Vec<(String, i64)> {
         un.extend_from_slice(extra);
         out.push((format!("{tag} unseal"), rss_ok(dp, "unseal", &un)));
         assert!(same_file(&d.join(&o1).join("big.bin"), &big), "{tag}");
+        let ex = format!("{tag}-export");
+        let mut mo = vec!["mount", &pack, "unused-mountpoint", "--export-dir", &ex];
+        mo.extend_from_slice(extra);
+        out.push((format!("{tag} mount export"), rss_ok(dp, "mount", &mo)));
+        assert!(same_file(&d.join(&ex).join("big.bin"), &big), "{tag}");
         let bad = format!("{tag}-bad.sg1");
         fs::copy(d.join(&pack), d.join(&bad)).unwrap();
         damage(&d.join(&bad));
