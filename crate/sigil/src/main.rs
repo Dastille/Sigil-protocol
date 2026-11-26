@@ -474,6 +474,7 @@ enum Cmd {
         /// the repair data), which sigil builds made before Tome v3 can read. By default a new
         /// unlocked Tome keeps its folder list inside the repair-protected body (Tome v3):
         /// protection against accidental damage only; add --pass / --to against deliberate edits.
+        /// SIGIL_OLD_TOME_LAYOUT=1 does the same for every Tome writer (Vault commits too).
         #[arg(long = "old-tome-layout")]
         old_tome_layout: bool,
         #[arg(long)]

@@ -17,7 +17,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare Sig
 A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CODEX.md](CODEX.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
 
-`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR Tome; an encrypted one is a sealed directory, SGDR ver=2, see docs/PRIVATE-LABEL.md). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
+`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR Tome: a protected plain Tome, SGDR ver=3, without a key, or a sealed directory, SGDR ver=2, with one, see docs/PRIVATE-LABEL.md; versions committed before Tome v3 are ver=1 and still restore. `SIGIL_OLD_TOME_LAYOUT=1` commits ver=1). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
 
 ## When to use which
 

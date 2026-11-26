@@ -465,7 +465,9 @@ default for new Tomes), so `mend` repairs damage to it and a list that cannot be
 refused, never read as different names. Without a Ward this guards against accidental
 damage only, not against someone editing the file on purpose. Tomes made by earlier
 versions open as before. Older versions of sigil refuse a v3 Tome with an error; add
-`--old-tome-layout` to make one they can read (its list has no repair data). Layout:
+`--old-tome-layout` to make one they can read (its list has no repair data); Vault folder
+versions use the same layout, and `SIGIL_OLD_TOME_LAYOUT=1` asks any writer for the older
+one. Layout:
 [docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md#protected-plain-tomes-sgdr-v3).
 
 An **encrypted** Tome (`--pass` or `--to`) hides its file names, folder

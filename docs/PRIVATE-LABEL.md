@@ -44,7 +44,9 @@ working), in Glyph mode because the body already carries the Reed-Solomon parity
   file count, trailing bytes, a truncated body, and any GCM / Merkle failure.
 - Still visible: the file count and the total ciphertext length.
 - Plain Tomes (no key) show their names to anyone. A new one is written as
-  a protected plain Tome (v3, below); `--old-tome-layout` still writes v1. A pack whose
+  a protected plain Tome (v3, below), by `sigil seal`, Vault folder commits and the
+  library writers alike; `--old-tome-layout` (or `SIGIL_OLD_TOME_LAYOUT=1` for any writer,
+  Vault commits included) still writes v1. A pack whose
   only keys are `--ward`s is refused unless `--ward-names-visible` is given (names
   readable without a key, with a warning); add `--pass` / `--to` to get v2. Every v1
   pack, including encrypted and ward-only ones written earlier, opens and lists as before.

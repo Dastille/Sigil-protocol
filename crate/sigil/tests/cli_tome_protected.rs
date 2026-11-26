@@ -391,3 +391,83 @@ fn ward_only_tome_with_visible_names_is_protected_and_keeps_its_ward() {
     );
     assert_eq!(tree(&d.join("out")), want);
 }
+
+fn sigil_env(dir: &Path, args: &[&str], env: (&str, &str)) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_sigil"))
+        .current_dir(dir)
+        .args(common::pass_via_file(args))
+        .env(env.0, env.1)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run sigil")
+}
+
+#[test]
+fn old_layout_env_applies_to_seal_and_vault_and_typos_are_refused() {
+    let d = common::scratch("prot-env");
+    fixture_src(&d);
+    let o = sigil_env(
+        &d,
+        &["seal", "-o", "e1.sg1", "src"],
+        ("SIGIL_OLD_TOME_LAYOUT", "1"),
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(
+        &std::fs::read(d.join("e1.sg1")).expect("r")[..5],
+        b"SGDR\x01"
+    );
+    let o = sigil_env(
+        &d,
+        &["seal", "-o", "e0.sg1", "src"],
+        ("SIGIL_OLD_TOME_LAYOUT", "0"),
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(
+        &std::fs::read(d.join("e0.sg1")).expect("r")[..5],
+        b"SGDR\x03"
+    );
+    let o = sigil_env(
+        &d,
+        &["seal", "-o", "ex.sg1", "src"],
+        ("SIGIL_OLD_TOME_LAYOUT", "yes"),
+    );
+    assert!(
+        !o.status.success() && !d.join("ex.sg1").exists(),
+        "{}",
+        text(&o)
+    );
+    assert!(text(&o).contains("SIGIL_OLD_TOME_LAYOUT must be 0 or 1"));
+    // Vault folder versions: v3 by default, v1 on request; both restore.
+    std::fs::create_dir_all(d.join("live/sub")).expect("mkdir");
+    std::fs::write(d.join("live/a.txt"), b"one").expect("w");
+    std::fs::write(d.join("live/sub/b.txt"), b"two").expect("w");
+    let o = sigil_env(
+        &d,
+        &["vault", "track", "live"],
+        ("SIGIL_OLD_TOME_LAYOUT", "1"),
+    );
+    assert!(o.status.success(), "{}", text(&o));
+    std::fs::write(d.join("live/a.txt"), b"three").expect("w");
+    ok(&d, &["vault", "commit", "live"]);
+    let vdir = d.join("live.sigil/versions");
+    let mut heads: Vec<(String, u8)> = std::fs::read_dir(&vdir)
+        .expect("vault dir")
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            let n = p.file_name()?.to_str()?.to_string();
+            (n.starts_with('v') && n.ends_with(".sg1"))
+                .then(|| (n, std::fs::read(&p).ok().map_or(0, |b| b[4])))
+        })
+        .collect();
+    heads.sort();
+    assert_eq!(
+        heads,
+        vec![("v1.sg1".into(), 1), ("v2.sg1".into(), 3)],
+        "{heads:?}"
+    );
+    ok(&d, &["vault", "restore", "--version", "1", "live"]);
+    assert_eq!(std::fs::read(d.join("live/a.txt")).expect("r"), b"one");
+    ok(&d, &["vault", "restore", "--version", "2", "live"]);
+    assert_eq!(std::fs::read(d.join("live/a.txt")).expect("r"), b"three");
+    assert_eq!(std::fs::read(d.join("live/sub/b.txt")).expect("r"), b"two");
+}
