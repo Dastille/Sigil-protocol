@@ -297,7 +297,10 @@ fn ward_only(
 /// Like `inscribe_dir`, with encrypt-to recipients applied to every file star.
 ///
 /// With a passphrase or any recipient the pack is written as a sealed directory
-/// (v2): names and per-member sizes are hidden. Without either it is a plain v1 pack.
+/// (v2): names and per-member sizes are hidden. Without either it is a protected plain
+/// Tome (v3): the folder list sits inside the repair-protected body, unencrypted. Set
+/// `SIGIL_OLD_TOME_LAYOUT=1` (or call [`inscribe_dir_old_layout`]) for the older v1
+/// layout that sigil builds made before Tome v3 can read.
 ///
 /// Safe by default: per-file `wards` with no passphrase and no recipient would leave
 /// the warded files' names and sizes in the clear, so that is refused before anything
@@ -318,15 +321,31 @@ pub fn inscribe_dir_to(
     if ward_only(pass, wards, recipients) {
         return Err(crate::Error::Msg(WARD_ONLY_REFUSED.into()));
     }
+    let protect = !old_layout_requested()?;
     inscribe_dir_any(
-        root, output, mode, pass, covenant, geas, chunk, wards, recipients, false,
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients, protect,
     )
 }
 
+/// Environment opt-out for every Tome writer that has no flag of its own (Vault folder
+/// commits, library callers): `SIGIL_OLD_TOME_LAYOUT=1` writes the older v1 layout for a
+/// Tome without a key. Unset, empty or `0` keeps the default (v3). Any other value is
+/// refused, so a typo never silently picks a layout.
+pub fn old_layout_requested() -> Result<bool> {
+    match std::env::var("SIGIL_OLD_TOME_LAYOUT") {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(v) if v.is_empty() || v == "0" => Ok(false),
+        Ok(v) if v == "1" => Ok(true),
+        _ => Err(crate::Error::Msg(
+            "SIGIL_OLD_TOME_LAYOUT must be 0 or 1 (1 writes the older Tome layout); nothing was written".into(),
+        )),
+    }
+}
+
 /// Like [`inscribe_dir_to`] (or [`inscribe_dir_to_names_visible`] with `names_visible`),
-/// but a Tome without a passphrase or recipient is written as a protected plain Tome
-/// (v3): its folder list sits inside the repair-protected body, like a Warded Tome's,
-/// unencrypted. Older sigil versions refuse v3 ("unknown Tome version 3").
+/// always writing a Tome without a passphrase or recipient as a protected plain Tome
+/// (v3), whatever `SIGIL_OLD_TOME_LAYOUT` says. Older sigil versions refuse v3
+/// ("unknown Tome version 3").
 // Justification: see `inscribe_dir`.
 #[allow(clippy::too_many_arguments)]
 pub fn inscribe_dir_protected(
@@ -349,10 +368,11 @@ pub fn inscribe_dir_protected(
     )
 }
 
-/// Explicit opt-in: write a folder pack locked only by per-file `wards` as a plain
-/// v1 pack (the layout every ward-only pack used before). The warded files' contents
-/// are encrypted, but every member name and size, and the unwarded files, are readable
-/// without any key. Same as [`inscribe_dir_to`] in every other case.
+/// Explicit opt-in: write a folder pack locked only by per-file `wards` with its names
+/// readable without a key (a protected plain Tome, v3, by default; v1 with
+/// `SIGIL_OLD_TOME_LAYOUT=1`). The warded files' contents are encrypted, but every
+/// member name and size, and the unwarded files, are readable without any key. Same as
+/// [`inscribe_dir_to`] in every other case.
 // Justification: see `inscribe_dir`.
 #[allow(clippy::too_many_arguments)]
 pub fn inscribe_dir_to_names_visible(
@@ -366,6 +386,33 @@ pub fn inscribe_dir_to_names_visible(
     wards: &[(String, String)],
     recipients: &[PublicIdentity],
 ) -> Result<(u32, u64)> {
+    let protect = !old_layout_requested()?;
+    inscribe_dir_any(
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients, protect,
+    )
+}
+
+/// The older layout on request (`sigil seal --old-tome-layout`): a Tome without a
+/// passphrase or recipient is written as v1 (folder list outside the repair data), which
+/// sigil builds made before Tome v3 can read. With a key it is v2, as always.
+/// `names_visible` as in [`inscribe_dir_protected`].
+// Justification: see `inscribe_dir`.
+#[allow(clippy::too_many_arguments)]
+pub fn inscribe_dir_old_layout(
+    root: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    wards: &[(String, String)],
+    recipients: &[PublicIdentity],
+    names_visible: bool,
+) -> Result<(u32, u64)> {
+    if !names_visible && ward_only(pass, wards, recipients) {
+        return Err(crate::Error::Msg(WARD_ONLY_REFUSED.into()));
+    }
     inscribe_dir_any(
         root, output, mode, pass, covenant, geas, chunk, wards, recipients, false,
     )

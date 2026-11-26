@@ -1,19 +1,18 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use sigil::{
     add_to_constellation, backend_by_name, copy_sigil_binary, deluge_pieces, format_bakeoff_report,
-    gather_pieces, hex32, inject_initrd, inscribe_dir_to, inscribe_dir_to_names_visible,
-    inscribe_path_to, inscribe_stars_dir_to, install_hooks, is_constellation_input, is_dir_pack,
-    is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot, mend_bytes_ex, mend_kit, mend_scan,
-    overture_report, path_extract_keys, path_walk_keys, place_kit, prepare_boot, resolve_recipient,
-    run_bakeoff, run_mount_keys, run_open_keys, run_showing, scatter_pieces, seal_kn_mds_to_opts,
-    sha256_path, talisman_pass, tally_pieces, umount_path, unseal_dir_only_keys, unseal_ex,
-    unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys, vault_commit_ex,
-    vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
-    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
-    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
-    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
-    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, Pad, SealOpts, VaultRetention,
-    CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    gather_pieces, hex32, inject_initrd, inscribe_path_to, inscribe_stars_dir_to, install_hooks,
+    is_constellation_input, is_dir_pack, is_fountain_dir, keygen_ecc, keygen_legacy, mend_boot,
+    mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
+    place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
+    run_showing, scatter_pieces, seal_kn_mds_to_opts, sha256_path, talisman_pass, tally_pieces,
+    umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys, unseal_path_keys,
+    unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex, vault_format_recipients,
+    vault_format_retention, vault_format_status, vault_format_versions, vault_get_recipients,
+    vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
+    vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status, vault_track_ex,
+    vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, Pad, SealOpts,
+    VaultRetention, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -3878,17 +3877,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     .into());
                 }
                 json_extra(&format!(",\"not_packed\":{}", skips.total));
-                let seal_dir = if ward_names_visible {
+                if ward_names_visible {
                     eprintln!(
                         "WARNING: --ward-names-visible: every file name and size in {} is readable without a key; only the warded files' contents are locked",
                         output.display()
                     );
-                    inscribe_dir_to_names_visible
-                } else {
-                    inscribe_dir_to
-                };
-                let (n, orig) = if old_tome_layout {
-                    seal_dir(
+                }
+                let (n, orig) = if old_tome_layout || sigil::folder_old_layout_requested()? {
+                    sigil::inscribe_dir_old_layout(
                         &input,
                         &output,
                         mode.into(),
@@ -3898,6 +3894,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         chunk,
                         &wards,
                         &recipients,
+                        ward_names_visible,
                     )?
                 } else {
                     sigil::inscribe_dir_protected(
