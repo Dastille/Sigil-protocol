@@ -4242,6 +4242,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             talisman,
             identity,
         } => {
+            if let Some(w) = sigil::weak_random_warning(&input) {
+                eprintln!("warning: {w}");
+            }
             verify_cmd(
                 input,
                 pass.or(pass_file),
@@ -4378,7 +4381,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 say!("far side: sigil gather -o rebuilt.sg1 <folder>");
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
             } else {
-                let from = from.or_else(|| watch.then(sigil::rain_lane));
+                let from = match from {
+                    Some(f) => Some(f),
+                    None if watch => Some(sigil::rain_lane()?),
+                    None => None,
+                };
                 if let Some(f) = from {
                     say!("this lane starts at part {f} (other people should pick a different --from so rain does not overlap)");
                 }
@@ -4956,7 +4963,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if peers.is_empty() {
                 println!("no --peer: using this folder as the pool (Syncthing/USB/NFS).");
             }
-            let lane = sigil::rain_lane();
+            let lane = sigil::rain_lane()?;
             println!("this machine’s new parts start at {lane}");
             let mut rained = false;
             loop {

@@ -111,7 +111,7 @@ fn blank(pass: &[u8]) -> bool {
 
 fn rand<const N: usize>() -> Result<[u8; N]> {
     let mut b = [0u8; N];
-    getrandom::getrandom(&mut b).map_err(|e| Error::Msg(e.to_string()))?;
+    crate::getrandom(&mut b)?;
     Ok(b)
 }
 

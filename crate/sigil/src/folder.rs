@@ -353,7 +353,9 @@ fn inscribe_dir_any(
     }
     let encrypted = pass.is_some() || !recipients.is_empty();
     if !encrypted {
-        let mut writer = BufWriter::new(File::create(output).map_err(io)?);
+        // Through a part file: a member that fails (a failing random source, a read
+        // error) leaves nothing at `output`.
+        let (part, mut writer) = crate::work::open_part(output)?;
         let total = write_v1(
             root,
             &files,
@@ -367,7 +369,7 @@ fn inscribe_dir_any(
             wards,
             recipients,
         )?;
-        writer.flush().map_err(io)?;
+        crate::work::finish_part(part, writer, output)?;
         return Ok((files.len() as u32, total));
     }
     // Sealed directory: build the v1 pack (members sealed with the same keys, Glyph

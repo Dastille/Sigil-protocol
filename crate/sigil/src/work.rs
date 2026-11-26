@@ -309,8 +309,7 @@ pub fn inscribe_path_to(
         stars,
         overture,
     });
-    let mut writer =
-        BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let (part, mut writer) = open_part(output)?;
     writer
         .write_all(&head_bytes)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -354,10 +353,37 @@ pub fn inscribe_path_to(
             .write_all(d)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
     }
-    writer
-        .flush()
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    finish_part(part, writer, output)?;
     Ok((orig, stars, true))
+}
+
+/// A new hidden part file beside `output` (never an existing path or link), so a pack that
+/// fails part way (a read error, a refused star, a failing random source) leaves nothing
+/// at `output`. The part is removed when the returned guard drops, unless
+/// [`finish_part`] has renamed it into place.
+pub(crate) fn open_part(output: &Path) -> Result<(crate::folder::Scratch, BufWriter<File>)> {
+    let part = crate::folder::Scratch(crate::folder::scratch_beside(output, "sgwk-part"));
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&part.0)
+        .map_err(|e| crate::Error::Msg(format!("{}: {e}", part.0.display())))?;
+    Ok((part, BufWriter::new(f)))
+}
+
+/// Flush the part file from [`open_part`] and rename it to `output`.
+pub(crate) fn finish_part(
+    part: crate::folder::Scratch,
+    writer: BufWriter<File>,
+    output: &Path,
+) -> Result<()> {
+    let f = writer
+        .into_inner()
+        .map_err(|e| crate::Error::Msg(e.error().to_string()))?;
+    drop(f);
+    std::fs::rename(&part.0, output).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    drop(part);
+    Ok(())
 }
 
 /// The SGFC facet list for `facets`.
@@ -446,8 +472,7 @@ fn inscribe_ranges(
         stars,
         overture,
     });
-    let mut writer =
-        BufWriter::new(File::create(output).map_err(|e| crate::Error::Msg(e.to_string()))?);
+    let (part, mut writer) = open_part(output)?;
     writer
         .write_all(&head_bytes)
         .map_err(|e| crate::Error::Msg(e.to_string()))?;
@@ -487,9 +512,7 @@ fn inscribe_ranges(
             .write_all(d)
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
     }
-    writer
-        .flush()
-        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    finish_part(part, writer, output)?;
     Ok((orig, stars, true))
 }
 

@@ -95,7 +95,7 @@ impl Drop for Identity {
 impl Identity {
     pub fn generate() -> Result<Self> {
         let mut master = [0u8; 32];
-        getrandom::getrandom(&mut master).map_err(|e| Error::Msg(e.to_string()))?;
+        crate::getrandom(&mut master)?;
         Self::from_master(master)
     }
 
