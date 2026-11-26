@@ -1731,13 +1731,12 @@ fn star_size_streamed<R: Read + ?Sized>(
 }
 
 fn peek_orig(peek: &[u8]) -> Option<u64> {
-    if peek.len() >= 4 && peek.starts_with(&crate::work::WORK_MAGIC) {
-        // SGWK: after magic+ver+chunk(4)+orig(8)
-        if peek.len() >= 4 + 1 + 4 + 8 {
-            let orig = u64::from_le_bytes(peek[9..17].try_into().ok()?);
-            return Some(orig);
-        }
-        return None;
+    if peek.starts_with(&crate::work::WORK_MAGIC) {
+        // A large-file member: its total is in the pack head, unless the head hides it
+        // (locked pack: total written as the placeholder 0 with stars > 0). Report none
+        // then, so a key can fill it in (or the listing shows no size), never "0 bytes".
+        let head = crate::work::read_head(&mut &peek[..]).ok()?;
+        return (!crate::work::total_hidden(&head)).then_some(head.orig_total);
     }
     // A private-label (v3) member keeps its size inside the lock: report none
     // rather than the placeholder 0.
@@ -2091,6 +2090,31 @@ pub fn seal_dir_names(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A large-file member's pack head as it starts a member star.
+    fn work_head_bytes(orig: u64, stars: u32) -> Vec<u8> {
+        let mut b = crate::work::WORK_MAGIC.to_vec();
+        b.push(1);
+        b.extend_from_slice(&4_194_304u32.to_le_bytes());
+        b.extend_from_slice(&orig.to_le_bytes());
+        b.push(0);
+        b.extend_from_slice(&stars.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn peek_orig_reports_large_member_size_but_not_the_hidden_placeholder() {
+        assert_eq!(peek_orig(&work_head_bytes(5_000_000, 2)), Some(5_000_000));
+        // Locked pack: total written as 0 with stars > 0 means "hidden", not empty.
+        assert_eq!(peek_orig(&work_head_bytes(0, 2)), None);
+        // A truly empty large-file pack (no stars) is 0 bytes.
+        assert_eq!(peek_orig(&work_head_bytes(0, 0)), Some(0));
+        // A head cut short (damaged or tiny star) gives no size rather than a guess.
+        let full = work_head_bytes(5_000_000, 2);
+        for cut in 0..full.len() {
+            assert_eq!(peek_orig(&full[..cut]), None, "cut at {cut}");
+        }
+    }
 
     /// Every file under `dir`, relative, sorted (directories omitted).
     fn listing(dir: &Path) -> Vec<String> {
