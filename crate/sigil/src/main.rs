@@ -464,6 +464,11 @@ enum Cmd {
         /// pack are then readable without any key; only the warded files' contents are locked.
         #[arg(long = "ward-names-visible")]
         ward_names_visible: bool,
+        /// Folder only: refuse (write nothing, exit 1) when any path would be left out of the
+        /// Tome (dotfiles and dot-folders, special files, broken links, empty folders).
+        /// Without it those paths are listed on stderr and the Tome is written.
+        #[arg(long = "fail-on-skip")]
+        fail_on_skip: bool,
         #[arg(long)]
         covenant: Option<String>,
         #[arg(long = "bind")]
@@ -3338,6 +3343,49 @@ impl Drop for RepairWatch {
     }
 }
 
+/// Most skipped paths printed by name; the rest are summarised as a count.
+const SKIPS_SHOWN: usize = 50;
+
+/// Tell the user, on stderr, every path a folder Inscribe leaves out of the Tome and that
+/// file permissions are not stored. Silent when nothing is left out and no file is
+/// executable. With `refusing`, the closing hint says nothing will be written.
+fn report_skips(root: &Path, skips: &sigil::SkipReport, refusing: bool) {
+    if skips.total > 0 {
+        let by: Vec<String> = skips
+            .counts()
+            .iter()
+            .map(|(r, n)| format!("{n} {}", r.label()))
+            .collect();
+        eprintln!(
+            "WARNING: {} path(s) in {} are not packed into the Tome ({}):",
+            skips.total,
+            root.display(),
+            by.join(", ")
+        );
+        for s in skips.listed.iter().take(SKIPS_SHOWN) {
+            let tail = match s.reason {
+                sigil::SkipReason::HiddenFolder => "/  (not entered: nothing under it is packed)",
+                sigil::SkipReason::EmptyFolder => "/",
+                _ => "",
+            };
+            eprintln!("  {:<14} {}{tail}", s.reason.label(), s.rel);
+        }
+        let shown = skips.listed.len().min(SKIPS_SHOWN) as u64;
+        if skips.total > shown {
+            eprintln!("  ... and {} more", skips.total - shown);
+        }
+        if !refusing {
+            eprintln!("  (add --fail-on-skip to refuse instead of packing without them)");
+        }
+    }
+    if skips.executables > 0 && !refusing {
+        eprintln!(
+            "note: file permissions are not stored; {} executable file(s) will restore without the executable bit",
+            skips.executables
+        );
+    }
+}
+
 /// First Ctrl-C: ask the repair to stop safely. Second: quit at once (exit 130).
 #[cfg(unix)]
 fn install_stop_handler() {
@@ -3693,6 +3741,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ward,
             ward_file,
             ward_names_visible,
+            fail_on_skip,
             covenant,
             bind,
             chunk,
@@ -3716,6 +3765,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let cov = covenant.as_deref().unwrap_or("");
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
+            if fail_on_skip && !input.is_dir() {
+                return Err("--fail-on-skip applies to a folder Inscribe only".into());
+            }
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
             {
                 return Err(
@@ -3779,6 +3831,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if pieces.is_some() {
                     return Err("folder Inscribe writes one pack. Omit --pieces.".into());
                 }
+                let skips = sigil::tree_skips(&input)?;
+                report_skips(&input, &skips, fail_on_skip);
+                if fail_on_skip && skips.total > 0 {
+                    return Err(format!(
+                        "--fail-on-skip: {} path(s) in {} would be left out of the Tome (listed above). Nothing was written",
+                        skips.total,
+                        input.display()
+                    )
+                    .into());
+                }
+                json_extra(&format!(",\"not_packed\":{}", skips.total));
                 let seal_dir = if ward_names_visible {
                     eprintln!(
                         "WARNING: --ward-names-visible: every file name and size in {} is readable without a key; only the warded files' contents are locked",
@@ -3800,12 +3863,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     &recipients,
                 )?;
                 say!(
-                    "folder {n} files, {orig} bytes → {}{}",
+                    "folder {n} files, {orig} bytes → {}{}{}",
                     output.display(),
                     if recipients.is_empty() {
                         ""
                     } else {
                         " (encrypt-to)"
+                    },
+                    if skips.total > 0 {
+                        format!(" ({} not packed: listed on stderr)", skips.total)
+                    } else {
+                        String::new()
                     },
                 );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;

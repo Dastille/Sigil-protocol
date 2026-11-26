@@ -1557,8 +1557,7 @@ impl<'a, S: Src> PackReader<'a, S> {
 
     /// The next star's plaintext, or `None` after the last star once the pack's
     /// total length has been checked. One star per call; at most `stars` calls.
-    fn next_star(&mut self) -> Result<Option<Vec<u8>>> {
-        let n = self.l.head.stars;
+    pub(crate) fn next_star(&mut self) -> Result<Option<Vec<u8>>> {
         let i = self.next;
         let Some(&(off, len)) = self.l.stars.get(i) else {
             if !self.done {
@@ -1574,26 +1573,58 @@ impl<'a, S: Src> PackReader<'a, S> {
             return Ok(None);
         };
         self.next += 1;
-        let mut star = vec![0u8; len as usize];
-        self.src.read_at(off, &mut star).map_err(|_| {
-            crate::Error::Msg(format!("work pack truncated inside star {i} of {n}"))
-        })?;
-        let (plain, meta) =
-            crate::unseal_meta_keys(&star, self.pass, self.companions, self.identities)
-                .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
-        if let Some(f) = self.l.facets() {
-            if crate::locate_header(&star)?.0.digest != f[i] {
-                return Err(crate::Error::Msg(format!(
-                    "chunk star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
-                )));
-            }
-        }
+        let (plain, meta) = open_star_checked(
+            self.src,
+            self.l,
+            i,
+            (off, len),
+            self.pass,
+            self.companions,
+            self.identities,
+        )?;
         if i == 0 {
             self.star0 = meta;
         }
         self.written += plain.len() as u64;
         Ok(Some(plain))
     }
+}
+
+/// Open chunk star `i` (at `(off, len)` in `src`) with the checks every reader of a
+/// pack applies: the star's own length and SHA-256 (or its authentication tag when
+/// encrypted) and, when the facet list is intact, that its true-name is the one the
+/// list puts at position `i` (a swapped or reordered star is refused). Holds one star
+/// and its plaintext in memory.
+pub(crate) fn open_star_checked<S: Src>(
+    src: &mut S,
+    l: &PackLayout,
+    i: usize,
+    (off, len): (u64, u64),
+    pass: Option<&str>,
+    companions: &[Vec<u8>],
+    identities: &[Identity],
+) -> Result<(Vec<u8>, Option<crate::privacy::SealMeta>)> {
+    let n = l.head.stars;
+    let len = usize::try_from(len)
+        .map_err(|_| crate::Error::Msg(format!("star {i} of {n} is too large to open")))?;
+    let mut star = vec![0u8; len];
+    src.read_at(off, &mut star)
+        .map_err(|_| crate::Error::Msg(format!("work pack truncated inside star {i} of {n}")))?;
+    let (plain, meta) = crate::unseal_meta_keys(&star, pass, companions, identities)
+        .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
+    if let Some(f) = l.facets() {
+        let want = f.get(i).ok_or_else(|| {
+            crate::Error::Msg(format!(
+                "chunk star {i} has no entry in the pack facet list; refusing"
+            ))
+        })?;
+        if crate::locate_header(&star)?.0.digest != *want {
+            return Err(crate::Error::Msg(format!(
+                "chunk star {i} true-name does not match the pack facet (swapped or reordered star); refusing"
+            )));
+        }
+    }
+    Ok((plain, meta))
 }
 
 impl<S: Src> Read for PackReader<'_, S> {

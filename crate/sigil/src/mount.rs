@@ -7,19 +7,240 @@
 //! per live segment (tombstones omitted; compaction members keep their original
 //! seq names); always available via `--export-dir`.
 
-use crate::folder::{is_dir_pack, list_dir_pack, read_dir_entry_star, DirEntry};
+use crate::folder::{is_dir_pack, list_dir_pack, locate_entry_star, DirEntry};
 use crate::keys::Identity;
+use crate::packhead::{PackLayout, Src};
 use crate::vault::{self, VAULT_SUFFIX};
-use crate::work::{is_work_pack, payload_name};
+use crate::work::{is_work_pack, payload_name, PackReader, WORK_MAGIC};
 use crate::{locate_header, unseal_ex_keys, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TTL: Duration = Duration::from_secs(1);
+
+/// Most bytes of whole-held members (classic seals, log segments) kept decoded between
+/// reads. Past it the oldest are dropped and decoded again when read; the member being
+/// read is always kept, so a member larger than this still opens.
+const WHOLE_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Decoded chunk stars kept between reads (each is one star, at most the pack's
+/// `--chunk`, 4 MiB by default). Shared by large-file members and a large Warded
+/// Tome's body: three is the fewest that keep a member star and the two body stars
+/// it may straddle, so sequential reads decode each star once.
+const STAR_CACHE: usize = 3;
+
+/// Star-cache key of a large Warded Tome's body (inode numbers start at 1).
+const BODY_KEY: u64 = 0;
+
+/// Where a large-file member's SGWK pack lives.
+#[derive(Clone, Debug)]
+enum PackHome {
+    /// `[base, base + len)` of a file on disk (a whole `.sg1`, a constellation star, or a
+    /// member in place inside a plain Tome).
+    File { path: PathBuf, base: u64, len: u64 },
+    /// `[base, base + len)` of a Warded Tome's inner pack, already decrypted in memory
+    /// (a small body: at most the Tome's `--chunk`).
+    Inner { base: u64, len: u64 },
+    /// `[base, base + len)` of a large Warded Tome's inner pack, decrypted a body star
+    /// at a time on demand (never whole).
+    Body { base: u64, len: u64 },
+}
+
+/// A readable view of a [`PackHome`] (offsets are relative to the pack's first byte).
+enum HomeSrc<'a> {
+    File {
+        f: crate::packhead::FileSrc,
+        base: u64,
+        len: u64,
+    },
+    Mem(&'a [u8]),
+    Body {
+        fs: &'a VaultFs,
+        base: u64,
+        len: u64,
+    },
+}
+
+impl Src for HomeSrc<'_> {
+    fn size(&self) -> u64 {
+        match self {
+            HomeSrc::File { len, .. } | HomeSrc::Body { len, .. } => *len,
+            HomeSrc::Mem(m) => m.len() as u64,
+        }
+    }
+    fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<()> {
+        let size = self.size();
+        if off.checked_add(buf.len() as u64).is_none_or(|e| e > size) {
+            return Err(crate::Error::Msg("read past the end of the pack".into()));
+        }
+        match self {
+            HomeSrc::File { f, base, .. } => f.read_at(*base + off, buf),
+            HomeSrc::Mem(m) => {
+                let start = off as usize;
+                buf.copy_from_slice(&m[start..start + buf.len()]);
+                Ok(())
+            }
+            HomeSrc::Body { fs, base, .. } => {
+                let body = fs
+                    .sealed_body
+                    .as_ref()
+                    .ok_or_else(|| crate::Error::Msg("internal: no Warded Tome body".into()))?;
+                fs.pieces_fill(BODY_KEY, body, *base + off, buf)
+            }
+        }
+    }
+}
+
+/// `Read + Seek` over a [`Src`], for walking a Tome's framing held in one.
+struct SrcCursor<S: Src> {
+    src: S,
+    pos: u64,
+}
+
+impl<S: Src> Read for SrcCursor<S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let left = self.src.size().saturating_sub(self.pos);
+        let n = (out.len() as u64).min(left) as usize;
+        if n == 0 {
+            return Ok(0);
+        }
+        self.src
+            .read_at(self.pos, &mut out[..n])
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<S: Src> Seek for SrcCursor<S> {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let size = self.src.size() as i128;
+        let next = match to {
+            SeekFrom::Start(o) => o as i128,
+            SeekFrom::End(d) => size + d as i128,
+            SeekFrom::Current(d) => self.pos as i128 + d as i128,
+        };
+        if !(0..=size).contains(&next) {
+            return Err(io::Error::other("seek outside the Tome body"));
+        }
+        self.pos = next as u64;
+        Ok(self.pos)
+    }
+}
+
+/// Reads a pack's plaintext star by star through a [`PackReader`] (with all its
+/// checks), noting each star's plaintext `(offset, length)` as it goes.
+struct SpanReader<'a, S: Src> {
+    r: PackReader<'a, S>,
+    spans: Vec<(u64, u64)>,
+    at: u64,
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl<S: Src> Read for SpanReader<'_, S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // Skips empty stars; bounded by the star count (one star per pass).
+        while self.pos == self.buf.len() {
+            match self.r.next_star() {
+                Ok(Some(p)) => {
+                    self.spans.push((self.at, p.len() as u64));
+                    self.at += p.len() as u64;
+                    self.buf = p;
+                    self.pos = 0;
+                }
+                Ok(None) => return Ok(0),
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// A large-file member, read one chunk star at a time.
+///
+/// Opening it reads every star once with the same checks as `sigil unseal` (each star's
+/// own check, its facet position, and the pack's total), holding one star at a time, and
+/// records where each star's plaintext starts. Later reads open only the stars they
+/// cover and check each one again, so a pack changed on disk after it was opened is
+/// refused rather than read.
+struct PackPieces {
+    home: PackHome,
+    layout: PackLayout,
+    /// Plaintext `(offset, length)` of each star, in order.
+    spans: Vec<(u64, u64)>,
+    pass: Option<String>,
+}
+
+/// Where a member's bytes come from, before any large pack is checked.
+enum Located {
+    /// Decoded whole (a classic seal or log segment).
+    Whole(Arc<Vec<u8>>),
+    /// A large-file pack at `home`, opened with `pass`.
+    Pack(PackHome, Option<String>),
+}
+
+/// How a member's bytes are held.
+#[derive(Clone)]
+enum Body {
+    /// Decoded whole (one AES-GCM message, or a log segment).
+    Whole(Arc<Vec<u8>>),
+    /// A large-file member read in pieces.
+    Pack(Arc<PackPieces>),
+}
+
+/// A decoded chunk star kept between reads: `((inode, star index), plaintext)`.
+type CachedStar = ((u64, usize), Arc<Vec<u8>>);
+
+/// Decoded members and stars kept between reads, with the bounds above.
+#[derive(Default)]
+struct Cache {
+    bodies: HashMap<u64, Body>,
+    /// Inodes of whole-held bodies, oldest first, and their total size.
+    whole_order: VecDeque<u64>,
+    whole_bytes: u64,
+    /// Recently opened chunk stars: `((inode, star index), plaintext)`, oldest first.
+    stars: VecDeque<CachedStar>,
+}
+
+impl Cache {
+    fn keep_whole(&mut self, ino: u64, data: &Arc<Vec<u8>>) {
+        self.bodies.insert(ino, Body::Whole(data.clone()));
+        self.whole_order.push_back(ino);
+        self.whole_bytes += data.len() as u64;
+        // Bounded by the number of held bodies; never drops the one just added.
+        while self.whole_bytes > WHOLE_CACHE_BYTES && self.whole_order.len() > 1 {
+            let Some(old) = self.whole_order.pop_front() else {
+                break;
+            };
+            if let Some(Body::Whole(d)) = self.bodies.remove(&old) {
+                self.whole_bytes = self.whole_bytes.saturating_sub(d.len() as u64);
+            }
+        }
+    }
+
+    fn star(&self, key: (u64, usize)) -> Option<Arc<Vec<u8>>> {
+        self.stars
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
+    }
+
+    fn keep_star(&mut self, key: (u64, usize), plain: Arc<Vec<u8>>) {
+        self.stars.retain(|(k, _)| *k != key);
+        self.stars.push_back((key, plain));
+        while self.stars.len() > STAR_CACHE {
+            self.stars.pop_front();
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 enum FileSrc {
@@ -59,9 +280,12 @@ pub struct VaultFs {
     /// path → ino ("" = root)
     by_path: HashMap<String, u64>,
     next_ino: u64,
-    cache: Mutex<HashMap<u64, Arc<Vec<u8>>>>,
-    /// Inner v1 pack of a sealed (v2) folder pack, decrypted in memory only.
+    cache: Mutex<Cache>,
+    /// Inner v1 pack of a sealed (v2) folder pack with a small (classic) body,
+    /// decrypted in memory only; at most the Tome's `--chunk`.
     sealed_inner: Option<Arc<Vec<u8>>>,
+    /// A sealed (v2) folder pack with a large (SGWK) body: read a body star at a time.
+    sealed_body: Option<Arc<PackPieces>>,
     uid: u32,
     gid: u32,
 }
@@ -103,8 +327,9 @@ impl VaultFs {
             nodes: HashMap::new(),
             by_path: HashMap::new(),
             next_ino: 2,
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(Cache::default()),
             sealed_inner: None,
+            sealed_body: None,
             uid: current_uid(),
             gid: current_gid(),
         };
@@ -161,8 +386,9 @@ impl VaultFs {
             nodes: HashMap::new(),
             by_path: HashMap::new(),
             next_ino: 2,
-            cache: Mutex::new(HashMap::new()),
+            cache: Mutex::new(Cache::default()),
             sealed_inner: None,
+            sealed_body: None,
             uid: current_uid(),
             gid: current_gid(),
         };
@@ -224,11 +450,38 @@ impl VaultFs {
         }
     }
 
+    /// The whole of one file, in memory. For large files prefer [`VaultFs::read_range`]
+    /// or [`VaultFs::copy_file_to`], which hold one chunk star at a time.
     pub fn read_file(&self, path: &str) -> Result<Arc<Vec<u8>>> {
         let ino = self
             .lookup_path(path)
             .ok_or_else(|| crate::Error::Msg(format!("no such path in mount: {path:?}")))?;
-        self.read_ino(ino)
+        match self.body(ino)? {
+            Body::Whole(d) => Ok(d),
+            Body::Pack(p) => {
+                let mut out = Vec::new();
+                self.copy_body_to(ino, &p, &mut out)?;
+                Ok(Arc::new(out))
+            }
+        }
+    }
+
+    /// Up to `size` bytes of one file starting at `offset` (fewer at its end, none past
+    /// it). A large-file member opens only the chunk stars the range covers.
+    pub fn read_range(&self, path: &str, offset: u64, size: usize) -> Result<Vec<u8>> {
+        let ino = self
+            .lookup_path(path)
+            .ok_or_else(|| crate::Error::Msg(format!("no such path in mount: {path:?}")))?;
+        self.read_at(ino, offset, size)
+    }
+
+    /// Write one whole file to `w`, one chunk star at a time for a large-file member.
+    /// Returns the bytes written.
+    pub fn copy_file_to<W: Write>(&self, path: &str, w: &mut W) -> Result<u64> {
+        let ino = self
+            .lookup_path(path)
+            .ok_or_else(|| crate::Error::Msg(format!("no such path in mount: {path:?}")))?;
+        self.copy_ino_to(ino, w)
     }
 
     pub fn file_size(&self, path: &str) -> Result<u64> {
@@ -289,8 +542,7 @@ impl VaultFs {
                     if let Some(parent) = out.parent() {
                         fs::create_dir_all(parent).map_err(|e| crate::Error::Msg(e.to_string()))?;
                     }
-                    let data = self.read_ino(*ino)?;
-                    fs::write(&out, data.as_ref()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+                    self.export_file(*ino, &out)?;
                     n += 1;
                 }
             }
@@ -358,19 +610,28 @@ impl VaultFs {
                 .to_string()
         });
         let name = sanitize_name(&name);
+        // Only the head is needed for the size: read a bounded peek first. A classic
+        // seal whose header is not found there (damaged, a copy further in) falls back
+        // to the whole file, as before, rather than showing a wrong size.
+        let bytes = peek_file(&self.seal, crate::header::KEYSTONE_SPAN as u64 + 64)?;
         let size = if is_work_pack(&self.seal) {
             // work head has orig len
-            let bytes = fs::read(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?;
             if bytes.len() >= 17 {
                 u64::from_le_bytes(bytes[9..17].try_into().unwrap_or([0; 8]))
             } else {
                 0
             }
         } else {
-            let bytes = fs::read(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?;
-            locate_header(&bytes)
-                .map(|(h, _, _)| h.orig_len)
-                .unwrap_or(0)
+            match locate_header(&bytes) {
+                Ok((h, _, _)) => h.orig_len,
+                Err(_) => {
+                    let whole =
+                        fs::read(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?;
+                    locate_header(&whole)
+                        .map(|(h, _, _)| h.orig_len)
+                        .unwrap_or(0)
+                }
+            }
         };
         self.add_file("", &name, size, FileSrc::Whole)?;
         Ok(())
@@ -406,7 +667,31 @@ impl VaultFs {
     }
 
     fn build_dir_pack(&mut self) -> Result<()> {
-        let entries = if crate::folder::is_sealed_dir_pack(&self.seal) {
+        let large_body = match crate::folder::sealed_dir_body_loc(&self.seal)? {
+            Some((count, off, len)) if len >= 4 => {
+                let mut mag = [0u8; 4];
+                let mut f = crate::packhead::FileSrc::open(&self.seal)?;
+                f.read_at(off, &mut mag)?;
+                (mag == WORK_MAGIC).then_some((count, off, len))
+            }
+            _ => None,
+        };
+        let entries = if let Some((count, off, len)) = large_body {
+            // One pass over the body: check every star (one in memory), keep only the
+            // star map, and list the members from the same stream.
+            let home = PackHome::File {
+                path: self.seal.clone(),
+                base: off,
+                len,
+            };
+            let pass = self.pass.clone();
+            let ids = self.identities.clone();
+            let (body, entries) = self.open_pack_with(home, pass.as_deref(), |r| {
+                crate::folder::list_inner_stream(r, count, pass.as_deref(), &ids)
+            })?;
+            self.sealed_body = Some(Arc::new(body));
+            entries
+        } else if crate::folder::is_sealed_dir_pack(&self.seal) {
             let inner = crate::folder::open_sealed_inner(
                 &self.seal,
                 self.pass.as_deref(),
@@ -542,16 +827,30 @@ impl VaultFs {
         self.by_path.get(&p).copied()
     }
 
-    fn read_ino(&self, ino: u64) -> Result<Arc<Vec<u8>>> {
-        if let Some(c) = self
-            .cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&ino)
-            .cloned()
-        {
-            return Ok(c);
+    /// How inode `ino`'s bytes are held, opening (and caching) it on first use.
+    fn body(&self, ino: u64) -> Result<Body> {
+        if let Some(b) = self.lock_cache().bodies.get(&ino).cloned() {
+            return Ok(b);
         }
+        let body = match self.locate(ino)? {
+            Located::Whole(d) => Body::Whole(d),
+            Located::Pack(home, pass) => {
+                Body::Pack(Arc::new(self.open_pack(home, pass.as_deref())?))
+            }
+        };
+        let mut c = self.lock_cache();
+        match &body {
+            Body::Whole(d) => c.keep_whole(ino, d),
+            Body::Pack(_) => {
+                c.bodies.insert(ino, body.clone());
+            }
+        }
+        Ok(body)
+    }
+
+    /// Find inode `ino`'s bytes: a classic member is decoded whole here, a large-file
+    /// member is only located (nothing of it is read yet).
+    fn locate(&self, ino: u64) -> Result<Located> {
         let node = self
             .nodes
             .get(&ino)
@@ -560,8 +859,8 @@ impl VaultFs {
             NodeKind::File { src, .. } => src.clone(),
             NodeKind::Dir => return Err(crate::Error::Msg("is a directory".into())),
         };
-        let data = match src {
-            FileSrc::Whole => decode_whole(&self.seal, self.pass.as_deref(), &self.identities)?,
+        let body = match src {
+            FileSrc::Whole => self.body_of_file(&self.seal, self.pass.as_deref())?,
             FileSrc::Member { star } => {
                 let star = star.ok_or_else(|| {
                     crate::Error::Msg(format!(
@@ -569,15 +868,11 @@ impl VaultFs {
                         node.name
                     ))
                 })?;
-                decode_whole(&star, self.pass.as_deref(), &self.identities)?
+                self.body_of_file(&star, self.pass.as_deref())?
             }
             FileSrc::Entry { rel } => {
-                let star = match &self.sealed_inner {
-                    Some(inner) => crate::folder::read_entry_star_v1_bytes(inner, &rel)?,
-                    None => read_dir_entry_star(&self.seal, &rel)?,
-                };
                 let file_pass = pass_for(&rel, self.pass.as_deref(), &self.wards);
-                decode_star(&star, file_pass.as_deref(), &self.identities)?
+                self.body_of_entry(&rel, file_pass)?
             }
             FileSrc::LogSeg { seq } => {
                 let dir = self
@@ -595,19 +890,354 @@ impl VaultFs {
                     &opts,
                     crate::seglog::ReadMode::Single,
                 )?;
-                out.parts
+                let data = out
+                    .parts
                     .into_iter()
                     .next()
                     .map(|(_, b)| b)
-                    .ok_or_else(|| crate::Error::Msg(format!("segment {seq} produced no bytes")))?
+                    .ok_or_else(|| crate::Error::Msg(format!("segment {seq} produced no bytes")))?;
+                Located::Whole(Arc::new(data))
             }
         };
-        let arc = Arc::new(data);
+        Ok(body)
+    }
+
+    fn lock_cache(&self) -> std::sync::MutexGuard<'_, Cache> {
         self.cache
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(ino, arc.clone());
-        Ok(arc)
+    }
+
+    /// A whole `.sg1` or constellation star: a large-file pack is read in pieces, a
+    /// classic seal is decoded whole.
+    fn body_of_file(&self, path: &Path, pass: Option<&str>) -> Result<Located> {
+        if is_work_pack(path) {
+            let len = fs::metadata(path)
+                .map_err(|e| crate::Error::Msg(e.to_string()))?
+                .len();
+            let home = PackHome::File {
+                path: path.to_path_buf(),
+                base: 0,
+                len,
+            };
+            return Ok(Located::Pack(home, pass.map(str::to_string)));
+        }
+        Ok(Located::Whole(Arc::new(decode_whole(
+            path,
+            pass,
+            &self.identities,
+        )?)))
+    }
+
+    /// One Tome member: located in place (a plain Tome on disk, or a Warded Tome's
+    /// decrypted inner pack); a large-file member is read in pieces from there.
+    fn body_of_entry(&self, rel: &str, pass: Option<String>) -> Result<Located> {
+        if let Some(body) = &self.sealed_body {
+            let total = body.spans.last().map(|s| s.0 + s.1).unwrap_or(0);
+            let mut cur = SrcCursor {
+                src: HomeSrc::Body {
+                    fs: self,
+                    base: 0,
+                    len: total,
+                },
+                pos: 0,
+            };
+            let (off, len) = locate_entry_star(&mut cur, total, rel)?;
+            let mut mag = [0u8; 4];
+            if len >= 4 {
+                self.pieces_fill(BODY_KEY, body, off, &mut mag)?;
+            }
+            if mag == WORK_MAGIC {
+                let home = PackHome::Body { base: off, len };
+                return Ok(Located::Pack(home, pass));
+            }
+            // A classic member is one AES-GCM message, at most the Tome's `--chunk` long.
+            let n =
+                usize::try_from(len).map_err(|_| crate::Error::Msg("member too large".into()))?;
+            let mut star = vec![0u8; n];
+            self.pieces_fill(BODY_KEY, body, off, &mut star)?;
+            return Ok(Located::Whole(Arc::new(decode_star(
+                &star,
+                pass.as_deref(),
+                &self.identities,
+            )?)));
+        }
+        if let Some(inner) = &self.sealed_inner {
+            let (off, len) = locate_entry_star(
+                &mut io::Cursor::new(inner.as_slice()),
+                inner.len() as u64,
+                rel,
+            )?;
+            let (a, b) = (off as usize, (off + len) as usize);
+            let star = &inner[a..b];
+            if star.starts_with(&WORK_MAGIC) {
+                let home = PackHome::Inner { base: off, len };
+                return Ok(Located::Pack(home, pass));
+            }
+            return Ok(Located::Whole(Arc::new(decode_star(
+                star,
+                pass.as_deref(),
+                &self.identities,
+            )?)));
+        }
+        let size = fs::metadata(&self.seal)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?
+            .len();
+        let mut f = io::BufReader::new(
+            fs::File::open(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?,
+        );
+        let (off, len) = locate_entry_star(&mut f, size, rel)?;
+        let mut mag = [0u8; 4];
+        let is_pack = len >= 4 && {
+            f.seek(SeekFrom::Start(off))
+                .map_err(|e| crate::Error::Msg(e.to_string()))?;
+            f.read_exact(&mut mag)
+                .map_err(|e| crate::Error::Msg(e.to_string()))?;
+            mag == WORK_MAGIC
+        };
+        if is_pack {
+            let home = PackHome::File {
+                path: self.seal.clone(),
+                base: off,
+                len,
+            };
+            return Ok(Located::Pack(home, pass));
+        }
+        // A classic member is one AES-GCM message, at most the Tome's `--chunk` long.
+        let n = usize::try_from(len).map_err(|_| crate::Error::Msg("member too large".into()))?;
+        let mut star = vec![0u8; n];
+        f.seek(SeekFrom::Start(off))
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        f.read_exact(&mut star)
+            .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        Ok(Located::Whole(Arc::new(decode_star(
+            &star,
+            pass.as_deref(),
+            &self.identities,
+        )?)))
+    }
+
+    /// A readable source for `home`.
+    fn home_src(&self, home: &PackHome) -> Result<HomeSrc<'_>> {
+        match home {
+            PackHome::File { path, base, len } => {
+                let f = crate::packhead::FileSrc::open(path)?;
+                if base.checked_add(*len).is_none_or(|e| e > f.size()) {
+                    return Err(crate::Error::Msg(
+                        "large-file member runs past the end of its file".into(),
+                    ));
+                }
+                Ok(HomeSrc::File {
+                    f,
+                    base: *base,
+                    len: *len,
+                })
+            }
+            PackHome::Body { base, len } => Ok(HomeSrc::Body {
+                fs: self,
+                base: *base,
+                len: *len,
+            }),
+            PackHome::Inner { base, len } => {
+                let inner = self
+                    .sealed_inner
+                    .as_ref()
+                    .ok_or_else(|| crate::Error::Msg("internal: no Warded Tome body".into()))?;
+                let (a, b) = (*base as usize, (*base + *len) as usize);
+                let slice = inner
+                    .get(a..b)
+                    .ok_or_else(|| crate::Error::Msg("member runs past the Tome body".into()))?;
+                Ok(HomeSrc::Mem(slice))
+            }
+        }
+    }
+
+    /// Check a large-file pack end to end, one star in memory at a time, and record
+    /// where each star's plaintext sits. Bounded by the pack's star count.
+    fn open_pack(&self, home: PackHome, pass: Option<&str>) -> Result<PackPieces> {
+        Ok(self.open_pack_with(home, pass, |_| Ok(()))?.0)
+    }
+
+    /// Like [`VaultFs::open_pack`], handing `f` the plaintext as a stream on the same
+    /// pass (so a caller that needs to read it once, such as listing a Warded Tome or
+    /// exporting a member, does not decrypt it twice). Whatever `f` leaves unread is
+    /// read and checked before anything is returned.
+    fn open_pack_with<T>(
+        &self,
+        home: PackHome,
+        pass: Option<&str>,
+        f: impl FnOnce(&mut dyn Read) -> Result<T>,
+    ) -> Result<(PackPieces, T)> {
+        crate::refuse_empty_open_pass(pass)?;
+        let mut src = self.home_src(&home)?;
+        let layout = crate::packhead::layout(&mut src)?;
+        let (spans, t) = {
+            let mut r = SpanReader {
+                r: PackReader::new(&mut src, &layout, pass, &[], &self.identities),
+                spans: Vec::with_capacity(layout.stars.len()),
+                at: 0,
+                buf: Vec::new(),
+                pos: 0,
+            };
+            let t = f(&mut r)?;
+            // The pack's total is checked at its end: read to it before trusting `t`.
+            io::copy(&mut r, &mut io::sink()).map_err(|e| crate::Error::Msg(e.to_string()))?;
+            (r.spans, t)
+        };
+        Ok((
+            PackPieces {
+                home,
+                layout,
+                spans,
+                pass: pass.map(str::to_string),
+            },
+            t,
+        ))
+    }
+
+    /// Plaintext of star `i` of a large-file member, from the small star cache or
+    /// opened (and checked) again.
+    fn pack_star(&self, ino: u64, p: &PackPieces, i: usize) -> Result<Arc<Vec<u8>>> {
+        if let Some(hit) = self.lock_cache().star((ino, i)) {
+            return Ok(hit);
+        }
+        let at = *p
+            .layout
+            .stars
+            .get(i)
+            .ok_or_else(|| crate::Error::Msg(format!("no star {i} in this member")))?;
+        let mut src = self.home_src(&p.home)?;
+        let (plain, _) = crate::work::open_star_checked(
+            &mut src,
+            &p.layout,
+            i,
+            at,
+            p.pass.as_deref(),
+            &[],
+            &self.identities,
+        )?;
+        let want = p.spans.get(i).map(|s| s.1).unwrap_or(u64::MAX);
+        if plain.len() as u64 != want {
+            return Err(crate::Error::Msg(format!(
+                "star {i} changed since this member was opened; refusing"
+            )));
+        }
+        let plain = Arc::new(plain);
+        self.lock_cache().keep_star((ino, i), plain.clone());
+        Ok(plain)
+    }
+
+    /// Fill `buf` exactly with the plaintext of `p` from `offset` (an error past its
+    /// end). Opens only the stars the range covers; bounded by the star count.
+    fn pieces_fill(&self, key: u64, p: &PackPieces, offset: u64, buf: &mut [u8]) -> Result<()> {
+        let total = p.spans.last().map(|s| s.0 + s.1).unwrap_or(0);
+        if offset
+            .checked_add(buf.len() as u64)
+            .is_none_or(|e| e > total)
+        {
+            return Err(crate::Error::Msg(
+                "read past the end of a large member".into(),
+            ));
+        }
+        let mut done = 0usize;
+        // First star whose plaintext ends after `offset`.
+        let mut i = p.spans.partition_point(|s| s.0 + s.1 <= offset);
+        // Each pass copies a non-empty piece or skips an empty star; at most one pass per star.
+        while done < buf.len() && i < p.spans.len() {
+            let (s_off, s_len) = p.spans[i];
+            if s_len > 0 {
+                let plain = self.pack_star(key, p, i)?;
+                let pos = offset + done as u64;
+                let from = usize::try_from(pos - s_off)
+                    .map_err(|_| crate::Error::Msg("offset out of range".into()))?;
+                let take = (buf.len() - done).min(plain.len().saturating_sub(from));
+                buf[done..done + take].copy_from_slice(&plain[from..from + take]);
+                done += take;
+            }
+            i += 1;
+        }
+        if done != buf.len() {
+            return Err(crate::Error::Msg("large member ended early".into()));
+        }
+        Ok(())
+    }
+
+    /// Up to `size` bytes of inode `ino` from `offset`.
+    fn read_at(&self, ino: u64, offset: u64, size: usize) -> Result<Vec<u8>> {
+        match self.body(ino)? {
+            Body::Whole(d) => {
+                let Ok(start) = usize::try_from(offset) else {
+                    return Ok(Vec::new());
+                };
+                if start >= d.len() {
+                    return Ok(Vec::new());
+                }
+                let end = start.saturating_add(size).min(d.len());
+                Ok(d[start..end].to_vec())
+            }
+            Body::Pack(p) => {
+                let total = p.spans.last().map(|s| s.0 + s.1).unwrap_or(0);
+                if offset >= total || size == 0 {
+                    return Ok(Vec::new());
+                }
+                let want = (size as u64).min(total - offset) as usize;
+                let mut out = vec![0u8; want];
+                self.pieces_fill(ino, &p, offset, &mut out)?;
+                Ok(out)
+            }
+        }
+    }
+
+    /// Write inode `ino` to the file `out`, all or nothing (a hidden part file renamed
+    /// into place only after every check passed). A large-file member not opened yet is
+    /// checked and written on one pass, one star in memory at a time.
+    fn export_file(&self, ino: u64, out: &Path) -> Result<u64> {
+        let cached = self.lock_cache().bodies.get(&ino).cloned();
+        let located = match cached {
+            Some(Body::Whole(d)) => Located::Whole(d),
+            Some(Body::Pack(_)) => {
+                return write_part(out, |w| self.copy_ino_to(ino, w));
+            }
+            None => self.locate(ino)?,
+        };
+        match located {
+            Located::Whole(d) => write_part(out, |w| {
+                w.write_all(&d)
+                    .map_err(|e| crate::Error::Msg(e.to_string()))?;
+                Ok(d.len() as u64)
+            }),
+            Located::Pack(home, pass) => write_part(out, |w| {
+                let (_, n) = self.open_pack_with(home, pass.as_deref(), |r| {
+                    io::copy(r, w).map_err(|e| crate::Error::Msg(e.to_string()))
+                })?;
+                Ok(n)
+            }),
+        }
+    }
+
+    /// Write all of inode `ino` to `w`; a large-file member goes one star at a time.
+    fn copy_ino_to<W: Write>(&self, ino: u64, w: &mut W) -> Result<u64> {
+        match self.body(ino)? {
+            Body::Whole(d) => {
+                w.write_all(&d)
+                    .map_err(|e| crate::Error::Msg(e.to_string()))?;
+                Ok(d.len() as u64)
+            }
+            Body::Pack(p) => self.copy_body_to(ino, &p, w),
+        }
+    }
+
+    /// Every star of a large-file member, in order, each opened and checked again.
+    /// Bounded by the star count.
+    fn copy_body_to<W: Write>(&self, ino: u64, p: &PackPieces, w: &mut W) -> Result<u64> {
+        let mut n = 0u64;
+        for i in 0..p.spans.len() {
+            let plain = self.pack_star(ino, p, i)?;
+            w.write_all(&plain)
+                .map_err(|e| crate::Error::Msg(e.to_string()))?;
+            n += plain.len() as u64;
+        }
+        Ok(n)
     }
 
     fn child_by_name(&self, parent: u64, name: &str) -> Option<u64> {
@@ -663,6 +1293,46 @@ fn decode_star(star: &[u8], pass: Option<&str>, identities: &[Identity]) -> Resu
     } else {
         unseal_ex_keys(star, pass, &[], identities)
     }
+}
+
+/// Write `out` all or nothing: bytes go to a new hidden part file beside it (a unique
+/// name, created exclusively, so it can never replace another exported file), renamed
+/// over `out` only if `f` succeeds; on any error the part file is removed. Unlike the
+/// archive writers this does not sync to disk (an export is a view, made again from the
+/// seal at will).
+fn write_part<T>(
+    out: &Path,
+    f: impl FnOnce(&mut io::BufWriter<fs::File>) -> Result<T>,
+) -> Result<T> {
+    let io_err = |e: io::Error| crate::Error::Msg(e.to_string());
+    let part = crate::folder::scratch_beside(out, "sigil-part");
+    let result = (|| {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .map_err(io_err)?;
+        let mut w = io::BufWriter::new(file);
+        let v = f(&mut w)?;
+        w.flush().map_err(io_err)?;
+        drop(w);
+        fs::rename(&part, out).map_err(io_err)?;
+        Ok(v)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&part);
+    }
+    result
+}
+
+/// The first `n` bytes of `path` (fewer when it is shorter).
+fn peek_file(path: &Path, n: u64) -> Result<Vec<u8>> {
+    let f = fs::File::open(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
+    let mut out = Vec::new();
+    f.take(n)
+        .read_to_end(&mut out)
+        .map_err(|e| crate::Error::Msg(e.to_string()))?;
+    Ok(out)
 }
 
 fn pass_for(rel: &str, default: Option<&str>, wards: &[(String, String)]) -> Option<String> {
@@ -863,16 +1533,8 @@ impl fuser::Filesystem for FuseFs {
         _lock_owner: Option<fuser::LockOwner>,
         reply: fuser::ReplyData,
     ) {
-        match self.inner.read_ino(u64::from(ino)) {
-            Ok(data) => {
-                let start = offset as usize;
-                if start >= data.len() {
-                    reply.data(&[]);
-                    return;
-                }
-                let end = (start + size as usize).min(data.len());
-                reply.data(&data[start..end]);
-            }
+        match self.inner.read_at(u64::from(ino), offset, size as usize) {
+            Ok(data) => reply.data(&data),
             Err(_) => reply.error(fuser::Errno::EIO),
         }
     }
@@ -1196,6 +1858,173 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn noise(n: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// Read `path` through the VFS in odd-sized pieces that cross star boundaries.
+    fn read_in_pieces(vfs: &VaultFs, path: &str, total: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let step = 50_001;
+        while out.len() < total {
+            let got = vfs.read_range(path, out.len() as u64, step).unwrap();
+            assert!(!got.is_empty(), "short read at {}", out.len());
+            out.extend_from_slice(&got);
+        }
+        assert!(vfs.read_range(path, total as u64, 10).unwrap().is_empty());
+        out
+    }
+
+    /// A Tome (plain and Warded, the Warded one with a large body) whose big member is
+    /// stored as a large-file pack: reads in pieces, whole, and an export all give the
+    /// member's bytes, and only stars are held, never the member.
+    #[test]
+    fn large_members_read_in_pieces() {
+        let d = tmp("pieces");
+        let src = d.join("src");
+        fs::create_dir_all(src.join("m")).unwrap();
+        let big = noise(700_000, 11);
+        fs::write(src.join("m/big.bin"), &big).unwrap();
+        fs::write(src.join("small.txt"), b"small").unwrap();
+        for (tag, pass) in [("plain", None), ("warded", Some("pw"))] {
+            let pack = d.join(format!("{tag}.sg1"));
+            inscribe_dir(&src, &pack, Mode::Seal, pass, "", &[], 64 * 1024, &[]).unwrap();
+            let before = crate::sha256_path(&pack).unwrap();
+            let vfs = VaultFs::open(&pack, pass, &[], false).unwrap();
+            assert_eq!(
+                vfs.sealed_body.is_some(),
+                pass.is_some(),
+                "{tag}: large body"
+            );
+            assert!(vfs.sealed_inner.is_none(), "{tag}: body never held whole");
+            assert_eq!(
+                vfs.file_size("m/big.bin").unwrap(),
+                big.len() as u64,
+                "{tag}"
+            );
+            assert_eq!(read_in_pieces(&vfs, "m/big.bin", big.len()), big, "{tag}");
+            assert_eq!(
+                vfs.read_range("m/big.bin", 65_530, 20).unwrap(),
+                &big[65_530..65_550]
+            );
+            assert_eq!(&vfs.read_file("m/big.bin").unwrap()[..], &big[..], "{tag}");
+            assert_eq!(&vfs.read_file("small.txt").unwrap()[..], b"small", "{tag}");
+            let mut copy = Vec::new();
+            assert_eq!(
+                vfs.copy_file_to("m/big.bin", &mut copy).unwrap(),
+                big.len() as u64
+            );
+            assert_eq!(copy, big);
+            let dest = d.join(format!("{tag}-out"));
+            assert_eq!(vfs.export_dir(&dest).unwrap(), 2);
+            assert_eq!(fs::read(dest.join("m/big.bin")).unwrap(), big, "{tag}");
+            assert_eq!(fs::read(dest.join("small.txt")).unwrap(), b"small", "{tag}");
+            // A fresh VFS exports on one streamed pass (nothing opened beforehand).
+            let fresh = VaultFs::open(&pack, pass, &[], false).unwrap();
+            let dest2 = d.join(format!("{tag}-out2"));
+            assert_eq!(fresh.export_dir(&dest2).unwrap(), 2);
+            assert_eq!(fs::read(dest2.join("m/big.bin")).unwrap(), big, "{tag}");
+            let held = vfs.lock_cache().stars.len();
+            assert!(held <= STAR_CACHE, "{tag}: {held} stars held");
+            assert_eq!(
+                crate::sha256_path(&pack).unwrap(),
+                before,
+                "{tag}: seal unchanged"
+            );
+        }
+        // A single file sealed as a large-file pack.
+        let single = d.join("single.sg1");
+        crate::work::inscribe_path(
+            &src.join("m/big.bin"),
+            &single,
+            Mode::Seal,
+            None,
+            "",
+            &[],
+            64 * 1024,
+            None,
+            crate::DEFAULT_PIECE,
+            crate::work::DEFAULT_OVERTURE_MB,
+            None,
+        )
+        .unwrap();
+        let vfs = VaultFs::open(&single, None, &[], false).unwrap();
+        assert_eq!(read_in_pieces(&vfs, "big.bin", big.len()), big);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Damage fails closed: a star changed after the member was opened is refused when
+    /// read (never served as wrong bytes), and a member damaged beforehand exports
+    /// nothing (no file, no part file).
+    #[test]
+    fn changed_or_damaged_large_member_is_refused() {
+        let d = tmp("pieces-bad");
+        let src = d.join("src");
+        fs::create_dir_all(&src).unwrap();
+        let big = noise(500_000, 23);
+        fs::write(src.join("big.bin"), &big).unwrap();
+        let pack = d.join("t.sg1");
+        // Glyph mode carries no parity, so any change is beyond repair.
+        inscribe_dir(&src, &pack, Mode::Glyph, None, "", &[], 64 * 1024, &[]).unwrap();
+        let vfs = VaultFs::open(&pack, None, &[], false).unwrap();
+        // Open the member (full check) and read its first piece.
+        assert_eq!(vfs.read_range("big.bin", 0, 100).unwrap(), &big[..100]);
+        // Change bytes inside a later star, in place.
+        let mut raw = fs::read(&pack).unwrap();
+        let at = raw.len() * 3 / 4;
+        for b in &mut raw[at..at + 64] {
+            *b ^= 0x5a;
+        }
+        fs::write(&pack, &raw).unwrap();
+        let tail_off = (big.len() * 3 / 4) as u64;
+        let mut refused = false;
+        for off in (tail_off.saturating_sub(70_000)..big.len() as u64).step_by(30_000) {
+            match vfs.read_range("big.bin", off, 30_000) {
+                Ok(got) => {
+                    let o = off as usize;
+                    assert_eq!(got, &big[o..o + got.len()], "wrong bytes served at {off}");
+                }
+                Err(_) => refused = true,
+            }
+        }
+        assert!(refused, "a changed star was never refused");
+        // A fresh view of the damaged Tome: export writes nothing for the member.
+        let fresh = VaultFs::open(&pack, None, &[], false).unwrap();
+        let dest = d.join("out");
+        assert!(fresh.export_dir(&dest).is_err());
+        let left: Vec<_> = fs::read_dir(&dest).unwrap().collect();
+        assert!(left.is_empty(), "export left {left:?}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Whole-held members are dropped oldest first past the cache budget, but the one
+    /// being read always stays (a member larger than the budget still opens).
+    #[test]
+    fn whole_cache_is_bounded_but_keeps_the_newest() {
+        let mut c = Cache::default();
+        let big = Arc::new(vec![0u8; (WHOLE_CACHE_BYTES / 2 + 1) as usize]);
+        c.keep_whole(10, &big);
+        c.keep_whole(11, &big);
+        assert!(!c.bodies.contains_key(&10) && c.bodies.contains_key(&11));
+        let huge = Arc::new(vec![0u8; (WHOLE_CACHE_BYTES + 1) as usize]);
+        c.keep_whole(12, &huge);
+        assert!(c.bodies.contains_key(&12) && c.bodies.len() == 1);
+        assert_eq!(c.whole_bytes, huge.len() as u64);
+        for i in 0..20 {
+            c.keep_star((1, i), Arc::new(vec![1u8; 8]));
+        }
+        assert_eq!(c.stars.len(), STAR_CACHE);
+        assert!(c.star((1, 19)).is_some() && c.star((1, 0)).is_none());
     }
 
     #[test]

@@ -20,6 +20,18 @@ piece at a time: a 2 GiB file sealed as one Sigil peaked at about 40 MiB in each
 steps (it used to take 12 to 18 GiB). Opening a Warded file reads it twice, once to check it
 and once to decrypt, so it takes a little longer. The deeper repair for scattered bit rot
 (the step `mend` tries when the quick repair is not enough) still loads the whole file.
+`sigil mount` also reads a big file inside a Tome a piece at a time: exporting a Tome with
+one 1 GiB file peaked at 43 MiB (86 MiB when the Tome is locked), where it used to take
+more than twice the file's size. Exporting a large file from a locked Tome takes longer
+than before (about 2.5 times as long), because each piece is checked twice.
+
+**Why are some files missing from my Tome?**
+A Tome stores regular files only. Files and folders whose names start with `.`, special
+files such as named pipes, links that point nowhere, and empty folders are left out. Sigil
+lists every one of them when it makes the Tome, and the last line says how many. File
+permissions are not stored either, so a script comes back without its executable bit. To
+stop instead of packing without them, add `--fail-on-skip`: nothing is written and the exit
+code is 1.
 
 **Can a repair ever give me a wrong file?**
 Sigil keeps a repaired file only if it matches the fingerprints stored when the Sigil was

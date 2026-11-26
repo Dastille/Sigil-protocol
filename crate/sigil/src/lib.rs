@@ -129,8 +129,9 @@ pub use folder::{
     dir_report, inscribe_dir, inscribe_dir_to, inscribe_dir_to_names_visible, is_dir_pack,
     is_plain_dir_pack, is_sealed_dir_pack, list_dir_pack, list_dir_pack_keys, looks_like_nest_name,
     mend_plain_dir, mend_sealed_dir, read_dir_entry_star, scry_dir, scry_dir_checked,
-    scry_dir_keys, seal_dir_names, sealed_dir_body, sealed_dir_body_loc, unseal_dir,
+    scry_dir_keys, seal_dir_names, sealed_dir_body, sealed_dir_body_loc, tree_skips, unseal_dir,
     unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry, SealNamesReport,
+    SkipReason, SkipReport, Skipped, MAX_SKIPS_LISTED,
 };
 pub use fountain::{
     deluge_answer_report, deluge_fountain, deluge_fountain_opts, deluge_fountain_report,
