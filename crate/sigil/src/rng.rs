@@ -102,7 +102,8 @@ pub fn weak_random_warning(path: &Path) -> Option<String> {
          its contents as readable by anyone: open it, then Inscribe it again with this \
          version and delete the old copies."
     } else {
-        " It is not encrypted, so only its checks are weaker; Inscribe it again to be safe."
+        " If it is not locked, nothing secret depended on it. If it is locked (an older \
+         label), Inscribe it again with this version and delete the old copies."
     };
     Some(format!(
         "{} has an all-zero {}: it was made while the system random number generator was \
