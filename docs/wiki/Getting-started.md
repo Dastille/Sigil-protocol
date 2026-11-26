@@ -83,6 +83,7 @@ same bytes
 byte for byte.
 
 Folders work the same way: `sigil seal -o tree.sg1 myfolder` and
-`sigil unseal -o restored tree.sg1`.
+`sigil unseal -o restored tree.sg1`. That folder Sigil is a **Tome**: one `.sg1`
+file, not a Codex (`name.sigil/` folder).
 
 Next: [Repairing a damaged file](Repairing-a-damaged-file.md).

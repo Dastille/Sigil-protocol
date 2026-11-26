@@ -1,6 +1,6 @@
-//! `sigil gc`: reclaim orphans and temp files from a tidy container (or old layout).
+//! `sigil gc`: reclaim orphans and temp files from a Codex (or old layout).
 //!
-//! Safety rules (see `docs/CONTAINER.md`):
+//! Safety rules (see `docs/CODEX.md`):
 //!
 //! * **Report-only by default.** Nothing is deleted unless `apply` is set.
 //! * Never deletes a member the card / CHART still references. A constellation card that
@@ -148,7 +148,7 @@ impl GcReport {
             "gc {} ({}, {})\n",
             self.root.display(),
             self.kind,
-            self.layout
+            crate::container::layout_label(&self.layout)
         );
         for i in &self.items {
             let rel = i.path.strip_prefix(&self.root).unwrap_or(&i.path);
@@ -322,7 +322,7 @@ pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
         return Ok(Target::Sky(sky));
     }
     Err(err(format!(
-        "nothing found at {} (not a tracked vault, nor a constellation or `name.sigil/` folder)",
+        "nothing found at {} (not a tracked vault, nor a constellation or Codex)",
         path.display()
     )))
 }
@@ -331,7 +331,7 @@ pub(crate) fn resolve_target(path: &Path) -> Result<Target> {
 pub fn gc(path: &Path, opts: &GcOpts<'_>) -> Result<GcReport> {
     match resolve_target(path).map_err(|_| {
         err(format!(
-            "nothing to gc at {} (not a tracked vault, nor a constellation or `name.sigil/` folder)",
+            "nothing to gc at {} (not a tracked vault, nor a constellation or Codex)",
             path.display()
         ))
     })? {

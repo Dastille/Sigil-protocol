@@ -196,7 +196,7 @@ fn expand(sources: &[PathBuf]) -> Result<(Vec<PathBuf>, usize)> {
         if s.is_dir() {
             if container::is_container(s) {
                 return Err(err(format!(
-                    "{} is already a sigil container; adopt takes loose .sg1 stars (a folder of them, or files)",
+                    "{} is already a Codex; adopt takes loose .sg1 stars (a folder of them, or files)",
                     s.display()
                 )));
             }
@@ -314,7 +314,7 @@ pub fn adopt(path: &Path, sources: &[PathBuf], opts: &AdoptOpts<'_>) -> Result<A
     for f in files {
         if inside_container(&f) {
             rep.skipped
-                .push((f, "inside a sigil container (not a loose star)".into()));
+                .push((f, "inside a Codex (not a loose star)".into()));
             continue;
         }
         let bytes = match fs::read(&f) {

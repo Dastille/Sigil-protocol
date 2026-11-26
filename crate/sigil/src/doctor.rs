@@ -1,11 +1,11 @@
 //! `sigil doctor`: read-only health check of a vault or constellation.
 //!
-//! Looks for: container manifest problems, old layouts, missing members, bit rot (ECC
+//! Looks for: CONTAINER manifest problems, old layouts, missing members, bit rot (ECC
 //! verify; repairable damage points at `sigil mend`), orphans and temp files (shared with
 //! `sigil gc`), and stale / broken cold kits. It never writes unless `fix` is set, and then
-//! only the two safe, reversible-in-spirit operations: `sigil tidy` (old layout → container,
+//! only the two safe, reversible-in-spirit operations: `sigil tidy` (old layout → Codex,
 //! fingerprint-verified) and `sigil gc --apply`. Bit rot, missing members and cold kits are
-//! never "fixed" automatically. See `docs/CONTAINER.md`.
+//! never "fixed" automatically. See `docs/CODEX.md`.
 //!
 //! Exit codes (CLI): 0 healthy · 1 warnings only · 2 problems found · 3 could not check.
 
@@ -102,10 +102,7 @@ impl DoctorReport {
 
     /// Same report under another command name (`sigil log verify`).
     pub fn render_as(&self, cmd: &str) -> String {
-        let layout = match self.layout.as_str() {
-            "container" => "`name.sigil/` folder",
-            other => other,
-        };
+        let layout = crate::container::layout_label(self.layout.as_str());
         let mut s = format!(
             "{cmd} {} ({}, {}{})\n",
             self.root.display(),
@@ -494,7 +491,7 @@ pub fn doctor(path: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
     let mut fixed = Vec::new();
     let mut path = path.to_path_buf();
     if opts.fix {
-        // Safe fix 1: old layout → container (fingerprint-verified copy, then remove old).
+        // Safe fix 1: old layout → Codex (fingerprint-verified copy, then remove old).
         let probe = analyze(&path, opts)?;
         if probe.layout == "old layout" {
             match container::tidy(
@@ -580,7 +577,7 @@ fn old_layout_finding(rep: &mut DoctorReport) {
         Severity::Warn,
         "old-layout",
         rep.root.display().to_string(),
-        "old layout still opens, but is not a tidy `name.sigil/` folder",
+        "old layout still opens, but is not a Codex",
         Some("sigil tidy PATH (or doctor --fix)".into()),
     ));
 }
@@ -779,8 +776,8 @@ fn analyze_vault(vdir: &Path, opts: &DoctorOpts<'_>) -> Result<DoctorReport> {
             if uses_cold { Severity::Warn } else { Severity::Info },
             "cold-missing",
             "cold/",
-            format!("light retention: {list} left the chart and no Frost Rune (cold folder) for it is inside this `name.sigil/` folder{}", if uses_cold { "" } else { " (fine if you used an external --cold DIR, which doctor cannot see)" }),
-            Some("keep Frost Rune cold folders with `--cold-here` so they travel with the `name.sigil/` folder".into()),
+            format!("light retention: {list} left the chart and no Frost Rune (cold folder) for it is inside this Codex{}", if uses_cold { "" } else { " (fine if you used an external --cold DIR, which doctor cannot see)" }),
+            Some("keep Frost Rune cold folders with `--cold-here` so they travel with the Codex".into()),
         ));
     }
     // Orphans / temp files, shared with gc.

@@ -267,7 +267,7 @@ fn symlinks_special_files_and_containers_skipped() {
         out.contains("- link.jpg  skipped: symbolic link")
             && out.contains("- outside  skipped: symbolic link")
             && out.contains("- pipe  skipped: special file")
-            && out.contains("- ev.sigil  skipped: sigil container"),
+            && out.contains("- ev.sigil  skipped: Codex"),
         "{out}"
     );
     // a name with a newline and an escape byte cannot fake output lines
@@ -286,7 +286,7 @@ fn symlinks_special_files_and_containers_skipped() {
     assert!(ls.contains("ok  evil\\nlog add"), "{ls}");
     // a folder inside a container is refused
     let e = fails(&d, &["log", "add", "photos/ev", "photos/ev.sigil/segments"]);
-    assert!(e.contains("inside a sigil container"), "{e}");
+    assert!(e.contains("inside a Codex"), "{e}");
     // a file is not a folder
     let e = fails(&d, &["log", "add", "photos/ev", "photos/a.jpg"]);
     assert!(e.contains("not a folder"), "{e}");

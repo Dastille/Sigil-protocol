@@ -494,7 +494,7 @@ seal the folder again to hide them. Details: "Tomes" in
 
 ### Segment log (append-only backups)
 
-A log is a `name.sigil/` folder of sealed segments chained by a hash INDEX.
+A log is a Codex (`name.sigil/` folder) of sealed segments chained by a hash INDEX.
 `log add` backs up a folder, sealing each new or changed file as a segment;
 unchanged files are skipped and deleted files are reported, never removed.
 

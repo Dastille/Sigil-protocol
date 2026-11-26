@@ -440,7 +440,7 @@ fn walk(root: &Path, ex: &Excluder, rep: &mut AddReport) -> Vec<Found> {
                 rep.special.push((r, "symbolic link (not followed)".into()));
             } else if ft.is_dir() {
                 if container::is_container(&abs) {
-                    rep.special.push((r, "sigil container (not added)".into()));
+                    rep.special.push((r, "Codex (not added)".into()));
                 } else {
                     stack.push((abs, r));
                 }
@@ -550,7 +550,7 @@ pub fn add(path: &Path, src: &Path, opts: &AddOpts<'_>) -> Result<AddReport> {
     let abs_src = fs::canonicalize(src).map_err(io)?;
     if abs_src.ancestors().any(container::is_container) {
         return Err(err(format!(
-            "{} is inside a sigil container; add a folder of ordinary files",
+            "{} is inside a Codex; add a folder of ordinary files",
             src.display()
         )));
     }

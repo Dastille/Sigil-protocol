@@ -111,7 +111,9 @@ Full story: [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) · retention (full vs lig
 ./sigil path tree.sg1 --into photos -o ./extracted
 ```
 
-### One tidy folder per thing (`name.sigil/`)
+### Codex: one tidy folder per thing (`name.sigil/`)
+
+A **Codex** is a `name.sigil/` folder that keeps one thing together — a Vault, a Constellation, or a signed log. It is not a Sigil Archive (a `.sg1` file) and it is not a **Tome** (a `.sg1` that holds a whole folder of files).
 
 ```
 ./sigil tidy ./notes.txt --dry-run    # preview: old .sgv/ → notes.txt.sigil/
@@ -120,7 +122,7 @@ Full story: [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) · retention (full vs lig
 ./sigil gc ./notes.txt.sigil
 ```
 
-On-disk `name.sigil/` layout: [CONTAINER.md](CONTAINER.md)
+On-disk Codex layout: [CODEX.md](CODEX.md)
 
 ### Append-only segment log (batches you can prove later)
 
@@ -256,7 +258,7 @@ Short note: [LRC-COLD-USB.md](LRC-COLD-USB.md)
 | [VAULT-MOUNT-NEST.md](VAULT-MOUNT-NEST.md) | Version tip + mount/export views + nested path walk |
 | [VAULT-RETENTION.md](VAULT-RETENTION.md) | Full vs light history, prune, Frost Rune cold folder |
 | [VAULT-RECIPIENTS.md](VAULT-RECIPIENTS.md) | Remember who a vault seals to on later commits |
-| [CONTAINER.md](CONTAINER.md) | One `name.sigil/` folder per thing; tidy / doctor / gc |
+| [CODEX.md](CODEX.md) | Codex: one `name.sigil/` folder per thing; tidy / doctor / gc |
 | [SEGMENT-LOG.md](SEGMENT-LOG.md) | Append-only sealed batches, verify, prove, shred, rotate signer |
 | [SFX-DESIGN.md](SFX-DESIGN.md) | Self-extracting archives with repair: recovery folder (Option 0) shipped as the script `scripts/make-recovery-kit.sh`; stubs pending |
 | [INDEX-PRUNE-DESIGN.md](INDEX-PRUNE-DESIGN.md) | Design note: options for bounding INDEX growth (Option A epoch rollover chosen 2026-11-02, shipped 2026-11-08 as `sigil log epoch`) |

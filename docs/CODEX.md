@@ -1,9 +1,16 @@
-# The `name.sigil/` on-disk layout
+# Codex (the `name.sigil/` folder)
 
-This page describes the on-disk layout of a `name.sigil/` folder (a Vault, a Constellation, or a
-signed log). The people-facing name is that folder. The on-disk manifest file is still named
-`CONTAINER`, and its first line is `sigil-container=1`. Those identifiers are the format, not the
-name you use in conversation. Older pages called this layout a "container".
+A **Codex** is a `name.sigil/` folder that keeps one thing together — a Vault, a
+Constellation, or a signed log — with its manifest and related files.
+
+It is not a **Sigil Archive** (a `.sg1` file) and it is not a **Tome** (a `.sg1`
+that holds a whole folder of files). Those stay what they are. A Codex is the
+folder around them.
+
+This page describes the on-disk layout. The on-disk manifest file is still named
+`CONTAINER`, and its first line is `sigil-container=1`. Those identifiers are the
+format, not the name you use in conversation. Older pages called this layout a
+"container".
 
 Status: on-disk layout version **1**, shipped. Approved 2026-10-10 as the tidy `name.sigil/` track,
 ahead of the segment-log mode.
@@ -17,13 +24,13 @@ forever, and Vandermonde stays the default (Cauchy opt-in) exactly as before.
 
 ```text
 notes.txt                      the live file (vault) stays where it is
-notes.txt.sigil/               vault container
+notes.txt.sigil/               vault Codex
   CONTAINER                    manifest (below)
   CHART                        vault chart, same format as before (sigil-vault=1)
   versions/v1.sg1 v2.sg1 …     version stack (byte-identical seals)
   cold/                        reserved: suggested `--cold` target for light retention
 
-Sky.sigil/                     constellation container
+Sky.sigil/                     constellation Codex
   CONTAINER
   Sky.sg1                      the card (index / list), same format as before
   stars/ab/ab12…ef.sg1         stars, sharded by fingerprint (SHA-256 of the plain file)
@@ -55,18 +62,18 @@ is still found; work packs (large chunked stars) are found by their sharded path
 
 ## Mapping old layouts
 
-| Old                                     | Container                         |
+| Old                                     | Codex                             |
 |-----------------------------------------|-----------------------------------|
 | `<live>.sgv/CHART`                      | `<live>.sigil/CHART` (verbatim)   |
 | `<live>.sgv/vN.sg1`                     | `<live>.sigil/versions/vN.sg1`    |
-| other files in `.sgv/` (e.g. leftovers) | same relative path in container   |
+| other files in `.sgv/` (e.g. leftovers) | same relative path in the Codex   |
 | `Sky/<title>.sg1` (card)                | `Sky.sigil/<title>.sg1`           |
 | `Sky/<name>.sg1` flat stars             | `Sky.sigil/stars/ab/<fp>.sg1`     |
 | `Sky/*.sga` atlas                       | `Sky.sigil/*.sga`                 |
 | non-sigil files / sub-folders in `Sky/` | left alone (reported)             |
 
 The CHART keeps storing bare seal names (`v3.sg1`); the `versions/` folder is implied by
-the `.sigil` container, so the CHART text is identical in both layouts.
+the Codex, so the CHART text is identical in both layouts.
 
 ## Defaults (new writes)
 
@@ -76,7 +83,7 @@ the `.sigil` container, so the CHART text is identical in both layouts.
   exists (or `Sky/` is empty). An existing non-empty flat folder stays flat.
 * Reading: `Sky` falls back to `Sky.sigil/` when `Sky` does not exist; `notes.txt`
   finds `notes.txt.sigil/` first, then `notes.txt.sgv/`.
-* Atlas bags built from a container carry stars under their old flat names, so any
+* Atlas bags built from a Codex carry stars under their old flat names, so any
   sigil — old or new — opens them.
 
 ## `sigil tidy PATH`
@@ -91,7 +98,7 @@ sigil tidy Sky [--pass-file F | --identity key.sgk]
 2. Copy into a hidden staging folder `.tidy-name.sigil/` beside it (fsync each file).
 3. Verify: SHA-256 of every copy equals the original. Vaults: the CHART loads and every
    version seal is present. Constellations: when the card opens (clear, or with the
-   given `--pass` / `--identity`), the container must not miss any star the old folder
+   given `--pass` / `--identity`), the Codex must not miss any star the old folder
    had ("list checked"). A locked card without keys gets byte-level verification only —
    still safe because nothing is re-encoded.
 4. Atomic rename staging → `name.sigil/`. Only then remove the moved old files (and the
@@ -99,7 +106,7 @@ sigil tidy Sky [--pass-file F | --identity key.sgk]
 
 Any failure before step 4 deletes the staging folder and leaves the original untouched.
 A crash mid-copy leaves only a `.tidy-*` folder that no reader looks at; the next `tidy`
-clears it and starts over. After the rename, readers prefer the container, so a crash
+clears it and starts over. After the rename, readers prefer the Codex, so a crash
 during cleanup is harmless (leftover old files are just redundant). `.sg1` bytes are
 never rewritten: encrypt-to and passphrase stars / cards migrate without any key.
 
@@ -109,7 +116,7 @@ never rewritten: encrypt-to and passphrase stars / cards migrate without any key
 sigil constellation remove Sky docs/a.txt [more names…]   # alias: rm
 sigil constellation remove Sky docs/ --dry-run            # trailing / = everything under docs/
 sigil vault remove notes.txt --version 2 [--cold DIR | --cold-here] [--force-drop] [--dry-run]
-sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the container
+sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the Codex
 ```
 
 * **Constellation remove** takes names off the list. The card is rewritten atomically
@@ -123,7 +130,7 @@ sigil vault prune  notes.txt --keep 3 --cold-here         # cold/ inside the con
   retention the seal must go to a cold folder (Frost Rune; `--cold DIR` or `--cold-here`) or be discarded on
   purpose (`--force-drop`); under **full** an explicit remove is allowed. The CHART is
   rewritten before the seal file is deleted (same order now used by `prune`).
-* `--cold-here` = `<name>.sigil/cold/` (`name.sigil/` folders only). Frost Rune cold folders land in `cold/vN/` exactly
+* `--cold-here` = `<name>.sigil/cold/` (a Codex only). Frost Rune cold folders land in `cold/vN/` exactly
   as with an external `--cold DIR`.
 
 ## `sigil gc PATH`
@@ -138,7 +145,7 @@ sigil gc Sky --pass-file F|--identity key.sgk   # card must be readable (see bel
 **Report-only unless `--apply`.** The report lists each orphan with its size, what was kept,
 what was left alone, and ends with "dry run: nothing was changed" or "reclaimed N …".
 
-Reclaims (`name.sigil/` folders):
+Reclaims (a Codex):
 
 | What                         | Rule |
 |------------------------------|------|
@@ -214,19 +221,19 @@ sigil mount Sky mnt             # FUSE (read-only): the tree is the list names; 
 sigil mount Sky mnt --export-dir out  [--pass-file F | --identity key.sgk]
 ```
 
-* `ls` / `mount` accept the short name (`Sky`), the container (`Sky.sigil`), an old flat folder,
-  and for vaults the container, `.sgv`, or the live path once the live file is gone. A live file
+* `ls` / `mount` accept the short name (`Sky`), the Codex (`Sky.sigil`), an old flat folder,
+  and for vaults the Codex, `.sgv`, or the live path once the live file is gone. A live file
   that still exists keeps its old `ls` meaning (it walks the file itself).
 * A warded / encrypt-to card needs `--pass` / `--identity` to show names; without the key the
   breadcrumb falls back to the file name and listing says so.
 * Constellation mount is read-only (`--writable` is refused — a constellation is a list of separate
   stars; use `constellation add` / `remove`). Vault mounts already carry the payload name.
-* Nothing is written into the container by `ls` or `mount` (the tests compare fingerprints).
+* Nothing is written into the Codex by `ls` or `mount` (the tests compare fingerprints).
 
 ## Segment logs (`kind=log`)
 
-A third container kind: `events.sigil/` with `CONTAINER` (`kind=log`, `log=1` or `2`, `log-id=…`),
-`INDEX`, `HEAD` and `segments/NNNN/<seq>.sg1`. Same container format 1 (extra manifest keys only).
+A third Codex kind: `events.sigil/` with `CONTAINER` (`kind=log`, `log=1` or `2`, `log-id=…`),
+`INDEX`, `HEAD` and `segments/NNNN/<seq>.sg1`. Same format 1 (extra manifest keys only).
 `sigil gc` and `sigil doctor` understand it: gc removes only unindexed leftovers of a crashed
 append, files the INDEX itself declares dead (tombstoned or merged away, `log=2`), and temp files,
 never a segment that is still needed. `log=2` appears only once a log gains a tombstone or
@@ -236,8 +243,8 @@ key ring; gc also destroys key records nothing needs); older sigils refuse newer
 
 ## Status
 
-Tidy-container track complete: container format 1, tidy, real remove, gc, doctor, names.
-Segment-log mode: slices 1–3 shipped (append / verify / mend; tombstones + compaction; opt-in per-segment keys + crypto-shredding; see SEGMENT-LOG.md), plus log mount, `sigil log adopt` (tidy a loose folder of `.sg1` batches into a `kind=log` container, byte-for-byte) and `sigil log add` (back up a folder: one segment per new or changed file). A later container-format bump (if ever needed) is
+Codex track complete: format 1, tidy, real remove, gc, doctor, names.
+Segment-log mode: slices 1–3 shipped (append / verify / mend; tombstones + compaction; opt-in per-segment keys + crypto-shredding; see SEGMENT-LOG.md), plus log mount, `sigil log adopt` (tidy a loose folder of `.sg1` batches into a `kind=log` Codex, byte-for-byte) and `sigil log add` (back up a folder: one segment per new or changed file). A later format bump (if ever needed) is
 handled by `sigil tidy` migrating forward; format 1 readers refuse newer manifests clearly.
 
 ## Private label (v3)

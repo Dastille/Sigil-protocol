@@ -1798,7 +1798,7 @@ pub fn cold_here(path: &Path) -> Result<PathBuf> {
     let (_live, vault_dir) = resolve_paths(path)?;
     if !is_container_vault_dir(&vault_dir) {
         return Err(crate::Error::Msg(
-            "--cold-here needs a tidy `name.sigil/` folder (run `sigil tidy` first) or pass --cold DIR".into(),
+            "--cold-here needs a Codex (`name.sigil/` folder); run `sigil tidy` first, or pass --cold DIR".into(),
         ));
     }
     Ok(vault_dir.join(crate::container::COLD_DIR))

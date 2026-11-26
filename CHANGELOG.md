@@ -9,6 +9,10 @@
   **Mend**, **Scry**, **Frost Rune**. **Fire Rune** is reserved (not built). On-disk names
   (`CONTAINER`, `KIT`, `name.sigil/`) and machine-readable JSON keys (`kind`, `layout`, `cmd`)
   are unchanged. Hidden aliases `kit` and `cold-usb` still run `sigil frost`.
+- The `name.sigil/` folder is called a **Codex** in user-facing text. A Codex holds a Vault, a
+  Constellation, or a signed log. It is not a Sigil Archive (a `.sg1` file) and not a Tome
+  (a `.sg1` of a whole folder). The on-disk `CONTAINER` manifest and the JSON value
+  `"layout":"container"` are unchanged.
 
 ### Repair
 
