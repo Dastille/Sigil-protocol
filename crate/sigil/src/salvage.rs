@@ -222,7 +222,17 @@ impl Ctx<'_, '_> {
 /// written to `<dest>.salvage-report.txt` (or `-N` when that exists).
 pub fn salvage_tome(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<SalvageReport> {
     crate::refuse_empty_open_pass(opts.pass)?;
+    let existed = dest.exists();
     fs::create_dir_all(dest).map_err(io)?;
+    let r = salvage_into(input, dest, opts);
+    if r.is_err() && !existed {
+        // Refused before anything was saved: leave no empty folder behind.
+        let _ = fs::remove_dir(dest);
+    }
+    r
+}
+
+fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<SalvageReport> {
     let mut cx = Ctx {
         opts,
         t0: Instant::now(),
