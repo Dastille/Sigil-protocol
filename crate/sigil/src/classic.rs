@@ -596,6 +596,7 @@ fn ct_eq16(a: &[u8; 16], b: &[u8; 16]) -> bool {
 // ---------------------------------------------------------------------------------------
 
 /// What a streamed open found.
+#[derive(Debug)]
 pub(crate) struct Opened {
     /// Plain bytes written.
     pub len: u64,
@@ -1817,4 +1818,623 @@ fn reencodes_exactly(src: &mut FileSrc, l: &Layout) -> Result<()> {
         plain_pass(src, l, &mut p, None, &mut std::io::sink()).map_err(|_| hard_fail())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::header::KEYSTONE_TRAILER_SIZE;
+    use crate::privacy::{Pad, SealOpts};
+
+    fn dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "sigil-classic-{tag}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn noise(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    fn text(len: usize) -> Vec<u8> {
+        b"the quick brown fox jumps over the lazy dog 0123456789\n"
+            .iter()
+            .cycle()
+            .take(len)
+            .copied()
+            .collect()
+    }
+
+    const PIECE: u32 = 64 * 1024;
+
+    struct Case<'a> {
+        data: &'a [u8],
+        mode: Mode,
+        pass: Option<&'a str>,
+        cov: &'a str,
+        geas: &'a [[u8; 32]],
+        shards: Option<u8>,
+        opts: SealOpts,
+        mds: &'a str,
+    }
+
+    impl<'a> Case<'a> {
+        fn new(data: &'a [u8], mode: Mode) -> Self {
+            Case {
+                data,
+                mode,
+                pass: None,
+                cov: "",
+                geas: &[],
+                shards: None,
+                opts: SealOpts::default(),
+                mds: "vandermonde",
+            }
+        }
+        /// (in-memory seal, streamed seal), same random draws.
+        fn seal_both(&self, seed: u64) -> (Vec<u8>, Vec<u8>) {
+            let be = mds::backend_by_name(self.mds).unwrap();
+            crate::set_test_random_seed(Some(seed));
+            let mem = crate::seal_kn_mds_to_opts(
+                self.data,
+                self.mode,
+                self.pass,
+                "f.bin",
+                false,
+                self.cov,
+                self.geas,
+                self.shards,
+                PIECE,
+                &*be,
+                &[],
+                &self.opts,
+            )
+            .unwrap();
+            let d = dir("seal");
+            let input = d.join("f.bin");
+            std::fs::write(&input, self.data).unwrap();
+            let out = d.join("f.sg1");
+            crate::set_test_random_seed(Some(seed));
+            let n = seal(
+                &input,
+                &out,
+                self.mode,
+                self.pass,
+                "f.bin",
+                false,
+                self.cov,
+                self.geas,
+                self.shards,
+                PIECE,
+                &*be,
+                &[],
+                &self.opts,
+            )
+            .unwrap()
+            .unwrap();
+            crate::set_test_random_seed(None);
+            assert_eq!(n, self.data.len() as u64);
+            let streamed = std::fs::read(&out).unwrap();
+            // no scratch or part files left behind
+            assert_eq!(std::fs::read_dir(&d).unwrap().count(), 2);
+            std::fs::remove_dir_all(&d).unwrap();
+            (mem, streamed)
+        }
+    }
+
+    /// The key wrap (and its spare) is drawn from the OS, so two encrypted seals of the same
+    /// draws differ only there: copy `from`'s key-wrap bytes into `to`.
+    fn same_key_wrap(to: &mut [u8], from: &[u8]) {
+        let len = keys::sgto_len_at(from, KEYSTONE_SPAN);
+        assert!(len > 0);
+        assert_eq!(keys::sgto_len_at(to, KEYSTONE_SPAN), len);
+        to[KEYSTONE_SPAN..KEYSTONE_SPAN + len]
+            .copy_from_slice(&from[KEYSTONE_SPAN..KEYSTONE_SPAN + len]);
+        let end = from.len() - KEYSTONE_TRAILER_SIZE;
+        let sp = header::SGTO_SPARE_HEAD + len;
+        to[end - sp..end].copy_from_slice(&from[end - sp..end]);
+    }
+
+    fn open_stream(file: &[u8], pass: Option<&str>, companions: &[Vec<u8>]) -> Result<Vec<u8>> {
+        let d = dir("open");
+        let p = d.join("x.sg1");
+        std::fs::write(&p, file).unwrap();
+        let mut out = Vec::new();
+        let r = open(
+            &p,
+            &mut out,
+            pass,
+            companions,
+            &*mds::default_backend(),
+            &[],
+            &d.join("out.bin"),
+            false,
+        );
+        // the spool (if any) is gone
+        assert_eq!(std::fs::read_dir(&d).unwrap().count(), 1);
+        std::fs::remove_dir_all(&d).unwrap();
+        match r? {
+            Some(o) => {
+                assert_eq!(o.len, out.len() as u64);
+                Ok(out)
+            }
+            None => Err(msg("not a clean layout")),
+        }
+    }
+
+    fn with_file<T>(file: &[u8], f: impl FnOnce(&Path) -> T) -> T {
+        let d = dir("file");
+        let p = d.join("x.sg1");
+        std::fs::write(&p, file).unwrap();
+        let r = f(&p);
+        std::fs::remove_dir_all(&d).unwrap();
+        r
+    }
+
+    fn layout_of(file: &[u8]) -> Layout {
+        with_file(file, |p| {
+            probe(&mut FileSrc::open(p).unwrap()).unwrap().unwrap()
+        })
+    }
+
+    /// Damage part `i` (CRC now fails).
+    fn hit_part(file: &mut [u8], l: &Layout, i: usize) {
+        let off = l.shard_off(i) as usize + (l.sl as usize / 2);
+        file[off] ^= 0x5a;
+    }
+
+    /// Rewrite every header copy (front Keystone, Embers, trailer) after `edit`.
+    fn patch_header(file: &mut [u8], edit: impl FnOnce(&mut Header)) {
+        let l = layout_of(file);
+        let mut h = l.h.clone();
+        edit(&mut h);
+        let hdr = header::write_header(&h);
+        let ks = header::wrap_keystone(&hdr);
+        file[..ks.len()].copy_from_slice(&ks);
+        for i in 0..l.n {
+            let at = (l.prefix + i as u64 * l.stride) as usize;
+            file[at..at + HEADER_SIZE].copy_from_slice(&header::write_ember(&hdr, i as u8));
+        }
+        let t = header::write_keystone_trailer(&hdr);
+        let n = file.len();
+        file[n - t.len()..].copy_from_slice(&t);
+    }
+
+    #[test]
+    fn plain_seals_are_byte_identical() {
+        let h1 = crate::sha256(b"companion");
+        let datas = [
+            Vec::new(),
+            vec![7u8],
+            text(23),
+            text(24),
+            noise(24, 3),
+            text(1000),
+            noise(70_001, 5),
+            text(300_003),
+            noise(1_200_000, 9),
+        ];
+        let mut n = 0;
+        for data in &datas {
+            for mode in [Mode::Seal, Mode::Reflection, Mode::Glyph] {
+                let mut c = Case::new(data, mode);
+                let (a, b) = c.seal_both(0x1126 + n);
+                assert_eq!(a, b, "plain {} bytes {mode:?}", data.len());
+                c.cov = "keep";
+                c.geas = std::slice::from_ref(&h1);
+                c.shards = Some(40);
+                let (a, b) = c.seal_both(0x2126 + n);
+                assert_eq!(a, b, "vow {} bytes {mode:?}", data.len());
+                c.mds = "cauchy";
+                if mode != Mode::Glyph {
+                    let (a, b) = c.seal_both(0x3126 + n);
+                    assert_eq!(a, b, "cauchy {} bytes {mode:?}", data.len());
+                }
+                n += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn warded_seals_match_and_cross_open() {
+        let datas = [text(24), noise(5000, 4), text(300_003), noise(900_001, 8)];
+        let mut n = 0;
+        for data in &datas {
+            for mode in [Mode::Seal, Mode::Glyph] {
+                for pad in [Pad::Off, Pad::Bucket] {
+                    let mut c = Case::new(data, mode);
+                    c.pass = Some("pw 1126");
+                    c.opts.pad = pad;
+                    let (a, mut b) = c.seal_both(0x4126 + n);
+                    n += 1;
+                    // each opens in the other's reader
+                    assert_eq!(crate::unseal(&b, c.pass).unwrap(), *data);
+                    assert_eq!(open_stream(&a, c.pass, &[]).unwrap(), *data);
+                    assert_eq!(open_stream(&b, c.pass, &[]).unwrap(), *data);
+                    same_key_wrap(&mut b, &a);
+                    assert_eq!(a, b, "warded {} bytes {mode:?} {pad:?}", data.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_open_matches_in_memory_with_damaged_parts() {
+        for pass in [None, Some("pw")] {
+            for (data, mode) in [
+                (noise(400_000, 11), Mode::Seal),
+                (text(400_000), Mode::Reflection),
+                (noise(200_000, 12), Mode::Glyph),
+            ] {
+                crate::set_test_random_seed(Some(77));
+                let file = crate::seal_kn(&data, mode, pass, "d", false, "", &[], Some(20), PIECE)
+                    .unwrap();
+                crate::set_test_random_seed(None);
+                assert_eq!(open_stream(&file, pass, &[]).unwrap(), data);
+                let l = layout_of(&file);
+                let mut torn = file.clone();
+                let hits: Vec<usize> = if mode == Mode::Glyph {
+                    vec![2]
+                } else {
+                    // two data parts and one parity part
+                    vec![0, 3, l.k + 1]
+                };
+                for &i in &hits {
+                    hit_part(&mut torn, &l, i);
+                }
+                let mem = crate::unseal(&torn, pass).map_err(|e| e.to_string());
+                let st = open_stream(&torn, pass, &[]).map_err(|e| e.to_string());
+                assert_eq!(st, mem, "{mode:?} {pass:?}");
+                if mode != Mode::Glyph {
+                    assert_eq!(st.unwrap(), data);
+                    // past repair: too few parts
+                    let mut gone = torn.clone();
+                    for i in 0..l.n - l.k + 1 {
+                        if !hits.contains(&i) {
+                            hit_part(&mut gone, &l, i);
+                        }
+                    }
+                    let mem = crate::unseal(&gone, pass).map_err(|e| e.to_string());
+                    let st = open_stream(&gone, pass, &[]).map_err(|e| e.to_string());
+                    assert!(mem.is_err());
+                    assert_eq!(st, mem);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tamper_wrong_key_and_geas_fail_closed() {
+        let data = noise(300_000, 21);
+        let geas = [crate::sha256(b"comp")];
+        crate::set_test_random_seed(Some(5));
+        let file =
+            crate::seal_ex(&data, Mode::Seal, Some("right"), "t", false, "c", &geas).unwrap();
+        crate::set_test_random_seed(None);
+        let comp = vec![b"comp".to_vec()];
+        assert_eq!(open_stream(&file, Some("right"), &comp).unwrap(), data);
+        for (pass, comp) in [
+            (Some("wrong"), comp.clone()),
+            (None, comp.clone()),
+            (Some("right"), Vec::new()),
+        ] {
+            let mem = crate::unseal_ex(&file, pass, &comp).map_err(|e| e.to_string());
+            let st = open_stream(&file, pass, &comp).map_err(|e| e.to_string());
+            assert!(mem.is_err());
+            assert_eq!(st, mem);
+        }
+        // A changed ciphertext byte with a matching CRC and Merkle root: the Merkle check
+        // passes, so only the GCM tag catches it, and nothing is written.
+        let l = layout_of(&file);
+        let mut t = file.clone();
+        let off = l.shard_off(1) as usize + 10;
+        t[off] ^= 1;
+        let body = &t[l.shard_off(1) as usize..(l.shard_off(1) + l.sl) as usize];
+        let crc = crc32fast::hash(body).to_le_bytes();
+        let at = (l.shard_off(1) + l.sl) as usize;
+        t[at..at + 4].copy_from_slice(&crc);
+        let lt = layout_of(&t);
+        let mut parts = Vec::new();
+        with_file(&t, |p| {
+            let mut s = FileSrc::open(p).unwrap();
+            parts = scan_parts(&mut s, &lt).unwrap().sha;
+        });
+        // parity no longer matches the data, so re-encoding gives a different root:
+        // refused before decrypting
+        let mem = crate::unseal_ex(&t, Some("right"), &comp).map_err(|e| e.to_string());
+        let st = open_stream(&t, Some("right"), &comp).map_err(|e| e.to_string());
+        assert!(mem.is_err());
+        assert_eq!(st, mem);
+        // drop every parity part's evidence by making the label agree with a re-encode of
+        // the tampered ciphertext: then the GCM tag is the only check left
+        let d = dir("tamper");
+        let p = d.join("t.sg1");
+        std::fs::write(&p, &t).unwrap();
+        let mut src = FileSrc::open(&p).unwrap();
+        let mut pl = Payload::InPlace;
+        let parity = rs::parity_matrix(lt.k, lt.n).unwrap();
+        let leaves = reencode(&mut src, &lt, &mut pl, &parity, |_, _, _| Ok(())).unwrap();
+        drop(src);
+        std::fs::remove_dir_all(&d).unwrap();
+        let root = merkle::merkle_root(&leaves);
+        patch_header(&mut t, |h| h.merkle = root);
+        // parity parts still hold the old values: rebuild them so every part is consistent
+        let lt = layout_of(&t);
+        let d = dir("tamper2");
+        let p = d.join("t.sg1");
+        std::fs::write(&p, &t).unwrap();
+        let mut src = FileSrc::open(&p).unwrap();
+        let mut pl = Payload::InPlace;
+        let mut f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        let mut pw = PartWriter::new(lt.prefix, lt.lead, lt.sl, lt.n);
+        reencode(&mut src, &lt, &mut pl, &parity, |i, col, b| {
+            if i >= lt.k {
+                pw.put_window(&mut f, i, col, b)
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        let (crcs, _) = pw.finish();
+        for (i, c) in crcs.iter().enumerate().skip(lt.k) {
+            write_at(&mut f, lt.shard_off(i) + lt.sl, &c.to_le_bytes()).unwrap();
+        }
+        drop(f);
+        let t = std::fs::read(&p).unwrap();
+        std::fs::remove_dir_all(&d).unwrap();
+        let _ = parts;
+        let mem = crate::unseal_ex(&t, Some("right"), &comp).map_err(|e| e.to_string());
+        assert_eq!(mem, Err(crate::LEGACY_OPEN_FAILED.to_string()));
+        let d = dir("tamper3");
+        let p = d.join("t.sg1");
+        std::fs::write(&p, &t).unwrap();
+        let mut out = Vec::new();
+        let r = open(
+            &p,
+            &mut out,
+            Some("right"),
+            &comp,
+            &*mds::default_backend(),
+            &[],
+            &d.join("o"),
+            false,
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(
+            r.map(|o| o.map(|o| o.len)).map_err(|e| e.to_string()),
+            Err(crate::LEGACY_OPEN_FAILED.to_string())
+        );
+        assert!(
+            out.is_empty(),
+            "no plaintext released before the tag checks"
+        );
+    }
+
+    #[test]
+    fn deflate_bomb_is_refused_at_the_stated_length() {
+        // 8 MiB of zeros deflates to a few KiB; the label then claims 1000 bytes.
+        let data = vec![0u8; 8 << 20];
+        let mut file = crate::seal(&data, Mode::Seal, None, "z", false).unwrap();
+        patch_header(&mut file, |h| h.orig_len = 1000);
+        let mem = crate::unseal(&file, None).map_err(|e| e.to_string());
+        assert_eq!(mem, Err("length mismatch".to_string()));
+        let d = dir("bomb");
+        let p = d.join("z.sg1");
+        std::fs::write(&p, &file).unwrap();
+        struct Count(u64);
+        impl Write for Count {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0 += b.len() as u64;
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut c = Count(0);
+        let r = open(
+            &p,
+            &mut c,
+            None,
+            &[],
+            &*mds::default_backend(),
+            &[],
+            &d.join("o"),
+            false,
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+        assert_eq!(
+            r.map(|o| o.map(|o| o.len)).map_err(|e| e.to_string()),
+            Err("length mismatch".to_string())
+        );
+        assert!(c.0 <= 1000, "wrote {} bytes past the stated length", c.0);
+    }
+
+    #[test]
+    fn a_stop_or_time_limit_ends_every_stream_with_nothing_kept() {
+        let data = noise(600_000, 31);
+        let d = dir("stop");
+        let input = d.join("in.bin");
+        std::fs::write(&input, &data).unwrap();
+        let out = d.join("out.sg1");
+        let be = mds::default_backend();
+        {
+            let _s = crate::repair_ctl::DeadlineScope::enter(Some(std::time::Instant::now()));
+            let e = seal(
+                &input,
+                &out,
+                Mode::Seal,
+                Some("p"),
+                "in.bin",
+                false,
+                "",
+                &[],
+                None,
+                PIECE,
+                &*be,
+                &[],
+                &SealOpts::default(),
+            );
+            assert!(e
+                .unwrap_err()
+                .to_string()
+                .contains(crate::repair_ctl::TIME_LIMIT));
+        }
+        assert_eq!(
+            std::fs::read_dir(&d).unwrap().count(),
+            1,
+            "nothing left behind"
+        );
+        seal(
+            &input,
+            &out,
+            Mode::Seal,
+            Some("p"),
+            "in.bin",
+            false,
+            "",
+            &[],
+            None,
+            PIECE,
+            &*be,
+            &[],
+            &SealOpts::default(),
+        )
+        .unwrap()
+        .unwrap();
+        {
+            let _s = crate::repair_ctl::DeadlineScope::enter(Some(std::time::Instant::now()));
+            let mut v = Vec::new();
+            let e = open(&out, &mut v, Some("p"), &[], &*be, &[], &out, false);
+            assert!(e
+                .unwrap_err()
+                .to_string()
+                .contains(crate::repair_ctl::TIME_LIMIT));
+            assert!(v.is_empty());
+            let (plan, _) = match mend_plan(&out, &out) {
+                Err(e) => {
+                    assert!(e.to_string().contains(crate::repair_ctl::TIME_LIMIT));
+                    (None, ())
+                }
+                Ok(p) => (p.map(|p| p.0), ()),
+            };
+            assert!(plan.is_none());
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn mend_scan_verify_and_assess_match_in_memory() {
+        for pass in [None, Some("pw")] {
+            for (data, mode) in [
+                (noise(500_000, 41), Mode::Seal),
+                (text(500_000), Mode::Reflection),
+                (noise(100_000, 42), Mode::Glyph),
+            ] {
+                crate::set_test_random_seed(Some(9));
+                let file = crate::seal_kn(&data, mode, pass, "m", false, "", &[], Some(24), PIECE)
+                    .unwrap();
+                crate::set_test_random_seed(None);
+                let l = layout_of(&file);
+                let mut cases = vec![file.clone()];
+                let mut one = file.clone();
+                hit_part(&mut one, &l, 1);
+                cases.push(one.clone());
+                if mode != Mode::Glyph {
+                    let mut many = one.clone();
+                    for i in [0, 4, l.k, l.n - 1] {
+                        hit_part(&mut many, &l, i);
+                    }
+                    cases.push(many.clone());
+                    let mut gone = file.clone();
+                    for i in 0..=(l.n - l.k) {
+                        hit_part(&mut gone, &l, i);
+                    }
+                    cases.push(gone);
+                }
+                // a damaged spare Keystone copy (data intact)
+                let mut ks = file.clone();
+                ks[HEADER_SIZE + 9] ^= 0xff;
+                cases.push(ks);
+                for (ci, f) in cases.iter().enumerate() {
+                    let what = format!("{mode:?} {pass:?} case {ci}");
+                    with_file(f, |p| {
+                        assert_eq!(
+                            verify_path(p).unwrap().map(|v| (v.1, v.2, v.3, v.4)),
+                            crate::verify(f).ok().map(|v| (v.1, v.2, v.3, v.4)),
+                            "verify {what}"
+                        );
+                        let mut budget = crate::recovery::ProbeBudget::with_secs(30);
+                        if let Some(c) = assess_path(p).unwrap() {
+                            assert_eq!(
+                                c,
+                                crate::recovery::assess_seal(
+                                    f,
+                                    crate::recovery::MendMode::Deep,
+                                    &mut budget
+                                ),
+                                "assess {what}"
+                            );
+                        }
+                        let mem = crate::pieces::mend_bytes_ex(f, false);
+                        let (plan, rep) = mend_plan(p, p).unwrap().unwrap();
+                        assert_eq!(
+                            Some(rep),
+                            crate::repair_scan::scan_bytes(f).ok(),
+                            "scan {what}"
+                        );
+                        let out = p.with_extension("mended");
+                        let st = mend_run(plan, &out, false);
+                        match (mem, st) {
+                            (Ok((m, _)), Ok(Some(done))) => {
+                                assert_eq!(std::fs::read(&out).unwrap(), m, "mend {what}");
+                                let v = crate::verify(&m).unwrap();
+                                assert_eq!((v.1, v.2, v.3), (done.merkle_ok, done.live, done.k));
+                            }
+                            (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string(), "{what}"),
+                            (a, b) => panic!(
+                                "{what}: in memory {:?}, streamed {:?}",
+                                a.map(|_| ()),
+                                b.map(|o| o.is_some())
+                            ),
+                        }
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shifted_or_extended_framing_is_left_to_the_in_memory_path() {
+        let data = noise(200_000, 51);
+        let file = crate::seal(&data, Mode::Seal, None, "s", false).unwrap();
+        let mut ins = file.clone();
+        ins.insert(file.len() / 2, 0);
+        let mut cut = file.clone();
+        cut.truncate(file.len() - 1000);
+        let mut extra = file.clone();
+        extra.extend_from_slice(b"SGIL trailing junk");
+        let mut ember = file.clone();
+        let l = layout_of(&file);
+        ember[(l.prefix + 3 * l.stride) as usize + 20] ^= 1;
+        for f in [&ins, &cut, &extra, &ember] {
+            with_file(f, |p| assert!(!is_clean(p).unwrap()));
+        }
+        with_file(&file, |p| assert!(is_clean(p).unwrap()));
+    }
 }
