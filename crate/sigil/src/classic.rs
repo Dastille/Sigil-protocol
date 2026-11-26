@@ -621,10 +621,94 @@ pub(crate) struct Opened {
 }
 
 /// The decrypted (when encrypted) and unfolded bytes of payload range `[pos, end)`.
+/// SHA-256 of each [`IO_WINDOW`]-aligned window of the payload, taken in the pass that
+/// authenticated those bytes (the GCM tag pass, or a hashing pass before a plain seal goes
+/// to stdout). Later passes read whole windows and re-check each one before using a byte,
+/// so a file changed between passes cannot slip other bytes into the output.
+pub(crate) struct Pinned {
+    sums: Vec<[u8; 32]>,
+    idx: Option<u64>,
+    win: zeroize::Zeroizing<Vec<u8>>,
+}
+
+/// Message when a pinned window no longer matches (the file changed under us).
+const CHANGED: &str = "the archive changed while it was being opened; nothing was kept";
+
+impl Pinned {
+    fn new() -> Self {
+        Pinned {
+            sums: Vec::new(),
+            idx: None,
+            win: zeroize::Zeroizing::new(Vec::new()),
+        }
+    }
+    /// Record the next window (windows arrive in order from offset 0).
+    fn record(&mut self, b: &[u8]) {
+        self.sums.push(Sha256::digest(b).into());
+    }
+    fn read_at(
+        &mut self,
+        p: &mut Payload,
+        src: &mut FileSrc,
+        l: &Layout,
+        off: u64,
+        buf: &mut [u8],
+    ) -> Result<()> {
+        let w = IO_WINDOW as u64;
+        let mut done = 0usize;
+        while done < buf.len() {
+            let at = off + done as u64;
+            let i = at / w;
+            if self.idx != Some(i) {
+                let start = i * w;
+                let len = l.h.folded_len.saturating_sub(start).min(w) as usize;
+                let want = self.sums.get(i as usize).ok_or_else(|| msg(CHANGED))?;
+                self.idx = None;
+                self.win.resize(len, 0);
+                p.read_at(src, l, start, &mut self.win[..])?;
+                let got: [u8; 32] = Sha256::digest(&self.win[..]).into();
+                if !ct_eq32(&got, want) {
+                    return Err(msg(CHANGED));
+                }
+                self.idx = Some(i);
+            }
+            let within = (at - i * w) as usize;
+            let t = (self.win.len().saturating_sub(within)).min(buf.len() - done);
+            if t == 0 {
+                return Err(msg("read past the end of the payload"));
+            }
+            buf[done..done + t].copy_from_slice(&self.win[within..within + t]);
+            done += t;
+        }
+        Ok(())
+    }
+}
+
+fn ct_eq32(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Read payload bytes, through `pin` when the pass must see exactly the bytes an earlier
+/// pass authenticated.
+fn pread(
+    p: &mut Payload,
+    pin: &mut Option<&mut Pinned>,
+    src: &mut FileSrc,
+    l: &Layout,
+    off: u64,
+    buf: &mut [u8],
+) -> Result<()> {
+    match pin {
+        Some(pn) => pn.read_at(p, src, l, off, buf),
+        None => p.read_at(src, l, off, buf),
+    }
+}
+
 struct BodyReader<'a> {
     src: &'a mut FileSrc,
     l: &'a Layout,
     p: &'a mut Payload,
+    pin: Option<&'a mut Pinned>,
     pos: u64,
     end: u64,
     ctr: Option<Ctr>,
@@ -643,9 +727,15 @@ impl Read for BodyReader<'_> {
             crate::repair_ctl::check().map_err(std::io::Error::other)?;
             let t = (self.end - self.pos).min(IO_WINDOW as u64) as usize;
             self.raw.resize(t, 0);
-            self.p
-                .read_at(self.src, self.l, self.pos, &mut self.raw[..t])
-                .map_err(std::io::Error::other)?;
+            pread(
+                self.p,
+                &mut self.pin,
+                self.src,
+                self.l,
+                self.pos,
+                &mut self.raw[..t],
+            )
+            .map_err(std::io::Error::other)?;
             if let Some(c) = &mut self.ctr {
                 c.try_apply_keystream(&mut self.raw[..t])
                     .map_err(|_| std::io::Error::other("AES-GCM: message too long"))?;
@@ -759,6 +849,7 @@ pub(crate) fn open<W: Write>(
     let mut p = payload(&mut src, &l, &parts, beside)?;
     let pz = pass.unwrap_or("").trim();
     let mut gcm: Option<Gcm> = None;
+    let mut pin = Pinned::new();
     if h.encrypted() {
         let key: zeroize::Zeroizing<[u8; 32]> = if let Some(block) = &l.sgto {
             match keys::unwrap_cek(block, identities, pass.filter(|s| !s.is_empty()), &h.salt) {
@@ -810,7 +901,8 @@ pub(crate) fn open<W: Write>(
         if h.folded_len > GCM_C_MAX {
             return Err(msg(crate::LEGACY_OPEN_FAILED));
         }
-        // Pass 1: the tag over the whole ciphertext, before anything is decrypted.
+        // Pass 1: the tag over the whole ciphertext, before anything is decrypted. Each
+        // window is pinned so later passes decrypt exactly these bytes.
         let mut gh = g.ghash(&aad);
         let mut buf = vec![0u8; IO_WINDOW];
         let mut pos = 0u64;
@@ -819,6 +911,7 @@ pub(crate) fn open<W: Write>(
             let t = (h.folded_len - pos).min(IO_WINDOW as u64) as usize;
             p.read_at(&mut src, &l, pos, &mut buf[..t])?;
             gh.update(&buf[..t]);
+            pin.record(&buf[..t]);
             pos += t as u64;
         }
         if !ct_eq16(&gh.tag(&g.mask()), &h.tag) {
@@ -828,11 +921,35 @@ pub(crate) fn open<W: Write>(
     } else if !pz.is_empty() {
         return Err(msg("seal was not encrypted"));
     }
-    // Pass 2 (and 3 when `verify_first`): decrypt, unfold, inflate, check.
-    if verify_first {
-        plain_pass(&mut src, &l, &mut p, gcm.as_ref(), &mut std::io::sink())?;
+    // Pass 2 (and 3 when `verify_first`): decrypt, unfold, inflate, check. An encrypted
+    // seal's passes read only the windows pass 1 pinned. A plain seal written to a file
+    // needs no pin (the part file is renamed only after the SHA-256 check); before a plain
+    // seal goes to stdout its windows are pinned first, so the bytes released are the
+    // bytes the check passed.
+    if gcm.is_none() && verify_first {
+        let mut buf = vec![0u8; IO_WINDOW];
+        let mut pos = 0u64;
+        while pos < h.folded_len {
+            crate::repair_ctl::check()?;
+            let t = (h.folded_len - pos).min(IO_WINDOW as u64) as usize;
+            p.read_at(&mut src, &l, pos, &mut buf[..t])?;
+            pin.record(&buf[..t]);
+            pos += t as u64;
+        }
     }
-    plain_pass(&mut src, &l, &mut p, gcm.as_ref(), out).map(Some)
+    let pinned = gcm.is_some() || verify_first;
+    if verify_first {
+        plain_pass(
+            &mut src,
+            &l,
+            &mut p,
+            gcm.as_ref(),
+            Some(&mut pin),
+            &mut std::io::sink(),
+        )?;
+    }
+    let pin = if pinned { Some(&mut pin) } else { None };
+    plain_pass(&mut src, &l, &mut p, gcm.as_ref(), pin, out).map(Some)
 }
 
 fn plain_pass<W: Write>(
@@ -840,6 +957,7 @@ fn plain_pass<W: Write>(
     l: &Layout,
     p: &mut Payload,
     gcm: Option<&Gcm>,
+    mut pin: Option<&mut Pinned>,
     out: &mut W,
 ) -> Result<Opened> {
     let h = &l.h;
@@ -849,7 +967,7 @@ fn plain_pass<W: Write>(
         // The inner block: at most INNER_FIXED + 65535 bytes.
         let head_len = total.min((privacy::INNER_FIXED + 65535) as u64) as usize;
         let mut head = zeroize::Zeroizing::new(vec![0u8; head_len]);
-        p.read_at(src, l, 0, &mut head[..])?;
+        pread(p, &mut pin, src, l, 0, &mut head[..])?;
         g.ctr(0)?
             .try_apply_keystream(&mut head[..])
             .map_err(|_| msg("AES-GCM: message too long"))?;
@@ -863,7 +981,7 @@ fn plain_pass<W: Write>(
         while pos < total {
             crate::repair_ctl::check()?;
             let t = (total - pos).min(IO_WINDOW as u64) as usize;
-            p.read_at(src, l, pos, &mut buf[..t])?;
+            pread(p, &mut pin, src, l, pos, &mut buf[..t])?;
             c.try_apply_keystream(&mut buf[..t])
                 .map_err(|_| msg("AES-GCM: message too long"))?;
             if buf[..t].iter().any(|&b| b != 0) {
@@ -893,6 +1011,7 @@ fn plain_pass<W: Write>(
             src,
             l,
             p,
+            pin,
             pos: body_off as u64,
             end: body_end,
             ctr,
@@ -930,6 +1049,7 @@ fn plain_pass<W: Write>(
         src,
         l,
         p,
+        pin,
         pos: 0,
         end: total,
         ctr,
@@ -1716,7 +1836,7 @@ pub fn mend_run(plan: MendPlan, out: &Path, soft: bool) -> Result<Option<MendDon
         })?;
         let mut ok = merkle::merkle_root(&leaves) == h.merkle;
         if ok && !h.encrypted() {
-            ok = plain_pass(&mut src, &l, &mut p, None, &mut std::io::sink()).is_ok();
+            ok = plain_pass(&mut src, &l, &mut p, None, None, &mut std::io::sink()).is_ok();
         }
         if !ok {
             drop(f);
@@ -1892,7 +2012,7 @@ fn reencodes_exactly(src: &mut FileSrc, l: &Layout) -> Result<()> {
         }
     }
     if !l.h.encrypted() {
-        plain_pass(src, l, &mut p, None, &mut std::io::sink()).map_err(|_| hard_fail())?;
+        plain_pass(src, l, &mut p, None, None, &mut std::io::sink()).map_err(|_| hard_fail())?;
     }
     Ok(())
 }
@@ -2199,6 +2319,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_window_changed_after_it_was_pinned_is_refused() {
+        let data = noise(3_000_000, 61);
+        let file = crate::seal(&data, Mode::Seal, Some("pw"), "p", false).unwrap();
+        let d = dir("pin");
+        let path = d.join("x.sg1");
+        std::fs::write(&path, &file).unwrap();
+        let mut src = FileSrc::open(&path).unwrap();
+        let l = probe(&mut src).unwrap().unwrap();
+        let mut p = Payload::InPlace;
+        let mut pin = Pinned::new();
+        let mut pos = 0u64;
+        while pos < l.h.folded_len {
+            let t = (l.h.folded_len - pos).min(IO_WINDOW as u64) as usize;
+            let mut b = vec![0u8; t];
+            p.read_at(&mut src, &l, pos, &mut b).unwrap();
+            pin.record(&b);
+            pos += t as u64;
+        }
+        // unchanged: pinned reads give the same bytes, across a window edge too
+        let at = IO_WINDOW as u64 - 100;
+        let (mut a, mut b) = (vec![0u8; 300], vec![0u8; 300]);
+        pin.read_at(&mut p, &mut src, &l, at, &mut a).unwrap();
+        p.read_at(&mut src, &l, at, &mut b).unwrap();
+        assert_eq!(a, b);
+        // one byte of window 2 changes on disk after pinning: refused, nothing handed on
+        let mut f = file.clone();
+        let off = {
+            let o = 2 * IO_WINDOW as u64 + 7;
+            let part = o / l.sl;
+            (l.shard_off(part as usize) + o % l.sl) as usize
+        };
+        f[off] ^= 1;
+        std::fs::write(&path, &f).unwrap();
+        let mut src = FileSrc::open(&path).unwrap();
+        let mut out = vec![0u8; 64];
+        let e = pin
+            .read_at(&mut p, &mut src, &l, 2 * IO_WINDOW as u64, &mut out)
+            .unwrap_err();
+        assert!(e.to_string().contains("changed"), "{e}");
+        assert!(out.iter().all(|&x| x == 0));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
