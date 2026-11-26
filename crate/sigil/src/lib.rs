@@ -128,8 +128,9 @@ pub use constellation::{
     unseal_constellation_keys, AddOpts, AddReport, Chart, RemoveOpts as ConstellationRemoveOpts,
     RemoveReport as ConstellationRemoveReport,
 };
+pub use folder::old_layout_requested as folder_old_layout_requested;
 pub use folder::{
-    dir_report, inscribe_dir, inscribe_dir_protected, inscribe_dir_to,
+    dir_report, inscribe_dir, inscribe_dir_old_layout, inscribe_dir_protected, inscribe_dir_to,
     inscribe_dir_to_names_visible, is_dir_pack, is_plain_dir_pack, is_sealed_dir_pack,
     list_dir_pack, list_dir_pack_keys, looks_like_nest_name, mend_plain_dir, mend_sealed_dir,
     read_dir_entry_star, scry_dir, scry_dir_checked, scry_dir_keys, seal_dir_names,

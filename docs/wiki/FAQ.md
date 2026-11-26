@@ -39,7 +39,8 @@ the repair data, so `sigil mend` fixes it, and if it cannot, nothing is restored
 by an older version keeps its list outside the repair data: a damaged list there is refused,
 and a small change to one name may not be noticed. Seal the folder again to get the new
 layout. Older versions of sigil cannot open the new layout (they stop with an error and write
-nothing); `sigil seal --old-tome-layout` makes a Tome they can read. Without a Ward this
+nothing); `sigil seal --old-tome-layout` makes a Tome they can read. Vault folder versions use the
+new layout too; set `SIGIL_OLD_TOME_LAYOUT=1` to have any writer use the older one. Without a Ward this
 protects against accidental damage, not against someone changing the file on purpose.
 
 **Can a repair ever give me a wrong file?**

@@ -1896,16 +1896,21 @@ mod tests {
         let big = noise(700_000, 11);
         fs::write(src.join("m/big.bin"), &big).unwrap();
         fs::write(src.join("small.txt"), b"small").unwrap();
-        for (tag, pass) in [("plain", None), ("warded", Some("pw"))] {
+        for (tag, pass, old) in [
+            ("plain", None, true),
+            ("protected", None, false),
+            ("warded", Some("pw"), false),
+        ] {
             let pack = d.join(format!("{tag}.sg1"));
-            inscribe_dir(&src, &pack, Mode::Seal, pass, "", &[], 64 * 1024, &[]).unwrap();
+            let seal = || inscribe_dir(&src, &pack, Mode::Seal, pass, "", &[], 64 * 1024, &[]);
+            if old {
+                crate::folder::test_layout::old(seal).unwrap();
+            } else {
+                seal().unwrap();
+            }
             let before = crate::sha256_path(&pack).unwrap();
             let vfs = VaultFs::open(&pack, pass, &[], false).unwrap();
-            assert_eq!(
-                vfs.sealed_body.is_some(),
-                pass.is_some(),
-                "{tag}: large body"
-            );
+            assert_eq!(vfs.sealed_body.is_some(), !old, "{tag}: large body");
             assert!(vfs.sealed_inner.is_none(), "{tag}: body never held whole");
             assert_eq!(
                 vfs.file_size("m/big.bin").unwrap(),
@@ -1975,7 +1980,10 @@ mod tests {
         fs::write(src.join("big.bin"), &big).unwrap();
         let pack = d.join("t.sg1");
         // Glyph mode carries no parity, so any change is beyond repair.
-        inscribe_dir(&src, &pack, Mode::Glyph, None, "", &[], 64 * 1024, &[]).unwrap();
+        crate::folder::test_layout::old(|| {
+            inscribe_dir(&src, &pack, Mode::Glyph, None, "", &[], 64 * 1024, &[])
+        })
+        .unwrap();
         let vfs = VaultFs::open(&pack, None, &[], false).unwrap();
         // Open the member (full check) and read its first piece.
         assert_eq!(vfs.read_range("big.bin", 0, 100).unwrap(), &big[..100]);

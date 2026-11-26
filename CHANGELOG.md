@@ -51,8 +51,15 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   edits the file on purpose (use a Ward for that). Every existing Tome opens as before.
   Sigil builds before this change refuse a v3 Tome with an error and write nothing; seal
   with `--old-tome-layout` to make a v1 Tome for them. `mend` also rebuilds a damaged body
-  length or file count in a v3 head. Library callers (`inscribe_dir*`, Vault and nest)
-  still write v1; `inscribe_dir_protected` writes v3.
+  length or file count in a v3 head.
+- **Every new unlocked Tome is v3, not just `sigil seal`.** Vault folder commits (`sigil vault
+  track` / `commit`, and the re-seal after a mount export) and the library writers
+  (`inscribe_dir`, `inscribe_dir_to`, `inscribe_dir_to_names_visible`) now write v3 too.
+  Opt out with `SIGIL_OLD_TOME_LAYOUT=1` (any writer, including Vault commits) or
+  `sigil seal --old-tome-layout`; library code can call `inscribe_dir_old_layout`. Any other
+  value of the variable is refused and nothing is written. Older Vault versions (v1 and v2)
+  restore as before; a Vault can hold versions of every layout. `list_dir_pack` lists a v3
+  Tome without a key, so `scry --json` reports `members` for it.
 - An unknown Tome version is refused by `scry` and `mend` with "unknown Tome version N:
   made by a newer sigil, or damaged", as `unseal` and `ls` already did.
 - `sigil ls` and `sigil mount` check a v1 Tome's folder list (bad names, repeated names)
