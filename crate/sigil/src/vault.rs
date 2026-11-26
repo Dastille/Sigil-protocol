@@ -2190,6 +2190,58 @@ mod tests {
     }
 
     #[test]
+    fn folder_versions_are_protected_tomes_and_old_versions_still_restore() {
+        let dir = tmpdir("fold-v3");
+        let live = dir.join("docs");
+        let v1_files: &[(&str, &[u8])] = &[("a.txt", b"first-a"), ("sub/b.txt", b"first-b")];
+        write_tree(&live, v1_files);
+        // Version 1 in the older layout (as written before Tome v3).
+        crate::folder::test_layout::old(|| track(&live, Mode::Seal, None, &[])).unwrap();
+        let p1 = version_seal_path(&live, 1).unwrap();
+        assert_eq!(&fs::read(&p1).unwrap()[..5], b"SGDR\x01");
+        // Version 2 by default: protected plain Tome (v3).
+        fs::write(live.join("a.txt"), b"second-a").unwrap();
+        fs::write(live.join("c.txt"), b"second-c").unwrap();
+        commit(&live, Mode::Reflection, None, false, &[]).unwrap();
+        let p2 = version_seal_path(&live, 2).unwrap();
+        assert_eq!(&fs::read(&p2).unwrap()[..5], b"SGDR\x03");
+        // Version 3 with a key: Warded (v2).
+        fs::write(live.join("a.txt"), b"third-a").unwrap();
+        commit(&live, Mode::Seal, Some("vault-pass"), false, &[]).unwrap();
+        let p3 = version_seal_path(&live, 3).unwrap();
+        assert_eq!(&fs::read(&p3).unwrap()[..5], b"SGDR\x02");
+        let want2 = vec![
+            ("a.txt".to_string(), b"second-a".to_vec()),
+            ("c.txt".to_string(), b"second-c".to_vec()),
+            ("sub/b.txt".to_string(), b"first-b".to_vec()),
+        ];
+        restore(&live, Some(1), None, &[]).unwrap();
+        assert_eq!(
+            tree_map(&live),
+            vec![
+                ("a.txt".to_string(), b"first-a".to_vec()),
+                ("sub/b.txt".to_string(), b"first-b".to_vec()),
+            ]
+        );
+        restore(&live, Some(2), None, &[]).unwrap();
+        assert_eq!(tree_map(&live), want2);
+        restore(&live, Some(3), Some("vault-pass"), &[]).unwrap();
+        assert_eq!(tree_map(&live)[0].1, b"third-a".to_vec());
+        // A damaged v3 version: restore mends its body and gives the exact tree.
+        let mut raw = fs::read(&p2).unwrap();
+        let (h, prefix, _) = locate_header(&raw[17..]).unwrap();
+        let stride = crate::header::shard_stride(&h);
+        let at = 17 + prefix;
+        raw[at..at + stride].fill(0);
+        raw[at] = 3;
+        fs::write(&p2, &raw).unwrap();
+        let r = restore(&live, Some(2), None, &[]).unwrap();
+        assert!(r.mended, "restore of a damaged v3 version reports mended");
+        assert_eq!(tree_map(&live), want2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn folder_restore_mends_torn_inner_star() {
         let dir = tmpdir("fold-mend");
         let live = dir.join("photos");
@@ -2201,7 +2253,7 @@ mod tests {
                 ("sub/c.txt", b"mend-folder-c-0123456789abcdef-CCCCCCCC"),
             ],
         );
-        track(&live, Mode::Seal, None, &[]).unwrap();
+        crate::folder::test_layout::old(|| track(&live, Mode::Seal, None, &[])).unwrap();
         let v1 = version_seal_path(&live, 1).unwrap();
         let mut bytes = fs::read(&v1).unwrap();
         // Smash one shard inside the first classic inner star (past Keystone/header).
@@ -2407,7 +2459,7 @@ mod tests {
         let live = dir.join("media");
         let big = pseudo(DEFAULT_CHUNK as usize + 100 * 1024, 11);
         write_tree(&live, &[("big.bin", &big)]);
-        track(&live, Mode::Reflection, None, &[]).unwrap();
+        crate::folder::test_layout::old(|| track(&live, Mode::Reflection, None, &[])).unwrap();
         let v1 = version_seal_path(&live, 1).unwrap();
         let mut torn = fs::read(&v1).unwrap();
         let (_, b0, b1) = sgdr_members(&torn)[0].clone();

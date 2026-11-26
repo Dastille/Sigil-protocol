@@ -332,6 +332,10 @@ pub fn inscribe_dir_to(
 /// Tome without a key. Unset, empty or `0` keeps the default (v3). Any other value is
 /// refused, so a typo never silently picks a layout.
 pub fn old_layout_requested() -> Result<bool> {
+    #[cfg(test)]
+    if test_layout::OLD.with(|c| c.get()) {
+        return Ok(true);
+    }
     match std::env::var("SIGIL_OLD_TOME_LAYOUT") {
         Err(std::env::VarError::NotPresent) => Ok(false),
         Ok(v) if v.is_empty() || v == "0" => Ok(false),
@@ -339,6 +343,22 @@ pub fn old_layout_requested() -> Result<bool> {
         _ => Err(crate::Error::Msg(
             "SIGIL_OLD_TOME_LAYOUT must be 0 or 1 (1 writes the older Tome layout); nothing was written".into(),
         )),
+    }
+}
+
+/// Unit tests that exercise the v1 layout through writers without a layout argument
+/// (Vault commits): [`test_layout::old`] makes this thread write v1 while `f` runs.
+#[cfg(test)]
+pub(crate) mod test_layout {
+    use std::cell::Cell;
+    thread_local! {
+        pub(crate) static OLD: Cell<bool> = const { Cell::new(false) };
+    }
+    pub(crate) fn old<T>(f: impl FnOnce() -> T) -> T {
+        OLD.with(|c| c.set(true));
+        let t = f();
+        OLD.with(|c| c.set(false));
+        t
     }
 }
 
@@ -1957,6 +1977,10 @@ pub struct DirEntry {
 /// Members of a plain (v1) folder pack. A sealed (v2) pack hides them: this errors;
 /// use [`list_dir_pack_keys`] with the key.
 pub fn list_dir_pack(input: &Path) -> Result<Vec<DirEntry>> {
+    // A protected plain Tome (v3) needs no key: list its body's inner pack.
+    if tome_version(input) == Some(DIR_VER_PROTECTED) {
+        return list_dir_pack_keys(input, None, &[], &[]);
+    }
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     list_v1(&mut reader)
 }
@@ -2622,7 +2646,8 @@ mod tests {
         fs::write(src.join("m/big.bin"), noise(200_000)).unwrap();
         fs::write(src.join("z.txt"), b"omega").unwrap();
         let pack = root.join("f.sg1");
-        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        test_layout::old(|| inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]))
+            .unwrap();
         let raw = fs::read(&pack).unwrap();
         (pack, raw)
     }
@@ -2900,7 +2925,8 @@ mod tests {
             ("m/big.bin".to_string(), false),
         ];
         let plain = root.join("plain.sg1");
-        inscribe_dir(&src, &plain, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        test_layout::old(|| inscribe_dir(&src, &plain, Mode::Seal, None, "", &[], 64 * 1024, &[]))
+            .unwrap();
         let raw = fs::read(&plain).unwrap();
         let big_star = parse_sgdr_entries(&raw)
             .unwrap()
@@ -3431,7 +3457,8 @@ mod stream_tests {
         let d = scratch("mend");
         let (src, big) = tree(&d);
         let pack = d.join("p.sg1");
-        inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]).unwrap();
+        test_layout::old(|| inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 64 * 1024, &[]))
+            .unwrap();
         let raw = fs::read(&pack).unwrap();
         let same = d.join("same.sg1");
         mend_plain_dir(&pack, &same, true).unwrap();
