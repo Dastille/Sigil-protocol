@@ -63,6 +63,7 @@ fn ward_only_pack_gets_sealed_names() {
             "--ward-file",
             "sub/tax-return-2025.pdf=wf",
             "--ward-names-visible",
+            "--old-tome-layout",
         ],
     );
     let old = fs::read(d.join("old.sg1")).unwrap();

@@ -40,6 +40,24 @@ The first release will be **v0.9.0**. This tree is not 1.0.
 
 ### Tomes
 
+- **Format change: new plain Tomes keep their folder list inside repair data (Tome v3).**
+  A Tome made without `--pass` / `--to` now uses the Warded Tome layout without
+  encryption (`SGDR` version 3): the list of names and sizes is inside the body, which
+  has Reed-Solomon parity and a SHA-256 check, so `mend` repairs a damaged list and
+  readers refuse one that cannot be repaired. Before, a bit flip in a name (`.dat` to `.dau`)
+  could restore a file under the wrong name. Measured size on three folder shapes:
+  8% to 48% smaller for many small or deeply nested files, at most 0.08% larger for a
+  few big files. This protects against accidental damage only, not against someone who
+  edits the file on purpose (use a Ward for that). Every existing Tome opens as before.
+  Sigil builds before this change refuse a v3 Tome with an error and write nothing; seal
+  with `--old-tome-layout` to make a v1 Tome for them. `mend` also rebuilds a damaged body
+  length or file count in a v3 head. Library callers (`inscribe_dir*`, Vault and nest)
+  still write v1; `inscribe_dir_protected` writes v3.
+- An unknown Tome version is refused by `scry` and `mend` with "unknown Tome version N:
+  made by a newer sigil, or damaged", as `unseal` and `ls` already did.
+- `sigil ls` and `sigil mount` check a v1 Tome's folder list (bad names, repeated names)
+  as `scry` and `unseal` do.
+
 - A folder Inscribe lists every path it leaves out of the Tome on stderr: names starting
   with `.` (a dot-folder is not entered), special files, links whose target is missing, and
   folders with nothing stored under them. The summary line counts them and `--json` adds

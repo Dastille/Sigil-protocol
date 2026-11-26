@@ -33,6 +33,15 @@ permissions are not stored either, so a script comes back without its executable
 stop instead of packing without them, add `--fail-on-skip`: nothing is written and the exit
 code is 1.
 
+**Can damage to a Tome's list of file names be repaired?**
+For a Tome made with this version or later, yes. The list of names and sizes is kept inside
+the repair data, so `sigil mend` fixes it, and if it cannot, nothing is restored. A Tome made
+by an older version keeps its list outside the repair data: a damaged list there is refused,
+and a small change to one name may not be noticed. Seal the folder again to get the new
+layout. Older versions of sigil cannot open the new layout (they stop with an error and write
+nothing); `sigil seal --old-tome-layout` makes a Tome they can read. Without a Ward this
+protects against accidental damage, not against someone changing the file on purpose.
+
 **Can a repair ever give me a wrong file?**
 Sigil keeps a repaired file only if it matches the fingerprints stored when the Sigil was
 made (a hash tree over the pieces, and for an unlocked Sigil a SHA-256 fingerprint of the

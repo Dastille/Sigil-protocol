@@ -471,6 +471,12 @@ enum Cmd {
         /// Without it those paths are listed on stderr and the Tome is written.
         #[arg(long = "fail-on-skip")]
         fail_on_skip: bool,
+        /// Folder only, no --pass / --to: write the older Tome layout (v1, folder list outside
+        /// the repair data), which sigil builds made before Tome v3 can read. By default a new
+        /// unlocked Tome keeps its folder list inside the repair-protected body (Tome v3):
+        /// protection against accidental damage only; add --pass / --to against deliberate edits.
+        #[arg(long = "old-tome-layout")]
+        old_tome_layout: bool,
         #[arg(long)]
         covenant: Option<String>,
         #[arg(long = "bind")]
@@ -3026,8 +3032,16 @@ fn verify_cmd(
                         "Tome  cut off; {} undamaged member(s) before the cut",
                         t.intact.len()
                     ),
-                    None => "Warded Tome  cut off (member names are hidden)".to_string(),
+                    None => "Tome  cut off (its body holds the member list)".to_string(),
                 }
+            }
+            // A protected plain Tome (v3) whose body cannot be restored: its list is in
+            // that body, so report the verdict (exit 2) as for a locked Warded Tome.
+            Err(_)
+                if sigil::tome_version(&input) == Some(3)
+                    && condition.unrecoverable_reason().is_some() =>
+            {
+                "folder  (the file list is inside the body, which cannot be restored)".to_string()
             }
             Err(e) => return Err(open_failure(&input, e.into())),
         };
@@ -3757,6 +3771,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ward_file,
             ward_names_visible,
             fail_on_skip,
+            old_tome_layout,
             covenant,
             bind,
             chunk,
@@ -3782,6 +3797,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let recipients = load_recipients(&to)?;
             if fail_on_skip && !input.is_dir() {
                 return Err("--fail-on-skip applies to a folder Inscribe only".into());
+            }
+            if old_tome_layout && (!input.is_dir() || pass.is_some() || !recipients.is_empty()) {
+                return Err(
+                    "--old-tome-layout applies to a folder Inscribe without --pass / --to only"
+                        .into(),
+                );
             }
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
             {
@@ -3866,17 +3887,32 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     inscribe_dir_to
                 };
-                let (n, orig) = seal_dir(
-                    &input,
-                    &output,
-                    mode.into(),
-                    pass.as_deref(),
-                    cov,
-                    &geas,
-                    chunk,
-                    &wards,
-                    &recipients,
-                )?;
+                let (n, orig) = if old_tome_layout {
+                    seal_dir(
+                        &input,
+                        &output,
+                        mode.into(),
+                        pass.as_deref(),
+                        cov,
+                        &geas,
+                        chunk,
+                        &wards,
+                        &recipients,
+                    )?
+                } else {
+                    sigil::inscribe_dir_protected(
+                        &input,
+                        &output,
+                        mode.into(),
+                        pass.as_deref(),
+                        cov,
+                        &geas,
+                        chunk,
+                        &wards,
+                        &recipients,
+                        ward_names_visible,
+                    )?
+                };
                 say!(
                     "folder {n} files, {orig} bytes → {}{}{}",
                     output.display(),
@@ -4620,6 +4656,18 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     sigil::mend_out::shell_word(&input.display().to_string())
                 );
             }
+        }
+        Cmd::Mend { input, .. }
+            if sigil::tome_version(&input).is_some_and(|v| !(1..=3).contains(&v)) =>
+        {
+            // Never guess at a Tome layout this build does not know (it would be read as
+            // a damaged large-file pack and the message would mislead).
+            let v = sigil::tome_version(&input).unwrap_or(0);
+            return Err(format!(
+                "could not repair {}: unknown Tome version {v}: made by a newer sigil, or damaged (update sigil and try again). Nothing was written.",
+                input.display()
+            )
+            .into());
         }
         Cmd::Mend {
             input,

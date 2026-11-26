@@ -41,8 +41,17 @@ through a pack left a half-written output file behind.
   used twice, not valid UTF-8, or out of the order Inscribe writes names in is
   refused, and a complete member after the last counted one means the count was
   lowered. A damaged name that keeps its header prefix and its place in the order
-  is not caught (that needs a protected list, a format change). Any of these stops `scry`, `verify`,
+  is not caught in a v1 Tome. Any of these stops `scry`, `verify`,
   `unseal` and `mend` with exit 2 (`folder list damaged: …`) and no output.
+  `sigil ls` and `sigil mount` run the same name checks on a v1 list.
+- **New plain Tomes protect their folder list (Tome v3).** The list is inside the
+  repair-protected body, so damage to it, including a name changed by one bit
+  (`.dat` to `.dau`), fails the body's SHA-256 and is repaired by `mend` or refused;
+  it is never read as a different name. This guards against accidental damage only: with
+  no key there is no authentication, so a deliberate forger can write a valid Tome (use a
+  Ward for that). A damaged body length or file count in the v3 head stops readers;
+  `mend` rebuilds both. An unknown Tome version (from a newer sigil, or a damaged
+  version byte) is refused by every command with nothing written.
 - **Whole-file checks before success.** Every chunk is checked against the length
   and SHA-256 in its own header. Pack unseal and in-memory pack mend also check
   every chunk against the facet list (catches swapped or reordered chunks) and the

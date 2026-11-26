@@ -82,7 +82,7 @@ fn tome(d: &Path, files: usize, big: bool) -> Vec<u8> {
     if big {
         std::fs::write(d.join("f/large.bin"), data(9 * 1024 * 1024, 5)).expect("w");
     }
-    ok(d, &["seal", "f", "-o", "t.sg1"]);
+    ok(d, &["seal", "--old-tome-layout", "f", "-o", "t.sg1"]);
     std::fs::read(d.join("t.sg1")).expect("r")
 }
 
@@ -225,14 +225,15 @@ fn damaged_tome_first_bytes_are_never_called_healthy() {
     let d = common::scratch("guard-head");
     std::fs::create_dir_all(d.join("f")).expect("mkdir");
     std::fs::write(d.join("f/x.bin"), data(4_000, 3)).expect("w");
-    ok(&d, &["seal", "f", "-o", "plain.sg1"]);
+    ok(&d, &["seal", "--old-tome-layout", "f", "-o", "plain.sg1"]);
     ok(
         &d,
         &["seal", "f", "-o", "warded.sg1", "--pass", "guard-pass-1"],
     );
     let warded = std::fs::read(d.join("warded.sg1")).expect("r");
     assert_eq!(&warded[..5], b"SGDR\x02", "Warded Tome");
-    for base in ["plain.sg1", "warded.sg1"] {
+    ok(&d, &["seal", "f", "-o", "protected.sg1"]);
+    for base in ["plain.sg1", "warded.sg1", "protected.sg1"] {
         let raw = std::fs::read(d.join(base)).expect("r");
         for byte in [0usize, 2, 3, 4] {
             let mut bad = raw.clone();
@@ -242,7 +243,13 @@ fn damaged_tome_first_bytes_are_never_called_healthy() {
             let o = sigil(&d, &["scry", &f]);
             let t = text(&o);
             assert_eq!(o.status.code(), Some(2), "{f}: {t}");
-            assert!(t.contains("Tome head damaged"), "{f}: {t}");
+            // An intact `SGDR` with an unknown version may be from a newer sigil.
+            let why = if byte == 4 {
+                "unknown Tome version"
+            } else {
+                "Tome head damaged"
+            };
+            assert!(t.contains(why), "{f}: {t}");
         }
     }
 }
@@ -265,7 +272,7 @@ fn terminal_escape_names_are_shown_escaped_in_tome_output() {
     std::fs::create_dir_all(d.join("f")).expect("mkdir");
     std::fs::write(d.join("f").join(ESC_NAME), data(9_000, 4)).expect("w");
     std::fs::write(d.join("f/plain.txt"), b"plain").expect("w");
-    ok(&d, &["seal", "f", "-o", "t.sg1"]);
+    ok(&d, &["seal", "--old-tome-layout", "f", "-o", "t.sg1"]);
 
     let o = sigil(&d, &["scry", "t.sg1"]);
     assert!(o.status.success(), "{}", text(&o));
@@ -364,7 +371,7 @@ fn long_name_damaged_past_its_header_prefix_is_caught_by_the_name_order() {
     for i in 0..4 {
         std::fs::write(deep.join(format!("doc-{i:02}.dat")), data(2_000, i + 1)).expect("w");
     }
-    ok(&d, &["seal", "f", "-o", "t.sg1"]);
+    ok(&d, &["seal", "--old-tome-layout", "f", "-o", "t.sg1"]);
     let mut raw = std::fs::read(d.join("t.sg1")).expect("r");
     let e = find(&raw, b"doc-01.dat");
     // "level01" -> "lewel01" (byte 33 of the name, well past the header's 16).
@@ -395,7 +402,7 @@ fn tricky_but_valid_name_order_is_accepted() {
         std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
         std::fs::write(&p, p.to_string_lossy().as_bytes()).expect("w");
     }
-    ok(&d, &["seal", "f", "-o", "t.sg1"]);
+    ok(&d, &["seal", "--old-tome-layout", "f", "-o", "t.sg1"]);
     ok(&d, &["scry", "t.sg1"]);
     ok(&d, &["unseal", "t.sg1", "-o", "out"]);
     ok(&d, &["mend", "t.sg1", "-o", "m.sg1"]);

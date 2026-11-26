@@ -306,14 +306,16 @@ pub fn damaged_tome_head(path: &std::path::Path) -> Option<String> {
         .zip(crate::folder::DIR_MAGIC.iter())
         .map(|(a, b)| (a ^ b).count_ones())
         .sum();
-    let known = head[4] == 1 || head[4] == 2;
+    let known = (1..=3).contains(&head[4]);
     if !((flips == 0 && !known) || (flips > 0 && flips <= 2 && known)) {
         return None;
     }
     let body_len = u64::from_le_bytes(head[9..17].try_into().ok()?);
     let body = &head[17..21];
     let warded = body_len == size - 17 && (body == STAR_MAGIC || body == crate::work::WORK_MAGIC);
-    if warded || member_at(&mut src, 9) {
+    if (warded || member_at(&mut src, 9)) && flips == 0 {
+        Some(crate::folder::unknown_version(head[4]))
+    } else if warded || member_at(&mut src, 9) {
         Some(
             "Tome head damaged: the first bytes that mark it as a Tome are changed, though the rest still has a Tome's shape"
                 .into(),

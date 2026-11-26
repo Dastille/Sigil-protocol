@@ -370,8 +370,8 @@ pub(crate) fn health_file(path: &Path) -> Health {
         // Sealed directory: members are inside the encrypted body; check the body in
         // place (a large body one part at a time, never copied or held whole).
         return match crate::sealed_dir_body_loc(path) {
-            Err(e) => Health::Damaged(format!("Warded Tome unreadable: {e}")),
-            Ok(None) => Health::Damaged("Warded Tome unreadable".into()),
+            Err(e) => Health::Damaged(format!("Tome body unreadable: {e}")),
+            Ok(None) => Health::Damaged("Tome body unreadable".into()),
             Ok(Some((_, off, len))) => health_window(path, off, len),
         };
     }

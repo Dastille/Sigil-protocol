@@ -55,7 +55,7 @@ fn pack(d: &Path, big: bool) -> (Vec<u8>, Vec<u8>) {
     std::fs::create_dir_all(d.join("f")).expect("mkdir");
     std::fs::write(d.join("f/a.bin"), &a).expect("w");
     std::fs::write(d.join("f/b.txt"), &b).expect("w");
-    ok(d, &["seal", "f", "-o", "f.sg1"]);
+    ok(d, &["seal", "--old-tome-layout", "f", "-o", "f.sg1"]);
     let raw = std::fs::read(d.join("f.sg1")).expect("r");
     assert_eq!(&raw[..5], b"SGDR\x01", "plain v1 folder pack");
     (a, b)

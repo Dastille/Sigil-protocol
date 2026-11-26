@@ -88,7 +88,7 @@ impl Src for HomeSrc<'_> {
                 let body = fs
                     .sealed_body
                     .as_ref()
-                    .ok_or_else(|| crate::Error::Msg("internal: no Warded Tome body".into()))?;
+                    .ok_or_else(|| crate::Error::Msg("internal: no Tome body".into()))?;
                 fs.pieces_fill(BODY_KEY, body, *base + off, buf)
             }
         }
@@ -1042,7 +1042,7 @@ impl VaultFs {
                 let inner = self
                     .sealed_inner
                     .as_ref()
-                    .ok_or_else(|| crate::Error::Msg("internal: no Warded Tome body".into()))?;
+                    .ok_or_else(|| crate::Error::Msg("internal: no Tome body".into()))?;
                 let (a, b) = (*base as usize, (*base + *len) as usize);
                 let slice = inner
                     .get(a..b)

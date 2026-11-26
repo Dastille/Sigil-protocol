@@ -31,10 +31,23 @@ pub const DIR_MAGIC: [u8; 4] = *b"SGDR";
 pub const DIR_VER_PLAIN: u8 = 1;
 /// Sealed directory: the whole v1 pack is encrypted as one body star.
 pub const DIR_VER_SEALED: u8 = 2;
+/// Protected plain Tome: the whole v1 pack (folder list and members) is one body star,
+/// like a Warded Tome's, but not encrypted. The body's repair data and SHA-256 checks
+/// cover the folder list. No key is needed; it guards against accidental damage only,
+/// not a deliberate forger (a Ward does that).
+pub const DIR_VER_PROTECTED: u8 = 3;
+
+/// True for the Tome layouts that keep the v1 pack inside one body star (v2 and v3).
+pub(crate) fn has_body(ver: u8) -> bool {
+    ver == DIR_VER_SEALED || ver == DIR_VER_PROTECTED
+}
 
 /// Error for a Warded Tome whose locked body is cut short (contains "truncated Tome").
-const TRUNCATED_WARDED: &str =
-    "truncated Tome (its locked Warded body is cut off; incomplete copy or transfer)";
+const TRUNCATED_WARDED: &str = "truncated Tome (its body is cut off; incomplete copy or transfer)";
+
+/// A v1-only reader was handed a protected (v3) Tome: its list is inside the body.
+const PROTECTED_AS_V1: &str =
+    "this Tome keeps its folder list inside its protected body; this operation reads only the older plain layout";
 
 const HIDDEN_HINT: &str =
     "Warded Tome: member names are hidden; give --pass / --identity to list or open it";
@@ -306,7 +319,33 @@ pub fn inscribe_dir_to(
         return Err(crate::Error::Msg(WARD_ONLY_REFUSED.into()));
     }
     inscribe_dir_any(
-        root, output, mode, pass, covenant, geas, chunk, wards, recipients,
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients, false,
+    )
+}
+
+/// Like [`inscribe_dir_to`] (or [`inscribe_dir_to_names_visible`] with `names_visible`),
+/// but a Tome without a passphrase or recipient is written as a protected plain Tome
+/// (v3): its folder list sits inside the repair-protected body, like a Warded Tome's,
+/// unencrypted. Older sigil versions refuse v3 ("unknown Tome version 3").
+// Justification: see `inscribe_dir`.
+#[allow(clippy::too_many_arguments)]
+pub fn inscribe_dir_protected(
+    root: &Path,
+    output: &Path,
+    mode: Mode,
+    pass: Option<&str>,
+    covenant: &str,
+    geas: &[[u8; 32]],
+    chunk: u32,
+    wards: &[(String, String)],
+    recipients: &[PublicIdentity],
+    names_visible: bool,
+) -> Result<(u32, u64)> {
+    if !names_visible && ward_only(pass, wards, recipients) {
+        return Err(crate::Error::Msg(WARD_ONLY_REFUSED.into()));
+    }
+    inscribe_dir_any(
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients, true,
     )
 }
 
@@ -328,7 +367,7 @@ pub fn inscribe_dir_to_names_visible(
     recipients: &[PublicIdentity],
 ) -> Result<(u32, u64)> {
     inscribe_dir_any(
-        root, output, mode, pass, covenant, geas, chunk, wards, recipients,
+        root, output, mode, pass, covenant, geas, chunk, wards, recipients, false,
     )
 }
 
@@ -344,6 +383,7 @@ fn inscribe_dir_any(
     chunk: u32,
     wards: &[(String, String)],
     recipients: &[PublicIdentity],
+    protect: bool,
 ) -> Result<(u32, u64)> {
     crate::refuse_empty_seal_pass(pass)?;
     let mut files = Vec::new();
@@ -352,7 +392,12 @@ fn inscribe_dir_any(
         return Err(crate::Error::Msg("folder is empty".into()));
     }
     let encrypted = pass.is_some() || !recipients.is_empty();
-    if !encrypted {
+    let ver = if encrypted {
+        DIR_VER_SEALED
+    } else {
+        DIR_VER_PROTECTED
+    };
+    if !encrypted && !protect {
         // Through a part file: a member that fails (a failing random source, a read
         // error) leaves nothing at `output`.
         let (part, mut writer) = crate::work::open_part(output)?;
@@ -413,7 +458,7 @@ fn inscribe_dir_any(
         drop(inner);
         let mut writer = BufWriter::new(File::create(output).map_err(io)?);
         writer
-            .write_all(&encode_sealed(files.len() as u32, &body))
+            .write_all(&encode_sealed(ver, files.len() as u32, &body))
             .map_err(io)?;
         writer.flush().map_err(io)?;
         return Ok((files.len() as u32, total));
@@ -440,7 +485,7 @@ fn inscribe_dir_any(
         let body_len = body.size();
         let mut writer = BufWriter::new(File::create(output).map_err(io)?);
         writer
-            .write_all(&encode_sealed_head(files.len() as u32, body_len))
+            .write_all(&encode_sealed_head(ver, files.len() as u32, body_len))
             .map_err(io)?;
         packhead::copy_range(&mut body, 0, body_len, &mut writer)?;
         writer.flush().map_err(io)?;
@@ -525,9 +570,9 @@ fn write_v1<W: Write>(
     Ok(total)
 }
 
-fn encode_sealed(count: u32, body: &[u8]) -> Vec<u8> {
+fn encode_sealed(ver: u8, count: u32, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(SEALED_HEAD_LEN + body.len());
-    out.extend_from_slice(&encode_sealed_head(count, body.len() as u64));
+    out.extend_from_slice(&encode_sealed_head(ver, count, body.len() as u64));
     out.extend_from_slice(body);
     out
 }
@@ -536,10 +581,10 @@ fn encode_sealed(count: u32, body: &[u8]) -> Vec<u8> {
 const SEALED_HEAD_LEN: usize = 17;
 
 /// The 17 bytes in front of a Warded Tome's body of `body_len` bytes.
-fn encode_sealed_head(count: u32, body_len: u64) -> [u8; SEALED_HEAD_LEN] {
+fn encode_sealed_head(ver: u8, count: u32, body_len: u64) -> [u8; SEALED_HEAD_LEN] {
     let mut out = [0u8; SEALED_HEAD_LEN];
     out[0..4].copy_from_slice(&DIR_MAGIC);
-    out[4] = DIR_VER_SEALED;
+    out[4] = ver;
     out[5..9].copy_from_slice(&count.to_le_bytes());
     out[9..17].copy_from_slice(&body_len.to_le_bytes());
     out
@@ -554,15 +599,19 @@ fn read_head<R: Read>(reader: &mut R, not_pack: &str) -> Result<(u8, u32)> {
     }
     let mut ver = [0u8; 1];
     reader.read_exact(&mut ver).map_err(io)?;
-    if ver[0] != DIR_VER_PLAIN && ver[0] != DIR_VER_SEALED {
-        return Err(crate::Error::Msg(format!(
-            "unknown Tome version {}",
-            ver[0]
-        )));
+    if ver[0] != DIR_VER_PLAIN && !has_body(ver[0]) {
+        return Err(crate::Error::Msg(unknown_version(ver[0])));
     }
     let mut nbuf = [0u8; 4];
     reader.read_exact(&mut nbuf).map_err(io)?;
     Ok((ver[0], u32::from_le_bytes(nbuf)))
+}
+
+/// Error for a Tome version this build does not know (a newer layout, or damage).
+pub(crate) fn unknown_version(v: u8) -> String {
+    format!(
+        "unknown Tome version {v}: made by a newer sigil, or damaged (update sigil and try again; nothing was read)"
+    )
 }
 
 /// Body bytes of a v2 pack whose head was just read. Exact length, no trailing bytes.
@@ -585,7 +634,7 @@ fn read_sealed_body<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
     let mut extra = [0u8; 1];
     if reader.read(&mut extra).map_err(io)? != 0 {
         return Err(crate::Error::Msg(
-            "Warded Tome has extra bytes after its locked body (edited or damaged)".into(),
+            "Tome has extra bytes after its body (edited or damaged)".into(),
         ));
     }
     Ok(body)
@@ -597,7 +646,7 @@ fn read_sealed_body<R: Read>(reader: &mut R) -> Result<Vec<u8>> {
 pub fn sealed_dir_body_loc(input: &Path) -> Result<Option<(u32, u64, u64)>> {
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
-    if ver != DIR_VER_SEALED {
+    if !has_body(ver) {
         return Ok(None);
     }
     let mut lb = [0u8; 8];
@@ -612,7 +661,7 @@ pub fn sealed_dir_body_loc(input: &Path) -> Result<Option<(u32, u64, u64)>> {
     }
     if len < avail {
         return Err(crate::Error::Msg(
-            "Warded Tome has extra bytes after its locked body (edited or damaged)".into(),
+            "Tome has extra bytes after its body (edited or damaged)".into(),
         ));
     }
     Ok(Some((n, SEALED_HEAD_LEN as u64, len)))
@@ -870,7 +919,7 @@ fn copy_bounded<R: Read + ?Sized, W: Write>(r: &mut R, w: &mut W) -> Result<u64>
 pub fn sealed_dir_body(input: &Path) -> Result<Option<(u32, Vec<u8>)>> {
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
-    if ver != DIR_VER_SEALED {
+    if !has_body(ver) {
         return Ok(None);
     }
     Ok(Some((n, read_sealed_body(&mut reader)?)))
@@ -882,7 +931,30 @@ pub fn is_sealed_dir_pack(input: &Path) -> bool {
         return false;
     };
     let mut head = [0u8; 5];
-    f.read_exact(&mut head).is_ok() && head[0..4] == DIR_MAGIC && head[4] == DIR_VER_SEALED
+    f.read_exact(&mut head).is_ok() && head[0..4] == DIR_MAGIC && has_body(head[4])
+}
+
+/// The Tome version byte of `input` (1 plain, 2 Warded, 3 protected plain), when it
+/// starts with `SGDR`.
+pub fn tome_version(input: &Path) -> Option<u8> {
+    let mut f = File::open(input).ok()?;
+    let mut head = [0u8; 5];
+    f.read_exact(&mut head).ok()?;
+    (head[0..4] == DIR_MAGIC).then_some(head[4])
+}
+
+/// True when opening `input` needs a key: a Warded (v2) Tome and no key given.
+fn locked_without_key(input: &Path, pass: Option<&str>, identities: &[Identity]) -> bool {
+    tome_version(input) == Some(DIR_VER_SEALED) && pass.is_none() && identities.is_empty()
+}
+
+/// For readers of a plain v1 list only: refuse a Tome whose list is inside a body.
+fn v1_only(ver: u8) -> Result<()> {
+    match ver {
+        DIR_VER_SEALED => Err(crate::Error::Msg(HIDDEN_HINT.into())),
+        DIR_VER_PROTECTED => Err(crate::Error::Msg(PROTECTED_AS_V1.into())),
+        _ => Ok(()),
+    }
 }
 
 /// Decrypt a v2 body to its inner v1 pack and check it matches the outer count.
@@ -914,7 +986,7 @@ fn check_inner(count: u32, inner: &[u8]) -> Result<()> {
         Ok(())
     } else {
         Err(crate::Error::Msg(
-            "Warded Tome: the locked contents do not match its outer header (edited or damaged)"
+            "Tome: the contents of its body do not match its outer header (edited or damaged)"
                 .into(),
         ))
     }
@@ -953,12 +1025,13 @@ pub fn unseal_dir_only_keys(
     let mut reader = BufReader::new(File::open(input).map_err(io)?);
     let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
     drop(reader);
-    if ver == DIR_VER_SEALED {
-        if pass.is_none() && identities.is_empty() {
+    if has_body(ver) {
+        if ver == DIR_VER_SEALED && pass.is_none() && identities.is_empty() {
             return Err(crate::Error::Msg(HIDDEN_HINT.into()));
         }
-        let (count, off, len) = sealed_dir_body_loc(input)?
-            .ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
+        let (count, off, len) = sealed_dir_body_loc(input)?.ok_or_else(|| {
+            crate::Error::Msg("not a Tome with a body (Warded or protected)".into())
+        })?;
         let mut tome = packhead::FileSrc::open(input)?;
         let mut staged = Staging::new();
         let got = with_inner(
@@ -1144,7 +1217,8 @@ pub fn unseal_dir_mend_keys(
 ) -> Result<(u32, Option<Vec<u8>>)> {
     crate::refuse_empty_open_pass(pass)?;
     let raw = fs::read(input).map_err(io)?;
-    if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && raw[4] == DIR_VER_SEALED {
+    if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && has_body(raw[4]) {
+        let ver = raw[4];
         let mut cur = Cursor::new(&raw[..]);
         let (_, n) = read_head(&mut cur, "not a Tome archive (SGDR)")?;
         let body = read_sealed_body(&mut cur)?;
@@ -1163,7 +1237,7 @@ pub fn unseal_dir_mend_keys(
         let (got, _) = restore_entries(
             entries, dest, pass, companions, only, wards, identities, false,
         )?;
-        return Ok((got, healed_body.map(|b| encode_sealed(n, &b))));
+        return Ok((got, healed_body.map(|b| encode_sealed(ver, n, &b))));
     }
     let entries = parse_sgdr_entries(&raw)?;
     let (got, healed) = restore_entries(
@@ -1181,9 +1255,26 @@ pub fn unseal_dir_mend_keys(
 /// `soft` adds the deeper bit-rot repair (as plain `sigil mend` does for a single
 /// `.sg1` and for plain Tome members) when the quick repair fails.
 pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
-    let (n, off, len) =
-        sealed_dir_body_loc(input)?.ok_or_else(|| crate::Error::Msg("not a Warded Tome".into()))?;
+    // The 17-byte head is outside the body's repair data. Its body length is rebuilt
+    // from the file size, and (protected v3 only, where no key is needed) its member
+    // count from the inner list's own head inside the healed body.
+    let (ver, mut n, stored_len) = {
+        let mut reader = BufReader::new(File::open(input).map_err(io)?);
+        let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
+        if !has_body(ver) {
+            return Err(crate::Error::Msg(
+                "not a Tome with a body (Warded or protected)".into(),
+            ));
+        }
+        let mut lb = [0u8; 8];
+        reader
+            .read_exact(&mut lb)
+            .map_err(|_| crate::Error::Msg(TRUNCATED_WARDED.into()))?;
+        (ver, n, u64::from_le_bytes(lb))
+    };
     let mut tome = packhead::FileSrc::open(input)?;
+    let off = SEALED_HEAD_LEN as u64;
+    let len = tome.size().saturating_sub(off);
     let mut mag = [0u8; 4];
     if len >= 4 {
         tome.read_at(off, &mut mag)?;
@@ -1192,6 +1283,10 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
     part.push(".mend-part");
     // Removed on any error; after the rename below there is nothing left to remove.
     let part = Scratch(PathBuf::from(part));
+    let inner_count = |head: &[u8]| -> Option<u32> {
+        (head.len() >= 9 && head[0..4] == DIR_MAGIC && head[4] == DIR_VER_PLAIN)
+            .then(|| u32::from_le_bytes([head[5], head[6], head[7], head[8]]))
+    };
     let state = if mag == crate::work::WORK_MAGIC {
         // Large body: heal it through scratch files, copying a window at a time.
         let src = Scratch(scratch_beside(output, "mend-body-in"));
@@ -1205,8 +1300,17 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
         drop(src);
         let mut healed = packhead::FileSrc::open(&dst.0)?;
         let hlen = healed.size();
+        if ver == DIR_VER_PROTECTED {
+            let l = packhead::layout(&mut healed)?;
+            let mut r = crate::work::PackReader::new(&mut healed, &l, None, &[], &[]);
+            let mut head = [0u8; 9];
+            r.read_exact(&mut head).map_err(io)?;
+            n = inner_count(&head).ok_or_else(|| {
+                crate::Error::Msg("the healed body of this Tome holds no folder list".into())
+            })?;
+        }
         let mut w = BufWriter::new(File::create(&part.0).map_err(io)?);
-        w.write_all(&encode_sealed_head(n, hlen)).map_err(io)?;
+        w.write_all(&encode_sealed_head(ver, n, hlen)).map_err(io)?;
         packhead::copy_range(&mut healed, 0, hlen, &mut w)?;
         w.flush().map_err(io)?;
         "ok"
@@ -1215,20 +1319,44 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
         let mut body = vec![0u8; len as usize];
         tome.read_at(off, &mut body)?;
         let (healed, _) = crate::pieces::mend_bytes_ex(&body, soft).map_err(|e| {
-            crate::Error::Msg(format!(
-                "the locked body of this Warded Tome is too damaged to mend: {e}"
-            ))
+            crate::Error::Msg(format!("the body of this Tome is too damaged to mend: {e}"))
         })?;
-        fs::write(&part.0, encode_sealed(n, &healed)).map_err(io)?;
+        drop(body);
+        if ver == DIR_VER_PROTECTED {
+            let inner = unseal_ex_keys(&healed, None, &[], &[])?;
+            n = inner_count(&inner).ok_or_else(|| {
+                crate::Error::Msg("the healed body of this Tome holds no folder list".into())
+            })?;
+        }
+        fs::write(&part.0, encode_sealed(ver, n, &healed)).map_err(io)?;
         if crate::work::star_torn(&healed) {
             "open"
         } else {
             "ok"
         }
     };
+    let mut fixed = Vec::new();
+    if stored_len != len {
+        fixed.push("body length");
+    }
+    let mut head_n = [0u8; 4];
+    tome.read_at(5, &mut head_n)?;
+    if u32::from_le_bytes(head_n) != n {
+        fixed.push("member count");
+    }
     fs::rename(&part.0, output).map_err(io)?;
+    let kind = if ver == DIR_VER_PROTECTED {
+        "protected Tome"
+    } else {
+        "sealed Tome"
+    };
+    let head = if fixed.is_empty() {
+        String::new()
+    } else {
+        format!(", head {} rebuilt", fixed.join(" and "))
+    };
     Ok(format!(
-        "mended {} → {} (sealed Tome, {n} files, body merkle {state})",
+        "mended {} → {} ({kind}, {n} files, body merkle {state}{head})",
         input.display(),
         output.display()
     ))
@@ -1372,14 +1500,9 @@ fn index_v1<S: Src>(src: &mut S) -> Result<Vec<(String, u64, u64)>> {
     if head[0..4] != DIR_MAGIC {
         return Err(crate::Error::Msg("not a Tome archive (SGDR)".into()));
     }
-    if head[4] == DIR_VER_SEALED {
-        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-    }
+    v1_only(head[4])?;
     if head[4] != DIR_VER_PLAIN {
-        return Err(crate::Error::Msg(format!(
-            "unknown Tome version {}",
-            head[4]
-        )));
+        return Err(crate::Error::Msg(unknown_version(head[4])));
     }
     let n = u32::from_le_bytes([head[5], head[6], head[7], head[8]]);
     let mut off = 9u64;
@@ -1529,14 +1652,9 @@ fn parse_sgdr_entries(raw: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     if raw[0..4] != DIR_MAGIC {
         return Err(crate::Error::Msg("not a Tome archive (SGDR)".into()));
     }
-    if raw[4] == DIR_VER_SEALED {
-        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-    }
+    v1_only(raw[4])?;
     if raw[4] != DIR_VER_PLAIN {
-        return Err(crate::Error::Msg(format!(
-            "unknown Tome version {}",
-            raw[4]
-        )));
+        return Err(crate::Error::Msg(unknown_version(raw[4])));
     }
     let n = u32::from_le_bytes(raw[5..9].try_into().map_err(crate::short_field)?);
     let mut off = 9usize;
@@ -1637,7 +1755,7 @@ pub fn scry_dir_keys(
     if let Some((n, off, len)) = sealed_dir_body_loc(input)? {
         let mut tome = packhead::FileSrc::open(input)?;
         let health = scry_body_at(&mut tome, off, len)?;
-        if pass.is_none() && identities.is_empty() {
+        if locked_without_key(input, pass, identities) {
             return Ok(format!("folder  {n} files (names hidden)\nbody  {health}"));
         }
         let entries = with_inner(&mut tome, n, off, len, pass, companions, identities, |r| {
@@ -1683,7 +1801,7 @@ pub fn dir_report(
                 .map(|r| crate::shown::name(r))
                 .collect::<Vec<_>>()
                 .join(", "),
-            None => "Warded Tome body".into(),
+            None => "Tome body".into(),
         }
     };
     let run = crate::mend_out::mend_command(input);
@@ -1814,9 +1932,7 @@ pub fn list_dir_pack_keys(
 
 fn list_v1<R: Read>(reader: &mut R) -> Result<Vec<DirEntry>> {
     let (ver, n) = read_head(reader, "not a Tome")?;
-    if ver == DIR_VER_SEALED {
-        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-    }
+    v1_only(ver)?;
     list_v1_members(reader, n, None)
 }
 
@@ -1835,6 +1951,7 @@ fn list_v1_members<R: Read + ?Sized>(
 ) -> Result<Vec<DirEntry>> {
     let keys = keys.filter(|(p, ids)| !(p.is_none_or(str::is_empty) && ids.is_empty()));
     let mut entries = Vec::with_capacity((n as usize).min(4096));
+    let mut seen = crate::tome_guard::ListNames::default();
     for _ in 0..n {
         crate::repair_ctl::check()?;
         let mut lb = [0u8; 2];
@@ -1842,7 +1959,11 @@ fn list_v1_members<R: Read + ?Sized>(
         let nlen = u16::from_le_bytes(lb) as usize;
         let mut name = vec![0u8; nlen];
         reader.read_exact(&mut name).map_err(io)?;
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            return Err(crate::tome_guard::damaged(why));
+        }
         let path = String::from_utf8_lossy(&name).into_owned();
+        crate::tome_guard::check_unique(&mut seen, &path)?;
         let mut sl = [0u8; 8];
         reader.read_exact(&mut sl).map_err(io)?;
         let slen = u64::from_le_bytes(sl);
@@ -2020,7 +2141,9 @@ pub(crate) fn open_sealed_inner(
 ) -> Result<Vec<u8>> {
     match sealed_dir_body(input)? {
         Some((n, body)) => open_body(n, &body, pass, companions, identities),
-        None => Err(crate::Error::Msg("not a Warded Tome".into())),
+        None => Err(crate::Error::Msg(
+            "not a Tome with a body (Warded or protected)".into(),
+        )),
     }
 }
 
@@ -2032,10 +2155,10 @@ pub(crate) fn unlock_dir_bytes(
     pass: Option<&str>,
     identities: &[Identity],
 ) -> Result<Vec<u8>> {
-    if data.len() < 5 || data[0..4] != DIR_MAGIC || data[4] != DIR_VER_SEALED {
+    if data.len() < 5 || data[0..4] != DIR_MAGIC || !has_body(data[4]) {
         return Ok(data);
     }
-    if pass.is_none() && identities.is_empty() {
+    if data[4] == DIR_VER_SEALED && pass.is_none() && identities.is_empty() {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
     let mut reader = Cursor::new(&data[..]);
@@ -2075,9 +2198,7 @@ pub(crate) fn fill_sizes_v1_bytes(
     }
     let mut reader = Cursor::new(inner);
     let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
-    if ver == DIR_VER_SEALED {
-        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-    }
+    v1_only(ver)?;
     for _ in 0..n {
         let mut lb = [0u8; 2];
         reader.read_exact(&mut lb).map_err(io)?;
@@ -2145,21 +2266,25 @@ pub(crate) fn locate_entry_star<R: Read + Seek>(
 ) -> Result<(u64, u64)> {
     let want = want.trim().trim_start_matches("./");
     let (ver, n) = read_head(reader, "not a Tome archive (SGDR)")?;
-    if ver == DIR_VER_SEALED {
-        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-    }
+    v1_only(ver)?;
     let truncated = || {
         crate::Error::Msg(
             "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
         )
     };
     let mut pos = 9u64;
+    let mut seen = crate::tome_guard::ListNames::default();
     for _ in 0..n {
         let mut lb = [0u8; 2];
         reader.read_exact(&mut lb).map_err(|_| truncated())?;
         let nlen = u16::from_le_bytes(lb) as usize;
         let mut name = vec![0u8; nlen];
         reader.read_exact(&mut name).map_err(|_| truncated())?;
+        // The members before (and at) the one wanted get the same list checks as unseal.
+        if let Some(why) = crate::tome_guard::bad_name(&name) {
+            return Err(crate::tome_guard::damaged(why));
+        }
+        crate::tome_guard::check_unique(&mut seen, &String::from_utf8_lossy(&name))?;
         let mut sl = [0u8; 8];
         reader.read_exact(&mut sl).map_err(|_| truncated())?;
         let slen = u64::from_le_bytes(sl);
@@ -2182,9 +2307,7 @@ pub(crate) fn locate_entry_star<R: Read + Seek>(
 fn read_entry_star_from<R: Read>(reader: &mut R, want: &str) -> Result<Vec<u8>> {
     let want = want.trim().trim_start_matches("./");
     let (ver, n) = read_head(reader, "not a Tome archive (SGDR)")?;
-    if ver == DIR_VER_SEALED {
-        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-    }
+    v1_only(ver)?;
     for _ in 0..n {
         let mut lb = [0u8; 2];
         reader.read_exact(&mut lb).map_err(io)?;
@@ -2266,6 +2389,12 @@ pub fn seal_dir_names(
             "this Tome already seals its names (SGDR v2); nothing to do".into(),
         ));
     }
+    // A protected plain Tome (v3) keeps its v1 pack in an unencrypted body: open it.
+    let raw = if raw.len() >= 5 && raw[0..4] == DIR_MAGIC && raw[4] == DIR_VER_PROTECTED {
+        open_sealed_inner(input, None, &[], &[])?
+    } else {
+        raw
+    };
     let mut entries = parse_sgdr_entries(&raw)?;
     let mut encrypted = 0usize;
     let mut opened = 0usize;
@@ -2363,7 +2492,7 @@ pub fn seal_dir_names(
         )?;
         fs::read(&packed.0).map_err(io)?
     };
-    let out = encode_sealed(count, &body);
+    let out = encode_sealed(DIR_VER_SEALED, count, &body);
     let tmp = Scratch(scratch_beside(output, "sgdr-out"));
     fs::write(&tmp.0, &out).map_err(io)?;
     fs::rename(&tmp.0, output).map_err(io)?;
@@ -3010,9 +3139,7 @@ pub fn dir_pick_stars(
 ) -> Result<Vec<PickedStar>> {
     fn walk<R: Read>(reader: &mut R, picks: &[u32]) -> Result<Vec<PickedStar>> {
         let (ver, n) = read_head(reader, "not a Tome archive (SGDR)")?;
-        if ver == DIR_VER_SEALED {
-            return Err(crate::Error::Msg(HIDDEN_HINT.into()));
-        }
+        v1_only(ver)?;
         let mut out = Vec::new();
         for i in 0..n {
             let mut lb = [0u8; 2];
@@ -3052,7 +3179,7 @@ pub fn dir_pick_stars(
         Ok(out)
     }
     if let Some((n, body)) = sealed_dir_body(input)? {
-        if pass.is_none() && identities.is_empty() {
+        if locked_without_key(input, pass, identities) {
             return Err(crate::Error::Msg(HIDDEN_HINT.into()));
         }
         let inner = open_body(n, &body, pass, &[], identities)?;
@@ -3118,8 +3245,11 @@ mod stream_tests {
 
     #[test]
     fn sealed_head_is_the_front_of_encode_sealed() {
-        let full = encode_sealed(3, b"body");
-        assert_eq!(&full[..SEALED_HEAD_LEN], &encode_sealed_head(3, 4));
+        let full = encode_sealed(DIR_VER_SEALED, 3, b"body");
+        assert_eq!(
+            &full[..SEALED_HEAD_LEN],
+            &encode_sealed_head(DIR_VER_SEALED, 3, 4)
+        );
         assert_eq!(&full[SEALED_HEAD_LEN..], b"body");
     }
 
