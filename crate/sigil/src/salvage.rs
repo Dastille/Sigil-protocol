@@ -9,11 +9,11 @@
 //! Names:
 //! * a Warded (v2) or protected (v3) Tome: the list is inside the body and checked by its
 //!   SHA-256 / AEAD, so list names are used as they are;
-//! * a plain v1 Tome: a list name is used when its member head reads cleanly, the name
-//!   matches the first 16 bytes kept in the member's own header, and it keeps the order
-//!   and uniqueness Inscribe writes. Every other member is written under
-//!   `recovered-names/` with a name built from its header (`NNNN-<header prefix>`), and the
-//!   report shows what the list said, if anything.
+//! * a plain v1 Tome: a list name is used when its member head reads cleanly, it keeps
+//!   the order and uniqueness Inscribe writes, and the member's own header confirms all
+//!   of it (a header keeps the first 16 bytes of the name, so longer names cannot be
+//!   confirmed). Every other member is written under `recovered-names/` with a name built
+//!   from its header (`NNNN-<header prefix>`), and the report shows what the list said.
 //!
 //! Nothing is overwritten: a name that is already taken gets `.salvaged-N` and is
 //! reported. A report file is written beside the output folder. Bounded: an optional
@@ -424,11 +424,10 @@ fn heal(star: &Path, dest: &Path) -> Result<Option<Scratch>> {
 /// member found into a private part file, then decide names and place them.
 ///
 /// Names in a plain v1 list are not checked by anything but the 16 bytes each member's
-/// header keeps, the order Inscribe writes and the list's own shape. When the Tome shows
-/// no damage at all (every head clean, every member opening as stored, the count and
-/// the end of file right), list names are used as plain `unseal` would. Once any damage
-/// is seen, a list name is used only if the member's own header confirms all of it;
-/// every other member goes under `recovered-names/` and the report shows the list name.
+/// header keeps, the order Inscribe writes and the list's own shape, and one changed
+/// byte past those 16 cannot be seen. So a v1 list name is used only when the member's
+/// own header confirms all of it; every other member goes under `recovered-names/` and
+/// the report shows the name the list gives it.
 fn salvage_v1(cx: &mut Ctx<'_, '_>, path: &Path, checked: bool, start: u64) -> Result<()> {
     cx.report.list_checked = checked;
     let mut src = packhead::FileSrc::open(path)?;
@@ -456,9 +455,12 @@ fn salvage_v1(cx: &mut Ctx<'_, '_>, path: &Path, checked: bool, start: u64) -> R
         && opened
             .iter()
             .all(|(f, o)| f.trusted && !f.cut && o.part.is_some() && !o.healed);
-    let trust_list = checked || structure_ok;
-    if !trust_list {
-        cx.report.list_checked = false;
+    let trust_list = checked;
+    if structure_ok && !checked {
+        cx.report.notes.push(
+            "no damage was found in this plain Tome: `sigil unseal` restores it with every name"
+                .into(),
+        );
     }
     for (f, o) in opened {
         place_one(cx, f, o, trust_list)?;
@@ -1072,4 +1074,49 @@ fn write_report_file(dest: &Path, text: &str) -> Result<PathBuf> {
 
 fn io(e: std::io::Error) -> crate::Error {
     crate::Error::Msg(e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_names_and_recovered_names() {
+        assert!(chunk_name("video.bin.0000"));
+        assert!(chunk_name("a.0123"));
+        assert!(!chunk_name("a.012"));
+        assert!(!chunk_name("notes.txt"));
+        assert_eq!(
+            recovered_rel(7, Some("dir/sub/file.t")),
+            "recovered-names/0007-dir_sub_file.t"
+        );
+        assert_eq!(recovered_rel(12, None), "recovered-names/0012-unnamed");
+        assert_eq!(recovered_rel(3, Some("..")), "recovered-names/0003-unnamed");
+        assert!(safe_rel("a/b.txt"));
+        assert!(!safe_rel("../x"));
+        assert!(!safe_rel("/etc/x"));
+        assert!(!safe_rel("recovered-names/0001-x"));
+    }
+
+    #[test]
+    fn exit_codes_never_hide_a_loss() {
+        let mut r = SalvageReport {
+            listed_count: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(r.exit_code(), 2, "nothing written");
+        r.outcomes.push(Outcome::Restored { path: "a".into() });
+        assert_eq!(r.exit_code(), 7, "one listed member has no data");
+        r.outcomes.push(Outcome::Restored { path: "b".into() });
+        assert_eq!(r.exit_code(), 0);
+        r.stopped = Some("time".into());
+        assert_eq!(r.exit_code(), 7, "a limit stopped it");
+        r.stopped = None;
+        r.outcomes[1] = Outcome::Renamed {
+            listed: None,
+            path: "recovered-names/0002-b".into(),
+            why: "x".into(),
+        };
+        assert_eq!(r.exit_code(), 7, "renamed");
+    }
 }

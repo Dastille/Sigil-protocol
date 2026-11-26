@@ -1,5 +1,6 @@
 //! `sigil unseal --salvage`: save what passes its own checks from a damaged Tome. Never a
 //! wrong file under a real name, never an overwrite; exit 0 / 7 / 2 as documented.
+//! A v1 list name is used only when the member's own header confirms all of it.
 mod common;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -133,13 +134,22 @@ fn entry_of(raw: &[u8], name: &str) -> usize {
 }
 
 #[test]
-fn clean_tomes_of_every_layout_salvage_exactly_with_exit_0() {
+fn clean_tomes_salvage_exactly_and_long_v1_names_are_marked() {
     let d = common::scratch("salvage-clean");
     let want = src(&d);
     seal(&d, "v1.sg1", &[], true);
     seal(&d, "v3.sg1", &[], false);
     seal(&d, "v2.sg1", &["--pass", "pw"], false);
-    for (t, key) in [("v1.sg1", false), ("v3.sg1", false), ("v2.sg1", true)] {
+    // An undamaged plain v1 Tome: its list cannot prove a name past the 16 bytes each
+    // member's header keeps, so the long name goes under recovered-names/ (exit 7) and
+    // the report says plain unseal restores it with every name.
+    let o = sigil(&d, &["unseal", "--salvage", "v1.sg1", "-o", "o-v1"]);
+    let msg = text(&o);
+    assert_eq!(code(&o), 7, "{msg}");
+    assert_eq!(all_right(&d.join("o-v1"), &want), (9, 1), "{msg}");
+    let rep = std::fs::read_to_string(d.join("o-v1.salvage-report.txt")).expect("report");
+    assert!(rep.contains("no damage was found"), "{rep}");
+    for (t, key) in [("v3.sg1", false), ("v2.sg1", true)] {
         let out = format!("o-{t}");
         let mut a = vec!["unseal", "--salvage", t, "-o", out.as_str()];
         if key {
@@ -180,8 +190,8 @@ fn damaged_v1_list_saves_every_member_and_marks_unconfirmed_names() {
         let o = sigil(&d, &["unseal", "--salvage", t, "-o", out.as_str()]);
         let msg = text(&o);
         assert_eq!(code(&o), 7, "{t}: {msg}");
-        // Every member saved. Once damage is seen, a name the member's own header cannot
-        // confirm in full (the long one here) goes under recovered-names/ as well.
+        // Every member saved. A name the member's own header cannot confirm in full (the
+        // long one here) goes under recovered-names/ as well.
         let (named, rec) = all_right(&d.join(&out), &want);
         assert_eq!((named, rec), (8, 2), "{t}: {msg}");
         assert!(msg.contains("cannot confirm its whole name"), "{msg}");
