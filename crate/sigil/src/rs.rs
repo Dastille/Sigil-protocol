@@ -57,7 +57,7 @@ fn encode_matrix(k: usize, rows: &[usize], systematic: bool) -> Result<Vec<u8>, 
 }
 
 /// Matrix mapping k received symbols at `xs` → k data symbols.
-fn decode_matrix(xs: &[u8], systematic: bool) -> Result<Vec<u8>, Error> {
+pub(crate) fn decode_matrix(xs: &[u8], systematic: bool) -> Result<Vec<u8>, Error> {
     let k = xs.len();
     let vinv = vandermonde_inverse(xs)?;
     if systematic {
@@ -66,6 +66,16 @@ fn decode_matrix(xs: &[u8], systematic: bool) -> Result<Vec<u8>, Error> {
     } else {
         Ok(vinv)
     }
+}
+
+/// Systematic parity rows `k..n` as an `(n - k) x k` matrix (see
+/// [`crate::mds::MdsBackend::parity_matrix`]). `k > n` is refused.
+pub(crate) fn parity_matrix(k: usize, n: usize) -> Result<Vec<u8>, Error> {
+    if k == 0 || k > n {
+        return Err(Error::Msg(format!("bad Reed-Solomon shape k={k} n={n}")));
+    }
+    let rows: Vec<usize> = (k..n).collect();
+    encode_matrix(k, &rows, true)
 }
 
 #[allow(dead_code)]

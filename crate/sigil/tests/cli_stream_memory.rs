@@ -1,5 +1,6 @@
 //! Peak memory of `sigil` on a Tome with one large member stays near one chunk, not the
-//! member's size: seal, scry, unseal and mend, for a plain and a Warded Tome.
+//! member's size: seal, scry, unseal and mend, for a plain and a Warded Tome. The same
+//! holds for a single file sealed whole (one classic seal, no chunking).
 //! Measured as the child's peak resident set (`wait4` rusage), Linux only.
 #![cfg(target_os = "linux")]
 mod common;
@@ -151,6 +152,75 @@ fn tome_commands_hold_one_chunk_not_the_member() {
             *l < *s + MARGIN_KIB,
             "{what}: peak {l} KiB with a {} KiB member vs {s} KiB with 1 MiB: memory grows with the member",
             BIG >> 10
+        );
+    }
+}
+
+/// Seal one `member`-byte file whole (a single classic seal), then scry, unseal (to a
+/// file and to stdout), mend and unseal again, plain and Warded; `(command, KiB)`.
+fn measure_classic(member: usize) -> Vec<(String, i64)> {
+    let d = common::scratch("stream-mem-classic");
+    let big = d.join("big.bin");
+    write_noise(&big, member);
+    let dp = d.path();
+    let mut out = Vec::new();
+    for (tag, extra) in [("plain", &[][..]), ("warded", &["--pass", "stream-pw"][..])] {
+        let pack = format!("{tag}.sg1");
+        let mut seal = vec!["seal", "big.bin", "-o", &pack, "--chunk", "4294967295"];
+        seal.extend_from_slice(extra);
+        out.push((format!("{tag} single seal"), rss_ok(dp, "seal", &seal)));
+        assert!(
+            !sigil::is_work_pack(&d.join(&pack)),
+            "{tag}: expected one classic seal"
+        );
+        out.push((
+            format!("{tag} single scry"),
+            rss_ok(dp, "scry", &["scry", &pack]),
+        ));
+        let o1 = format!("{tag}-out.bin");
+        let mut un = vec!["unseal", &pack, "-o", &o1];
+        un.extend_from_slice(extra);
+        out.push((format!("{tag} single unseal"), rss_ok(dp, "unseal", &un)));
+        assert!(same_file(&d.join(&o1), &big), "{tag}");
+        let mut un_out = vec!["unseal", &pack, "-o", "-"];
+        un_out.extend_from_slice(extra);
+        out.push((
+            format!("{tag} single unseal stdout"),
+            rss_ok(dp, "unseal", &un_out),
+        ));
+        let bad = format!("{tag}-bad.sg1");
+        fs::copy(d.join(&pack), d.join(&bad)).unwrap();
+        damage(&d.join(&bad));
+        let fixed = format!("{tag}-fixed.sg1");
+        let mend = ["mend", bad.as_str(), "-o", fixed.as_str(), "-y"];
+        out.push((format!("{tag} single mend"), rss_ok(dp, "mend", &mend)));
+        assert!(same_file(&d.join(&fixed), &d.join(&pack)), "{tag}: mend");
+        let o2 = format!("{tag}-out2.bin");
+        let mut un2 = vec!["unseal", &fixed, "-o", &o2];
+        un2.extend_from_slice(extra);
+        out.push((
+            format!("{tag} single unseal mended"),
+            rss_ok(dp, "unseal", &un2),
+        ));
+        assert!(same_file(&d.join(&o2), &big), "{tag}");
+    }
+    out
+}
+
+/// A single file sealed whole: each command's peak memory with a 96 MiB file stays under
+/// `SINGLE_CAP_KIB`, below the file's own size. The streamed paths work in column
+/// windows of at most about 32 MiB in all (whatever the file size), plus 1 MiB buffers
+/// and the passphrase KDF; reading the file whole would take >= 96 MiB, and the
+/// in-memory mend several times that.
+#[test]
+fn single_seal_commands_hold_a_window_not_the_file() {
+    const SINGLE_BIG: usize = 96 << 20;
+    const SINGLE_CAP_KIB: i64 = 72 << 10;
+    for (what, kib) in measure_classic(SINGLE_BIG) {
+        eprintln!("{what}: 96 MiB file {kib} KiB");
+        assert!(
+            kib < SINGLE_CAP_KIB,
+            "{what}: peak {kib} KiB with a 96 MiB file (cap {SINGLE_CAP_KIB} KiB)"
         );
     }
 }

@@ -40,6 +40,9 @@ zeroize = "1"
 ctap-hid-fido2 = { version = "3.6", optional = true }
 rpassword = "7"
 aes = "0.8"
+# Streaming AES-256-GCM for big classic seals (same crates aes-gcm already uses).
+ctr = "0.9"
+ghash = "0.5"
 cfb-mode = "0.8"
 # Lab GUI only. No default features: glow (OpenGL) instead of wgpu, and no `accesskit`
 # (its Linux AT-SPI backend pulls zbus/zvariant, unmaintained per RUSTSEC-2026-0370/0371/0372)

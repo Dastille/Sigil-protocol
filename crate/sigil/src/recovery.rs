@@ -402,6 +402,10 @@ pub fn assess_path(input: &Path, budget: &mut ProbeBudget) -> Result<Condition> 
     if crate::is_work_pack(input) || crate::is_damaged_work_pack_or_limit(input) {
         return assess_pack_path(input, MendMode::Deep, budget);
     }
+    // A classic seal with intact framing that opens as is is checked a window at a time.
+    if let Some(c) = crate::classic::assess_path(input)? {
+        return Ok(c);
+    }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     Ok(assess_star(&data, MendMode::Deep, budget))
 }

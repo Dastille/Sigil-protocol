@@ -393,6 +393,10 @@ pub(crate) fn health_file(path: &Path) -> Health {
         }
         return worst;
     }
+    // A classic seal with intact framing is checked a window at a time.
+    if let Ok(Some(h)) = crate::classic::health_path(path) {
+        return h;
+    }
     match fs::read(path) {
         Ok(b) => match health_bytes(&b) {
             Health::Ok => Health::Ok,

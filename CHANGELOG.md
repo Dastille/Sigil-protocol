@@ -39,10 +39,23 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   deflate stream would grow far larger is refused without first using that memory.
 - `scrub` skips a large-file pack without reading it; `attest`, attestation checks and
   `--bind` hash files in a stream.
-- Still whole-file: a classic single seal (a file at or below `--chunk`, or forced with a
-  larger `--chunk`, `--mds` or `--pad`). One AES-GCM message and one deflate stream cover
-  the whole body; bounding it needs a codec rewrite, planned separately. A 2 GiB file forced
-  into one classic seal peaked at about 12 GiB to seal and 18 GiB to mend.
+- A classic single seal (a file at or below `--chunk`, or forced with a larger `--chunk`,
+  `--mds` or `--pad`) is now sealed, opened, scried and mended a window at a time. The
+  `.sg1` format is unchanged: with a fixed random source, seals are byte-identical to the
+  previous build, and each build opens the other's seals. The AES-GCM tag is checked over
+  the whole ciphertext before anything is decrypted, and every later pass re-checks each
+  1 MiB window against that pass, so no byte the tag did not cover is ever decrypted into
+  the output. Plain seals sent to stdout are checked in full before the first byte is
+  written. Scratch files are owner-only and removed afterwards; the deflate scratch is
+  encrypted with a throwaway key.
+- Measured peak RSS for one 2 GiB file sealed whole (before -> after): seal 12 GiB ->
+  39 MiB, scry 2.7 GiB -> 40 MiB, unseal 15 GiB -> 12 MiB, mend 18 GiB -> 39 MiB; Warded:
+  seal 13 GiB -> 39 MiB, scry 2.7 GiB -> 40 MiB, unseal 15 GiB -> 39 MiB, mend 13 GiB ->
+  39 MiB. Wall times were within 10% except Warded unseal, about 25% slower (65 s -> 82 s)
+  because of the window re-check.
+- Still whole-file for a classic seal: the deeper (soft) repair, repair of the framing
+  itself (a header recovered from its copies, shifted or extra bytes), version 1 seals,
+  `unseal --repair`, opening a `--mds cauchy` seal, and mending several copies together.
 
 ### Repair
 

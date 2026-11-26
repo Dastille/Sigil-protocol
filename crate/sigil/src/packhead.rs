@@ -96,6 +96,13 @@ impl FileSrc {
         let len = f.metadata().map_err(|e| msg(e.to_string()))?.len();
         Ok(FileSrc { f, len })
     }
+
+    /// A second handle on the same file (every read seeks first, so the two never mix up
+    /// their positions).
+    pub(crate) fn try_clone(&self) -> Result<Self> {
+        let f = self.f.try_clone().map_err(|e| msg(e.to_string()))?;
+        Ok(FileSrc { f, len: self.len })
+    }
 }
 
 impl Src for FileSrc {

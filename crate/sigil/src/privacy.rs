@@ -210,35 +210,52 @@ fn u64_at(b: &[u8], at: usize) -> Result<u64> {
 /// Parse the inner block at the start of decrypted bytes. Returns the metadata and
 /// the offset of the body. Padding after the body must be zero.
 pub fn read_inner(plain: &[u8]) -> Result<(SealMeta, usize)> {
+    let (meta, body_off) = read_inner_head(plain, plain.len() as u64)?;
+    // `read_inner_head` checked body_off + body_len <= plain.len().
+    let body_end = body_off.saturating_add(usize::try_from(meta.body_len).unwrap_or(usize::MAX));
+    if plain
+        .get(body_end..)
+        .is_none_or(|t| t.iter().any(|&b| b != 0))
+    {
+        return Err(Error::Msg(format!("private label: {PADDING_NOT_ZERO}")));
+    }
+    Ok((meta, body_off))
+}
+
+/// Why [`read_inner`] refuses a plaintext whose padding has a non-zero byte.
+pub(crate) const PADDING_NOT_ZERO: &str = "padding is not zero";
+
+/// The checks of [`read_inner`] that need only the front of the plaintext: `head` is the
+/// first bytes of a `total`-byte plaintext (at least `min(total, INNER_FIXED + 65535)` of
+/// them, so the whole name fits). The zero padding after the body is not checked here;
+/// a streaming reader checks it itself. Same errors as [`read_inner`], in the same order.
+pub(crate) fn read_inner_head(head: &[u8], total: u64) -> Result<(SealMeta, usize)> {
     let bad = |s: &str| Error::Msg(format!("private label: {s}"));
-    if plain.len() < INNER_FIXED || plain[0..4] != INNER_MAGIC {
+    if total < INNER_FIXED as u64 || head.len() < INNER_FIXED || head[0..4] != INNER_MAGIC {
         return Err(bad("inner block missing"));
     }
-    if plain[4] != INNER_VERSION {
+    if head[4] != INNER_VERSION {
         return Err(bad("unknown inner block version"));
     }
-    let fl = plain[5];
-    let nlen = u16::from_le_bytes([plain[6], plain[7]]) as usize;
-    let orig_len = u64_at(plain, 8)?;
-    let body_len = u64_at(plain, 16)?;
+    let fl = head[5];
+    let nlen = u16::from_le_bytes([head[6], head[7]]) as usize;
+    let orig_len = u64_at(head, 8)?;
+    let body_len = u64_at(head, 16)?;
     let mut digest = [0u8; 32];
-    digest.copy_from_slice(&plain[24..56]);
-    let entropy_milli = u32::from_le_bytes([plain[56], plain[57], plain[58], plain[59]]);
-    let group_total = u64_at(plain, 60)?;
+    digest.copy_from_slice(&head[24..56]);
+    let entropy_milli = u32::from_le_bytes([head[56], head[57], head[58], head[59]]);
+    let group_total = u64_at(head, 60)?;
     let body_off = INNER_FIXED
         .checked_add(nlen)
-        .filter(|&o| o <= plain.len())
+        .filter(|&o| (o as u64) <= total && o <= head.len())
         .ok_or_else(|| bad("name runs past the end"))?;
-    let name = String::from_utf8(plain[INNER_FIXED..body_off].to_vec())
+    let name = String::from_utf8(head[INNER_FIXED..body_off].to_vec())
         .map_err(|_| bad("name is not UTF-8"))?;
     let body_end = usize::try_from(body_len)
         .ok()
         .and_then(|l| body_off.checked_add(l))
-        .filter(|&e| e <= plain.len())
+        .filter(|&e| (e as u64) <= total)
         .ok_or_else(|| bad("body runs past the end"))?;
-    if plain[body_end..].iter().any(|&b| b != 0) {
-        return Err(bad("padding is not zero"));
-    }
     Ok((
         SealMeta {
             name,
@@ -249,7 +266,7 @@ pub fn read_inner(plain: &[u8]) -> Result<(SealMeta, usize)> {
             compressed: fl & IF_COMPRESSED != 0,
             group_total,
             shared_fingerprint: fl & IF_SHARED_FP != 0,
-            pad_len: (plain.len() - body_end) as u64,
+            pad_len: total - body_end as u64,
         },
         body_off,
     ))

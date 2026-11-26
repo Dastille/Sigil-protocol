@@ -21,7 +21,7 @@ Lab: https://dove-bloom-star-island.grok.me
 
 ## Gaps still open
 
-1. **Whole-file RAM** — seal/unseal/mend still load the Sigil; multi-GB media needs streaming.
+1. **Whole-file RAM** — mostly closed: large-file packs, Tomes and classic single seals are sealed, opened, scried and quick-mended a window at a time (see CHANGELOG, Memory). Still whole-file: the deeper (soft) repair, framing repair and v1 seals.
 2. **Deflate-only** — already-compressed video barely shrinks; entropy flag unused for codec choice.
 3. **Constellation productization** — card / atlas / Geas exist in code paths but are not the archive product yet.
 4. **Show / range serve** — work-pack `show` exists; Jellyfin-grade streaming UX still maturing.

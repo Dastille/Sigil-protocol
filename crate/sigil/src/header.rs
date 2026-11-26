@@ -736,7 +736,7 @@ pub fn keystone_trailer_len_at(file: &[u8], off: usize) -> usize {
 
 /// Parse a Keystone trailer at `off`. Garbage or non-keystone headers yield `None`
 /// (fail closed, never panic).
-fn try_parse_keystone_trailer_at(file: &[u8], off: usize) -> Option<Header> {
+pub(crate) fn try_parse_keystone_trailer_at(file: &[u8], off: usize) -> Option<Header> {
     let end = off.checked_add(KEYSTONE_TRAILER_SIZE)?;
     let block = file.get(off..end)?;
     if block[0..4] != MAGIC_KEYSTONE_TRAILER {
@@ -873,7 +873,7 @@ const PACK_FRAME_REACH: usize = 281 + 8;
 
 /// True when some header within the first [`PACK_FRAME_REACH`] bytes is preceded
 /// by an 8-byte length that matches the seal ending at `end`.
-fn framed_as_pack_star(file: &[u8], end: usize) -> bool {
+pub(crate) fn framed_as_pack_star(file: &[u8], end: usize) -> bool {
     let reach = file.len().min(PACK_FRAME_REACH + 1);
     (8..reach).any(|s| {
         if file.get(s..s + 4) != Some(&MAGIC[..]) || read_header(&file[s..]).is_err() {

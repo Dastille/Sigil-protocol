@@ -156,7 +156,7 @@ pub struct RepairScan {
 
 /// A repeated-byte run this long inside a CRC-failed shard reads as "wiped". Random or
 /// compressed data almost never has one; plain data might, so it stays a hint.
-const WIPE_RUN: usize = 64;
+pub(crate) const WIPE_RUN: usize = 64;
 
 // Throughput model (bytes per second), measured on the shared 8-core box, 18 Nov 2026,
 // release build, then rounded down. See docs/MEND-SCAN.md for the raw timings.
@@ -194,31 +194,57 @@ pub fn scan_seal(file: &[u8]) -> Result<SealScan> {
 }
 
 fn grade(file: &[u8], h: &Header, prefix: usize) -> SealScan {
+    let graded = header::gather_graded_shards(file, h, prefix);
+    let grades: Vec<Grade> = graded
+        .iter()
+        .map(|g| match g {
+            GradedShard::Hard(_) => Grade::Clean,
+            GradedShard::Soft(b, _) => Grade::Damaged {
+                wiped: longest_run(b) >= WIPE_RUN.min(b.len().max(1)),
+            },
+            GradedShard::Missing => Grade::Missing,
+        })
+        .collect();
+    grade_states(h, &grades)
+}
+
+/// How one shard looked to the scan.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Grade {
+    /// Passes its CRC.
+    Clean,
+    /// Present but fails its CRC; `wiped` when it holds a long run of one byte.
+    Damaged { wiped: bool },
+    /// Not found.
+    Missing,
+}
+
+/// Sort graded shards into a [`SealScan`] (shared by the in-memory and streamed scans).
+pub(crate) fn grade_states(h: &Header, grades: &[Grade]) -> SealScan {
     let n = h.n as usize;
     let k = h.k as usize;
-    let graded = header::gather_graded_shards(file, h, prefix);
     let mut clean = 0usize;
     let mut damaged = 0usize;
     let mut missing = 0usize;
     let mut wiped_looking = 0usize;
     // Per shard: 0 good, 1 wiped or missing, 2 damaged but holding data.
     let mut state = Vec::with_capacity(n);
-    for g in &graded {
+    for g in grades {
         match g {
-            GradedShard::Hard(_) => {
+            Grade::Clean => {
                 clean += 1;
                 state.push(0u8);
             }
-            GradedShard::Soft(b, _) => {
+            Grade::Damaged { wiped } => {
                 damaged += 1;
-                if longest_run(b) >= WIPE_RUN.min(b.len().max(1)) {
+                if *wiped {
                     wiped_looking += 1;
                     state.push(1);
                 } else {
                     state.push(2);
                 }
             }
-            GradedShard::Missing => {
+            Grade::Missing => {
                 missing += 1;
                 state.push(1);
             }
@@ -228,9 +254,9 @@ fn grade(file: &[u8], h: &Header, prefix: usize) -> SealScan {
     let one_run = bad.windows(2).all(|w| w[1] == w[0] + 1);
     let tail_missing = missing > 0
         && damaged == 0
-        && graded[n - missing..]
+        && grades[n - missing..]
             .iter()
-            .all(|g| matches!(g, GradedShard::Missing));
+            .all(|g| matches!(g, Grade::Missing));
     let flips = state.iter().filter(|&&s| s == 2).count();
     let kind = if bad.is_empty() {
         DamageKind::Clean
@@ -310,6 +336,11 @@ fn summarize(file_len: u64, seals: &[(SealScan, u64)]) -> RepairScan {
     }
     out.est_secs = secs * PAD;
     out
+}
+
+/// File-level scan of one seal of `file_len` bytes.
+pub(crate) fn summarize_one(file_len: u64, s: SealScan) -> RepairScan {
+    summarize(file_len, &[(s, file_len)])
 }
 
 /// Scan a single seal held in memory.
