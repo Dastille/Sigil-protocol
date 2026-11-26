@@ -21,8 +21,9 @@ steps (it used to take 12 to 18 GiB). Opening a Warded file reads it twice, once
 and once to decrypt, so it takes a little longer. The deeper repair for scattered bit rot
 (the step `mend` tries when the quick repair is not enough) still loads the whole file.
 `sigil mount` also reads a big file inside a Tome a piece at a time: exporting a Tome with
-one 96 MiB file peaked at 17 MiB (46 MiB when the Tome is locked), where it used to take
-more than twice the file's size.
+one 1 GiB file peaked at 43 MiB (86 MiB when the Tome is locked), where it used to take
+more than twice the file's size. Exporting a large file from a locked Tome takes longer
+than before (about 2.5 times as long), because each piece is checked twice.
 
 **Why are some files missing from my Tome?**
 A Tome stores regular files only. Files and folders whose names start with `.`, special

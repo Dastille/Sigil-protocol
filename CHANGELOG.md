@@ -49,11 +49,12 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   still decoded whole; at most 256 MiB of them stay cached, oldest dropped first, and the
   member being read is always kept. A single file sealed whole with a large `--chunk` is
   still decoded whole by `mount`.
-- Measured peak RSS of `mount --export-dir` with one 96 MiB member at a 1 MiB `--chunk`
-  (before -> after): plain Tome 240 MiB -> 17 MiB, Warded Tome 318 MiB -> 46 MiB, single
-  large-file pack 111 MiB -> 16 MiB. Plain Tome and single pack exports were faster (2.4 s ->
-  1.8 s). A large Warded Tome export was slower (7.2 s -> 20 s): each member star is read
-  through the locked body, and finding a member's stars reads the body once more.
+- Measured peak RSS of `mount --export-dir` with one 1 GiB member at the default `--chunk`
+  (before -> after): plain Tome 2.37 GiB -> 43 MiB, Warded Tome 3.04 GiB -> 86 MiB, single
+  large-file pack 1.04 GiB -> 43 MiB; every export byte-identical. Plain Tome and single pack
+  exports took about the same time (33 s -> 30 s). A large Warded Tome export was slower
+  (78 s -> 206 s): each member star is read through the locked body, and is checked when the
+  member is opened and again when it is copied.
 - Library: `VaultFs::read_range` and `VaultFs::copy_file_to` read part of a file, or copy
   it, without holding the whole file.
 
