@@ -132,6 +132,24 @@ What you can try:
 
 The result code was 2 and no file was written. Sigil does not guess.
 
+### A damaged Tome: save what you can
+
+When a Tome (a Sigil of a folder) is too damaged to open as a whole, you can still ask for
+every file that is intact:
+
+```
+$ sigil unseal --salvage -o rescued photos.sg1
+```
+
+Each file is checked on its own and written only if it passes; a file that fails is listed
+as lost and nothing of it is written. Nothing already in `rescued` is overwritten (a taken
+name gets `.salvaged-1`). The list of what was restored, renamed and lost is written to
+`rescued.salvage-report.txt`. If a file's name cannot be confirmed (a damaged list in a Tome
+made by an older version), the file goes into `rescued/recovered-names/` with the start of
+its name, and the report shows the name the list gave it. Result code 0 means every file
+came back under its own name, 7 means some did and some did not, 2 means nothing could be
+saved.
+
 ## Two damaged copies can rescue each other
 
 If you have two damaged copies of the same Sigil, give both. Here one copy lost 800 KB near
@@ -178,7 +196,7 @@ The quick repair was not enough, so Sigil used the deeper repair for bit rot. Th
 The same repair stopped with Ctrl-C after about 3 seconds:
 
 ```
-Stopping safely... nothing will be written. (Ctrl-C again quits at once.)
+Stopping safely... nothing half-done will be written. (Ctrl-C again quits at once.)
 repair stopped: you pressed Ctrl-C. Nothing was written; one.sg1 is unchanged. Run the same command again to start over.
 ```
 
@@ -219,7 +237,8 @@ Programs and scripts see a number when Sigil finishes (`echo $?` shows it in a t
 | 4 | Repair skipped: too long, or you said no; nothing was written |
 | 5 | Damaged, and `sigil mend` repairs it (checked in memory; the file cannot be opened as-is). `scry`, `verify`, `unseal` and `open` use this code |
 | 6 | Damaged; whether `sigil mend` can repair it was not found out (time limit `SIGIL_SCRY_PROBE_SECS`, default 3 seconds, or a seal over 32 MiB). Run `sigil mend` |
-| 130 | Stopped with Ctrl-C: nothing was written |
+| 7 | `unseal --salvage` saved some files but not all (or saved some under another name); see its report file |
+| 130 | Stopped with Ctrl-C: nothing was written (`unseal --salvage`: files already saved stay) |
 
 Exit 5 is given only after the repair was checked in memory (nothing is written by that check; at most 2 CPU threads). Exit 6 is not a guess that repair will fail. These codes and the `What you can try:` lines are tested in `crate/sigil/tests/cli_recovery_hints.rs`.
 

@@ -60,6 +60,15 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   value of the variable is refused and nothing is written. Older Vault versions (v1 and v2)
   restore as before; a Vault can hold versions of every layout. `list_dir_pack` lists a v3
   Tome without a key, so `scry --json` reports `members` for it.
+- **New `sigil unseal --salvage`: save what can be saved from a damaged Tome.** Opt-in;
+  plain `unseal` stays all-or-nothing. It finds each file's stored data directly (past a
+  damaged folder list, a cut-off end or a damaged head), repairs each file in scratch
+  when it can, keeps only files that pass their own checks, never overwrites (`.salvaged-N`
+  for a taken name) and writes `<output>.salvage-report.txt` listing restored, renamed and
+  lost files. v1, v2 (with its key) and v3 Tomes; per-file Wards with `--ward-file`. In a
+  plain v1 Tome a list name is used only when the file's own header confirms all of it;
+  other files go under `recovered-names/`. New exit code **7**: partly saved. `--max-secs`
+  bounds the run; Ctrl-C stops it and keeps what was already saved. SALVAGE_NUMBERS
 - An unknown Tome version is refused by `scry` and `mend` with "unknown Tome version N:
   made by a newer sigil, or damaged", as `unseal` and `ls` already did.
 - `sigil ls` and `sigil mount` check a v1 Tome's folder list (bad names, repeated names)
