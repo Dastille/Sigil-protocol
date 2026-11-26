@@ -196,6 +196,9 @@ enum Body {
     Pack(Arc<PackPieces>),
 }
 
+/// A decoded chunk star kept between reads: `((inode, star index), plaintext)`.
+type CachedStar = ((u64, usize), Arc<Vec<u8>>);
+
 /// Decoded members and stars kept between reads, with the bounds above.
 #[derive(Default)]
 struct Cache {
@@ -204,7 +207,7 @@ struct Cache {
     whole_order: VecDeque<u64>,
     whole_bytes: u64,
     /// Recently opened chunk stars: `((inode, star index), plaintext)`, oldest first.
-    stars: VecDeque<((u64, usize), Arc<Vec<u8>>)>,
+    stars: VecDeque<CachedStar>,
 }
 
 impl Cache {
