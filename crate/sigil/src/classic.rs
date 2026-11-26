@@ -1674,7 +1674,6 @@ fn write_seal(
         emit(&mut pw, &mut f, &mut buf[..t])?;
         pad -= t as u64;
     }
-    drop(emit);
     // Zero padding of the last data part(s): part of the parts, not of the message.
     let mut rest = data_parts as u64 * sl - total;
     while rest > 0 {
