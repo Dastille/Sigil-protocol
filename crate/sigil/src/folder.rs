@@ -23,7 +23,7 @@ use crate::packhead::{self, Src};
 use crate::staging::Staging;
 use crate::{seal_kn_to, unseal_ex_keys, Mode, Result, DEFAULT_PIECE};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Cursor, Read, Write};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 pub const DIR_MAGIC: [u8; 4] = *b"SGDR";
@@ -2039,6 +2039,63 @@ pub(crate) fn list_v1_bytes(inner: &[u8]) -> Result<Vec<DirEntry>> {
 /// One member's star from an in-memory v1 pack.
 pub(crate) fn read_entry_star_v1_bytes(inner: &[u8], want: &str) -> Result<Vec<u8>> {
     read_entry_star_from(&mut Cursor::new(inner), want)
+}
+
+/// List a Warded Tome's members from its decrypted body read as a stream (`r` at the
+/// body's first byte): the inner head is checked against the outer member `count`, and
+/// members whose size is inside their lock are opened with the keys to read it, as
+/// [`list_dir_pack_keys`] does. Reads exactly the inner pack's framing and members.
+pub(crate) fn list_inner_stream<R: Read + ?Sized>(
+    r: &mut R,
+    count: u32,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Vec<DirEntry>> {
+    let mut head = [0u8; 9];
+    r.read_exact(&mut head).map_err(io)?;
+    check_inner(count, &head)?;
+    list_v1_members(r, count, Some((pass, identities)))
+}
+
+/// Where entry `want`'s star sits in a plain (v1) Tome read from `reader`: `(offset,
+/// length)` from the start of `reader`, which holds `size` bytes. Seeks past the other
+/// members instead of reading them, so finding a member costs one small read per
+/// member before it. Fails closed (an error, nothing guessed) when a length runs past
+/// `size`. The loop runs at most the head's member count, and each step moves forward
+/// by at least the 10 bytes of a member's framing, so it is bounded by `size` as well.
+pub(crate) fn locate_entry_star<R: Read + Seek>(
+    reader: &mut R,
+    size: u64,
+    want: &str,
+) -> Result<(u64, u64)> {
+    let want = want.trim().trim_start_matches("./");
+    let (ver, n) = read_head(reader, "not a Tome archive (SGDR)")?;
+    if ver == DIR_VER_SEALED {
+        return Err(crate::Error::Msg(HIDDEN_HINT.into()));
+    }
+    let truncated =
+        || crate::Error::Msg("truncated Tome (cut off mid-archive; incomplete copy or transfer)".into());
+    let mut pos = 9u64;
+    for _ in 0..n {
+        let mut lb = [0u8; 2];
+        reader.read_exact(&mut lb).map_err(|_| truncated())?;
+        let nlen = u16::from_le_bytes(lb) as usize;
+        let mut name = vec![0u8; nlen];
+        reader.read_exact(&mut name).map_err(|_| truncated())?;
+        let mut sl = [0u8; 8];
+        reader.read_exact(&mut sl).map_err(|_| truncated())?;
+        let slen = u64::from_le_bytes(sl);
+        pos += 2 + nlen as u64 + 8;
+        let end = pos.checked_add(slen).filter(|e| *e <= size).ok_or_else(truncated)?;
+        if String::from_utf8_lossy(&name) == want {
+            return Ok((pos, slen));
+        }
+        reader.seek(SeekFrom::Start(end)).map_err(io)?;
+        pos = end;
+    }
+    Err(crate::Error::Msg(format!(
+        "no entry '{want}' in Tome (run sigil scry or sigil path to list)"
+    )))
 }
 
 fn read_entry_star_from<R: Read>(reader: &mut R, want: &str) -> Result<Vec<u8>> {
