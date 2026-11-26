@@ -20,6 +20,7 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   place at the end, so a seal that fails part way leaves no partial output.
 - A padded log refuses an append when the random source fails, instead of padding with
   zeros (zeros would compress and show the entry's size).
+- Library: `rain_lane()` returns `Result<u8>` (it fails when the random source fails).
 
 ### Version
 
