@@ -1996,7 +1996,7 @@ pub fn scry_path(input: &Path) -> Result<String> {
             if recovered { "recovered" } else { "intact" },
             h.orig_len,
             h.entropy_milli,
-            h.name
+            crate::shown::name(&h.name)
         )
     };
     if let Ok(a) = crate::verify_attestation(input) {
