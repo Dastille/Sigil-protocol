@@ -337,6 +337,10 @@ fn salvage_body(cx: &mut Ctx<'_, '_>, input: &Path, keyed: bool) -> Result<()> {
     };
     let opened = match open(&body.0) {
         Ok(()) => Ok(()),
+        // A wrong or missing key is not damage: no repair can help, so say so now.
+        Err(first) if keyed && crate::recovery::key_problem(&first.to_string()).is_some() => {
+            Err((first, false))
+        }
         Err(first) => match heal(&body.0, &cx.dest)? {
             Some(h) => open(&h.0).map_err(|e| (e, true)),
             None => Err((first, false)),
@@ -451,7 +455,7 @@ fn salvage_v1(cx: &mut Ctx<'_, '_>, path: &Path, checked: bool, start: u64) -> R
         && cx.report.listed_count == Some(opened.len() as u32)
         && opened
             .last()
-            .map_or(true, |(f, _)| f.star_off + f.star_len == size)
+            .is_none_or(|(f, _)| f.star_off + f.star_len == size)
         && opened
             .iter()
             .all(|(f, o)| f.trusted && !f.cut && o.part.is_some() && !o.healed);
@@ -958,7 +962,7 @@ fn member_keys<'a>(o: &'a SalvageOpts<'_>, name: Option<&str>) -> Vec<Option<&'a
 }
 
 /// Unseal `from` into a private part file in the output folder; the part is removed
-/// unless it is linked into place. Any check failure leaves nothing behind.
+/// unless it is moved into place. Any check failure leaves nothing behind.
 fn unseal_part(cx: &Ctx<'_, '_>, from: &Path, pass: Option<&str>) -> Result<Scratch> {
     let part = Scratch(crate::folder::scratch_beside(
         &cx.dest.join("member"),
@@ -971,7 +975,7 @@ fn unseal_part(cx: &Ctx<'_, '_>, from: &Path, pass: Option<&str>) -> Result<Scra
     Ok(part)
 }
 
-/// Link a checked part file to `rel` under the output folder without overwriting
+/// Move a checked part file to `rel` under the output folder without overwriting
 /// anything (a taken name gets `.salvaged-N`). Returns the path written.
 fn place(cx: &Ctx<'_, '_>, part: &Path, rel: &str) -> Result<PathBuf> {
     let target = cx.dest.join(rel);
@@ -990,9 +994,19 @@ fn place(cx: &Ctx<'_, '_>, part: &Path, rel: &str) -> Result<PathBuf> {
         } else {
             target.with_file_name(format!("{name}.salvaged-{k}"))
         };
-        // A hard link never replaces an existing file (or folder).
-        match fs::hard_link(part, &p) {
-            Ok(()) => return Ok(p),
+        // Claim the name with a new empty file (never an existing file or folder), then
+        // move the checked part over that claim. Works on every file system (no links).
+        match OpenOptions::new().write(true).create_new(true).open(&p) {
+            Ok(claim) => {
+                drop(claim);
+                return match fs::rename(part, &p) {
+                    Ok(()) => Ok(p),
+                    Err(e) => {
+                        let _ = fs::remove_file(&p);
+                        Err(io(e))
+                    }
+                };
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(io(e)),
         }

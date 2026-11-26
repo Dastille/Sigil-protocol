@@ -56,9 +56,9 @@ through a pack left a half-written output file behind.
   (`salvage.rs`) is the one restore that is not all-or-nothing, and only when asked
   for. Each file is unsealed into a private part file and kept only if it passes its
   own checks (length and SHA-256 or AEAD tag, Merkle binding after a repair); a file
-  that fails is reported lost and nothing of it stays. Files are linked into place
-  with a hard link, which never replaces an existing file: a taken name gets
-  `.salvaged-N`. A v1 list name is used only when the file's own header confirms all
+  that fails is reported lost and nothing of it stays. Each name is first claimed
+  with a new empty file (`create_new`, which never takes an existing file or folder),
+  then the checked part is moved over that claim: a taken name gets `.salvaged-N`. A v1 list name is used only when the file's own header confirms all
   of it; otherwise the file goes under `recovered-names/` and the report gives the
   list's name. A stored part of a large file found without its pack head is never
   written as if it were the whole file. Exit 0 only when every listed file came back

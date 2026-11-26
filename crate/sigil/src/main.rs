@@ -517,7 +517,8 @@ enum Cmd {
         wormhole: bool,
     },
     /// De-scribe a .sg1 back to the original file or folder (`--pass-file` / `--identity` when
-    /// locked; `--repair` to open a bit-rotten copy). Aliases: de-scribe, describe
+    /// locked; `--repair` to open a bit-rotten copy; `--salvage` to save what still checks
+    /// out from a damaged Tome). Aliases: de-scribe, describe
     #[command(visible_aliases = ["de-scribe", "describe"])]
     Unseal {
         input: PathBuf,
