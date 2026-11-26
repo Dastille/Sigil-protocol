@@ -52,7 +52,7 @@ Optional on track/commit: `--mode seal`, `--pass-file F`, `--to alice.pub`. Encr
 
 FUSE is read-only. Writable cleartext requires `--export-dir --writable` (writes a `.sigil-dirty` sidecar; never stores passphrases). Re-seal only through `vault commit --from-export`.
 
-Memory: a large-file member (a large member of a Tome, a Warded Tome with a large body, a single large-file pack, or a Constellation star) is read one chunk star at a time. Its first read checks every star once, as `unseal` does; later reads open only the stars they cover and check each again. At most three decoded stars are kept. Classic members (at most the Tome's `--chunk`) and log segments are decoded whole, with at most 256 MiB of them cached. `--export-dir` writes each file via a `.sigil-part` file renamed into place only after its checks pass.
+Memory: a large-file member (a large member of a Tome, a Warded Tome with a large body, a single large-file pack, or a Constellation star) is read one chunk star at a time. Its first read checks every star once, as `unseal` does; later reads open only the stars they cover and check each again. At most three decoded stars are kept. Classic members (at most the Tome's `--chunk`) and log segments are decoded whole, with at most 256 MiB of them cached. `--export-dir` writes each file via a hidden part file renamed into place only after its checks pass.
 
 ```
 # FUSE read-only (Linux: /dev/fuse + fusermount3)

@@ -3765,6 +3765,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let cov = covenant.as_deref().unwrap_or("");
             let pass = resolve_pass(pass, talisman)?;
             let recipients = load_recipients(&to)?;
+            if fail_on_skip && !input.is_dir() {
+                return Err("--fail-on-skip applies to a folder Inscribe only".into());
+            }
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
             {
                 return Err(
@@ -3823,9 +3826,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
                 dispatch(&output, &rsync, &rclone, wormhole, false)?;
                 return Ok(());
-            }
-            if fail_on_skip && !input.is_dir() {
-                return Err("--fail-on-skip applies to a folder Inscribe only".into());
             }
             if input.is_dir() {
                 if pieces.is_some() {

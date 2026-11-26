@@ -610,7 +610,9 @@ impl VaultFs {
                 .to_string()
         });
         let name = sanitize_name(&name);
-        // Only the head is needed for the size: read a bounded peek, never the whole seal.
+        // Only the head is needed for the size: read a bounded peek first. A classic
+        // seal whose header is not found there (damaged, a copy further in) falls back
+        // to the whole file, as before, rather than showing a wrong size.
         let bytes = peek_file(&self.seal, crate::header::KEYSTONE_SPAN as u64 + 64)?;
         let size = if is_work_pack(&self.seal) {
             // work head has orig len
@@ -620,9 +622,16 @@ impl VaultFs {
                 0
             }
         } else {
-            locate_header(&bytes)
-                .map(|(h, _, _)| h.orig_len)
-                .unwrap_or(0)
+            match locate_header(&bytes) {
+                Ok((h, _, _)) => h.orig_len,
+                Err(_) => {
+                    let whole =
+                        fs::read(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?;
+                    locate_header(&whole)
+                        .map(|(h, _, _)| h.orig_len)
+                        .unwrap_or(0)
+                }
+            }
         };
         self.add_file("", &name, size, FileSrc::Whole)?;
         Ok(())
@@ -659,26 +668,23 @@ impl VaultFs {
 
     fn build_dir_pack(&mut self) -> Result<()> {
         let large_body = match crate::folder::sealed_dir_body_loc(&self.seal)? {
-            Some((_, off, len)) if len >= 4 => {
+            Some((count, off, len)) if len >= 4 => {
                 let mut mag = [0u8; 4];
                 let mut f = crate::packhead::FileSrc::open(&self.seal)?;
                 f.read_at(off, &mut mag)?;
-                (mag == WORK_MAGIC).then_some((off, len))
+                (mag == WORK_MAGIC).then_some((count, off, len))
             }
             _ => None,
         };
-        let entries = if let Some((off, len)) = large_body {
-            // Check the whole body once (one star in memory), keep only its star map,
-            // and list the members from a second streamed pass.
+        let entries = if let Some((count, off, len)) = large_body {
+            // One pass over the body: check every star (one in memory), keep only the
+            // star map, and list the members from the same stream.
             let home = PackHome::File {
                 path: self.seal.clone(),
                 base: off,
                 len,
             };
             let pass = self.pass.clone();
-            let count = crate::folder::sealed_dir_body_loc(&self.seal)?
-                .map(|t| t.0)
-                .unwrap_or(0);
             let ids = self.identities.clone();
             let (body, entries) = self.open_pack_with(home, pass.as_deref(), |r| {
                 crate::folder::list_inner_stream(r, count, pass.as_deref(), &ids)
@@ -1182,7 +1188,7 @@ impl VaultFs {
         }
     }
 
-    /// Write inode `ino` to the file `out`, all or nothing (a `.sigil-part` file renamed
+    /// Write inode `ino` to the file `out`, all or nothing (a hidden part file renamed
     /// into place only after every check passed). A large-file member not opened yet is
     /// checked and written on one pass, one star in memory at a time.
     fn export_file(&self, ino: u64, out: &Path) -> Result<u64> {
@@ -1289,19 +1295,24 @@ fn decode_star(star: &[u8], pass: Option<&str>, identities: &[Identity]) -> Resu
     }
 }
 
-/// Write `out` all or nothing: bytes go to `<out>.sigil-part`, renamed over `out` only
-/// if `f` succeeds; on any error the part file is removed. Unlike the archive writers
-/// this does not sync to disk (an export is a view, made again from the seal at will).
+/// Write `out` all or nothing: bytes go to a new hidden part file beside it (a unique
+/// name, created exclusively, so it can never replace another exported file), renamed
+/// over `out` only if `f` succeeds; on any error the part file is removed. Unlike the
+/// archive writers this does not sync to disk (an export is a view, made again from the
+/// seal at will).
 fn write_part<T>(
     out: &Path,
     f: impl FnOnce(&mut io::BufWriter<fs::File>) -> Result<T>,
 ) -> Result<T> {
     let io_err = |e: io::Error| crate::Error::Msg(e.to_string());
-    let mut part = out.as_os_str().to_os_string();
-    part.push(".sigil-part");
-    let part = PathBuf::from(part);
+    let part = crate::folder::scratch_beside(out, "sigil-part");
     let result = (|| {
-        let mut w = io::BufWriter::new(fs::File::create(&part).map_err(io_err)?);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
+            .map_err(io_err)?;
+        let mut w = io::BufWriter::new(file);
         let v = f(&mut w)?;
         w.flush().map_err(io_err)?;
         drop(w);
@@ -1991,8 +2002,8 @@ mod tests {
         let fresh = VaultFs::open(&pack, None, &[], false).unwrap();
         let dest = d.join("out");
         assert!(fresh.export_dir(&dest).is_err());
-        assert!(!dest.join("big.bin").exists());
-        assert!(!dest.join("big.bin.sigil-part").exists());
+        let left: Vec<_> = fs::read_dir(&dest).unwrap().collect();
+        assert!(left.is_empty(), "export left {left:?}");
         let _ = fs::remove_dir_all(&d);
     }
 

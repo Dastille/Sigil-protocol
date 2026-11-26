@@ -43,7 +43,7 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   a member checks every star once, as `unseal` does (each star, its facet position, the
   total), holding one star; later reads open only the stars they cover and check each again,
   so a pack changed after it was opened is refused, never served. At most three decoded
-  stars are kept. `--export-dir` writes each file through a `.sigil-part` file renamed into
+  stars are kept. `--export-dir` writes each file through a hidden part file renamed into
   place only after its checks pass.
 - Classic members (one AES-GCM message, at most the Tome's `--chunk`) and log segments are
   still decoded whole; at most 256 MiB of them stay cached, oldest dropped first, and the
