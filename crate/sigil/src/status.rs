@@ -161,8 +161,15 @@ pub fn scry_status_assessed(
         });
         bad
     } else {
-        let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
-        let (h, merkle_ok, live, k, recovered) = crate::verify(&data)?;
+        // A classic seal with intact framing is checked a window at a time.
+        let checked = match crate::classic::verify_path(input)? {
+            Some(v) => v,
+            None => {
+                let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
+                crate::verify(&data)?
+            }
+        };
+        let (h, merkle_ok, live, k, recovered) = checked;
         st.mark = Some(MarkFacts {
             version: h.version,
             live: live as u32,

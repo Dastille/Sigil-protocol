@@ -1375,8 +1375,11 @@ pub fn unseal_path_keys(
         });
     }
     // A classic seal with intact framing is opened a window at a time (same checks).
+    // `open` declines (before writing anything) when the parts must be placed the way
+    // only the in-memory scan places them; the empty part file is then removed.
     if crate::classic::is_clean(input)? {
-        return write_atomic(output, |w| {
+        const DECLINED: &str = "classic stream declined";
+        let r = write_atomic(output, |w| {
             match crate::classic::open(
                 input,
                 w,
@@ -1388,11 +1391,13 @@ pub fn unseal_path_keys(
                 false,
             )? {
                 Some(o) => Ok(o.len),
-                None => Err(crate::Error::Msg(
-                    "the archive changed while it was being opened".into(),
-                )),
+                None => Err(crate::Error::Msg(DECLINED.into())),
             }
         });
+        match r {
+            Err(crate::Error::Msg(m)) if m == DECLINED => {}
+            r => return r,
+        }
     }
     let data = std::fs::read(input).map_err(|e| crate::Error::Msg(e.to_string()))?;
     // unseal_ex_keys checks length + SHA-256 against the header and refuses a

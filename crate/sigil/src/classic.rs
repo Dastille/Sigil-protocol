@@ -74,8 +74,12 @@ pub(crate) struct Layout {
     pub h: Header,
     /// `write_header(h)`: the canonical header bytes (Embers and trailer copy these).
     pub hdr: Vec<u8>,
-    /// The front of the file is the canonical Keystone (all copies intact).
+    /// The front of the file is the canonical Keystone and every Ember / Vow copy beside
+    /// a part is byte-exact (nothing for a mend to rewrite but the parts themselves).
     pub front_canonical: bool,
+    /// Per part: its Ember sits where the header puts it, byte-exact (the in-memory scan
+    /// finds that part by its Ember; a damaged Ember leaves it to the CRC at its slot).
+    pub ember_ok: Vec<bool>,
     pub prefix: u64,
     pub lead: u64,
     pub stride: u64,
@@ -93,6 +97,17 @@ impl Layout {
     }
     fn data_parts(&self) -> usize {
         self.k
+    }
+    /// The in-memory scan places Ember-found parts by their order, not their slot, when
+    /// fewer than two distinct slots were found that way; with exactly one such part
+    /// away from slot 0 it reads the seal differently from here. Leave that rare case
+    /// (all but one Ember or part lost) to the in-memory path.
+    fn placed_by_order(&self, parts: &Parts) -> bool {
+        if !self.h.ember() {
+            return false;
+        }
+        let mut found = (0..self.n).filter(|&i| self.ember_ok[i] && parts.crc_ok[i]);
+        matches!((found.next(), found.next()), (Some(i), None) if i != 0)
     }
 }
 
@@ -187,10 +202,11 @@ pub(crate) fn probe(src: &mut FileSrc) -> Result<Option<Layout>> {
     if header::framed_as_pack_star(&head, end as usize) {
         return Ok(None);
     }
-    let l = Layout {
+    let mut l = Layout {
         h,
         hdr,
         front_canonical,
+        ember_ok: vec![true; n],
         prefix: prefix as u64,
         lead,
         stride,
@@ -201,7 +217,8 @@ pub(crate) fn probe(src: &mut FileSrc) -> Result<Option<Layout>> {
         vow,
         file_len: len,
     };
-    // Every Ember (and the Vow after it) must be exactly where the header puts it.
+    // Note which Embers (and Vows after them) are exactly where the header puts them. A
+    // damaged copy does not move any part (each part sits at its slot); a mend rewrites it.
     let mut buf = vec![0u8; l.lead as usize];
     for i in 0..n {
         crate::repair_ctl::check()?;
@@ -209,13 +226,14 @@ pub(crate) fn probe(src: &mut FileSrc) -> Result<Option<Layout>> {
         let mut pos = 0;
         if l.h.ember() {
             if buf[..HEADER_SIZE] != header::write_ember(&l.hdr, i as u8)[..] {
-                return Ok(None);
+                l.ember_ok[i] = false;
+                l.front_canonical = false;
             }
             pos = HEADER_SIZE;
         }
         if let Some(v) = &l.vow {
             if buf[pos..pos + VOW_SIZE] != v[..] {
-                return Ok(None);
+                l.front_canonical = false;
             }
         }
     }
@@ -735,6 +753,9 @@ pub(crate) fn open<W: Write>(
         return Err(msg("v3 label carries an outer entropy score; refusing"));
     }
     let parts = scan_parts(&mut src, &l)?;
+    if l.placed_by_order(&parts) {
+        return Ok(None);
+    }
     let mut p = payload(&mut src, &l, &parts, beside)?;
     let pz = pass.unwrap_or("").trim();
     let mut gcm: Option<Gcm> = None;
@@ -1595,6 +1616,7 @@ pub struct MendPlan {
 }
 
 /// What a streamed mend wrote (the values `verify` reports on the mended copy).
+#[derive(Debug)]
 pub struct MendDone {
     pub header: Header,
     pub merkle_ok: bool,
@@ -1614,6 +1636,9 @@ pub fn mend_plan(
         return Ok(None);
     };
     let parts = scan_parts(&mut src, &l)?;
+    if l.placed_by_order(&parts) {
+        return Ok(None);
+    }
     let mut grades = Vec::with_capacity(l.n);
     for (i, &ok) in parts.crc_ok.iter().enumerate() {
         grades.push(if ok {
@@ -1663,6 +1688,11 @@ pub fn mend_run(plan: MendPlan, out: &Path, soft: bool) -> Result<Option<MendDon
         return Err(msg(format!("need {k} live shards to mend, have {live}")));
     }
     let mut f = File::create(out).map_err(io)?;
+    // Any error (a stop, a failed check, I/O) removes the partial output.
+    let mut guard = PartFile {
+        path: out.to_path_buf(),
+        keep: false,
+    };
     let mut pw = PartWriter::new(l.prefix, l.lead, l.sl, n);
     let mut merkle_ok = true;
     if glyph {
@@ -1690,7 +1720,6 @@ pub fn mend_run(plan: MendPlan, out: &Path, soft: bool) -> Result<Option<MendDon
         }
         if !ok {
             drop(f);
-            let _ = std::fs::remove_file(out);
             if soft {
                 return Ok(None);
             }
@@ -1712,6 +1741,7 @@ pub fn mend_run(plan: MendPlan, out: &Path, soft: bool) -> Result<Option<MendDon
         &crcs,
     )?;
     f.sync_all().map_err(io)?;
+    guard.keep = true;
     Ok(Some(MendDone {
         header: l.h.clone(),
         merkle_ok,
@@ -1735,6 +1765,9 @@ pub(crate) fn verify_path(input: &Path) -> Result<Option<Verified>> {
         return Ok(None);
     };
     let parts = scan_parts(&mut src, &l)?;
+    if l.placed_by_order(&parts) {
+        return Ok(None);
+    }
     let live = parts.live();
     let merkle_ok = live == l.n && merkle::merkle_root(&parts.sha) == l.h.merkle;
     Ok(Some((l.h, merkle_ok, live, l.k, false)))
@@ -1750,6 +1783,9 @@ pub(crate) fn assess_path(input: &Path) -> Result<Option<crate::recovery::Condit
         return Ok(None);
     };
     let parts = scan_parts(&mut src, &l)?;
+    if l.placed_by_order(&parts) {
+        return Ok(None);
+    }
     let (n, k) = (l.n, l.k);
     let live = parts.live();
     let merkle_ok = live == n && merkle::merkle_root(&parts.sha) == l.h.merkle;
@@ -1772,6 +1808,47 @@ pub(crate) fn assess_path(input: &Path) -> Result<Option<crate::recovery::Condit
         Condition::Healthy
     } else {
         Condition::Torn(
+            "redundant copies (shard or key-wrap spares) are damaged (data still intact)".into(),
+        )
+    }))
+}
+
+/// `doctor::health_bytes` for a classic seal on disk whose framing is intact; `Ok(None)`
+/// for anything else, or when the repair check fails (the in-memory check words that).
+pub(crate) fn health_path(input: &Path) -> Result<Option<crate::doctor::Health>> {
+    use crate::doctor::Health;
+    let mut src = FileSrc::open(input)?;
+    let Some(l) = probe(&mut src)? else {
+        return Ok(None);
+    };
+    let parts = scan_parts(&mut src, &l)?;
+    if l.placed_by_order(&parts) {
+        return Ok(None);
+    }
+    let (n, k) = (l.n, l.k);
+    let live = parts.live();
+    if live < k {
+        return Ok(Some(Health::Damaged(format!(
+            "only {live}/{n} shards intact, need {k}"
+        ))));
+    }
+    if live < n {
+        return Ok(Some(Health::Mendable(format!(
+            "{live}/{n} shards intact (need {k})"
+        ))));
+    }
+    if merkle::merkle_root(&parts.sha) != l.h.merkle {
+        return Ok(Some(Health::Damaged(
+            "all shards present but Merkle root differs (corrupt shard data)".into(),
+        )));
+    }
+    if reencodes_exactly(&mut src, &l).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(if l.front_canonical {
+        Health::Ok
+    } else {
+        Health::Mendable(
             "redundant copies (shard or key-wrap spares) are damaged (data still intact)".into(),
         )
     }))
@@ -2097,6 +2174,12 @@ mod tests {
                 for &i in &hits {
                     hit_part(&mut torn, &l, i);
                 }
+                if l.h.ember() {
+                    // damaged Ember copies beside an intact part and a damaged one
+                    for i in [1, hits[0]] {
+                        torn[(l.prefix + i as u64 * l.stride) as usize + 20] ^= 0x33;
+                    }
+                }
                 let mem = crate::unseal(&torn, pass).map_err(|e| e.to_string());
                 let st = open_stream(&torn, pass, &[]).map_err(|e| e.to_string());
                 assert_eq!(st, mem, "{mode:?} {pass:?}");
@@ -2371,14 +2454,52 @@ mod tests {
                 let mut ks = file.clone();
                 ks[HEADER_SIZE + 9] ^= 0xff;
                 cases.push(ks);
+                let ember_at = |i: usize| (l.prefix + i as u64 * l.stride) as usize;
+                if l.h.ember() {
+                    // damaged Embers: beside an intact part 1, and beside a damaged part 2
+                    let mut em = file.clone();
+                    em[ember_at(1) + 20] ^= 0x33;
+                    em[ember_at(2) + 3] ^= 0x01;
+                    hit_part(&mut em, &l, 2);
+                    cases.push(em);
+                    // 4 KiB wiped across the boundary of parts 2 and 3 (CRC word, Ember)
+                    let mut st = file.clone();
+                    let (b, w) = (ember_at(3), (l.stride as usize / 2).min(2048));
+                    st[b - w..b + w].fill(0xa5);
+                    cases.push(st);
+                    // only part 1 is still found by its Ember: the in-memory scan places
+                    // it by order, so the streamed paths step aside
+                    let mut ord = file.clone();
+                    for i in (0..l.n).filter(|&i| i != 1) {
+                        ord[ember_at(i) + 20] ^= 0x33;
+                    }
+                    with_file(&ord, |p| {
+                        assert!(verify_path(p).unwrap().is_none(), "{mode:?} order");
+                        assert!(assess_path(p).unwrap().is_none(), "{mode:?} order");
+                        assert!(health_path(p).unwrap().is_none(), "{mode:?} order");
+                        assert!(mend_plan(p, p).unwrap().is_none(), "{mode:?} order");
+                        let mut sink = Vec::new();
+                        let be = crate::mds::VandermondeRs;
+                        let o = open(p, &mut sink, pass, &[], &be, &[], p, true).unwrap();
+                        assert!(o.is_none() && sink.is_empty(), "{mode:?} order");
+                    });
+                }
                 for (ci, f) in cases.iter().enumerate() {
                     let what = format!("{mode:?} {pass:?} case {ci}");
                     with_file(f, |p| {
+                        assert!(verify_path(p).unwrap().is_some(), "streams {what}");
                         assert_eq!(
                             verify_path(p).unwrap().map(|v| (v.1, v.2, v.3, v.4)),
                             crate::verify(f).ok().map(|v| (v.1, v.2, v.3, v.4)),
                             "verify {what}"
                         );
+                        if let Some(h) = health_path(p).unwrap() {
+                            assert_eq!(
+                                format!("{h:?}"),
+                                format!("{:?}", crate::doctor::health_bytes(f)),
+                                "health {what}"
+                            );
+                        }
                         let mut budget = crate::recovery::ProbeBudget::with_secs(30);
                         if let Some(c) = assess_path(p).unwrap() {
                             assert_eq!(
@@ -2432,9 +2553,14 @@ mod tests {
         let mut ember = file.clone();
         let l = layout_of(&file);
         ember[(l.prefix + 3 * l.stride) as usize + 20] ^= 1;
-        for f in [&ins, &cut, &extra, &ember] {
+        for f in [&ins, &cut, &extra] {
             with_file(f, |p| assert!(!is_clean(p).unwrap()));
         }
+        // a damaged Ember copy moves nothing: still streamed, and not canonical
+        with_file(&ember, |p| {
+            let l = probe(&mut FileSrc::open(p).unwrap()).unwrap().unwrap();
+            assert!(!l.front_canonical && !l.ember_ok[3] && l.ember_ok[2]);
+        });
         with_file(&file, |p| assert!(is_clean(p).unwrap()));
     }
 }
