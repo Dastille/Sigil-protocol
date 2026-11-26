@@ -180,8 +180,11 @@ fn damaged_v1_list_saves_every_member_and_marks_unconfirmed_names() {
         let o = sigil(&d, &["unseal", "--salvage", t, "-o", out.as_str()]);
         let msg = text(&o);
         assert_eq!(code(&o), 7, "{t}: {msg}");
+        // Every member saved. Once damage is seen, a name the member's own header cannot
+        // confirm in full (the long one here) goes under recovered-names/ as well.
         let (named, rec) = all_right(&d.join(&out), &want);
-        assert_eq!((named, rec), (9, 1), "{t}: {msg}");
+        assert_eq!((named, rec), (8, 2), "{t}: {msg}");
+        assert!(msg.contains("cannot confirm its whole name"), "{msg}");
         assert!(
             msg.contains("renamed") && msg.contains("recovered-names/"),
             "{msg}"
