@@ -262,6 +262,8 @@ fn kind_label(k: &NestKind) -> &'static str {
 /// Render a [`PathView`] as a branded field slab: identity, condition, extent,
 /// inventory, then a one-line SHA-256 of the outer file (top level only).
 pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> String {
+    // Stored names can carry terminal controls: show them escaped.
+    let view = &view.shown();
     let (rule_ch, sep, crumb, ell) = if st.unicode {
         ("─", " · ", " → ", "…")
     } else {
@@ -306,6 +308,7 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
             );
         }
         Some(Health::NeedsRepair(what)) => {
+            let what = &crate::shown::name(what);
             add("STATUS", "needs repair", st.paint("33", "needs repair"));
             add("", what, st.dim(what));
             add(
@@ -315,6 +318,7 @@ pub fn render_path_view(view: &PathView, extra: &Extra<'_>, st: &Style) -> Strin
             );
         }
         Some(Health::NotRecoverable(why)) => {
+            let why = &crate::shown::name(why);
             add(
                 "STATUS",
                 "not recoverable",

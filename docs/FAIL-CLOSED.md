@@ -35,6 +35,14 @@ through a pack left a half-written output file behind.
   final renames are one per file. If a rename itself fails during that last step,
   files already renamed stay; each is complete and verified. A crash before the
   renames can leave `.sigil-part` files, never a file under a restored name.
+- **A damaged Tome folder list is refused, not guessed.** A plain Tome's list
+  (count, names, lengths) has no repair data. Before anything is written, each name
+  is checked against the path prefix in that member's own protected header, a name
+  used twice, not valid UTF-8, or out of the order Inscribe writes names in is
+  refused, and a complete member after the last counted one means the count was
+  lowered. A damaged name that keeps its header prefix and its place in the order
+  is not caught (that needs a protected list, a format change). Any of these stops `scry`, `verify`,
+  `unseal` and `mend` with exit 2 (`folder list damaged: …`) and no output.
 - **Whole-file checks before success.** Every chunk is checked against the length
   and SHA-256 in its own header. Pack unseal and in-memory pack mend also check
   every chunk against the facet list (catches swapped or reordered chunks) and the

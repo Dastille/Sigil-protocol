@@ -26,10 +26,11 @@ static JSON_EXTRA: std::sync::Mutex<String> = std::sync::Mutex::new(String::new(
 /// A human status line: stdout normally, stderr when stdout carries data or JSON.
 macro_rules! say_raw {
     ($($t:tt)*) => {
+        // Stored names can carry terminal controls: print them escaped.
         if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
-            eprint!($($t)*);
+            eprint!("{}", sigil::shown::line(&format!($($t)*)));
         } else {
-            print!($($t)*);
+            print!("{}", sigil::shown::line(&format!($($t)*)));
         }
     };
 }
@@ -37,10 +38,11 @@ macro_rules! say_raw {
 /// A human status line: stdout normally, stderr when stdout carries data or JSON.
 macro_rules! say {
     ($($t:tt)*) => {
+        // Stored names can carry terminal controls: print them escaped.
         if HUMAN_TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
-            eprintln!($($t)*);
+            eprintln!("{}", sigil::shown::line(&format!($($t)*)));
         } else {
-            println!($($t)*);
+            println!("{}", sigil::shown::line(&format!($($t)*)));
         }
     };
 }
@@ -400,7 +402,7 @@ use std::process::{Command, Stdio};
     name = "sigil",
     version = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("SIGIL_GIT_COMMIT"), ")"),
     about = "Wrap a file so a damaged copy can still be restored, and so you can tell if it was swapped.",
-    long_about = "Inscribe makes a .sg1 Sigil Archive. Scry checks it without unpacking. De-scribe gets the original back.\nDefault redundancy style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nExit codes: 0 ok; 1 error, wrong or missing key; 2 not recoverable / too damaged (nothing written) or usage error; 3 nothing could be checked; 4 repair skipped (too long, or you said no); 5 damaged, `sigil mend` repairs it (checked in memory; cannot open as-is); 6 damaged, repair not checked (time limit SIGIL_SCRY_PROBE_SECS, default 3 s): run `sigil mend`; 130 stopped with Ctrl-C.",
+    long_about = "Inscribe makes a .sg1 Sigil Archive. Scry checks it without unpacking. De-scribe gets the original back.\nDefault redundancy style is Reflection (~1.3× size, ~25% repair). Seal is opt-in for worse damage.\nFriendly start page (recipes + guide links): docs/START.md in the repo.\nExit codes: 0 ok; 1 error, wrong or missing key; 2 not recoverable / too damaged (nothing written; includes a damaged Tome folder list) or usage error; 3 nothing could be checked; 4 repair skipped (too long, or you said no); 5 damaged, `sigil mend` repairs it (checked in memory; cannot open as-is); 6 damaged, repair not checked (time limit SIGIL_SCRY_PROBE_SECS, default 3 s): run `sigil mend`; 130 stopped with Ctrl-C.",
     after_long_help = "See docs/START.md in the repo for a plain-English map of everyday commands."
 )]
 struct Cli {
@@ -2999,6 +3001,17 @@ fn verify_cmd(
             star.as_deref(),
             None,
         )?;
+    } else if let Some(why) = sigil::damaged_tome_head(&input) {
+        // Never read a Tome with a damaged head as a single archive (it would look repairable).
+        return Err(hinted_err(
+            not_recoverable(&why),
+            sigil::recovery::hints(
+                sigil::recovery::ArchiveKind::Tome,
+                &sigil::recovery::Situation::NotRecoverable { intact: Vec::new() },
+                &input,
+            ),
+            2,
+        ));
     } else if is_dir_pack(&input) {
         let pass = resolve_pass(pass.clone(), talisman.clone())?;
         let identities = load_identities(&identity)?;
@@ -3492,16 +3505,17 @@ fn main() {
             let code = hinted
                 .map(|h| h.exit_code)
                 .unwrap_or_else(|| classify_exit(&e.to_string()));
+            // Error text can quote stored names: print control characters escaped.
             if let Some(h) = hinted {
-                eprintln!("{}", h.msg);
+                eprintln!("{}", sigil::shown::line(&h.msg));
                 if j.is_none() && !h.hints.is_empty() {
                     eprintln!("\nWhat you can try:");
                     for opt in &h.hints {
-                        eprintln!("  - {opt}");
+                        eprintln!("  - {}", sigil::shown::line(opt));
                     }
                 }
             } else {
-                eprintln!("{e}");
+                eprintln!("{}", sigil::shown::line(&e.to_string()));
             }
             if let Some((cmd, _)) = j {
                 let hints_json = match hinted {
@@ -3692,6 +3706,7 @@ fn classify_exit(msg: &str) -> i32 {
     } else if msg.contains(sigil::repair_ctl::STOPPED) {
         130
     } else if msg.contains("too damaged")
+        || msg.contains(sigil::FOLDER_LIST_DAMAGED)
         || msg.contains("truncated Tome")
         || msg.contains("will not guess")
         || msg.contains("work pack incomplete")
@@ -4718,11 +4733,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-        Cmd::Mend { input, output, .. } if sigil::is_sealed_dir_pack(&input) => {
+        Cmd::Mend {
+            input,
+            output,
+            soft,
+            hard_only,
+            ..
+        } if sigil::is_sealed_dir_pack(&input) => {
             let output = mend_output(&input, output)?;
             json_extra(",\"kind\":\"sealed-folder-pack\"");
-            let msg = sigil::mend_sealed_dir(&input, &output).map_err(|e| {
-                damage_failure(e.to_string(), mend_hints(&input, false, Vec::new()))
+            let msg = sigil::mend_sealed_dir(&input, &output, soft || !hard_only).map_err(|e| {
+                damage_failure(
+                    e.to_string(),
+                    mend_hints(&input, hard_only && !soft, Vec::new()),
+                )
             })?;
             say!("{msg}");
         }

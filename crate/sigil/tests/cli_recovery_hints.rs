@@ -618,13 +618,26 @@ fn warded_tome_never_shows_member_names() {
         assert!(!all(&o).contains(secret), "{f}: {}", all(&o));
     }
 
-    // Bit rot only the deeper repair could fix: `sigil mend` runs the quick repair on a
-    // Warded Tome, so scry must not promise a repair (exit 2, the same as mend).
+    // Bit rot only the deeper repair can fix: `sigil mend` runs the deeper repair on a
+    // Warded Tome's body (as on a single .sg1), so scry promises the repair (exit 5),
+    // mend delivers it, and `--hard-only` still refuses (exit 2, nothing written).
     let o = sigil(&d, &["scry", "w-rot.sg1"]);
+    assert_eq!(o.status.code(), Some(5), "{}", all(&o));
+    assert!(!all(&o).contains(secret), "{}", all(&o));
+    let o = sigil(&d, &["mend", "--hard-only", "-o", "mh.sg1", "w-rot.sg1"]);
     assert_eq!(o.status.code(), Some(2), "{}", all(&o));
+    assert!(!d.join("mh.sg1").exists());
     let o = sigil(&d, &["mend", "-o", "m.sg1", "w-rot.sg1"]);
-    assert_eq!(o.status.code(), Some(2), "{}", all(&o));
-    assert!(!d.join("m.sg1").exists());
+    assert_eq!(o.status.code(), Some(0), "{}", all(&o));
+    assert!(!all(&o).contains(secret), "{}", all(&o));
+    let o = sigil(&d, &["unseal", "--pass-file", "pw", "-o", "o4", "m.sg1"]);
+    assert!(o.status.success(), "{}", all(&o));
+    let o = sigil(&d, &["unseal", "--pass-file", "pw", "-o", "o5", "w.sg1"]);
+    assert!(o.status.success(), "{}", all(&o));
+    assert_eq!(
+        fs::read(d.join("o4").join(secret)).unwrap(),
+        fs::read(d.join("o5").join(secret)).unwrap()
+    );
 }
 
 #[test]

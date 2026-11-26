@@ -97,6 +97,33 @@ The first release will be **v0.9.0**. This tree is not 1.0.
 
 ### Repair
 
+- `sigil mend` on a Warded Tome now runs the deeper bit-rot repair on its locked body when the
+  quick repair fails, as it already did for a single `.sg1` and for the members of a plain Tome.
+  Scattered bit flips that touch every part of the body used to leave a Warded Tome
+  unrepairable even at one flipped bit in 100,000; with Reflection or Seal, copies with up to
+  about one flipped bit in 10,000 are now healed (measured on three test folders). `--hard-only`
+  keeps the quick repair only. `scry` assesses the body with the same repair, so it reports
+  exit 5 (repairable) instead of 2 for such copies. The format is unchanged.
+
+- A plain Tome's folder list (member count, names and lengths) has no repair data of its own,
+  so one damaged byte there could give wrong output that still exited 0: a member restored
+  under another name, two members sharing a name (one overwriting the other), or members
+  silently dropped by a lowered count. `scry`, `verify`, `unseal` and `mend` now refuse
+  such a copy with exit 2 and `folder list damaged: …`, and write nothing. They check each
+  name against the path kept in that member's own protected header (its first 16 bytes; for
+  a large-file member, its first chunk's name), refuse a name used twice or one that is not
+  valid UTF-8, refuse a name out of the order Inscribe has always written names in (sorted,
+  folder by folder), and refuse when a complete member follows the last counted one. A length that
+  runs past the end while later members are still there is reported as list damage, not as
+  "this copy is cut short"; a copy that really is cut short is still reported as cut short.
+  Encrypted member headers keep no name, so names in those Tomes are checked for uniqueness,
+  order and form only. Limit: a damaged name that keeps its first 16 bytes, stays valid and
+  still sorts between its neighbours (for example `.dat` turned into `.dau`) cannot be told
+  from the real name without protecting the list itself, which would change the format.
+  The format is unchanged.
+- `scry` / `verify` no longer report a Tome whose first bytes (`SGDR` and the version) are
+  damaged as a healthy or repairable single archive; they exit 2 with `Tome head damaged`.
+
 - `mend` and `unseal` rebuild damaged length prefixes in a large-file pack
   (the 8-byte length in front of each chunk star) when every star confirms
   against the facet list and any intact pack-head guard. Decoder-only: the
@@ -156,6 +183,10 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   Frost Rune. A wrong key now says `Wrong passphrase or key — this Sigil Archive is Warded
   (…)` instead of `could not unwrap CEK — need matching --identity or passphrase`.
 - A Warded Tome never shows its member names in any of this guidance.
+- Stored names are printed with control characters and invisible layout characters escaped
+  (for example `\u{1b}`), so a crafted name in a Tome or `.sg1` cannot drive the terminal.
+  This covers `scry`, `ls`, `unseal`, `mend` and every error and hint line. Files are still
+  restored under their real names.
 
 ### Breaking changes
 
