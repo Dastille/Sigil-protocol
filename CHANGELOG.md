@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+The first release will be **v0.9.0**. This tree is not 1.0.
+
+### Version
+
+- The crate and `sigil --version` now report `0.9.0`. The `.sg1` format version is unchanged.
+
 ### Naming
 
 - User-facing text (CLI `--help`, messages, README, docs, wiki, and the desktop lab) uses the

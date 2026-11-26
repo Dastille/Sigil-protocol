@@ -16,7 +16,7 @@ cargo build --release
 
 No extra libraries for the default build. Optional `--features passkey` (FIDO2 security keys) needs `libudev-dev` + `pkg-config` on Linux — see `docs/PASSKEY.md`. AGPL-3.0 for this program. Apache-2.0 for the `.sg1` layout (`LICENSE.SPEC` at the repo root).
 
-Tag **v1.0** on GitHub when you push `Dastille/Sigil-protocol` (this sandbox cannot log into your GitHub).
+Tag **v0.9.0** on GitHub when you push `Dastille/Sigil-protocol` (this sandbox cannot log into your GitHub).
 
 **CI**
 

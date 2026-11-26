@@ -29,7 +29,7 @@ The root `Dockerfile` is a multi-stage, multi-arch (`linux/amd64`,
 
 ```sh
 docker build \
-  --build-arg SIGIL_VERSION=1.0.0 \
+  --build-arg SIGIL_VERSION=0.9.0 \
   --build-arg SIGIL_GIT_COMMIT="$(git rev-parse --short=7 HEAD)" \
   --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)" \
   -t sigil:local .
@@ -40,10 +40,10 @@ docker build \
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg SIGIL_VERSION=1.0.0 \
+  --build-arg SIGIL_VERSION=0.9.0 \
   --build-arg SIGIL_GIT_COMMIT="$(git rev-parse --short=7 HEAD)" \
   --build-arg SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)" \
-  -t ghcr.io/dastille/sigil:1.0.0 \
+  -t ghcr.io/dastille/sigil:0.9.0 \
   .
 ```
 

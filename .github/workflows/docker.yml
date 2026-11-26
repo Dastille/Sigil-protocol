@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag (e.g. 1.0.0 or main)"
+        description: "Image tag (e.g. 0.9.0 or main)"
         required: true
         default: "local"
         type: string
@@ -42,7 +42,7 @@ jobs:
           echo "sha=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
           echo "epoch=$(git log -1 --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' crate/sigil/Cargo.toml | head -n1)
-          echo "version=${version:-1.0.0}" >> "$GITHUB_OUTPUT"
+          echo "version=${version:-0.9.0}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
