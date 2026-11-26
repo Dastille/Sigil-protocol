@@ -1255,12 +1255,26 @@ pub fn unseal_dir_mend_keys(
 /// `soft` adds the deeper bit-rot repair (as plain `sigil mend` does for a single
 /// `.sg1` and for plain Tome members) when the quick repair fails.
 pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String> {
-    let (n, off, len) = sealed_dir_body_loc(input)?
-        .ok_or_else(|| crate::Error::Msg("not a Tome with a body (Warded or protected)".into()))?;
+    // The 17-byte head is outside the body's repair data. Its body length is rebuilt
+    // from the file size, and (protected v3 only, where no key is needed) its member
+    // count from the inner list's own head inside the healed body.
+    let (ver, mut n, stored_len) = {
+        let mut reader = BufReader::new(File::open(input).map_err(io)?);
+        let (ver, n) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
+        if !has_body(ver) {
+            return Err(crate::Error::Msg(
+                "not a Tome with a body (Warded or protected)".into(),
+            ));
+        }
+        let mut lb = [0u8; 8];
+        reader
+            .read_exact(&mut lb)
+            .map_err(|_| crate::Error::Msg(TRUNCATED_WARDED.into()))?;
+        (ver, n, u64::from_le_bytes(lb))
+    };
     let mut tome = packhead::FileSrc::open(input)?;
-    let mut ver = [0u8; 1];
-    tome.read_at(4, &mut ver)?;
-    let ver = ver[0];
+    let off = SEALED_HEAD_LEN as u64;
+    let len = tome.size().saturating_sub(off);
     let mut mag = [0u8; 4];
     if len >= 4 {
         tome.read_at(off, &mut mag)?;
@@ -1269,6 +1283,10 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
     part.push(".mend-part");
     // Removed on any error; after the rename below there is nothing left to remove.
     let part = Scratch(PathBuf::from(part));
+    let inner_count = |head: &[u8]| -> Option<u32> {
+        (head.len() >= 9 && head[0..4] == DIR_MAGIC && head[4] == DIR_VER_PLAIN)
+            .then(|| u32::from_le_bytes([head[5], head[6], head[7], head[8]]))
+    };
     let state = if mag == crate::work::WORK_MAGIC {
         // Large body: heal it through scratch files, copying a window at a time.
         let src = Scratch(scratch_beside(output, "mend-body-in"));
@@ -1282,6 +1300,15 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
         drop(src);
         let mut healed = packhead::FileSrc::open(&dst.0)?;
         let hlen = healed.size();
+        if ver == DIR_VER_PROTECTED {
+            let l = packhead::layout(&mut healed)?;
+            let mut r = crate::work::PackReader::new(&mut healed, &l, None, &[], &[]);
+            let mut head = [0u8; 9];
+            r.read_exact(&mut head).map_err(io)?;
+            n = inner_count(&head).ok_or_else(|| {
+                crate::Error::Msg("the healed body of this Tome holds no folder list".into())
+            })?;
+        }
         let mut w = BufWriter::new(File::create(&part.0).map_err(io)?);
         w.write_all(&encode_sealed_head(ver, n, hlen)).map_err(io)?;
         packhead::copy_range(&mut healed, 0, hlen, &mut w)?;
@@ -1294,6 +1321,13 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
         let (healed, _) = crate::pieces::mend_bytes_ex(&body, soft).map_err(|e| {
             crate::Error::Msg(format!("the body of this Tome is too damaged to mend: {e}"))
         })?;
+        drop(body);
+        if ver == DIR_VER_PROTECTED {
+            let inner = unseal_ex_keys(&healed, None, &[], &[])?;
+            n = inner_count(&inner).ok_or_else(|| {
+                crate::Error::Msg("the healed body of this Tome holds no folder list".into())
+            })?;
+        }
         fs::write(&part.0, encode_sealed(ver, n, &healed)).map_err(io)?;
         if crate::work::star_torn(&healed) {
             "open"
@@ -1301,9 +1335,28 @@ pub fn mend_sealed_dir(input: &Path, output: &Path, soft: bool) -> Result<String
             "ok"
         }
     };
+    let mut fixed = Vec::new();
+    if stored_len != len {
+        fixed.push("body length");
+    }
+    let mut head_n = [0u8; 4];
+    tome.read_at(5, &mut head_n)?;
+    if u32::from_le_bytes(head_n) != n {
+        fixed.push("member count");
+    }
     fs::rename(&part.0, output).map_err(io)?;
+    let kind = if ver == DIR_VER_PROTECTED {
+        "protected Tome"
+    } else {
+        "sealed Tome"
+    };
+    let head = if fixed.is_empty() {
+        String::new()
+    } else {
+        format!(", head {} rebuilt", fixed.join(" and "))
+    };
     Ok(format!(
-        "mended {} → {} (sealed Tome, {n} files, body merkle {state})",
+        "mended {} → {} ({kind}, {n} files, body merkle {state}{head})",
         input.display(),
         output.display()
     ))
