@@ -89,6 +89,7 @@ pub mod rs_bench {
     }
 }
 mod race;
+mod salvage;
 mod show;
 mod soft_ratchet;
 mod staging;
@@ -174,6 +175,10 @@ pub use pieces::{
     write_vessel, CopiesMend, VESSEL,
 };
 pub use privacy::{FingerprintKey, Pad, SealMeta, SealOpts};
+pub use salvage::{
+    salvage_tome, Outcome as SalvageOutcome, SalvageOpts, SalvageReport,
+    RECOVERED_DIR as SALVAGE_RECOVERED_DIR,
+};
 pub use show::run_showing;
 pub use tome_guard::{damaged_tome_head, LIST_DAMAGED as FOLDER_LIST_DAMAGED};
 pub use vault::tip_seal_path as vault_tip_seal_path;

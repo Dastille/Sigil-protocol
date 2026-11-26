@@ -565,6 +565,18 @@ enum Cmd {
         /// mended file; output is written only on success. Plain .sg1 only.
         #[arg(long)]
         repair: bool,
+        /// Opt-in for a damaged Tome that will not open: save every file that still passes
+        /// its own checks into the -o folder (repairing each one first if it can), never
+        /// write one that fails, never overwrite. Unconfirmed names go under
+        /// recovered-names/, taken names get .salvaged-N. Writes <output>.salvage-report.txt
+        /// and lists restored / renamed / lost. Exit 0 all saved, 7 some saved (something
+        /// lost or renamed), 2 nothing saved, 130 Ctrl-C.
+        #[arg(long, conflicts_with_all = ["repair", "only", "star", "from_mb", "to_mb", "json"])]
+        salvage: bool,
+        /// With --salvage: stop after this many seconds and report what was not tried
+        /// (default: no time limit)
+        #[arg(long = "max-secs", value_name = "SECS", requires = "salvage")]
+        max_secs: Option<u64>,
     },
     /// Check a .sg1 Sigil Archive without writing anything: shards, Merkle binding, header copies
     /// (and with --read-data, the original bytes). Exit 0 ok, 1 key problem/error, 2 NOT recoverable,
@@ -3413,6 +3425,74 @@ fn report_skips(root: &Path, skips: &sigil::SkipReport, refusing: bool) {
     }
 }
 
+/// `sigil unseal --salvage`: save what passes its own checks from a damaged Tome, print
+/// a bounded summary on stderr, and exit 0 (all saved under their names), 7 (something
+/// written, something lost or renamed, or a limit stopped it) or 2 (nothing saved).
+fn run_salvage(
+    input: &Path,
+    output: &Path,
+    opts: &sigil::SalvageOpts<'_>,
+    mds: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if output.as_os_str() == "-" {
+        return Err("--salvage writes a folder; give -o a folder path, not -".into());
+    }
+    if mds != "vandermonde" {
+        return Err("--salvage is for Tomes written with the default --mds".into());
+    }
+    if output.exists() && !output.is_dir() {
+        return Err(format!(
+            "{} exists and is not a folder; nothing was written",
+            output.display()
+        )
+        .into());
+    }
+    install_stop_handler();
+    let report = sigil::salvage_tome(input, output, opts)?;
+    const SHOWN: usize = 50;
+    let mut shown = 0usize;
+    for o in &report.outcomes {
+        let line = match o {
+            sigil::SalvageOutcome::Restored { .. } => continue,
+            sigil::SalvageOutcome::Renamed { listed, path, why } => format!(
+                "renamed  {} -> {path} ({why})",
+                listed.as_deref().unwrap_or("(no name)")
+            ),
+            sigil::SalvageOutcome::Lost { label, why } => format!("lost     {label} ({why})"),
+        };
+        if shown < SHOWN {
+            eprintln!("{}", sigil::shown::name(&line));
+        }
+        shown += 1;
+    }
+    if shown > SHOWN {
+        eprintln!("... and {} more (see the report file)", shown - SHOWN);
+    }
+    if let Some(w) = &report.stopped {
+        eprintln!("STOPPED: {w}");
+    }
+    let code = report.exit_code();
+    eprintln!(
+        "salvage: restored {}, renamed {}, lost {} → {}{}",
+        report.restored(),
+        report.renamed(),
+        report.lost(),
+        output.display(),
+        report
+            .report_path
+            .as_ref()
+            .map(|p| format!("  (report: {})", p.display()))
+            .unwrap_or_default()
+    );
+    if code == 0 {
+        return Ok(());
+    }
+    if sigil::repair_ctl::stop_requested() {
+        std::process::exit(130);
+    }
+    std::process::exit(code);
+}
+
 /// First Ctrl-C: ask the repair to stop safely. Second: quit at once (exit 130).
 #[cfg(unix)]
 fn install_stop_handler() {
@@ -3421,7 +3501,7 @@ fn install_stop_handler() {
             // SAFETY: `_exit` is async-signal-safe and takes no pointers.
             unsafe { libc::_exit(130) };
         }
-        let msg = b"\nStopping safely... nothing will be written. (Ctrl-C again quits at once.)\n";
+        let msg = b"\nStopping safely... nothing half-done will be written. (Ctrl-C again quits at once.)\n";
         // SAFETY: `write` is async-signal-safe; `msg` is a valid static buffer of that length.
         let _ = unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
     }
@@ -4083,6 +4163,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             to_mb,
             mds,
             repair,
+            salvage,
+            max_secs,
         } => {
             let pass = pass.or(pass_file);
             let companions = companion_bytes(&bind)?;
@@ -4090,6 +4172,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let pass = resolve_pass(pass, talisman)?;
             let identities = load_identities(&identity)?;
             let mds_be = resolve_mds(&mds)?;
+            if salvage {
+                return run_salvage(
+                    &input,
+                    &output,
+                    &sigil::SalvageOpts {
+                        pass: pass.as_deref(),
+                        companions: &companions,
+                        identities: &identities,
+                        wards: &wards,
+                        max_secs,
+                    },
+                    mds_be.name(),
+                );
+            }
             let to_stdout = output.as_os_str() == "-";
             if to_stdout {
                 if json {
