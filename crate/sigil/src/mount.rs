@@ -223,7 +223,10 @@ impl Cache {
     }
 
     fn star(&self, key: (u64, usize)) -> Option<Arc<Vec<u8>>> {
-        self.stars.iter().find(|(k, _)| *k == key).map(|(_, v)| v.clone())
+        self.stars
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.clone())
     }
 
     fn keep_star(&mut self, key: (u64, usize), plain: Arc<Vec<u8>>) {
@@ -939,7 +942,8 @@ impl VaultFs {
                 return Ok(Located::Pack(home, pass));
             }
             // A classic member is one AES-GCM message, at most the Tome's `--chunk` long.
-            let n = usize::try_from(len).map_err(|_| crate::Error::Msg("member too large".into()))?;
+            let n =
+                usize::try_from(len).map_err(|_| crate::Error::Msg("member too large".into()))?;
             let mut star = vec![0u8; n];
             self.pieces_fill(BODY_KEY, body, off, &mut star)?;
             return Ok(Located::Whole(Arc::new(decode_star(
@@ -949,8 +953,11 @@ impl VaultFs {
             )?)));
         }
         if let Some(inner) = &self.sealed_inner {
-            let (off, len) =
-                locate_entry_star(&mut io::Cursor::new(inner.as_slice()), inner.len() as u64, rel)?;
+            let (off, len) = locate_entry_star(
+                &mut io::Cursor::new(inner.as_slice()),
+                inner.len() as u64,
+                rel,
+            )?;
             let (a, b) = (off as usize, (off + len) as usize);
             let star = &inner[a..b];
             if star.starts_with(&WORK_MAGIC) {
@@ -966,8 +973,9 @@ impl VaultFs {
         let size = fs::metadata(&self.seal)
             .map_err(|e| crate::Error::Msg(e.to_string()))?
             .len();
-        let mut f =
-            io::BufReader::new(fs::File::open(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?);
+        let mut f = io::BufReader::new(
+            fs::File::open(&self.seal).map_err(|e| crate::Error::Msg(e.to_string()))?,
+        );
         let (off, len) = locate_entry_star(&mut f, size, rel)?;
         let mut mag = [0u8; 4];
         let is_pack = len >= 4 && {
@@ -1117,7 +1125,9 @@ impl VaultFs {
             .checked_add(buf.len() as u64)
             .is_none_or(|e| e > total)
         {
-            return Err(crate::Error::Msg("read past the end of a large member".into()));
+            return Err(crate::Error::Msg(
+                "read past the end of a large member".into(),
+            ));
         }
         let mut done = 0usize;
         // First star whose plaintext ends after `offset`.

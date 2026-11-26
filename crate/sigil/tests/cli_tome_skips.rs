@@ -38,7 +38,10 @@ fn skipped_paths_are_listed_and_the_tome_is_still_written() {
     let o = sigil(&dir, &["inscribe", "src", "-o", "t.sg1"]);
     let (out, err) = text(&o);
     assert!(o.status.success(), "{out}\n{err}");
-    assert!(err.contains("WARNING: 4 path(s) in src are not packed"), "{err}");
+    assert!(
+        err.contains("WARNING: 4 path(s) in src are not packed"),
+        "{err}"
+    );
     for line in [
         "hidden file    .env",
         "hidden folder  .cache/",

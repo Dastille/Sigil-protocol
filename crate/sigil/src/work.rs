@@ -1614,7 +1614,9 @@ pub(crate) fn open_star_checked<S: Src>(
         .map_err(|e| crate::Error::Msg(format!("star {i} of {n}: {e}")))?;
     if let Some(f) = l.facets() {
         let want = f.get(i).ok_or_else(|| {
-            crate::Error::Msg(format!("chunk star {i} has no entry in the pack facet list; refusing"))
+            crate::Error::Msg(format!(
+                "chunk star {i} has no entry in the pack facet list; refusing"
+            ))
         })?;
         if crate::locate_header(&star)?.0.digest != *want {
             return Err(crate::Error::Msg(format!(

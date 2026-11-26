@@ -123,7 +123,12 @@ impl SkipReport {
         ];
         order
             .iter()
-            .map(|r| (*r, self.listed.iter().filter(|s| s.reason == *r).count() as u64))
+            .map(|r| {
+                (
+                    *r,
+                    self.listed.iter().filter(|s| s.reason == *r).count() as u64,
+                )
+            })
             .filter(|(_, n)| *n > 0)
             .collect()
     }
@@ -2073,8 +2078,11 @@ pub(crate) fn locate_entry_star<R: Read + Seek>(
     if ver == DIR_VER_SEALED {
         return Err(crate::Error::Msg(HIDDEN_HINT.into()));
     }
-    let truncated =
-        || crate::Error::Msg("truncated Tome (cut off mid-archive; incomplete copy or transfer)".into());
+    let truncated = || {
+        crate::Error::Msg(
+            "truncated Tome (cut off mid-archive; incomplete copy or transfer)".into(),
+        )
+    };
     let mut pos = 9u64;
     for _ in 0..n {
         let mut lb = [0u8; 2];
@@ -2086,7 +2094,10 @@ pub(crate) fn locate_entry_star<R: Read + Seek>(
         reader.read_exact(&mut sl).map_err(|_| truncated())?;
         let slen = u64::from_le_bytes(sl);
         pos += 2 + nlen as u64 + 8;
-        let end = pos.checked_add(slen).filter(|e| *e <= size).ok_or_else(truncated)?;
+        let end = pos
+            .checked_add(slen)
+            .filter(|e| *e <= size)
+            .ok_or_else(truncated)?;
         if String::from_utf8_lossy(&name) == want {
             return Ok((pos, slen));
         }
@@ -2551,8 +2562,11 @@ mod tests {
         std::os::unix::fs::symlink("a.txt", src.join("good-link")).unwrap();
         let _sock = std::os::unix::net::UnixListener::bind(src.join("sock")).unwrap();
         let rep = tree_skips(&src).unwrap();
-        let got: Vec<(String, SkipReason)> =
-            rep.listed.iter().map(|s| (s.rel.clone(), s.reason)).collect();
+        let got: Vec<(String, SkipReason)> = rep
+            .listed
+            .iter()
+            .map(|s| (s.rel.clone(), s.reason))
+            .collect();
         assert_eq!(
             got,
             vec![
@@ -2574,7 +2588,11 @@ mod tests {
         let pack = root.join("t.sg1");
         let (n, _) = inscribe_dir(&src, &pack, Mode::Seal, None, "", &[], 0, &[]).unwrap();
         assert_eq!(n, 4);
-        let listed: Vec<String> = list_dir_pack(&pack).unwrap().into_iter().map(|e| e.path).collect();
+        let listed: Vec<String> = list_dir_pack(&pack)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.path)
+            .collect();
         assert_eq!(listed, packed);
         // A clean folder reports nothing.
         let clean = tree_skips(&src.join("sub")).unwrap();
@@ -2644,7 +2662,10 @@ mod tests {
             .find(|(r, _)| r == "m/big.bin")
             .unwrap()
             .1;
-        assert!(big_star.starts_with(&crate::work::WORK_MAGIC), "stored large");
+        assert!(
+            big_star.starts_with(&crate::work::WORK_MAGIC),
+            "stored large"
+        );
         assert_eq!(flags(list_dir_pack(&plain).unwrap()), want);
         let report = scry_dir(&plain).unwrap();
         assert!(report.contains("file  m/big.bin"), "{report}");

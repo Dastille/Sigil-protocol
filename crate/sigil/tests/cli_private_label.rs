@@ -49,8 +49,31 @@ fn has(hay: &[u8], n: &[u8]) -> bool {
     hay.windows(n.len()).any(|w| w == n)
 }
 
-/// Fail if any file under `root` carries an encoding of the plaintext's identity.
-fn assert_no_leak(root: &Path, data: &[u8]) {
+/// Probes shorter than this are matched by chance in random bytes often enough to
+/// matter: a 4-byte probe turns up in a 1.5 MB pack of ciphertext about once in 2,800
+/// runs (expected 2^-32 per byte offset), which made this suite fail now and then.
+const CHANCE_SAFE_PROBE: usize = 8;
+
+/// All files under `root`, read whole (test outputs are small).
+fn files_under(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    walk(root)
+        .into_iter()
+        .map(|p| {
+            let b = std::fs::read(&p).unwrap();
+            (p, b)
+        })
+        .collect()
+}
+
+/// Fail if the outputs under `first` and `second` (the same input sealed twice, each
+/// with fresh salts, nonces and keys) carry an encoding of the plaintext's identity.
+///
+/// Probes of 8 bytes or more must not appear in either output at all (chance of a
+/// random match: below 2^-40 per run). A shorter probe (the 4-byte length) is a leak
+/// only when it appears in *both* outputs: a field that encodes the length is written
+/// on every seal, while a chance match in ciphertext would have to happen twice in
+/// independent outputs (about 1 in 10^7 runs for the largest pack here).
+fn assert_no_leak(first: &Path, second: &Path, data: &[u8]) {
     let sha = sigil::sha256(data);
     let len = data.len() as u64;
     let probes: Vec<(&str, Vec<u8>)> = vec![
@@ -61,17 +84,24 @@ fn assert_no_leak(root: &Path, data: &[u8]) {
         ("len u64", len.to_le_bytes().to_vec()),
         ("len u32", (len as u32).to_le_bytes().to_vec()),
     ];
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        if p.is_dir() {
-            for e in std::fs::read_dir(&p).unwrap() {
-                stack.push(e.unwrap().path());
+    let (a, b) = (files_under(first), files_under(second));
+    assert!(!a.is_empty() && !b.is_empty(), "nothing to check");
+    for (what, n) in &probes {
+        let in_a: Vec<&PathBuf> = a.iter().filter(|(_, x)| has(x, n)).map(|f| &f.0).collect();
+        let in_b: Vec<&PathBuf> = b.iter().filter(|(_, x)| has(x, n)).map(|f| &f.0).collect();
+        if n.len() >= CHANCE_SAFE_PROBE {
+            assert!(
+                in_a.is_empty() && in_b.is_empty(),
+                "{in_a:?} {in_b:?} leak {what}"
+            );
+        } else {
+            assert!(
+                in_a.is_empty() || in_b.is_empty(),
+                "{in_a:?} and {in_b:?} both carry {what}: a field encodes it"
+            );
+            if !(in_a.is_empty() && in_b.is_empty()) {
+                eprintln!("note: {what} matched by chance in one output only: {in_a:?} {in_b:?}");
             }
-            continue;
-        }
-        let b = std::fs::read(&p).unwrap();
-        for (what, n) in &probes {
-            assert!(!has(&b, n), "{} leaks {what}", p.display());
         }
     }
 }
@@ -87,12 +117,17 @@ fn seal_pass_and_to_hide_identity_and_mend_keylessly() {
         ("glyph", vec!["--pass", "pw", "--mode", "glyph"]),
     ] {
         let out_dir = dir.join(format!("out-{tag}"));
+        let again_dir = dir.join(format!("again-{tag}"));
         std::fs::create_dir_all(&out_dir).unwrap();
+        std::fs::create_dir_all(&again_dir).unwrap();
         let out = format!("out-{tag}/x.sg1");
-        let mut a = vec!["seal", "-o", &out, NAME];
-        a.extend(&extra);
-        ok(sigil(&dir, &a));
-        assert_no_leak(&out_dir, &data);
+        let again = format!("again-{tag}/x.sg1");
+        for o in [&out, &again] {
+            let mut a = vec!["seal", "-o", o.as_str(), NAME];
+            a.extend(&extra);
+            ok(sigil(&dir, &a));
+        }
+        assert_no_leak(&out_dir, &again_dir, &data);
         let scry = ok(sigil(&dir, &["scry", &out]));
         assert!(
             !scry.contains(NAME) && !scry.contains("123457"),
@@ -129,21 +164,17 @@ fn seal_pass_and_to_hide_identity_and_mend_keylessly() {
 #[test]
 fn big_file_pack_hides_name_size_and_chunk_hashes() {
     let (dir, data) = setup("pack", 1_300_017);
-    std::fs::create_dir_all(dir.join("p")).unwrap();
-    ok(sigil(
-        &dir,
-        &[
-            "seal",
-            "-o",
-            "p/big.sg1",
-            NAME,
-            "--pass",
-            "pw",
-            "--chunk",
-            "262144",
-        ],
-    ));
-    assert_no_leak(&dir.join("p"), &data);
+    for sub in ["p", "p2"] {
+        std::fs::create_dir_all(dir.join(sub)).unwrap();
+        let out = format!("{sub}/big.sg1");
+        ok(sigil(
+            &dir,
+            &[
+                "seal", "-o", &out, NAME, "--pass", "pw", "--chunk", "262144",
+            ],
+        ));
+    }
+    assert_no_leak(&dir.join("p"), &dir.join("p2"), &data);
     for i in 0..(data.len() / 262_144 + 1) {
         let c = &data[i * 262_144..((i + 1) * 262_144).min(data.len())];
         let b = std::fs::read(dir.join("p/big.sg1")).unwrap();
@@ -252,4 +283,61 @@ fn walk(root: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+/// Noise of `n` bytes with `plant` written at `at` (the checker's own tests).
+fn planted(n: usize, at: usize, plant: &[u8]) -> Vec<u8> {
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let mut v: Vec<u8> = (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 32) as u8
+        })
+        .collect();
+    v[at..at + plant.len()].copy_from_slice(plant);
+    v
+}
+
+/// Two output folders holding `a` and `b`, for the checker's own tests.
+fn two_outputs(tag: &str, a: &[u8], b: &[u8]) -> (common::Scratch, PathBuf, PathBuf) {
+    let dir = common::scratch(&format!("cli-priv-check-{tag}"));
+    let (pa, pb) = (dir.join("a"), dir.join("b"));
+    std::fs::create_dir_all(&pa).unwrap();
+    std::fs::create_dir_all(&pb).unwrap();
+    std::fs::write(pa.join("x.sg1"), a).unwrap();
+    std::fs::write(pb.join("x.sg1"), b).unwrap();
+    (dir, pa, pb)
+}
+
+const CHECK_LEN: usize = 1_300_017;
+
+/// The length written in both outputs (as a field would be) is still caught.
+#[test]
+#[should_panic(expected = "a field encodes it")]
+fn checker_catches_a_length_written_on_every_seal() {
+    let l = (CHECK_LEN as u32).to_le_bytes();
+    let (_d, a, b) = two_outputs("both", &planted(4096, 100, &l), &planted(4096, 900, &l));
+    assert_no_leak(&a, &b, &vec![b'x'; CHECK_LEN]);
+}
+
+/// A 4-byte match in one output only (what the old check failed on now and then) passes.
+#[test]
+fn checker_ignores_a_chance_match_in_one_output() {
+    let l = (CHECK_LEN as u32).to_le_bytes();
+    let (_d, a, b) = two_outputs("one", &planted(4096, 100, &l), &planted(4096, 0, b"zz"));
+    assert_no_leak(&a, &b, &vec![b'x'; CHECK_LEN]);
+}
+
+/// A long probe (the name) in a single output is a leak.
+#[test]
+#[should_panic(expected = "leak name")]
+fn checker_catches_a_long_probe_in_one_output() {
+    let (_d, a, b) = two_outputs(
+        "name",
+        &planted(4096, 7, NAME.as_bytes()),
+        &planted(4096, 0, b"zz"),
+    );
+    assert_no_leak(&a, &b, &vec![b'x'; CHECK_LEN]);
 }
