@@ -484,8 +484,9 @@ enum Cmd {
         #[arg(long = "dotfiles")]
         dotfiles: bool,
         /// Folder only: do not keep file details (permissions, modified times, empty
-        /// folders). Kept by default (a few bytes per file); a Tome without them opens in
-        /// sigil builds since 0.9.0, one with them needs this build or newer.
+        /// folders). Kept by default (a few bytes per file). Without them the Tome uses the
+        /// previous layout (v3, or v2 with --pass / --to), which sigil builds from before
+        /// file details can read; builds from before that need --old-tome-layout.
         #[arg(long = "no-file-details")]
         no_file_details: bool,
         #[arg(long)]

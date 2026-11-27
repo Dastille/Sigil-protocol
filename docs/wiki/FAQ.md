@@ -26,20 +26,29 @@ more than twice the file's size. Exporting a large file from a locked Tome takes
 than before (about 2.5 times as long), because each piece is checked twice.
 
 **Why are some files missing from my Tome?**
-A Tome stores regular files only. Files and folders whose names start with `.`, special
-files such as named pipes, links that point nowhere, and empty folders are left out. Sigil
-lists every one of them when it makes the Tome, and the last line says how many. File
-permissions are not stored either, so a script comes back without its executable bit. To
-stop instead of packing without them, add `--fail-on-skip`: nothing is written and the exit
-code is 1.
+Files and folders whose names start with `.` (such as `.env`, `.ssh` or `.git`), special
+files such as named pipes, and links that point nowhere are left out. Sigil lists every one
+of them when it makes the Tome, and the last line says how many. Dotfiles are left out on
+purpose: they often hold passwords, keys or history nobody meant to share, and a Tome that
+has been sent cannot be taken back. Add `--dotfiles` to pack them. To stop instead of
+packing without them, add `--fail-on-skip`: nothing is written and the exit code is 1.
+
+**Does a Tome keep permissions and dates?**
+Yes, for Tomes made with this version or later: each file's permissions and modified time,
+and empty folders, are kept (a few bytes per file). A script comes back executable and a
+private file comes back private. Set-user-ID, set-group-ID and sticky bits are not restored
+and your umask applies, unless you add `sigil unseal --exact-modes` for a Tome you trust. On
+Windows only the modified time is restored. Add `sigil seal --no-file-details` to leave the
+details out; older sigil builds can read that layout.
 
 **Can damage to a Tome's list of file names be repaired?**
 For a Tome made with this version or later, yes. The list of names and sizes is kept inside
 the repair data, so `sigil mend` fixes it, and if it cannot, nothing is restored. A Tome made
 by an older version keeps its list outside the repair data: a damaged list there is refused,
 and a small change to one name may not be noticed. Seal the folder again to get the new
-layout. Older versions of sigil cannot open the new layout (they stop with an error and write
-nothing); `sigil seal --old-tome-layout` makes a Tome they can read. Vault folder versions use the
+layout. Older versions of sigil cannot open the new layouts (they stop with an error and write
+nothing); `sigil seal --no-file-details` makes a Tome the previous version can read, and
+`sigil seal --old-tome-layout` one that the oldest versions can read. Vault folder versions use the
 new layout too; set `SIGIL_OLD_TOME_LAYOUT=1` to have any writer use the older one. Without a Ward this
 protects against accidental damage, not against someone changing the file on purpose.
 

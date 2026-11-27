@@ -467,7 +467,7 @@ fn old_layout_env_applies_to_seal_and_vault_and_typos_are_refused() {
     heads.sort();
     assert_eq!(
         heads,
-        vec![("v1.sg1".into(), 1), ("v2.sg1".into(), 3)],
+        vec![("v1.sg1".into(), 1), ("v2.sg1".into(), 4)],
         "{heads:?}"
     );
     ok(&d, &["vault", "restore", "--version", "1", "live"]);

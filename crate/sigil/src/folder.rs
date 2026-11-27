@@ -3375,7 +3375,7 @@ mod tests {
         let s = scry_dir(&pack).unwrap();
         assert!(s.starts_with("folder  2 files (names hidden)"), "{s}");
 
-        // Mend: a few torn shards in the body heal; the healed pack stays v2.
+        // Mend: a few torn shards in the body heal; the healed pack stays v5.
         let (h, prefix, _) = crate::locate_header(&raw[17..]).unwrap();
         let stride = crate::header::shard_stride(&h);
         let mut torn = raw.clone();
@@ -3391,7 +3391,7 @@ mod tests {
             b"s3cret"
         );
         let healed = healed.expect("body mended");
-        assert_eq!(&healed[0..5], b"SGDR\x02");
+        assert_eq!(&healed[0..5], b"SGDR\x05");
         assert!(!crate::work::star_torn(&healed[17..]));
         // Wrong key on the mend path writes nothing and returns no healed pack.
         let wk = root.join("wk");

@@ -17,7 +17,7 @@ Seals stay **immutable**. Edits never rewrite an existing `vN.sg1` or a bare Sig
 A constellation mounts too (`sigil mount Sky mnt`): the tree is the card's list names, read-only — see [CODEX.md](CODEX.md#names-not-hashes-ls-mount).
 A segment log mounts as one file per live segment (`0000000007` …), honouring tombstones; see [SEGMENT-LOG.md](SEGMENT-LOG.md#mount-read-only-view-of-a-log).
 
-`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR Tome: a protected plain Tome, SGDR ver=3, without a key, or a sealed directory, SGDR ver=2, with one, see docs/PRIVATE-LABEL.md; versions committed before Tome v3 are ver=1 and still restore. `SIGIL_OLD_TOME_LAYOUT=1` commits ver=1). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
+`vault track` takes a **regular file** (single-file vault) or a **directory** (folder vault: each `vN.sg1` is an ordinary SGDR Tome: a protected plain Tome with file details, SGDR ver=4, without a key, or a sealed directory with file details, SGDR ver=5, with one, see docs/PRIVATE-LABEL.md; versions committed by earlier builds are ver=1, 2 or 3 and still restore. `SIGIL_OLD_TOME_LAYOUT=1` commits ver=1, or ver=2 with a key, without file details). Bare SGDR packs outside a vault stay mountable and walkable as plain `.sg1` Sigils.
 
 ## When to use which
 
@@ -96,6 +96,7 @@ mkdir -p /tmp/sigil-dirty
 **Tip model.** The chart's tip seal (an SGDR `vN.sg1`) is the durable source of truth; the live directory and any `--writable` export tree are working copies. That is the same rule as single-file vaults (commit reads a working copy, restore writes one), so no second "live dir is the truth" model exists.
 
 - **Version digest** = tree true-name: SHA-256 over `sigil-tree=1` + sorted `rel\0size\0sha256` lines (dotfiles skipped — the same set folder Inscribe packs). It lives only in `CHART`; the SGDR layout is unchanged, so every folder version opens with plain `de-scribe` / `mount` / `path`.
+- **Permissions digest**: SHA-256 over `sigil-modes=1\n` + sorted `rel\0mode\n` lines (mode in octal) for files and `rel/\0mode\n` for empty folders, stored as ` modes=<hex>` on the version's chart line (older builds ignore the key; a version without it has none). `commit` makes a new version when the tree true-name or this digest changes, so a permission-only change is recorded; a modified-time-only change is not (each version is a full Tome). An older tip without the digest gets one new version on the next commit.
 - **Chart** gains one additive line, `kind=folder`. Single-file charts are written byte-for-byte as before; a missing `kind=` means single.
 - `vault commit ./photos` seals the live dir; `--from-export DIR` seals the export tree (the `.sigil-dirty` sidecar is ignored). Unchanged tree → skipped unless `--force`.
 - After a from-export commit the live dir is **synced** (adds / edits / deletes) only if it was clean (matched a hot version) or missing. If it had its own uncommitted edits it is left untouched and commit prints a `note:`; use `vault restore --force` to take the tip.

@@ -1012,7 +1012,7 @@ pub fn tree_digest(dir: &Path) -> Result<([u8; 32], u64, u32)> {
 /// Permissions true-name of a directory: SHA-256 over `sigil-modes=1` + sorted
 /// `rel\0mode\n` lines for the files [`tree_digest`] covers, then `rel/\0mode\n` for
 /// each empty folder. A permission change (`chmod`) or a new or removed empty folder
-/// changes it; contents and modified times do not. Mode bits are 0 on Windows.
+/// changes it; contents and modified times do not. Windows has no mode bits (one fixed value).
 pub fn tree_modes_digest(dir: &Path) -> Result<[u8; 32]> {
     let (files, empties) = crate::folder::tree_files_and_empties(dir)?;
     let mut manifest = String::from("sigil-modes=1\n");

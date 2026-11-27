@@ -31,6 +31,8 @@ pub(crate) const MAGIC: [u8; 4] = *b"SGMT";
 pub(crate) const FMT: u8 = 1;
 /// Largest details block read; a larger one is skipped (about 16 million files).
 pub(crate) const MAX_LEN: u64 = 256 * 1024 * 1024;
+/// `mode` of a file whose writer keeps no Unix permissions (Windows): never applied.
+pub const NO_MODE: u32 = u32::MAX;
 /// Bytes of one detail record.
 const DETAIL_LEN: usize = 16;
 
@@ -41,7 +43,9 @@ fn io(e: std::io::Error) -> crate::Error {
 /// Permissions and modified time of one file or folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct FileDetail {
-    /// Unix mode bits (permission, set-ID and sticky bits; no file type). 0 on Windows.
+    /// Unix mode bits (permission, set-ID and sticky bits; no file type), or
+    /// [`NO_MODE`] when the writer had none (Windows). A value with bits above `0o7777`
+    /// is never applied.
     pub mode: u32,
     /// Modified time: seconds since 1970-01-01 UTC (negative before it).
     pub secs: i64,
@@ -118,7 +122,12 @@ fn mode_of(meta: &fs::Metadata) -> u32 {
 
 #[cfg(not(unix))]
 fn mode_of(_meta: &fs::Metadata) -> u32 {
-    0
+    NO_MODE
+}
+
+/// The stored mode is real Unix permission bits (not [`NO_MODE`] or unknown bits).
+pub fn has_mode(stored: u32) -> bool {
+    stored & !0o7777 == 0
 }
 
 /// An empty folder kept in a Tome (relative path, `/` separators).
@@ -366,7 +375,7 @@ pub(crate) fn apply_to_file(f: &fs::File, d: &FileDetail, opts: RestoreOpts) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(m) = f.metadata() {
+        if let (true, Ok(m)) = (has_mode(d.mode), f.metadata()) {
             let mode = restore_mode(d.mode, m.permissions().mode(), opts.exact_modes);
             let _ = f.set_permissions(fs::Permissions::from_mode(mode));
         }
@@ -387,7 +396,7 @@ pub(crate) fn apply_to_dir(dir: &Path, d: &FileDetail, opts: RestoreOpts) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(m) = fs::symlink_metadata(dir) {
+        if let (true, Ok(m)) = (has_mode(d.mode), fs::symlink_metadata(dir)) {
             let mode = restore_mode(d.mode, m.permissions().mode(), opts.exact_modes);
             let _ = fs::set_permissions(dir, fs::Permissions::from_mode(mode));
         }
@@ -473,6 +482,22 @@ mod tests {
         assert_eq!(restore_mode(0o755, 0o600, false), 0o700);
         // Exact: everything stored, nothing limited.
         assert_eq!(restore_mode(0o6755, 0o600, true), 0o6755);
+    }
+
+    #[test]
+    fn a_missing_or_unknown_mode_is_never_applied() {
+        assert!(has_mode(0) && has_mode(0o6755) && has_mode(0o7777));
+        assert!(!has_mode(NO_MODE) && !has_mode(0o10000) && !has_mode(0o100644));
+        let dir = std::env::temp_dir().join(format!("sigil-details-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("f");
+        fs::write(&p, b"x").unwrap();
+        let before = fs::metadata(&p).unwrap().permissions();
+        let f = fs::OpenOptions::new().write(true).open(&p).unwrap();
+        apply_to_file(&f, &d(NO_MODE, 0, u32::MAX), RestoreOpts::default());
+        drop(f);
+        assert_eq!(fs::metadata(&p).unwrap().permissions(), before);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

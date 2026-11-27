@@ -52,6 +52,13 @@ through a pack left a half-written output file behind.
   Ward for that). A damaged body length or file count in the v3 head stops readers;
   `mend` rebuilds both. An unknown Tome version (from a newer sigil, or a damaged
   version byte) is refused by every command with nothing written.
+- **File details never widen access by default (Tome v4 and v5).** Restored permissions
+  are limited by the umask and never include set-user-ID, set-group-ID or sticky bits
+  unless `unseal --exact-modes` is given. The mode is set on the private part file before
+  the rename, so a file stored as private is never visible to others. Empty-folder names
+  are checked like member names (`..`, `.` parts, absolute names refuse the restore), and
+  restore refuses to write through a link inside the output folder. A details block this
+  build cannot read is skipped with a note; it never stops the files from restoring.
 - **Salvage is opt-in and never writes an unchecked file.** `unseal --salvage`
   (`salvage.rs`) is the one restore that is not all-or-nothing, and only when asked
   for. Each file is unsealed into a private part file and kept only if it passes its
