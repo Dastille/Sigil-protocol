@@ -14,6 +14,12 @@
 //! place; each of them is complete and verified, never a partial write. A crash
 //! before commit can leave `.sigil-part` files behind; they are named so they
 //! cannot be mistaken for restored files.
+//!
+//! A [`Staging::confined`] restore never writes through a symbolic link inside its
+//! output folder: a folder on the way to a file that is already a link (planted there,
+//! or pointing outside) stops the restore before anything is placed. Files restored
+//! with file details get their permissions and modified time on the part file, before
+//! it is renamed into place, so a private file is never readable by others in between.
 
 use crate::Result;
 use std::ffi::OsString;
@@ -165,7 +171,19 @@ pub(crate) struct Staging {
     /// Directories this restore created, outermost first.
     made: Vec<PathBuf>,
     seq: u32,
+    /// Output folder no write may leave through a symbolic link (see [`Staging::confined`]).
+    root: Option<PathBuf>,
+    /// Empty folders this restore created, with the details to give them at commit.
+    dir_details: Vec<(
+        PathBuf,
+        crate::details::FileDetail,
+        crate::details::RestoreOpts,
+    )>,
 }
+
+/// Error for a restore that would write through a symbolic link in its output folder.
+pub(crate) const THROUGH_LINK: &str =
+    "refusing to restore through a symbolic link inside the output folder";
 
 impl Staging {
     pub(crate) fn new() -> Self {
@@ -173,12 +191,58 @@ impl Staging {
             parts: Vec::new(),
             made: Vec::new(),
             seq: 0,
+            root: None,
+            dir_details: Vec::new(),
         }
+    }
+
+    /// A staging whose writes all stay under `root`: no folder between `root` and a
+    /// file it writes may be a symbolic link, and nothing outside `root` is written.
+    pub(crate) fn confined(root: &Path) -> Self {
+        let mut s = Self::new();
+        s.root = Some(root.to_path_buf());
+        s
+    }
+
+    /// For a confined staging: refuse `dir` when it is outside the root, or when it or
+    /// a folder between it and the root is a symbolic link.
+    fn check_confined(&self, dir: &Path) -> Result<()> {
+        let Some(root) = &self.root else {
+            return Ok(());
+        };
+        let Ok(rel) = dir.strip_prefix(root) else {
+            return Err(crate::Error::Msg(format!(
+                "refusing to restore outside the output folder: {}",
+                crate::shown::name(&dir.to_string_lossy())
+            )));
+        };
+        let mut cur = root.clone();
+        for c in rel.components() {
+            match c {
+                std::path::Component::Normal(n) => cur.push(n),
+                _ => {
+                    return Err(crate::Error::Msg(format!(
+                        "refusing unsafe path in Tome: {}",
+                        crate::shown::name(&dir.to_string_lossy())
+                    )))
+                }
+            }
+            if let Ok(m) = fs::symlink_metadata(&cur) {
+                if m.file_type().is_symlink() {
+                    return Err(crate::Error::Msg(format!(
+                        "{THROUGH_LINK}: {}",
+                        crate::shown::name(&cur.to_string_lossy())
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Create `dir` and any missing ancestors, remembering the ones created so
     /// a failed restore can remove them again.
     pub(crate) fn make_dir(&mut self, dir: &Path) -> Result<()> {
+        self.check_confined(dir)?;
         let mut missing = Vec::new();
         let mut cur = Some(dir);
         while let Some(p) = cur {
@@ -204,6 +268,17 @@ impl Staging {
         out: &Path,
         f: impl FnOnce(&mut BufWriter<File>) -> Result<T>,
     ) -> Result<T> {
+        self.write_with_detail(out, None, f)
+    }
+
+    /// [`Staging::write_with`], then give the part file `detail` (permissions and
+    /// modified time) before it is synced.
+    pub(crate) fn write_with_detail<T>(
+        &mut self,
+        out: &Path,
+        detail: Option<(&crate::details::FileDetail, crate::details::RestoreOpts)>,
+        f: impl FnOnce(&mut BufWriter<File>) -> Result<T>,
+    ) -> Result<T> {
         if let Some(parent) = out.parent() {
             self.make_dir(parent)?;
         }
@@ -227,6 +302,9 @@ impl Staging {
         let file = w
             .into_inner()
             .map_err(|e| crate::Error::Msg(e.to_string()))?;
+        if let Some((d, opts)) = detail {
+            crate::details::apply_to_file(&file, d, opts);
+        }
         file.sync_all().map_err(io)?;
         Ok(v)
     }
@@ -234,6 +312,32 @@ impl Staging {
     /// Write `bytes` as the file that will become `out`.
     pub(crate) fn write(&mut self, out: &Path, bytes: &[u8]) -> Result<()> {
         self.write_with(out, |w| w.write_all(bytes).map_err(io))
+    }
+
+    /// [`Staging::write`] with file details.
+    pub(crate) fn write_detail(
+        &mut self,
+        out: &Path,
+        bytes: &[u8],
+        detail: Option<(&crate::details::FileDetail, crate::details::RestoreOpts)>,
+    ) -> Result<()> {
+        self.write_with_detail(out, detail, |w| w.write_all(bytes).map_err(io))
+    }
+
+    /// Create the empty folder `dir` (kept in a Tome's file details). A folder that is
+    /// already there is left as it is; one this restore creates gets `detail` at commit.
+    pub(crate) fn empty_dir(
+        &mut self,
+        dir: &Path,
+        detail: &crate::details::FileDetail,
+        opts: crate::details::RestoreOpts,
+    ) -> Result<()> {
+        let existed = fs::symlink_metadata(dir).is_ok();
+        self.make_dir(dir)?;
+        if !existed {
+            self.dir_details.push((dir.to_path_buf(), *detail, opts));
+        }
+        Ok(())
     }
 
     /// Rename every part file over its destination. Destinations that are
@@ -259,6 +363,9 @@ impl Staging {
             }
         }
         self.made.clear();
+        for (dir, d, opts) in std::mem::take(&mut self.dir_details) {
+            crate::details::apply_to_dir(&dir, &d, opts);
+        }
         Ok(())
     }
 }

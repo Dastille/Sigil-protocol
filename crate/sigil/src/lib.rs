@@ -20,6 +20,7 @@ mod chaos;
 mod classic;
 mod constellation;
 pub mod container;
+pub mod details;
 pub mod doctor;
 mod folder;
 mod fountain;
@@ -135,9 +136,10 @@ pub use folder::{
     inscribe_dir_to_names_visible, is_dir_pack, is_plain_dir_pack, is_sealed_dir_pack,
     list_dir_pack, list_dir_pack_keys, looks_like_nest_name, mend_plain_dir, mend_sealed_dir,
     read_dir_entry_star, scry_dir, scry_dir_checked, scry_dir_keys, seal_dir_names,
-    sealed_dir_body, sealed_dir_body_loc, tome_version, tree_skips, unseal_dir,
-    unseal_dir_mend_keys, unseal_dir_only, unseal_dir_only_keys, DirEntry, SealNamesReport,
-    SkipReason, SkipReport, Skipped, MAX_SKIPS_LISTED,
+    sealed_dir_body, sealed_dir_body_loc, tome_version, tree_skips, tree_skips_opts, unseal_dir,
+    unseal_dir_mend_keys, unseal_dir_mend_keys_opts, unseal_dir_only, unseal_dir_only_keys,
+    unseal_dir_only_keys_opts, DirEntry, SealNamesReport, SkipReason, SkipReport, Skipped,
+    TreeOpts, MAX_SKIPS_LISTED,
 };
 pub use fountain::{
     deluge_answer_report, deluge_fountain, deluge_fountain_opts, deluge_fountain_report,

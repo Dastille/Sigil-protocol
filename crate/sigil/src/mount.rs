@@ -286,6 +286,8 @@ pub struct VaultFs {
     sealed_inner: Option<Arc<Vec<u8>>>,
     /// A sealed (v2) folder pack with a large (SGWK) body: read a body star at a time.
     sealed_body: Option<Arc<PackPieces>>,
+    /// A Tome's member paths in folder-list order (file details follow this order).
+    list_order: Vec<String>,
     uid: u32,
     gid: u32,
 }
@@ -330,6 +332,7 @@ impl VaultFs {
             cache: Mutex::new(Cache::default()),
             sealed_inner: None,
             sealed_body: None,
+            list_order: Vec::new(),
             uid: current_uid(),
             gid: current_gid(),
         };
@@ -389,6 +392,7 @@ impl VaultFs {
             cache: Mutex::new(Cache::default()),
             sealed_inner: None,
             sealed_body: None,
+            list_order: Vec::new(),
             uid: current_uid(),
             gid: current_gid(),
         };
@@ -528,6 +532,8 @@ impl VaultFs {
             fs::create_dir_all(dest).map_err(|e| crate::Error::Msg(e.to_string()))?;
         }
         let mut n = 0u32;
+        // Files this export wrote.
+        let mut created: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (path, ino) in &self.by_path {
             if path.is_empty() {
                 continue;
@@ -543,10 +549,13 @@ impl VaultFs {
                         fs::create_dir_all(parent).map_err(|e| crate::Error::Msg(e.to_string()))?;
                     }
                     self.export_file(*ino, &out)?;
+                    created.insert(path.as_str());
                     n += 1;
                 }
             }
         }
+        // Before folders are made read-only: empty folders are created inside them.
+        let detailed = self.export_details(dest, writable, &created);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -557,6 +566,9 @@ impl VaultFs {
             };
             for (path, ino) in &self.by_path {
                 if path.is_empty() {
+                    continue;
+                }
+                if detailed.contains(path.as_str()) {
                     continue;
                 }
                 let out = dest.join(path);
@@ -589,6 +601,83 @@ impl VaultFs {
             meta.write(dest)?;
         }
         Ok(n)
+    }
+
+    /// Give an export tree the Tome's file details (v4 / v5), best effort: each file's
+    /// stored permission bits, so that re-sealing an export keeps them, but never
+    /// set-ID, sticky or world-write bits, with the owner's write bit added in a writable
+    /// export and every write bit removed in a read-only one; modified times; and the
+    /// empty folders. A Tome without details, or details that do not match the list,
+    /// leaves the export as written.
+    /// Returns the files whose permissions it set.
+    fn export_details(
+        &self,
+        dest: &Path,
+        writable: bool,
+        created: &std::collections::HashSet<&str>,
+    ) -> std::collections::HashSet<String> {
+        let mut done = std::collections::HashSet::new();
+        if self.list_order.is_empty() || !is_dir_pack(&self.seal) {
+            return done;
+        }
+        let Ok(Some(d)) =
+            crate::folder::tome_details(&self.seal, self.pass.as_deref(), &self.identities)
+        else {
+            return done;
+        };
+        if d.files.len() != self.list_order.len() {
+            return done;
+        }
+        let shape = |mode: u32| {
+            if writable {
+                mode | 0o200
+            } else {
+                mode & !0o222
+            }
+        };
+        for (rel, fd) in self.list_order.iter().zip(&d.files) {
+            let out = dest.join(rel);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if crate::details::has_mode(fd.mode) && created.contains(rel.as_str()) {
+                    let mode = shape(fd.mode & 0o775);
+                    if fs::set_permissions(&out, fs::Permissions::from_mode(mode)).is_ok() {
+                        done.insert(rel.clone());
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = (created, &shape);
+            if let Some(t) = fd.modified() {
+                if let Ok(f) = fs::File::open(&out) {
+                    let _ = f.set_modified(t);
+                }
+            }
+        }
+        for f in &d.folders {
+            if !crate::details::safe_folder(&f.rel) {
+                continue;
+            }
+            let out = dest.join(&f.rel);
+            if fs::symlink_metadata(&out).is_ok() || fs::create_dir_all(&out).is_err() {
+                continue;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if crate::details::has_mode(f.detail.mode) {
+                    let mode = shape(f.detail.mode & 0o775) | if writable { 0o700 } else { 0o500 };
+                    let _ = fs::set_permissions(&out, fs::Permissions::from_mode(mode));
+                }
+            }
+            if let Some(t) = f.detail.modified() {
+                if let Ok(h) = fs::File::open(&out) {
+                    let _ = h.set_modified(t);
+                }
+            }
+        }
+        done
     }
 
     fn build_single(&mut self) -> Result<()> {
@@ -706,6 +795,7 @@ impl VaultFs {
         };
         for e in entries {
             self.add_entry(&e)?;
+            self.list_order.push(e.path.replace('\\', "/"));
         }
         Ok(())
     }

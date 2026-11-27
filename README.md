@@ -451,38 +451,71 @@ $ sigil unseal --only sub/b.txt -o just-b album.sg1
 de-scribed 1 files → just-b
 ```
 
-A Tome keeps regular files only. These are left out, and every one is listed on stderr
-when the Tome is made (the summary line counts them; `--json` adds `"not_packed": N`):
-names starting with `.` (files and whole folders: a dot-folder is not entered), special
-files (named pipes, sockets, devices), links whose target is missing, and folders with
-nothing stored under them. Links to files and folders are followed. File permissions are
-not stored either; a note says how many executable files will come back without their
-executable bit. The Tome is still written and the exit code is 0, as before. Add
-`--fail-on-skip` to refuse instead: the paths are listed, nothing is written, and the exit
-code is 1.
+A Tome keeps regular files, empty folders and file details. **File details** are each
+file's permissions and modified time, and each empty folder's name, permissions and
+modified time: a few bytes per file (under 0.1% of the Tome size on test folders), kept by
+default. Add `--no-file-details` to leave them out.
+
+These are left out, and every one is listed on stderr when the Tome is made (the summary
+line counts them; `--json` adds `"not_packed": N`): names starting with `.` (files and
+whole folders: a dot-folder is not entered), special files (named pipes, sockets,
+devices) and links whose target is missing. Links to files and folders are followed. The
+Tome is still written and the exit code is 0, as before. Add `--fail-on-skip` to refuse
+instead: the paths are listed, nothing is written, and the exit code is 1.
+
+Dotfiles are left out by default because folders often hold secrets nobody meant to
+share (`.env`, `.ssh/`, `.git/` with its history), and a Tome that has been sent cannot be
+taken back. A missing dotfile is listed and can be added later. Add `--dotfiles` to pack
+them.
 
 ```
 $ sigil seal -o album.sg1 album
-WARNING: 2 path(s) in album are not packed into the Tome (1 hidden file, 1 empty folder):
+WARNING: 1 path(s) in album are not packed into the Tome (1 hidden file):
   hidden file    .env
-  empty folder   drafts/
+  (dotfiles are left out by default; add --dotfiles to pack them)
   (add --fail-on-skip to refuse instead of packing without them)
-folder 2 files, 4 bytes → album.sg1 (2 not packed: listed on stderr)
+folder 3 files, 14 bytes → album.sg1 (1 not packed: listed on stderr)
+$ sigil seal --dotfiles -o album.sg1 album
+folder 4 files, 18 bytes → album.sg1
 ```
+
+When a Tome with file details is opened, permissions and modified times are put back, and
+empty folders are created. Restoring is careful by default:
+
+- Set-user-ID, set-group-ID and sticky bits are never restored, and permissions are
+  limited by your umask, as for any file you create. A file stored as private (`600`) is
+  given that mode before it gets its final name, so it is never readable by others, even
+  for a moment. `sigil unseal --exact-modes` restores the stored bits exactly (all of
+  them, umask ignored); use it only for a Tome you trust.
+- Names with `..`, absolute names and names starting with `/` or `\` are refused, and
+  nothing is written through a link inside the output folder: a hostile Tome cannot place
+  files outside it.
+- A folder that already existed keeps its own permissions; only folders the restore
+  created get the stored ones.
+- On Windows only the modified time is restored (Windows has no Unix permission bits).
+- `sigil mount --export-dir` gives exported files their stored permission bits (never
+  set-ID, sticky or world-write) and times and creates the empty folders, so an export
+  re-sealed unchanged with `vault commit --from-export` makes no new version.
+- A Tome without file details (made by an older build or with `--no-file-details`)
+  restores as before; a note says how many executable files will come back without
+  their executable bit when it is made.
 
 A member larger than `--chunk` is stored as a large-file pack inside the Tome; `scry`
 and `path` list it as `file`, like any other. Only a member whose name ends in `.sg1` or
 `.sgwk` is listed as `nest`.
 
-The list of file names and sizes is kept inside the Tome's repair data (Tome v3, the
-default for new Tomes), so `mend` repairs damage to it and a list that cannot be repaired is
+The list of file names and sizes is kept inside the Tome's repair data (Tome v4 with file
+details, the default for new Tomes, or v3 without them), so `mend` repairs damage to it and a list that cannot be repaired is
 refused, never read as different names. Without a Ward this guards against accidental
 damage only, not against someone editing the file on purpose. Tomes made by earlier
-versions open as before. Older versions of sigil refuse a v3 Tome with an error; add
-`--old-tome-layout` to make one they can read (its list has no repair data); Vault folder
-versions use the same layout, and `SIGIL_OLD_TOME_LAYOUT=1` asks any writer for the older
-one. Layout:
-[docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md#protected-plain-tomes-sgdr-v3).
+versions open as before. Older versions of sigil refuse a Tome layout they do not know
+with an error and write nothing. `--no-file-details` makes a v3 Tome (v2 when
+encrypted), which builds from before file details can read; `--old-tome-layout` makes
+one the oldest builds can read (its list has no repair data and it has no file details).
+Vault folder versions use the same layouts, and `SIGIL_OLD_TOME_LAYOUT=1` asks any writer
+for the oldest one. Layout:
+[docs/PRIVATE-LABEL.md](docs/PRIVATE-LABEL.md#protected-plain-tomes-sgdr-v3) and
+[file details](docs/PRIVATE-LABEL.md#file-details-tome-v4-and-v5).
 
 An **encrypted** Tome (`--pass` or `--to`) hides its file names, folder
 layout and per-file sizes. There is no flag for this; it is always on. Without the

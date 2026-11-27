@@ -38,25 +38,45 @@ fn skipped_paths_are_listed_and_the_tome_is_still_written() {
     let o = sigil(&dir, &["inscribe", "src", "-o", "t.sg1"]);
     let (out, err) = text(&o);
     assert!(o.status.success(), "{out}\n{err}");
+    // Empty folders are kept with the file details (the default), so not listed.
     assert!(
-        err.contains("WARNING: 4 path(s) in src are not packed"),
+        err.contains("WARNING: 3 path(s) in src are not packed"),
         "{err}"
     );
     for line in [
         "hidden file    .env",
         "hidden folder  .cache/",
         "broken link    dangling",
-        "empty folder   empty/",
+        "add --dotfiles to pack them",
     ] {
         assert!(err.contains(line), "missing {line:?} in:\n{err}");
     }
-    assert!(out.contains("(4 not packed: listed on stderr)"), "{out}");
+    assert!(!err.contains("empty folder"), "{err}");
+    assert!(out.contains("(3 not packed: listed on stderr)"), "{out}");
     assert!(dir.join("t.sg1").is_file());
     // The JSON result carries the count.
     let o = sigil(&dir, &["inscribe", "src", "-o", "j.sg1", "--json"]);
     let (out, err) = text(&o);
     assert!(o.status.success(), "{out}\n{err}");
-    assert!(out.contains("\"not_packed\":4"), "{out}");
+    assert!(out.contains("\"not_packed\":3"), "{out}");
+    // Without file details an empty folder is left out again, and listed.
+    let o = sigil(
+        &dir,
+        &["inscribe", "src", "-o", "n.sg1", "--no-file-details"],
+    );
+    let (out, err) = text(&o);
+    assert!(o.status.success(), "{out}\n{err}");
+    assert!(err.contains("empty folder   empty/"), "{err}");
+    assert!(out.contains("(4 not packed: listed on stderr)"), "{out}");
+    // With --dotfiles the dotfiles are packed and no longer listed.
+    let o = sigil(&dir, &["inscribe", "src", "-o", "d.sg1", "--dotfiles"]);
+    let (out, err) = text(&o);
+    assert!(o.status.success(), "{out}\n{err}");
+    assert!(err.contains("WARNING: 1 path(s)"), "{err}");
+    assert!(
+        !err.contains(".env") && !err.contains("--dotfiles"),
+        "{err}"
+    );
 }
 
 #[test]

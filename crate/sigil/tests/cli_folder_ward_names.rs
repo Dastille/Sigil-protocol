@@ -71,7 +71,7 @@ fn ward_with_pass_hides_names_and_fails_closed() {
         ],
     ));
     let raw = std::fs::read(d.join("e.sg1")).unwrap();
-    assert_eq!(&raw[0..5], b"SGDR\x02");
+    assert_eq!(&raw[0..5], b"SGDR\x05");
     for name in [&b"tax-return-2025"[..], b"visible-name-a", b"private-sub"] {
         assert!(!contains(&raw, name), "name fragment leaked in the clear");
     }

@@ -139,7 +139,7 @@ pub fn scry_status_assessed(
         if let Some((n, _, _)) = crate::sealed_dir_body_loc(input)? {
             st.members = Some(u64::from(n));
             // A protected plain Tome (v3) has a body too, but it is not encrypted.
-            st.encrypted = Some(crate::tome_version(input) == Some(2));
+            st.encrypted = Some(matches!(crate::tome_version(input), Some(2) | Some(5)));
         } else {
             // A cut-off Tome cannot be listed: its member count is unknown.
             st.members = crate::list_dir_pack(input).ok().map(|m| m.len() as u64);

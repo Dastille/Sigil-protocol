@@ -78,6 +78,37 @@ repair data. Members inside the body are sealed in Glyph mode, as in v2.
   `unseal` / `ls`; `scry` and `mend` report the Tome as too damaged); they never return
   a wrong tree. Update sigil to open it, or write `--old-tome-layout` for an old reader.
 
+## File details (Tome v4 and v5)
+
+New Tomes keep file details: v4 is a protected plain Tome (v3 above) with details, v5 a
+sealed directory (v2) with details. The head is the same as v3 / v2 with the new version
+byte. The body's plaintext starts with a details block, followed by the v1 Tome as before:
+
+    "SGMT" | fmt u8 (1) | len u32 LE | files u32 LE | folders u32 LE
+           | files × detail | folders × (detail | name length u16 LE | name)
+    detail = mode u32 LE | modified secs i64 LE | nanos u32 LE
+
+`len` counts every byte after it. File details are in folder-list order and `files`
+must equal the Tome's file count. `mode` is the Unix permission, set-ID and sticky bits
+(`0xFFFFFFFF` when the writer had none, as on Windows; a value with bits above `0o7777`
+is never applied). `nanos` of `0xFFFFFFFF` means no modified time. Folder names follow
+the member name rules.
+
+- The block is inside the body, so it has the body's repair data and checks and, in v5,
+  its encryption: in a v5 Tome permissions and times are hidden without the key.
+- A block with an unknown `fmt` or a `len` over 256 MiB is skipped (its `len` is
+  honoured) and the files restore without details; a block that does not parse or does
+  not match the count is skipped the same way. A body that ends inside the block is
+  refused.
+- Restore: permission bits are limited by the umask (a class that may read may execute)
+  and set-user-ID, set-group-ID and sticky bits are dropped, unless `unseal --exact-modes`;
+  the mode is set on the part file before it is renamed into place; modified times are
+  best effort; only folders the restore created get stored folder details; an empty
+  folder name with `..`, `.` parts, a leading `/` or `\` or an absolute path refuses the
+  restore; no write goes through a link inside the output folder. Windows applies times only.
+- Older sigil builds refuse v4 and v5 without writing anything ("unknown Tome version").
+  `seal --no-file-details` writes v3 / v2, `--old-tome-layout` v1 / v2.
+
 ### Sealing the names of an old pack (`sigil seal-folder-names`)
 
 ```sh

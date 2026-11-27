@@ -40,6 +40,40 @@ The first release will be **v0.9.0**. This tree is not 1.0.
 
 ### Tomes
 
+- **Format change: new Tomes keep file details (Tome v4, v5 when encrypted).** Each
+  file's permission bits and modified time, and each empty folder (name, permissions,
+  modified time), are stored in a block at the start of the repair-protected body, before
+  the files. On by default: measured on three folder shapes it adds 4 to 26 bytes per
+  file (under 0.1% of the Tome). `seal --no-file-details` writes v3 (v2 when encrypted) as
+  before. Restore is safe by default: set-user-ID, set-group-ID and sticky bits are
+  dropped, permissions are limited by the umask, a file's mode is set before it is renamed
+  into place, folders that already existed keep their own permissions, and on Windows
+  only the modified time is applied. New `unseal --exact-modes` applies the stored bits
+  exactly. `..` names, absolute names and writes through a link inside the output folder
+  are refused, so a hostile Tome cannot write outside it (an unsafe empty-folder name
+  refuses the whole restore). A details block of an unknown format, or one that does not
+  match the folder list, is skipped with a note and the files still restore.
+  `mend`, `--salvage`, `scry`, `ls`, `mount` and `--ward-names-visible` re-sealing handle
+  v4 and v5. `mount --export-dir` gives exported files their stored permission bits
+  (never set-ID, sticky or world-write; the owner's write bit added in a writable export,
+  every write bit removed in a read-only one) and modified times, and creates the empty
+  folders, so re-sealing an untouched export makes no new Vault version. Sigil builds before this change refuse v4 and v5 with "unknown Tome version"
+  and write nothing (checked with two earlier builds); their `--salvage` restores the
+  file contents without the details. `--old-tome-layout` now also works with `--pass` /
+  `--to` (v2).
+- **Dotfiles: new opt-in `seal --dotfiles`.** Files and folders whose names start with
+  `.` stay out by default, because they often hold secrets (`.env`, `.ssh/`, `.git/`)
+  and a sent Tome cannot be taken back, while a missing file is listed and can be added.
+  The list of paths left out now says how to include them. Empty folders are no longer
+  listed as left out when file details are kept (they are stored).
+- **Vault records permission-only changes.** Each folder version records a digest of the
+  files' permission bits and empty folders (` modes=` in the chart; older builds ignore
+  the key), and `commit` makes a new version when only permissions or empty folders
+  changed. A change of modified time alone does not make a new version, since every
+  version is a full Tome. The first commit after updating makes one extra version of an
+  unchanged folder. Restoring a version keeps modified times and empty folders, and a
+  folder left empty in an export is kept as an empty folder in the new version.
+
 - **Format change: new plain Tomes keep their folder list inside repair data (Tome v3).**
   A Tome made without `--pass` / `--to` now uses the Warded Tome layout without
   encryption (`SGDR` version 3): the list of names and sizes is inside the body, which

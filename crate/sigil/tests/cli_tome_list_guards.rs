@@ -231,25 +231,29 @@ fn damaged_tome_first_bytes_are_never_called_healthy() {
         &["seal", "f", "-o", "warded.sg1", "--pass", "guard-pass-1"],
     );
     let warded = std::fs::read(d.join("warded.sg1")).expect("r");
-    assert_eq!(&warded[..5], b"SGDR\x02", "Warded Tome");
+    assert_eq!(&warded[..5], b"SGDR\x05", "Warded Tome");
     ok(&d, &["seal", "f", "-o", "protected.sg1"]);
     for base in ["plain.sg1", "warded.sg1", "protected.sg1"] {
         let raw = std::fs::read(d.join(base)).expect("r");
-        for byte in [0usize, 2, 3, 4] {
+        // Byte 4 is the version: `^ 0x04` can land on another known version (1 and 5,
+        // 4 and 0), which must still never be called healthy; `^ 0x40` is unknown.
+        for (byte, flip) in [(0usize, 0x04u8), (2, 0x04), (3, 0x04), (4, 0x04), (4, 0x40)] {
             let mut bad = raw.clone();
-            bad[byte] ^= 0x04;
-            let f = format!("h{byte}-{base}");
+            bad[byte] ^= flip;
+            let f = format!("h{byte}-{flip}-{base}");
             std::fs::write(d.join(&f), &bad).expect("w");
             let o = sigil(&d, &["scry", &f]);
             let t = text(&o);
             assert_eq!(o.status.code(), Some(2), "{f}: {t}");
             // An intact `SGDR` with an unknown version may be from a newer sigil.
-            let why = if byte == 4 {
-                "unknown Tome version"
-            } else {
-                "Tome head damaged"
+            let why = match (byte, flip) {
+                (4, 0x40) => Some("unknown Tome version"),
+                (4, _) => None,
+                _ => Some("Tome head damaged"),
             };
-            assert!(t.contains(why), "{f}: {t}");
+            if let Some(why) = why {
+                assert!(t.contains(why), "{f}: {t}");
+            }
         }
     }
 }
