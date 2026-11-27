@@ -11,8 +11,10 @@ use std::process::{Command, Stdio};
 /// Size of the large member: far above the memory limit below.
 const BIG: usize = 48 << 20;
 /// Most a command's peak resident set may grow (KiB) when the member grows from 1 MiB
-/// to `BIG`; reading the member whole would add at least 47 MiB.
-const MARGIN_KIB: i64 = 16 << 10;
+/// to `BIG`; reading the member whole would add at least 47 MiB. The Warded mount export
+/// swings between about 47 and 52 MiB peak from run to run (allocator and thread timing),
+/// up to 17 MiB above the 1 MiB case, so the margin sits well above that and well below 47.
+const MARGIN_KIB: i64 = 24 << 10;
 
 /// Write `n` bytes of a fixed pseudo-random stream to `path`, 1 MiB at a time. The test
 /// process itself must stay small: a child's peak resident set as reported by `wait4`

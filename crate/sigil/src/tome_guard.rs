@@ -52,7 +52,7 @@ pub(crate) fn bad_name(raw: &[u8]) -> Option<&'static str> {
 pub(crate) const STAR_PEEK: usize = crate::header::KEYSTONE_SPAN + 64;
 
 /// What a star header keeps of `name`: its first 16 bytes, trailing zero bytes dropped.
-fn header_prefix(name: &str) -> String {
+pub(crate) fn header_prefix(name: &str) -> String {
     let b = name.as_bytes();
     let cut = &b[..b.len().min(16)];
     let end = cut.iter().rposition(|&x| x != 0).map_or(0, |i| i + 1);
@@ -60,7 +60,7 @@ fn header_prefix(name: &str) -> String {
 }
 
 /// The name a plain star's protected header carries, when it carries one.
-fn header_name(star_head: &[u8]) -> Option<String> {
+pub(crate) fn header_name(star_head: &[u8]) -> Option<String> {
     let (h, _, _) = crate::locate_header(star_head).ok()?;
     if h.encrypted() || h.private_label() || h.name.is_empty() {
         return None;

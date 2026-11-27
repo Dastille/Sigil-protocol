@@ -201,7 +201,7 @@ mended one.sg1 → one.mended.sg1 (live 44/44, need 33, merkle ok, soft salvage)
 The same file, stopped with one Ctrl-C after about 3 seconds (exit 130, no output file):
 
 ```
-Stopping safely... nothing will be written. (Ctrl-C again quits at once.)
+Stopping safely... nothing half-done will be written. (Ctrl-C again quits at once.)
 repair stopped: you pressed Ctrl-C. Nothing was written; one.sg1 is unchanged. Run the same command again to start over.
 ```
 
@@ -266,6 +266,19 @@ Two opt-in shortcuts use the same repair (plain `unseal` stays strict by default
 - `sigil unseal --repair -o out.jpg flipped.sg1` repairs in memory and opens, without
   writing a mended copy. It prints a warning that the file on disk is still damaged,
   and writes nothing at all if the repair or the checks fail (wrong passphrase too).
+- `sigil unseal --salvage -o out-folder damaged.sg1` saves what it can from a Tome that
+  will not open: every file that still passes its own checks (repaired first when it can
+  be), and nothing that fails. It finds each file's stored data directly when the folder
+  list is damaged, never overwrites (a taken name gets `.salvaged-N`), and writes
+  `out-folder.salvage-report.txt` listing what was restored, renamed and lost (stderr shows
+  the same, at most 50 lines). Names come from the folder list when it is checked (a v3 or
+  Warded Tome). In a plain v1 Tome a name is used only when the file's own header confirms
+  all of it (it keeps the first 16 bytes); every other file goes under
+  `out-folder/recovered-names/NNNN-<first 16 bytes of its name>` and the report shows the
+  name the list gives it. Exit 0 when every file came back under its own name, 7 when
+  something was saved but something was lost or renamed, 2 when nothing could be saved.
+  `--max-secs N` stops after N seconds and reports what was not tried (no limit by
+  default); Ctrl-C stops the same way (exit 130).
 - `sigil doctor --scrub DIR` checks every `.sg1` in a folder, repairs flipped bits, and
   rewrites a Sigil only when the hash tree and file hash match. A Sigil it cannot fix is
   listed as UNCORRECTABLE and left byte-for-byte as it was (exit code 2). Run it on a
@@ -317,7 +330,8 @@ doctor reports in `scrub.rs` / `doctor.rs`):
 | 4 | Repair skipped, nothing written | `mend --max-secs` estimate too long; "no" at the `Keep going?` question; unattended repair estimated over 15 minutes |
 | 5 | Damaged, will not open as-is, and `sigil mend` repairs it (checked: the repair ran in memory and passed the full check) | `scry` / `verify` / `unseal` / `open` when `live < need` (e.g. scattered bit rot) |
 | 6 | Damaged, will not open as-is; whether `sigil mend` can repair it was not found out (the repair check ran out of time, was turned off, or the seal is over 32 MiB) | same commands; run `sigil mend` to find out |
-| 130 | Stopped with Ctrl-C, nothing written | `mend` stopped safely |
+| 7 | Partly saved: some files were written, but at least one was lost, written under another name, or not tried because a limit stopped the run | `unseal --salvage` (see its report file) |
+| 130 | Stopped with Ctrl-C, nothing written (`unseal --salvage`: files already saved stay, each one checked) | `mend` stopped safely |
 
 A failed `mend` leaves the damaged file exactly as it was and writes no output file.
 With `--json`, a failure line keeps its fields (`ok`, `cmd`, `exit`, `error`, …) and may add
@@ -824,7 +838,8 @@ by tests (they need a boot medium and rsync/rclone/wormhole).
 | 4 | `mend`: repair skipped — the estimate was over `--max-secs`, over the 15-minute unattended limit with nobody to ask, or you answered no; nothing written |
 | 5 | damaged, repairable with `sigil mend` (cannot open as-is; the repair was checked in memory) |
 | 6 | damaged, cannot open as-is; repair not checked (time limit, `SIGIL_SCRY_PROBE_SECS=0`, or over 32 MiB): run `sigil mend` |
-| 130 | `mend`: stopped with Ctrl-C; nothing written |
+| 7 | `unseal --salvage`: partly saved (something lost, renamed or not tried); see the report file |
+| 130 | `mend`: stopped with Ctrl-C; nothing written. `unseal --salvage`: stopped; files already saved stay |
 
 `doctor` keeps its own documented codes.
 
