@@ -54,7 +54,10 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   refuses the whole restore). A details block of an unknown format, or one that does not
   match the folder list, is skipped with a note and the files still restore.
   `mend`, `--salvage`, `scry`, `ls`, `mount` and `--ward-names-visible` re-sealing handle
-  v4 and v5. Sigil builds before this change refuse v4 and v5 with "unknown Tome version"
+  v4 and v5. `mount --export-dir` gives exported files their stored permission bits
+  (never set-ID, sticky or world-write; the owner's write bit added in a writable export,
+  every write bit removed in a read-only one) and modified times, and creates the empty
+  folders, so re-sealing an untouched export makes no new Vault version. Sigil builds before this change refuse v4 and v5 with "unknown Tome version"
   and write nothing (checked with two earlier builds); their `--salvage` restores the
   file contents without the details. `--old-tome-layout` now also works with `--pass` /
   `--to` (v2).

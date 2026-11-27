@@ -2810,6 +2810,41 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn folder_export_keeps_file_details_and_an_untouched_export_skips() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmpdir("fold-export-details");
+        let live = dir.join("proj");
+        write_tree(&live, &[("run.sh", b"#!/bin/sh\n"), ("secret.txt", b"s")]);
+        fs::set_permissions(live.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(live.join("secret.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+        fs::create_dir_all(live.join("empty")).unwrap();
+        let f = fs::File::open(live.join("secret.txt")).unwrap();
+        f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000))
+            .unwrap();
+        drop(f);
+        track(&live, Mode::Glyph, None, &[]).unwrap();
+        let export = dir.join("dirty");
+        export_writable(&live, &export, &[]);
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&export.join("run.sh")) & 0o100, 0o100);
+        assert_eq!(mode(&export.join("secret.txt")), 0o600);
+        assert!(export.join("empty").is_dir());
+        let t = fs::metadata(export.join("secret.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            t,
+            UNIX_EPOCH + std::time::Duration::from_secs(1_500_000_000)
+        );
+        // Nothing changed: no new version (permissions and empty folders match the tip).
+        let skip = commit_from_export(&export, Mode::Glyph, None, false, &[]).unwrap();
+        assert!(skip.skipped);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn folder_export_reseal_edit_add_delete() {
         let dir = tmpdir("fold-export");

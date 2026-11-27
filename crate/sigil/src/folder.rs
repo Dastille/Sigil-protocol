@@ -886,6 +886,41 @@ pub fn sealed_dir_body_loc(input: &Path) -> Result<Option<(u32, u64, u64)>> {
     Ok(Some((n, SEALED_HEAD_LEN as u64, len)))
 }
 
+/// File details of a Tome with them (v4 / v5), read from the start of its body; `None`
+/// for other layouts or a details block this build skips. Reads the whole body once
+/// (its checks run before the details are trusted). Used by `mount --export-dir`.
+pub(crate) fn tome_details(
+    input: &Path,
+    pass: Option<&str>,
+    identities: &[Identity],
+) -> Result<Option<crate::details::Details>> {
+    let mut reader = BufReader::new(File::open(input).map_err(io)?);
+    let (ver, _) = read_head(&mut reader, "not a Tome archive (SGDR)")?;
+    drop(reader);
+    if ver != DIR_VER_PROTECTED_DETAILS && ver != DIR_VER_SEALED_DETAILS {
+        return Ok(None);
+    }
+    let Some((count, off, len)) = sealed_dir_body_loc(input)? else {
+        return Ok(None);
+    };
+    let mut src = packhead::FileSrc::open(input)?;
+    with_inner(
+        &mut src,
+        count,
+        off,
+        len,
+        pass,
+        &[],
+        identities,
+        |_, found| {
+            Ok(match found {
+                crate::details::Found::Read(d) => Some(d.clone()),
+                _ => None,
+            })
+        },
+    )
+}
+
 /// Open a Warded Tome's body (`len` bytes at `off` of `tome`) and hand `f` its
 /// plaintext, the inner v1 pack, positioned just after the inner `SGDR | 1 | count`
 /// head (already checked against the outer `count`).

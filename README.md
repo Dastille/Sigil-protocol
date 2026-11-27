@@ -493,6 +493,9 @@ empty folders are created. Restoring is careful by default:
 - A folder that already existed keeps its own permissions; only folders the restore
   created get the stored ones.
 - On Windows only the modified time is restored (Windows has no Unix permission bits).
+- `sigil mount --export-dir` gives exported files their stored permission bits (never
+  set-ID, sticky or world-write) and times and creates the empty folders, so an export
+  re-sealed unchanged with `vault commit --from-export` makes no new version.
 - A Tome without file details (made by an older build or with `--no-file-details`)
   restores as before; a note says how many executable files will come back without
   their executable bit when it is made.
