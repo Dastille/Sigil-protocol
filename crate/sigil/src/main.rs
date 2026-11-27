@@ -470,13 +470,24 @@ enum Cmd {
         /// Without it those paths are listed on stderr and the Tome is written.
         #[arg(long = "fail-on-skip")]
         fail_on_skip: bool,
-        /// Folder only, no --pass / --to: write the older Tome layout (v1, folder list outside
-        /// the repair data), which sigil builds made before Tome v3 can read. By default a new
-        /// unlocked Tome keeps its folder list inside the repair-protected body (Tome v3):
-        /// protection against accidental damage only; add --pass / --to against deliberate edits.
+        /// Folder only: write the older Tome layout that older sigil builds can read: v1
+        /// (folder list outside the repair data) without --pass / --to, v2 with them; no file
+        /// details. By default a new unlocked Tome keeps its folder list inside the
+        /// repair-protected body (protection against accidental damage only; add --pass / --to
+        /// against deliberate edits), and every new Tome keeps file details.
         /// SIGIL_OLD_TOME_LAYOUT=1 does the same for every Tome writer (Vault commits too).
         #[arg(long = "old-tome-layout")]
         old_tome_layout: bool,
+        /// Folder only (opt-in): also pack dotfiles and dot-folders (.env, .git, .ssh, ...).
+        /// Off by default because they often hold secrets a person sharing a Tome does not
+        /// expect in it; without it they are listed on stderr as not packed.
+        #[arg(long = "dotfiles")]
+        dotfiles: bool,
+        /// Folder only: do not keep file details (permissions, modified times, empty
+        /// folders). Kept by default (a few bytes per file); a Tome without them opens in
+        /// sigil builds since 0.9.0, one with them needs this build or newer.
+        #[arg(long = "no-file-details")]
+        no_file_details: bool,
         #[arg(long)]
         covenant: Option<String>,
         #[arg(long = "bind")]
@@ -578,6 +589,11 @@ enum Cmd {
         /// (default: no time limit)
         #[arg(long = "max-secs", value_name = "SECS", requires = "salvage")]
         max_secs: Option<u64>,
+        /// Tome with file details: apply stored permissions exactly, set-user-ID,
+        /// set-group-ID and sticky bits included, ignoring the umask. By default those
+        /// bits are dropped and permissions are limited by the umask.
+        #[arg(long = "exact-modes", conflicts_with = "salvage")]
+        exact_modes: bool,
     },
     /// Check a .sg1 Sigil Archive without writing anything: shards, Merkle binding, header copies
     /// (and with --read-data, the original bytes). Exit 0 ok, 1 key problem/error, 2 NOT recoverable,
@@ -3051,7 +3067,7 @@ fn verify_cmd(
             // A protected plain Tome (v3) whose body cannot be restored: its list is in
             // that body, so report the verdict (exit 2) as for a locked Warded Tome.
             Err(_)
-                if sigil::tome_version(&input) == Some(3)
+                if matches!(sigil::tome_version(&input), Some(3) | Some(4))
                     && condition.unrecoverable_reason().is_some() =>
             {
                 "folder  (the file list is inside the body, which cannot be restored)".to_string()
@@ -3386,10 +3402,17 @@ impl Drop for RepairWatch {
 /// Most skipped paths printed by name; the rest are summarised as a count.
 const SKIPS_SHOWN: usize = 50;
 
-/// Tell the user, on stderr, every path a folder Inscribe leaves out of the Tome and that
-/// file permissions are not stored. Silent when nothing is left out and no file is
-/// executable. With `refusing`, the closing hint says nothing will be written.
-fn report_skips(root: &Path, skips: &sigil::SkipReport, refusing: bool) {
+/// Tell the user, on stderr, every path a folder Inscribe leaves out of the Tome and, when
+/// the Tome keeps no file details, that file permissions are not stored. Silent when
+/// nothing is left out and no file is executable. With `refusing`, the closing hint says
+/// nothing will be written.
+fn report_skips(
+    root: &Path,
+    skips: &sigil::SkipReport,
+    refusing: bool,
+    details: bool,
+    dotfiles: bool,
+) {
     if skips.total > 0 {
         let by: Vec<String> = skips
             .counts()
@@ -3414,13 +3437,22 @@ fn report_skips(root: &Path, skips: &sigil::SkipReport, refusing: bool) {
         if skips.total > shown {
             eprintln!("  ... and {} more", skips.total - shown);
         }
+        let hidden = skips.counts().iter().any(|(r, _)| {
+            matches!(
+                r,
+                sigil::SkipReason::HiddenFile | sigil::SkipReason::HiddenFolder
+            )
+        });
+        if hidden && !dotfiles {
+            eprintln!("  (dotfiles are left out by default; add --dotfiles to pack them)");
+        }
         if !refusing {
             eprintln!("  (add --fail-on-skip to refuse instead of packing without them)");
         }
     }
-    if skips.executables > 0 && !refusing {
+    if skips.executables > 0 && !refusing && !details {
         eprintln!(
-            "note: file permissions are not stored; {} executable file(s) will restore without the executable bit",
+            "note: file permissions are not stored in this layout; {} executable file(s) will restore without the executable bit",
             skips.executables
         );
     }
@@ -3853,6 +3885,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ward_names_visible,
             fail_on_skip,
             old_tome_layout,
+            dotfiles,
+            no_file_details,
             covenant,
             bind,
             chunk,
@@ -3879,11 +3913,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if fail_on_skip && !input.is_dir() {
                 return Err("--fail-on-skip applies to a folder Inscribe only".into());
             }
-            if old_tome_layout && (!input.is_dir() || pass.is_some() || !recipients.is_empty()) {
-                return Err(
-                    "--old-tome-layout applies to a folder Inscribe without --pass / --to only"
-                        .into(),
-                );
+            if old_tome_layout && !input.is_dir() {
+                return Err("--old-tome-layout applies to a folder Inscribe only".into());
+            }
+            if (dotfiles || no_file_details) && !input.is_dir() {
+                return Err("--dotfiles and --no-file-details apply to a folder Inscribe only".into());
             }
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
             {
@@ -3948,8 +3982,14 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 if pieces.is_some() {
                     return Err("folder Inscribe writes one pack. Omit --pieces.".into());
                 }
-                let skips = sigil::tree_skips(&input)?;
-                report_skips(&input, &skips, fail_on_skip);
+                let old_layout = old_tome_layout || sigil::folder_old_layout_requested()?;
+                let tree_opts = sigil::TreeOpts {
+                    dotfiles,
+                    details: !no_file_details,
+                };
+                let details_written = tree_opts.details && !old_layout;
+                let skips = sigil::tree_skips_opts(&input, tree_opts, details_written)?;
+                report_skips(&input, &skips, fail_on_skip, details_written, dotfiles);
                 if fail_on_skip && skips.total > 0 {
                     return Err(format!(
                         "--fail-on-skip: {} path(s) in {} would be left out of the Tome (listed above). Nothing was written",
@@ -3965,7 +4005,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         output.display()
                     );
                 }
-                let (n, orig) = if old_tome_layout || sigil::folder_old_layout_requested()? {
+                let (n, orig) = if old_layout {
                     sigil::inscribe_dir_old_layout(
                         &input,
                         &output,
@@ -3977,6 +4017,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &wards,
                         &recipients,
                         ward_names_visible,
+                        tree_opts,
                     )?
                 } else {
                     sigil::inscribe_dir_protected(
@@ -3990,6 +4031,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &wards,
                         &recipients,
                         ward_names_visible,
+                        tree_opts,
                     )?
                 };
                 say!(
@@ -4166,6 +4208,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             repair,
             salvage,
             max_secs,
+            exact_modes,
         } => {
             let pass = pass.or(pass_file);
             let companions = companion_bytes(&bind)?;
@@ -4302,7 +4345,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         output.display()
                     );
                 } else if is_dir_pack(&input) {
-                    let n = unseal_dir_only_keys(
+                    let (n, note) = sigil::unseal_dir_only_keys_opts(
                         &input,
                         &output,
                         pass,
@@ -4310,7 +4353,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                         &only,
                         &wards,
                         &identities,
+                        sigil::details::RestoreOpts { exact_modes },
                     )?;
+                    if let Some(note) = note {
+                        eprintln!("note: {note}");
+                    }
                     say!("de-scribed {n} files → {}", output.display());
                 } else if is_constellation_input(&input) {
                     let n = sigil::unseal_constellation_keys(
@@ -4753,7 +4800,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Cmd::Mend { input, .. }
-            if sigil::tome_version(&input).is_some_and(|v| !(1..=3).contains(&v)) =>
+            if sigil::tome_version(&input).is_some_and(|v| !(1..=5).contains(&v)) =>
         {
             // Never guess at a Tome layout this build does not know (it would be read as
             // a damaged large-file pack and the message would mislead).

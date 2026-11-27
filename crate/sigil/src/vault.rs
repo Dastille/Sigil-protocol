@@ -142,6 +142,10 @@ pub struct VersionEntry {
     pub digest: [u8; 32],
     pub size: u64,
     pub time: u64,
+    /// Folder versions with file details: digest of every file's permissions and the
+    /// empty folders ([`tree_modes_digest`]). `None` for single files, older charts and
+    /// versions written in the older Tome layout.
+    pub modes: Option<[u8; 32]>,
 }
 
 /// How many version seals stay hot in the `.sgv` chart.
@@ -561,13 +565,18 @@ fn write_chart(chart: &Chart) -> Result<()> {
     }
     for v in &chart.versions {
         body.push_str(&format!(
-            "version={} seal={} digest={} size={} time={}\n",
+            "version={} seal={} digest={} size={} time={}",
             v.n,
             v.seal,
             hex32(&v.digest),
             v.size,
             v.time
         ));
+        // Additive: older builds ignore an unknown key on a version line.
+        if let Some(m) = &v.modes {
+            body.push_str(&format!(" modes={}", hex32(m)));
+        }
+        body.push('\n');
     }
     fs::write(chart.vault_dir.join(CHART_NAME), body).map_err(|e| crate::Error::Msg(e.to_string()))
 }
@@ -629,6 +638,7 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
             let mut digest = None;
             let mut size = 0u64;
             let mut time = 0u64;
+            let mut modes = None;
             // First token is the version number (no key) after "version="
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if parts.is_empty() {
@@ -652,6 +662,7 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
                         }
                         "seal" => seal = v.to_string(),
                         "digest" => digest = Some(parse_hex32(v)?),
+                        "modes" => modes = Some(parse_hex32(v)?),
                         "size" => {
                             size = v
                                 .parse()
@@ -677,6 +688,7 @@ pub fn load_chart(vault_dir: &Path) -> Result<Chart> {
                 digest,
                 size,
                 time,
+                modes,
             });
         }
     }
@@ -897,6 +909,7 @@ pub fn track_ex(
             digest,
             size,
             time: now_unix(),
+            modes: None,
         }],
         retention: RetentionPolicy::Full,
         kind: ChartKind::Single,
@@ -940,6 +953,7 @@ fn track_dir(
         ));
     }
     let (digest, size, _n) = tree_digest(&live)?;
+    let modes = version_modes(&live)?;
     prepare_vault_dir(&vault_dir, &live)?;
     let seal_file = seal_name(1);
     seal_tree_version(
@@ -960,6 +974,7 @@ fn track_dir(
             digest,
             size,
             time: now_unix(),
+            modes,
         }],
         retention: RetentionPolicy::Full,
         kind: ChartKind::Folder,
@@ -992,6 +1007,31 @@ pub fn tree_digest(dir: &Path) -> Result<([u8; 32], u64, u32)> {
         manifest.push_str(&format!("{rel}\0{size}\0{}\n", hex32(&sha256_path(path)?)));
     }
     Ok((sha256(manifest.as_bytes()), total, files.len() as u32))
+}
+
+/// Permissions true-name of a directory: SHA-256 over `sigil-modes=1` + sorted
+/// `rel\0mode\n` lines for the files [`tree_digest`] covers, then `rel/\0mode\n` for
+/// each empty folder. A permission change (`chmod`) or a new or removed empty folder
+/// changes it; contents and modified times do not. Mode bits are 0 on Windows.
+pub fn tree_modes_digest(dir: &Path) -> Result<[u8; 32]> {
+    let (files, empties) = crate::folder::tree_files_and_empties(dir)?;
+    let mut manifest = String::from("sigil-modes=1\n");
+    for (rel, path) in files.iter().chain(empties.iter()) {
+        let meta = fs::metadata(path).map_err(|e| crate::Error::Msg(e.to_string()))?;
+        let d = crate::details::FileDetail::of(&meta);
+        let slash = if meta.is_dir() { "/" } else { "" };
+        manifest.push_str(&format!("{rel}{slash}\0{:o}\n", d.mode));
+    }
+    Ok(sha256(manifest.as_bytes()))
+}
+
+/// The permissions digest a new folder version records: `None` when versions are
+/// written in the older Tome layout (no file details are stored then).
+fn version_modes(dir: &Path) -> Result<Option<[u8; 32]>> {
+    if crate::folder::old_layout_requested()? {
+        return Ok(None);
+    }
+    tree_modes_digest(dir).map(Some)
 }
 
 /// Seal `src` as an SGDR pack at `out` (written via `.part` + rename; never overwrites).
@@ -1260,6 +1300,7 @@ fn commit_bytes(
         digest,
         size,
         time: now_unix(),
+        modes: None,
     });
     chart.tip = next;
     write_chart(&chart)?;
@@ -1297,8 +1338,13 @@ fn commit_tree(
     }
     chart.live = live.to_path_buf();
     let (digest, size, _n) = tree_digest(src)?;
+    let modes = version_modes(src)?;
     if let Ok(tip) = entry_by_n(&chart, chart.tip) {
-        if tip.digest == digest && !force {
+        // A permission-only change (same contents, new modes or empty folders) is a new
+        // version too. Modified times alone are not: each version is a whole Tome, and
+        // a re-saved or touched file would cost a full copy. A tip without a permissions
+        // digest (an older chart) gets one new version that records them.
+        if tip.digest == digest && tip.modes == modes && !force {
             return Ok(CommitReport {
                 version: chart.tip,
                 digest,
@@ -1329,6 +1375,7 @@ fn commit_tree(
         digest,
         size,
         time: now_unix(),
+        modes,
     });
     chart.tip = next;
     write_chart(&chart)?;

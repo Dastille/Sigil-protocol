@@ -256,9 +256,9 @@ fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<Sal
             cx.report.listed_count = Some(u32::from_le_bytes([head[5], head[6], head[7], head[8]]));
             salvage_v1(&mut cx, input, false, 9)?;
         }
-        Some(2) | Some(3) => {
+        Some(2..=5) => {
             cx.report.listed_count = Some(u32::from_le_bytes([head[5], head[6], head[7], head[8]]));
-            salvage_body(&mut cx, input, ver == Some(2))?;
+            salvage_body(&mut cx, input, matches!(ver, Some(2) | Some(5)))?;
         }
         _ if body_after_damaged_head(&head, size) => {
             // The 17-byte head is outside the repair data; the body after it is intact
@@ -301,7 +301,7 @@ fn salvage_into(input: &Path, dest: &Path, opts: &SalvageOpts<'_>) -> Result<Sal
 /// A Tome head (first 17 bytes) that is damaged while a body star follows it and the
 /// stored body length still matches the file.
 fn body_after_damaged_head(head: &[u8; 21], size: u64) -> bool {
-    if head[0..4] == crate::folder::DIR_MAGIC && matches!(head[4], 1..=3) {
+    if head[0..4] == crate::folder::DIR_MAGIC && matches!(head[4], 1..=5) {
         return false;
     }
     if size < 21 {
@@ -389,18 +389,31 @@ fn salvage_body(cx: &mut Ctx<'_, '_>, input: &Path, keyed: bool) -> Result<()> {
 /// Salvage a body's inner v1 pack (whole, or the front part that opened): its list was
 /// checked with the body, so its names are used as they are.
 fn salvage_inner(cx: &mut Ctx<'_, '_>, inner: &Path) -> Result<()> {
+    // A file-details block may come first (Tome v4 / v5): the list follows it. Salvage
+    // saves contents only; file details are not applied.
+    let base = inner_base(inner)?;
     // The inner list's own head (checked with the body) has the true member count.
     {
         let mut h = [0u8; 9];
         let mut isrc = packhead::FileSrc::open(inner)?;
-        if isrc.size() >= 9
-            && isrc.read_at(0, &mut h).is_ok()
+        if isrc.size() >= base + 9
+            && isrc.read_at(base, &mut h).is_ok()
             && h[0..4] == crate::folder::DIR_MAGIC
         {
             cx.report.listed_count = Some(u32::from_le_bytes([h[5], h[6], h[7], h[8]]));
         }
     }
-    salvage_v1(cx, inner, true, 9)
+    salvage_v1(cx, inner, true, base + 9)
+}
+
+/// Where the folder list starts in a body's opened plaintext: after a file-details
+/// block when there is one (0 otherwise, and when too little came back to say).
+fn inner_base(inner: &Path) -> Result<u64> {
+    let mut isrc = packhead::FileSrc::open(inner)?;
+    let mut h = [0u8; 9];
+    let n = usize::try_from(isrc.size().min(9)).unwrap_or(0);
+    isrc.read_at(0, &mut h[..n])?;
+    Ok(crate::details::block_len(&h[..n]).unwrap_or(0))
 }
 
 /// Open a chunked body (`SGWK`) one chunk at a time from the start, each chunk with its
@@ -461,10 +474,11 @@ fn pack_prefix(
     w.flush().map_err(io)?;
     drop(w);
     let mut h = [0u8; 9];
+    let base = inner_base(out)?;
     let mut isrc = packhead::FileSrc::open(out)?;
     let ok = done > 0
-        && isrc.size() >= 9
-        && isrc.read_at(0, &mut h).is_ok()
+        && isrc.size() >= base + 9
+        && isrc.read_at(base, &mut h).is_ok()
         && h[0..4] == crate::folder::DIR_MAGIC
         && h[4] == 1;
     Ok(ok.then_some(done))
