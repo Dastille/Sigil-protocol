@@ -1098,14 +1098,16 @@ fn sync_tree(src: &Path, dst: &Path) -> Result<()> {
         fs::copy(path, &out).map_err(|e| crate::Error::Msg(format!("copy {rel}: {e}")))?;
         // `fs::copy` keeps the permissions; keep the modified time too (best effort).
         if let Ok(t) = fs::metadata(path).and_then(|m| m.modified()) {
-            if let Ok(f) = fs::File::options().write(true).open(&out) {
+            // A read-only file cannot be opened for writing; on Unix its owner can still
+            // set the time through a read handle.
+            let f = fs::File::options()
+                .write(true)
+                .open(&out)
+                .or_else(|_| fs::File::open(&out));
+            if let Ok(f) = f {
                 let _ = f.set_modified(t);
             }
         }
-    }
-    for (rel, _) in &src_empties {
-        fs::create_dir_all(dst.join(rel))
-            .map_err(|e| crate::Error::Msg(format!("folder {rel}: {e}")))?;
     }
     for (rel, path) in tree_files(dst)? {
         if keep.contains(rel.as_str()) {
@@ -1119,6 +1121,11 @@ fn sync_tree(src: &Path, dst: &Path) -> Result<()> {
             }
             cur = d.parent().map(|p| p.to_path_buf());
         }
+    }
+    // After the removals, which drop folders left empty: a stored empty folder stays.
+    for (rel, _) in &src_empties {
+        fs::create_dir_all(dst.join(rel))
+            .map_err(|e| crate::Error::Msg(format!("folder {rel}: {e}")))?;
     }
     Ok(())
 }
@@ -2294,7 +2301,12 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(m & 0o100, 0, "{m:o}");
+        // A file in the live copy of a stored empty folder is removed, the folder kept;
+        // a read-only file still gets its stored modified time.
+        fs::write(live.join("build/out/stray.txt"), b"x").unwrap();
+        fs::set_permissions(live.join("notes.txt"), fs::Permissions::from_mode(0o444)).unwrap();
         restore_ex(&live, Some(3), None, &[], &[], true).unwrap();
+        assert!(!live.join("build/out/stray.txt").exists());
         let m = fs::metadata(live.join("run.sh"))
             .unwrap()
             .permissions()
@@ -2836,7 +2848,9 @@ mod tests {
         ];
         // Live synced (clean before) and tip matches.
         assert_eq!(tree_map(&live), want);
-        assert!(!live.join("gone").exists());
+        // `gone/` is left empty in the export, and empty folders are kept with file details.
+        assert!(live.join("gone").is_dir());
+        assert!(!live.join("gone/old.txt").exists());
         assert_eq!(status(&live).unwrap().drift, Drift::Match);
         assert_eq!(list_versions(&live).unwrap().tip, 2);
 

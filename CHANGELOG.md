@@ -68,7 +68,8 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   the key), and `commit` makes a new version when only permissions or empty folders
   changed. A change of modified time alone does not make a new version, since every
   version is a full Tome. The first commit after updating makes one extra version of an
-  unchanged folder. Restoring a version keeps modified times and empty folders.
+  unchanged folder. Restoring a version keeps modified times and empty folders, and a
+  folder left empty in an export is kept as an empty folder in the new version.
 
 - **Format change: new plain Tomes keep their folder list inside repair data (Tome v3).**
   A Tome made without `--pass` / `--to` now uses the Warded Tome layout without
