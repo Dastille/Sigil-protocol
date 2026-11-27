@@ -233,7 +233,7 @@ fn rel_name(root: &Path, file: &Path) -> String {
 }
 
 fn safe_out_path(dest: &Path, rel: &str) -> Result<PathBuf> {
-    if rel.contains("..") || Path::new(rel).is_absolute() {
+    if crate::tome_guard::unsafe_member_path(rel) {
         return Err(err("refusing unsafe path in constellation"));
     }
     Ok(dest.join(rel))
@@ -803,7 +803,7 @@ pub fn add_to_constellation(sky: &Path, input: &Path, opts: AddOpts<'_>) -> Resu
         } else {
             rel_name(&names_root, file)
         };
-        if list_name.contains("..") {
+        if crate::tome_guard::unsafe_member_path(&list_name) {
             return Err(err("refusing unsafe path"));
         }
         let digest = sha256_path(file)?;

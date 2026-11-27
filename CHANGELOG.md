@@ -40,6 +40,14 @@ The first release will be **v0.9.0**. This tree is not 1.0.
 
 ### Tomes
 
+- **Fixed: names that contain `..` inside a part now restore.** A file named `a..b.txt`
+  (or `x..y/z..w`, `..hidden`) sealed into a Tome or Constellation, but unseal, `mount
+  --export-dir`, `open` and Vault restore refused it as an unsafe path (`constellation
+  add` refused it outright). The check now looks at whole name parts: a part that is
+  exactly `..` or `.`, an absolute name, an empty part or a NUL byte is still refused on
+  every way out, with nothing written. Folder Inscribe now also refuses, before writing
+  anything, a name that would be refused on restore (such as a file named `x\..\y`).
+  No format change; existing Tomes are read as before, except that such names now restore.
 - **Format change: new Tomes keep file details (Tome v4, v5 when encrypted).** Each
   file's permission bits and modified time, and each empty folder (name, permissions,
   modified time), are stored in a block at the start of the repair-protected body, before

@@ -577,6 +577,7 @@ fn inscribe_dir_any(
     if files.is_empty() {
         return Err(crate::Error::Msg("folder is empty".into()));
     }
+    refuse_unrestorable_names(root, &files, empties.as_deref())?;
     let ver = match (encrypted, with_details) {
         (true, false) => DIR_VER_SEALED,
         (true, true) => DIR_VER_SEALED_DETAILS,
@@ -683,6 +684,35 @@ fn inscribe_dir_any(
         writer.flush().map_err(io)?;
     }
     Ok((files.len() as u32, total))
+}
+
+/// Refuse, before anything is written, a folder holding a name a Tome could not restore
+/// safely (for example a file named `x\..\y` on a system where `\` is an ordinary
+/// character), so Inscribe never makes a Tome that its own unseal refuses.
+fn refuse_unrestorable_names(
+    root: &Path,
+    files: &[PathBuf],
+    empties: Option<&[PathBuf]>,
+) -> Result<()> {
+    for f in files {
+        let r = rel(root, f);
+        if crate::tome_guard::unsafe_member_path(&r) {
+            return Err(crate::Error::Msg(format!(
+                "refusing to pack '{}': that name cannot be restored safely",
+                crate::shown::name(&r)
+            )));
+        }
+    }
+    for e in empties.unwrap_or_default() {
+        let r = rel(root, e);
+        if !crate::details::safe_folder(&r) {
+            return Err(crate::Error::Msg(format!(
+                "refusing to pack empty folder '{}': that name cannot be restored safely",
+                crate::shown::name(&r)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// File details of the `files` and `empties` a folder walk of `root` found.
@@ -1435,7 +1465,7 @@ fn unseal_v1_members(
         }
         let rel = String::from_utf8_lossy(&name).into_owned();
         crate::tome_guard::check_unique(&mut seen, &rel)?;
-        if unsafe_rel(&rel) {
+        if crate::tome_guard::unsafe_member_path(&rel) {
             return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
         let mut sl = [0u8; 8];
@@ -1508,16 +1538,6 @@ fn restore_empty_folders(
         staged.empty_dir(&dest.join(&f.rel), &f.detail, o)?;
     }
     Ok(())
-}
-
-/// A member name that must not be restored: `..` anywhere, a `.` part, or an absolute
-/// path (a leading `/`, or a drive or `\\` prefix on Windows).
-fn unsafe_rel(rel: &str) -> bool {
-    rel.contains("..")
-        || Path::new(rel).is_absolute()
-        || rel.starts_with('/')
-        || rel.starts_with('\\')
-        || rel.split('/').any(|p| p == ".")
 }
 
 /// Mend a classic star (unseal; RS-mend when it fails or shows damage).
@@ -1985,7 +2005,7 @@ fn restore_entries(
     for (i, (rel, star)) in entries.into_iter().enumerate() {
         let detail = details.and_then(|(d, o)| d.files.get(i).map(|f| (f, o)));
         let mut star = star;
-        if unsafe_rel(&rel) {
+        if crate::tome_guard::unsafe_member_path(&rel) {
             return Err(crate::Error::Msg("refusing unsafe path in Tome".into()));
         }
         crate::tome_guard::check_star_bytes(&rel, &star)?;
