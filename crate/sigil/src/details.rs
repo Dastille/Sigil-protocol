@@ -216,7 +216,7 @@ fn parse(b: &[u8], count: u32) -> std::result::Result<Details, String> {
         folders: Vec::new(),
     };
     while off < need {
-        if out.files.len() % 65_536 == 0 && crate::repair_ctl::stop_requested() {
+        if out.files.len().is_multiple_of(65_536) && crate::repair_ctl::stop_requested() {
             return Err("stopped (Ctrl-C)".into());
         }
         out.files
@@ -224,7 +224,7 @@ fn parse(b: &[u8], count: u32) -> std::result::Result<Details, String> {
         off += DETAIL_LEN;
     }
     for i in 0..folders {
-        if i % 65_536 == 0 && crate::repair_ctl::stop_requested() {
+        if i.is_multiple_of(65_536) && crate::repair_ctl::stop_requested() {
             return Err("stopped (Ctrl-C)".into());
         }
         let detail = FileDetail::get(&b[off.min(b.len())..]).ok_or("details block cut short")?;

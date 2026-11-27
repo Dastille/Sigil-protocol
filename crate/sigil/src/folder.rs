@@ -305,11 +305,12 @@ pub(crate) fn tree_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
+/// `(relative path, path)` pairs of a folder walk.
+pub(crate) type RelPaths = Vec<(String, PathBuf)>;
+
 /// Sorted `(rel, path)` files and sorted empty folders (relative) a folder Inscribe with
 /// file details would keep (dotfiles skipped). Used by vault permission digests.
-pub(crate) fn tree_files_and_empties(
-    root: &Path,
-) -> Result<(Vec<(String, PathBuf)>, Vec<(String, PathBuf)>)> {
+pub(crate) fn tree_files_and_empties(root: &Path) -> Result<(RelPaths, RelPaths)> {
     let mut files = Vec::new();
     let mut empties = Some(Vec::new());
     walk_noting(root, root, &mut files, &mut None, &mut empties, false)?;
@@ -696,7 +697,7 @@ fn tree_details(
         folders: Vec::with_capacity(empties.len()),
     };
     for (i, p) in files.iter().enumerate() {
-        if i % 4096 == 0 {
+        if i.is_multiple_of(4096) {
             crate::repair_ctl::check()?;
         }
         // Links are followed, as the walk does: the details are those of the file stored.
@@ -1460,7 +1461,7 @@ fn restore_empty_folders(
         return Ok(());
     }
     for (i, f) in d.folders.iter().enumerate() {
-        if i % 4096 == 0 {
+        if i.is_multiple_of(4096) {
             crate::repair_ctl::check()?;
         }
         if !crate::details::safe_folder(&f.rel) {
