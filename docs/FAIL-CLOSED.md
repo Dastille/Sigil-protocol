@@ -59,6 +59,16 @@ through a pack left a half-written output file behind.
   are checked like member names (`..`, `.` parts, absolute names refuse the restore), and
   restore refuses to write through a link inside the output folder. A details block this
   build cannot read is skipped with a note; it never stops the files from restoring.
+- **One name check for every way out of a Tome.** Unseal, `mount --export-dir`, `open`,
+  Vault restore and Constellation restore refuse a member name that is empty, absolute
+  (a leading `/` or `\`, a drive or UNC prefix), has an empty part, a NUL byte, or a part
+  that is exactly `.` or `..` (parts split at `/` and at `\`); nothing is written. A name
+  that only contains two dots inside a part (`a..b.txt`, `x..y/z..w`, `..hidden`) is an
+  ordinary name and restores. On Windows a part made only of dots and spaces, or any `:`,
+  is refused as well. Folder Inscribe and `constellation add` run the same check and
+  refuse a name they could not restore (for example a file named `x\..\y` where `\` is an
+  ordinary character), so a new Tome never holds a name its own unseal refuses
+  (`tome_guard::unsafe_member_path`, tested in `tests/cli_tome_dotdot_names.rs`).
 - **Salvage is opt-in and never writes an unchecked file.** `unseal --salvage`
   (`salvage.rs`) is the one restore that is not all-or-nothing, and only when asked
   for. Each file is unsealed into a private part file and kept only if it passes its

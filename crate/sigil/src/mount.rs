@@ -732,7 +732,7 @@ impl VaultFs {
         let entries = crate::names::sky_entries(sky, self.pass.as_deref(), &self.identities)?;
         for e in entries {
             let rel = e.name.replace('\\', "/");
-            if rel.contains("..") || Path::new(&rel).is_absolute() {
+            if crate::tome_guard::unsafe_member_path(&rel) {
                 return Err(crate::Error::Msg(format!(
                     "refusing unsafe name on the list: {rel}"
                 )));
@@ -802,7 +802,7 @@ impl VaultFs {
 
     fn add_entry(&mut self, e: &DirEntry) -> Result<()> {
         let rel = e.path.replace('\\', "/");
-        if rel.contains("..") || Path::new(&rel).is_absolute() {
+        if crate::tome_guard::unsafe_member_path(&rel) {
             return Err(crate::Error::Msg(format!(
                 "refusing unsafe path in Tome: {rel}"
             )));

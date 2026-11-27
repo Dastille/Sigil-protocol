@@ -48,6 +48,44 @@ pub(crate) fn bad_name(raw: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// A member name that must never be joined under an output folder: empty, a NUL byte,
+/// an absolute path (a leading `/` or `\`, a drive or UNC prefix), an empty part, or a
+/// part that is exactly `.` or `..` (parts split at `/` and at `\`). A name that only
+/// contains two dots inside a part (`a..b.txt`, `..hidden`, `...`) is an ordinary name.
+///
+/// On Windows a part made only of dots and spaces (`...`, `.. `), which Windows would
+/// trim to `..` or to nothing, and any `:` (drive-relative names such as `C:x`, alternate
+/// data streams) are refused as well.
+///
+/// The one check shared by every way out of a Tome or Constellation (unseal, mount
+/// `--export-dir`, open, Vault restore) and by folder Inscribe, so a Tome never holds a
+/// name it then refuses to restore.
+pub(crate) fn unsafe_member_path(rel: &str) -> bool {
+    unsafe_member_path_for(rel, cfg!(windows))
+}
+
+/// [`unsafe_member_path`] with the Windows rules on or off (tested on every platform).
+fn unsafe_member_path_for(rel: &str, windows: bool) -> bool {
+    use std::path::{Component, Path};
+    if rel.is_empty()
+        || rel.contains('\0')
+        || rel.starts_with(['/', '\\'])
+        || Path::new(rel).is_absolute()
+        || rel.split('/').any(str::is_empty)
+        || rel.split(['/', '\\']).any(|p| p == "." || p == "..")
+        || Path::new(rel)
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return true;
+    }
+    windows
+        && (rel.contains(':')
+            || rel
+                .split(['/', '\\'])
+                .any(|p| p.trim_end_matches(['.', ' ']).is_empty()))
+}
+
 /// Bytes of a star enough to read its header (the primary copy or a Keystone copy).
 pub(crate) const STAR_PEEK: usize = crate::header::KEYSTONE_SPAN + 64;
 
@@ -328,6 +366,71 @@ pub fn damaged_tome_head(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_with_two_dots_inside_a_part_are_ordinary() {
+        for good in [
+            "a..b.txt",
+            "x..y/z..w",
+            "..hidden",
+            "trail..",
+            "a/b..",
+            "...x",
+            "a\\b",
+            "C:x",
+        ] {
+            assert!(!unsafe_member_path_for(good, false), "{good:?}");
+        }
+        for good in ["a..b.txt", "x..y/z..w", "..hidden", "a/b..c/d"] {
+            assert!(
+                !unsafe_member_path_for(good, true),
+                "{good:?} (windows rules)"
+            );
+        }
+        assert!(!unsafe_member_path_for("...", false));
+    }
+
+    #[test]
+    fn every_escape_is_refused_on_every_platform() {
+        for windows in [false, true] {
+            for bad in [
+                "",
+                ".",
+                "..",
+                "../x",
+                "a/../b",
+                "a/..",
+                "./a",
+                "a/./b",
+                "/etc/passwd",
+                "/",
+                "\\x",
+                "\\\\server\\share\\x",
+                "a\\..\\b",
+                "..\\x",
+                "a//b",
+                "a/",
+                "a\0b",
+            ] {
+                assert!(
+                    unsafe_member_path_for(bad, windows),
+                    "{bad:?} windows={windows}"
+                );
+            }
+        }
+        for bad in [
+            "C:x",
+            "C:/x",
+            "c:\\x",
+            "a/b:stream",
+            "...",
+            ".. ",
+            "a/ ../b",
+            "a/. /b",
+        ] {
+            assert!(unsafe_member_path_for(bad, true), "{bad:?} (windows rules)");
+        }
+    }
 
     #[test]
     fn names_no_inscribe_writes_are_flagged() {
