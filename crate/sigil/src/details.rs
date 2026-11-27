@@ -54,7 +54,10 @@ impl FileDetail {
     pub(crate) fn of(meta: &fs::Metadata) -> FileDetail {
         let (secs, nanos) = match meta.modified() {
             Ok(t) => match t.duration_since(UNIX_EPOCH) {
-                Ok(d) => (i64::try_from(d.as_secs()).unwrap_or(i64::MAX), d.subsec_nanos()),
+                Ok(d) => (
+                    i64::try_from(d.as_secs()).unwrap_or(i64::MAX),
+                    d.subsec_nanos(),
+                ),
                 Err(e) => {
                     let d = e.duration();
                     // Before 1970: floor to whole seconds below, nanos counted upward.
@@ -168,8 +171,9 @@ pub(crate) fn encode(d: &Details) -> Result<Vec<u8>> {
     }
     for e in &d.folders {
         let nb = e.rel.as_bytes();
-        let nlen = u16::try_from(nb.len())
-            .map_err(|_| crate::Error::Msg("an empty folder's path is too long for a Tome".into()))?;
+        let nlen = u16::try_from(nb.len()).map_err(|_| {
+            crate::Error::Msg("an empty folder's path is too long for a Tome".into())
+        })?;
         e.detail.put(&mut body);
         body.extend_from_slice(&nlen.to_le_bytes());
         body.extend_from_slice(nb);
@@ -177,7 +181,9 @@ pub(crate) fn encode(d: &Details) -> Result<Vec<u8>> {
     let len = u32::try_from(body.len())
         .map_err(|_| crate::Error::Msg("file details too large for one Tome".into()))?;
     if u64::from(len) > MAX_LEN {
-        return Err(crate::Error::Msg("file details too large for one Tome".into()));
+        return Err(crate::Error::Msg(
+            "file details too large for one Tome".into(),
+        ));
     }
     let mut out = Vec::with_capacity(9 + body.len());
     out.extend_from_slice(&MAGIC);
@@ -262,7 +268,9 @@ pub(crate) fn read_start(r: &mut dyn Read, count: u32) -> Result<(Found, [u8; 9]
     let found = if fmt != FMT || len > MAX_LEN {
         let skipped = copy_to_sink(r, len)?;
         if skipped != len {
-            return Err(crate::Error::Msg("Tome body cut short inside its file details".into()));
+            return Err(crate::Error::Msg(
+                "Tome body cut short inside its file details".into(),
+            ));
         }
         Found::Skipped(if fmt != FMT {
             format!("file details in format {fmt}, newer than this sigil reads")
@@ -273,7 +281,9 @@ pub(crate) fn read_start(r: &mut dyn Read, count: u32) -> Result<(Found, [u8; 9]
         let mut b = Vec::new();
         r.take(len).read_to_end(&mut b).map_err(io)?;
         if b.len() as u64 != len {
-            return Err(crate::Error::Msg("Tome body cut short inside its file details".into()));
+            return Err(crate::Error::Msg(
+                "Tome body cut short inside its file details".into(),
+            ));
         }
         crate::repair_ctl::check()?;
         match parse(&b, count) {
@@ -310,7 +320,9 @@ pub(crate) fn split(inner: &mut Vec<u8>, count: u32) -> Result<Found> {
     }
     let mut cur = std::io::Cursor::new(&inner[..]);
     let (found, _) = read_start(&mut cur, count)?;
-    let start = usize::try_from(cur.position()).unwrap_or(inner.len()).saturating_sub(9);
+    let start = usize::try_from(cur.position())
+        .unwrap_or(inner.len())
+        .saturating_sub(9);
     inner.drain(..start);
     Ok(found)
 }

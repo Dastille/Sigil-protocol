@@ -231,7 +231,7 @@ fn damaged_tome_first_bytes_are_never_called_healthy() {
         &["seal", "f", "-o", "warded.sg1", "--pass", "guard-pass-1"],
     );
     let warded = std::fs::read(d.join("warded.sg1")).expect("r");
-    assert_eq!(&warded[..5], b"SGDR\x02", "Warded Tome");
+    assert_eq!(&warded[..5], b"SGDR\x05", "Warded Tome");
     ok(&d, &["seal", "f", "-o", "protected.sg1"]);
     for base in ["plain.sg1", "warded.sg1", "protected.sg1"] {
         let raw = std::fs::read(d.join(base)).expect("r");

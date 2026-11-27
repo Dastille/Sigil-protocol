@@ -6,13 +6,13 @@ use sigil::{
     mend_bytes_ex, mend_kit, mend_scan, overture_report, path_extract_keys, path_walk_keys,
     place_kit, prepare_boot, resolve_recipient, run_bakeoff, run_mount_keys, run_open_keys,
     run_showing, scatter_pieces, seal_kn_mds_to_opts, sha256_path, talisman_pass, tally_pieces,
-    umount_path, unseal_dir_only_keys, unseal_ex, unseal_ex_mds_keys, unseal_path_keys,
-    unseal_range_keys, vault_commit_ex, vault_commit_from_export_ex, vault_format_recipients,
-    vault_format_retention, vault_format_status, vault_format_versions, vault_get_recipients,
-    vault_get_retention, vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with,
-    vault_restore_ex, vault_set_recipients, vault_set_retention, vault_status, vault_track_ex,
-    vessel_present, write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, Pad, SealOpts,
-    VaultRetention, CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
+    umount_path, unseal_ex, unseal_ex_mds_keys, unseal_path_keys, unseal_range_keys,
+    vault_commit_ex, vault_commit_from_export_ex, vault_format_recipients, vault_format_retention,
+    vault_format_status, vault_format_versions, vault_get_recipients, vault_get_retention,
+    vault_list_versions, vault_maybe_prune_after_commit, vault_prune_with, vault_restore_ex,
+    vault_set_recipients, vault_set_retention, vault_status, vault_track_ex, vessel_present,
+    write_vessel, AddOpts, BootOutcome, CdcProfile, Identity, Mode, Pad, SealOpts, VaultRetention,
+    CDC_DEDUP, CDC_MEDIA, DEFAULT_CHUNK, MAX_NEST_DEPTH, OVERTURE, VESSEL,
 };
 use std::fs;
 use std::io::Read;
@@ -3917,7 +3917,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Err("--old-tome-layout applies to a folder Inscribe only".into());
             }
             if (dotfiles || no_file_details) && !input.is_dir() {
-                return Err("--dotfiles and --no-file-details apply to a folder Inscribe only".into());
+                return Err(
+                    "--dotfiles and --no-file-details apply to a folder Inscribe only".into(),
+                );
             }
             if ward_names_visible && (wards.is_empty() || pass.is_some() || !recipients.is_empty())
             {

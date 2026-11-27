@@ -1080,11 +1080,12 @@ fn seal_tree_version(
     }
 }
 
-/// Make `dst` mirror `src` (non-dot files): copy every file, delete files absent
-/// from `src`, drop dirs left empty. Dotfiles in `dst` are never touched.
+/// Make `dst` mirror `src` (non-dot files): copy every file (with its permissions and
+/// modified time), create the empty folders of `src`, delete files absent from `src`,
+/// drop dirs left empty. Dotfiles in `dst` are never touched.
 fn sync_tree(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst).map_err(|e| crate::Error::Msg(e.to_string()))?;
-    let src_files = tree_files(src)?;
+    let (src_files, src_empties) = crate::folder::tree_files_and_empties(src)?;
     let keep: std::collections::HashSet<&str> = src_files.iter().map(|(r, _)| r.as_str()).collect();
     for (rel, path) in &src_files {
         let out = dst.join(rel);
@@ -1095,6 +1096,16 @@ fn sync_tree(src: &Path, dst: &Path) -> Result<()> {
             let _ = fs::remove_file(&out);
         }
         fs::copy(path, &out).map_err(|e| crate::Error::Msg(format!("copy {rel}: {e}")))?;
+        // `fs::copy` keeps the permissions; keep the modified time too (best effort).
+        if let Ok(t) = fs::metadata(path).and_then(|m| m.modified()) {
+            if let Ok(f) = fs::File::options().write(true).open(&out) {
+                let _ = f.set_modified(t);
+            }
+        }
+    }
+    for (rel, _) in &src_empties {
+        fs::create_dir_all(dst.join(rel))
+            .map_err(|e| crate::Error::Msg(format!("folder {rel}: {e}")))?;
     }
     for (rel, path) in tree_files(dst)? {
         if keep.contains(rel.as_str()) {
@@ -2236,6 +2247,64 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn folder_vault_records_permission_changes_but_not_touches() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmpdir("fold-modes");
+        let live = dir.join("proj");
+        write_tree(&live, &[("run.sh", b"#!/bin/sh\n"), ("notes.txt", b"n")]);
+        fs::set_permissions(live.join("run.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+        track(&live, Mode::Glyph, None, &[]).unwrap();
+        assert!(
+            commit(&live, Mode::Glyph, None, false, &[])
+                .unwrap()
+                .skipped
+        );
+        // chmod only: a new version.
+        fs::set_permissions(live.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let c = commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        assert!(!c.skipped);
+        assert_eq!(c.version, 2);
+        // A new empty folder only: a new version.
+        fs::create_dir_all(live.join("build/out")).unwrap();
+        let c = commit(&live, Mode::Glyph, None, false, &[]).unwrap();
+        assert_eq!((c.skipped, c.version), (false, 3));
+        // A modified time only: no new version (each version is a whole Tome).
+        let f = fs::File::options()
+            .write(true)
+            .open(live.join("notes.txt"))
+            .unwrap();
+        f.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+            .unwrap();
+        drop(f);
+        assert!(
+            commit(&live, Mode::Glyph, None, false, &[])
+                .unwrap()
+                .skipped
+        );
+        // The chart keeps the permissions digest; restoring v1 brings 0644 back,
+        // v2 brings 0755 back, and v3 the empty folder.
+        let chart = list_versions(&live).unwrap();
+        assert!(chart.versions.iter().all(|v| v.modes.is_some()));
+        restore_ex(&live, Some(1), None, &[], &[], true).unwrap();
+        let m = fs::metadata(live.join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(m & 0o100, 0, "{m:o}");
+        restore_ex(&live, Some(3), None, &[], &[], true).unwrap();
+        let m = fs::metadata(live.join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(m & 0o100, 0o100, "{m:o}");
+        assert!(live.join("build/out").is_dir());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn folder_versions_are_protected_tomes_and_old_versions_still_restore() {
         let dir = tmpdir("fold-v3");
@@ -2251,12 +2320,12 @@ mod tests {
         fs::write(live.join("c.txt"), b"second-c").unwrap();
         commit(&live, Mode::Reflection, None, false, &[]).unwrap();
         let p2 = version_seal_path(&live, 2).unwrap();
-        assert_eq!(&fs::read(&p2).unwrap()[..5], b"SGDR\x03");
+        assert_eq!(&fs::read(&p2).unwrap()[..5], b"SGDR\x04");
         // Version 3 with a key: Warded (v2).
         fs::write(live.join("a.txt"), b"third-a").unwrap();
         commit(&live, Mode::Seal, Some("vault-pass"), false, &[]).unwrap();
         let p3 = version_seal_path(&live, 3).unwrap();
-        assert_eq!(&fs::read(&p3).unwrap()[..5], b"SGDR\x02");
+        assert_eq!(&fs::read(&p3).unwrap()[..5], b"SGDR\x05");
         let want2 = vec![
             ("a.txt".to_string(), b"second-a".to_vec()),
             ("c.txt".to_string(), b"second-c".to_vec()),
@@ -2446,7 +2515,7 @@ mod tests {
         // body (here a WORK pack, the folder is > 4 MiB) carries the repair data.
         assert_eq!(
             &clean[0..5],
-            b"SGDR\x02",
+            b"SGDR\x05",
             "encrypt-to folder pack hides names"
         );
         assert!(!clean.windows(9).any(|w| w == b"small.txt"), "name leaked");

@@ -196,7 +196,14 @@ pub fn tree_skips_opts(root: &Path, opts: TreeOpts, details_written: bool) -> Re
     let mut files = Vec::new();
     let mut report = Some(SkipReport::default());
     let mut empties = details_written.then(Vec::new);
-    walk_noting(root, root, &mut files, &mut report, &mut empties, opts.dotfiles)?;
+    walk_noting(
+        root,
+        root,
+        &mut files,
+        &mut report,
+        &mut empties,
+        opts.dotfiles,
+    )?;
     Ok(report.unwrap_or_default())
 }
 
@@ -558,7 +565,14 @@ fn inscribe_dir_any(
     let with_details = protect && opts.details;
     let mut files = Vec::new();
     let mut empties = with_details.then(Vec::new);
-    walk_noting(root, root, &mut files, &mut None, &mut empties, opts.dotfiles)?;
+    walk_noting(
+        root,
+        root,
+        &mut files,
+        &mut None,
+        &mut empties,
+        opts.dotfiles,
+    )?;
     if files.is_empty() {
         return Err(crate::Error::Msg("folder is empty".into()));
     }
@@ -595,8 +609,10 @@ fn inscribe_dir_any(
         // Holds member names in the clear until it is sealed: owner-only, created exclusively.
         let mut w = BufWriter::new(crate::staging::create_private(&inner.0)?);
         if let Some(empties) = &empties {
-            w.write_all(&crate::details::encode(&tree_details(root, &files, empties)?)?)
-                .map_err(io)?;
+            w.write_all(&crate::details::encode(&tree_details(
+                root, &files, empties,
+            )?)?)
+            .map_err(io)?;
         }
         let t = write_v1(
             root,
@@ -2110,9 +2126,16 @@ pub fn scry_dir_keys(
         if locked_without_key(input, pass, identities) {
             return Ok(format!("folder  {n} files (names hidden)\nbody  {health}"));
         }
-        let entries = with_inner(&mut tome, n, off, len, pass, companions, identities, |r, _| {
-            list_v1_members(r, n, Some((pass, identities)))
-        })?;
+        let entries = with_inner(
+            &mut tome,
+            n,
+            off,
+            len,
+            pass,
+            companions,
+            identities,
+            |r, _| list_v1_members(r, n, Some((pass, identities))),
+        )?;
         return Ok(format!("{}\nbody  {health}", render_listing(&entries)));
     }
     Ok(render_listing(&list_dir_pack(input)?))
@@ -2279,9 +2302,16 @@ pub fn list_dir_pack_keys(
 ) -> Result<Vec<DirEntry>> {
     if let Some((n, off, len)) = sealed_dir_body_loc(input)? {
         let mut tome = packhead::FileSrc::open(input)?;
-        return with_inner(&mut tome, n, off, len, pass, companions, identities, |r, _| {
-            list_v1_members(r, n, Some((pass, identities)))
-        });
+        return with_inner(
+            &mut tome,
+            n,
+            off,
+            len,
+            pass,
+            companions,
+            identities,
+            |r, _| list_v1_members(r, n, Some((pass, identities))),
+        );
     }
     list_dir_pack(input)
 }
@@ -3330,7 +3360,7 @@ mod tests {
         let pack = root.join("s.sg1");
         inscribe_dir(&src, &pack, Mode::Seal, Some("pw"), "", &[], 64 * 1024, &[]).unwrap();
         let raw = fs::read(&pack).unwrap();
-        assert_eq!(&raw[0..5], b"SGDR\x02");
+        assert_eq!(&raw[0..5], b"SGDR\x05");
         assert!(!raw.windows(16).any(|w| w == b"very-secret-name"));
         assert!(list_dir_pack(&pack).is_err(), "keyless listing refused");
         assert!(read_dir_entry_star(&pack, "b.bin").is_err());
@@ -3948,5 +3978,422 @@ mod stream_tests {
         s.read_at(90, &mut b).unwrap();
         assert_eq!(&b, &data[100..110]);
         assert!(s.read_at(91, &mut b).is_err());
+    }
+}
+
+/// File details (permissions, modified times, empty folders) and dotfiles: round trip,
+/// the safe restore defaults, and hostile Tomes refused.
+#[cfg(all(test, unix))]
+mod details_tests {
+    use super::*;
+    use crate::details::{Details, EmptyFolder, FileDetail, RestoreOpts};
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "sigil-folder-details-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn mode(p: &Path) -> u32 {
+        fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+    }
+
+    /// The mode a new file gets from this process's umask.
+    fn created_mode(dir: &Path) -> u32 {
+        let p = dir.join("umask-probe");
+        fs::write(&p, b"x").unwrap();
+        let m = mode(&p);
+        fs::remove_file(&p).unwrap();
+        m
+    }
+
+    fn set_mtime(p: &Path, secs: u64) {
+        let f = File::options().write(true).open(p).unwrap();
+        f.set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    /// src/ with a private file, an executable with set-user-ID, a dated file, a dotfile,
+    /// a dot-folder, an empty folder (mode 0700) and a nested empty folder.
+    fn tree(root: &Path) -> PathBuf {
+        let src = root.join("src");
+        fs::create_dir_all(src.join("sub/empty")).unwrap();
+        fs::create_dir_all(src.join("deep/a/b")).unwrap();
+        fs::create_dir_all(src.join(".git")).unwrap();
+        fs::write(src.join("secret.txt"), b"private").unwrap();
+        fs::set_permissions(src.join("secret.txt"), fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(src.join("run.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+        fs::set_permissions(src.join("run.sh"), fs::Permissions::from_mode(0o4755)).unwrap();
+        fs::write(src.join("old.txt"), b"dated").unwrap();
+        set_mtime(&src.join("old.txt"), 981_173_106);
+        fs::write(src.join(".env"), b"TOKEN=x").unwrap();
+        fs::write(src.join(".git/config"), b"[core]").unwrap();
+        fs::write(src.join("sub/b.txt"), b"bee").unwrap();
+        fs::set_permissions(src.join("sub/empty"), fs::Permissions::from_mode(0o700)).unwrap();
+        src
+    }
+
+    fn seal(src: &Path, out: &Path, pass: Option<&str>, opts: TreeOpts) {
+        inscribe_dir_protected(
+            src,
+            out,
+            Mode::Glyph,
+            pass,
+            "",
+            &[],
+            crate::DEFAULT_CHUNK,
+            &[],
+            &[],
+            false,
+            opts,
+        )
+        .unwrap();
+    }
+
+    fn unseal(
+        t: &Path,
+        dest: &Path,
+        pass: Option<&str>,
+        exact: bool,
+    ) -> Result<(u32, Option<String>)> {
+        unseal_dir_only_keys_opts(
+            t,
+            dest,
+            pass,
+            &[],
+            &[],
+            &[],
+            &[],
+            RestoreOpts { exact_modes: exact },
+        )
+    }
+
+    fn mtime(p: &Path) -> u64 {
+        fs::metadata(p)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    #[test]
+    fn protected_and_warded_round_trip_modes_times_and_empty_folders() {
+        for pass in [None, Some("pw-details")] {
+            let d = scratch(if pass.is_some() { "rt-w" } else { "rt-p" });
+            let src = tree(&d);
+            let t = d.join("t.sg1");
+            seal(&src, &t, pass, TreeOpts::default());
+            let raw = fs::read(&t).unwrap();
+            let want = if pass.is_some() {
+                DIR_VER_SEALED_DETAILS
+            } else {
+                DIR_VER_PROTECTED_DETAILS
+            };
+            assert_eq!(raw[4], want);
+            let out = d.join("out");
+            let (n, note) = unseal(&t, &out, pass, false).unwrap();
+            assert_eq!((n, note), (4, None));
+            let umask_file = created_mode(&d);
+            assert_eq!(mode(&out.join("secret.txt")), 0o600 & (umask_file | 0o111));
+            // Set-user-ID dropped by default; execute kept where the umask allows read.
+            assert_eq!(
+                mode(&out.join("run.sh")),
+                crate::details::restore_mode(0o4755, umask_file, false)
+            );
+            assert_eq!(mode(&out.join("run.sh")) & 0o7000, 0);
+            assert_eq!(mtime(&out.join("old.txt")), 981_173_106);
+            assert!(out.join("sub/empty").is_dir());
+            assert_eq!(mode(&out.join("sub/empty")) & 0o077, 0);
+            assert!(out.join("deep/a/b").is_dir());
+            // Dotfiles stay out by default.
+            assert!(!out.join(".env").exists() && !out.join(".git").exists());
+            // Exact modes: set-user-ID back, only on request.
+            let ex = d.join("exact");
+            unseal(&t, &ex, pass, true).unwrap();
+            assert_eq!(mode(&ex.join("run.sh")), 0o4755);
+            let _ = fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    fn dotfiles_only_on_request_and_they_round_trip() {
+        let d = scratch("dot");
+        let src = tree(&d);
+        let t = d.join("t.sg1");
+        seal(
+            &src,
+            &t,
+            None,
+            TreeOpts {
+                dotfiles: true,
+                details: true,
+            },
+        );
+        let out = d.join("out");
+        let (n, _) = unseal(&t, &out, None, false).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(fs::read(out.join(".env")).unwrap(), b"TOKEN=x");
+        assert_eq!(fs::read(out.join(".git/config")).unwrap(), b"[core]");
+        let skips = tree_skips_opts(&src, TreeOpts::default(), true).unwrap();
+        assert_eq!(skips.total, 2, "{:?}", skips.listed);
+        let all = tree_skips_opts(
+            &src,
+            TreeOpts {
+                dotfiles: true,
+                details: true,
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(all.total, 0, "{:?}", all.listed);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn without_details_the_older_layouts_are_written() {
+        let d = scratch("nodet");
+        let src = tree(&d);
+        let opts = TreeOpts {
+            dotfiles: false,
+            details: false,
+        };
+        seal(&src, &d.join("p.sg1"), None, opts);
+        seal(&src, &d.join("w.sg1"), Some("pw-x"), opts);
+        assert_eq!(fs::read(d.join("p.sg1")).unwrap()[4], DIR_VER_PROTECTED);
+        assert_eq!(fs::read(d.join("w.sg1")).unwrap()[4], DIR_VER_SEALED);
+        inscribe_dir_old_layout(
+            &src,
+            &d.join("o.sg1"),
+            Mode::Glyph,
+            Some("pw-x"),
+            "",
+            &[],
+            crate::DEFAULT_CHUNK,
+            &[],
+            &[],
+            false,
+            TreeOpts::default(),
+        )
+        .unwrap();
+        assert_eq!(fs::read(d.join("o.sg1")).unwrap()[4], DIR_VER_SEALED);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn large_body_keeps_details_and_mend_keeps_them() {
+        let d = scratch("large");
+        let src = tree(&d);
+        fs::write(src.join("big.bin"), vec![7u8; 300_000]).unwrap();
+        fs::set_permissions(src.join("big.bin"), fs::Permissions::from_mode(0o640)).unwrap();
+        let t = d.join("t.sg1");
+        inscribe_dir_protected(
+            &src,
+            &t,
+            Mode::Glyph,
+            None,
+            "",
+            &[],
+            65_536,
+            &[],
+            &[],
+            false,
+            TreeOpts::default(),
+        )
+        .unwrap();
+        let m = d.join("m.sg1");
+        mend_sealed_dir(&t, &m, false).unwrap();
+        assert_eq!(fs::read(&t).unwrap(), fs::read(&m).unwrap());
+        let out = d.join("out");
+        unseal(&m, &out, None, false).unwrap();
+        assert_eq!(mode(&out.join("big.bin")) & 0o077, 0o040 & created_mode(&d));
+        assert_eq!(list_dir_pack(&t).unwrap().len(), 5);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A v4 Tome built by hand: `details` in front of a v1 list of `members`.
+    fn hostile(path: &Path, details: &[u8], members: &[(&str, &[u8])]) {
+        let mut inner = details.to_vec();
+        let entries: Vec<(String, Vec<u8>)> = members
+            .iter()
+            .map(|(n, data)| {
+                let star = seal_kn_to(
+                    data,
+                    Mode::Glyph,
+                    None,
+                    n,
+                    false,
+                    "",
+                    &[],
+                    None,
+                    DEFAULT_PIECE,
+                    &[],
+                )
+                .unwrap();
+                (n.to_string(), star)
+            })
+            .collect();
+        inner.extend_from_slice(&encode_sgdr(&entries).unwrap());
+        let body = seal_kn_to(
+            &inner,
+            Mode::Glyph,
+            None,
+            "folder.sgdr",
+            false,
+            "",
+            &[],
+            None,
+            DEFAULT_PIECE,
+            &[],
+        )
+        .unwrap();
+        fs::write(
+            path,
+            encode_sealed(DIR_VER_PROTECTED_DETAILS, members.len() as u32, &body),
+        )
+        .unwrap();
+    }
+
+    fn one(mode: u32) -> FileDetail {
+        FileDetail {
+            mode,
+            secs: 1,
+            nanos: 0,
+        }
+    }
+
+    #[test]
+    fn hostile_set_id_and_world_writable_modes_are_limited() {
+        let d = scratch("setid");
+        let t = d.join("t.sg1");
+        let det = Details {
+            files: vec![one(0o6777), one(0o1777)],
+            folders: vec![EmptyFolder {
+                rel: "e".into(),
+                detail: one(0o7777),
+            }],
+        };
+        hostile(
+            &t,
+            &crate::details::encode(&det).unwrap(),
+            &[("a", b"a"), ("b", b"b")],
+        );
+        let out = d.join("out");
+        unseal(&t, &out, None, false).unwrap();
+        let umask_file = created_mode(&d);
+        for p in ["a", "b"] {
+            let m = mode(&out.join(p));
+            assert_eq!(m & 0o7000, 0, "{p}: {m:o}");
+            assert_eq!(m & !(umask_file | 0o111), 0, "{p}: {m:o} beyond umask");
+        }
+        assert_eq!(mode(&out.join("e")) & 0o7000, 0);
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn hostile_names_in_details_or_list_are_refused_and_nothing_is_written() {
+        for (tag, folder, member) in [
+            ("dotdot-folder", "../escape", "a"),
+            ("abs-folder", "/tmp/sigil-escape", "a"),
+            ("dot-part", "x/./y", "a"),
+            ("dotdot-member", "ok", "../escape.txt"),
+            ("dot-member", "ok", "x/./y.txt"),
+        ] {
+            let d = scratch(tag);
+            let t = d.join("t.sg1");
+            let det = Details {
+                files: vec![one(0o644)],
+                folders: vec![EmptyFolder {
+                    rel: folder.into(),
+                    detail: one(0o755),
+                }],
+            };
+            hostile(
+                &t,
+                &crate::details::encode(&det).unwrap(),
+                &[(member, b"m")],
+            );
+            let out = d.join("out");
+            let e = unseal(&t, &out, None, false).unwrap_err().to_string();
+            assert!(e.contains("unsafe path"), "{tag}: {e}");
+            assert!(!out.exists(), "{tag}: output left behind");
+            assert!(!d.join("escape").exists() && !d.join("escape.txt").exists());
+            let e = unseal_dir_mend_keys_opts(
+                &t,
+                &out,
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+                RestoreOpts::default(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains("unsafe path"), "{tag} (mend path): {e}");
+            let _ = fs::remove_dir_all(&d);
+        }
+    }
+
+    #[test]
+    fn a_link_in_the_output_folder_is_never_written_through() {
+        let d = scratch("link");
+        let src = tree(&d);
+        let t = d.join("t.sg1");
+        seal(&src, &t, None, TreeOpts::default());
+        let outside = d.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let out = d.join("out");
+        fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("sub")).unwrap();
+        let e = unseal(&t, &out, None, false).unwrap_err().to_string();
+        assert!(e.contains(crate::staging::THROUGH_LINK), "{e}");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        // Nothing else was placed either (all or nothing).
+        assert!(!out.join("secret.txt").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_newer_details_format_is_skipped_and_files_still_restore() {
+        let d = scratch("newer");
+        let t = d.join("t.sg1");
+        let mut det = crate::details::encode(&Details {
+            files: vec![one(0o600)],
+            folders: vec![],
+        })
+        .unwrap();
+        det[4] = 9;
+        hostile(&t, &det, &[("a.txt", b"alpha")]);
+        let out = d.join("out");
+        let (n, note) = unseal(&t, &out, None, false).unwrap();
+        assert_eq!(n, 1);
+        assert!(note.unwrap().contains("not applied"));
+        assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"alpha");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn seal_dir_names_keeps_file_details() {
+        let d = scratch("sealnames");
+        let src = tree(&d);
+        let t = d.join("t.sg1");
+        seal(&src, &t, None, TreeOpts::default());
+        let w = d.join("w.sg1");
+        seal_dir_names(&t, &w, Mode::Glyph, Some("pw-n"), &[], None, &[], false).unwrap();
+        assert_eq!(fs::read(&w).unwrap()[4], DIR_VER_SEALED_DETAILS);
+        let out = d.join("out");
+        unseal(&w, &out, Some("pw-n"), false).unwrap();
+        assert_eq!(mtime(&out.join("old.txt")), 981_173_106);
+        assert!(out.join("sub/empty").is_dir());
+        let _ = fs::remove_dir_all(&d);
     }
 }

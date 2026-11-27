@@ -54,7 +54,7 @@ fn encrypted_folder_hides_names_and_round_trips() {
     ));
     assert!(out.contains("folder 2 files"), "{out}");
     let raw = std::fs::read(d.join("e.sg1")).unwrap();
-    assert_eq!(&raw[0..5], b"SGDR\x02");
+    assert_eq!(&raw[0..5], b"SGDR\x05");
     for name in [
         &b"tax-return-2025"[..],
         b"visible-name-a",
@@ -119,7 +119,7 @@ fn encrypted_folder_hides_names_and_round_trips() {
     let m = ok(&sigil(&d, &["mend", "torn.sg1", "-o", "m.sg1"]));
     assert!(m.contains("sealed Tome"), "{m}");
     let healed = std::fs::read(d.join("m.sg1")).unwrap();
-    assert_eq!(&healed[0..5], b"SGDR\x02");
+    assert_eq!(&healed[0..5], b"SGDR\x05");
     assert!(!contains(&healed, b"tax-return-2025"));
     let s = ok(&sigil(&d, &["scry", "m.sg1"]));
     assert!(s.contains("live=16/16"), "{s}");
@@ -145,7 +145,7 @@ fn encrypt_to_folder_hides_names() {
     };
     ok(&sigil(&d, &["seal", "--to", pubk, "-o", "t.sg1", "album"]));
     let raw = std::fs::read(d.join("t.sg1")).unwrap();
-    assert_eq!(&raw[0..5], b"SGDR\x02");
+    assert_eq!(&raw[0..5], b"SGDR\x05");
     assert!(!contains(&raw, b"tax-return-2025"));
     let s = ok(&sigil(&d, &["scry", "--identity", "me.sgk", "t.sg1"]));
     assert!(s.contains("private-sub/tax-return-2025.pdf"), "{s}");
@@ -263,7 +263,7 @@ fn plain_folder_pack_is_unchanged() {
     // A new unlocked Tome keeps its list in the protected body (v3); no key needed.
     ok(&sigil(&d, &["seal", "-o", "p3.sg1", "album"]));
     let raw = std::fs::read(d.join("p3.sg1")).unwrap();
-    assert_eq!(&raw[0..5], b"SGDR\x03");
+    assert_eq!(&raw[0..5], b"SGDR\x04");
     let s = ok(&sigil(&d, &["scry", "p3.sg1"]));
     assert!(s.contains("file  private-sub/tax-return-2025.pdf"), "{s}");
     let _ = std::fs::remove_dir_all(&d);

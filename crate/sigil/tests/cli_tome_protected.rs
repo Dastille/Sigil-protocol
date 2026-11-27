@@ -103,7 +103,7 @@ fn new_unlocked_tomes_are_v3_and_round_trip_in_every_mode() {
                 &["seal", "--mode", mode, "--chunk", chunk, "-o", &f, "src"],
             );
             let raw = std::fs::read(d.join(&f)).expect("r");
-            assert_eq!(&raw[..5], b"SGDR\x03", "{f}");
+            assert_eq!(&raw[..5], b"SGDR\x04", "{f}");
             let s = ok(&d, &["scry", &f]);
             assert!(s.contains("file  sub/large.bin  100000 bytes"), "{f}: {s}");
             assert!(!s.contains("names hidden"), "{f}: {s}");
@@ -142,11 +142,12 @@ fn older_layout_on_request_and_with_a_key_unchanged() {
         &d,
         &["seal", "--pass", "prot-pass-1", "-o", "v2.sg1", "src"],
     );
+    // A Warded Tome keeps file details by default (v5); the older layout with a key is v2.
     assert_eq!(
         &std::fs::read(d.join("v2.sg1")).expect("r")[..5],
-        b"SGDR\x02"
+        b"SGDR\x05"
     );
-    let o = sigil(
+    ok(
         &d,
         &[
             "seal",
@@ -158,10 +159,14 @@ fn older_layout_on_request_and_with_a_key_unchanged() {
             "src",
         ],
     );
-    assert!(
-        !o.status.success() && !d.join("x.sg1").exists(),
-        "{}",
-        text(&o)
+    assert_eq!(
+        &std::fs::read(d.join("x.sg1")).expect("r")[..5],
+        b"SGDR\x02"
+    );
+    ok(&d, &["seal", "--no-file-details", "-o", "v3.sg1", "src"]);
+    assert_eq!(
+        &std::fs::read(d.join("v3.sg1")).expect("r")[..5],
+        b"SGDR\x03"
     );
 }
 
@@ -255,7 +260,7 @@ fn damaged_list_and_head_repair_or_fail_closed() {
     let want = tree(&d.join("deep"));
     ok(&d, &["seal", "-o", "t.sg1", "deep"]);
     let raw = std::fs::read(d.join("t.sg1")).expect("r");
-    assert_eq!(&raw[..5], b"SGDR\x03");
+    assert_eq!(&raw[..5], b"SGDR\x04");
     let mut exact = 0;
     // Single bit flips spread over the whole body, including where the folder list sits
     // (the start of the inner pack) and the end: the ".dat" -> ".dau" kind of damage.
@@ -307,18 +312,18 @@ fn unknown_tome_version_is_refused_cleanly() {
     fixture_src(&d);
     ok(&d, &["seal", "-o", "t.sg1", "src"]);
     let mut raw = std::fs::read(d.join("t.sg1")).expect("r");
-    raw[4] = 4;
-    std::fs::write(d.join("v4.sg1"), &raw).expect("w");
+    raw[4] = 6;
+    std::fs::write(d.join("v6.sg1"), &raw).expect("w");
     for args in [
-        vec!["unseal", "v4.sg1", "-o", "o"],
-        vec!["ls", "v4.sg1"],
-        vec!["scry", "v4.sg1"],
-        vec!["mend", "v4.sg1", "-o", "m.sg1"],
+        vec!["unseal", "v6.sg1", "-o", "o"],
+        vec!["ls", "v6.sg1"],
+        vec!["scry", "v6.sg1"],
+        vec!["mend", "v6.sg1", "-o", "m.sg1"],
     ] {
         let o = sigil(&d, &args);
         let t = text(&o);
         assert!(!o.status.success(), "{args:?}: {t}");
-        assert!(t.contains("unknown Tome version 4"), "{args:?}: {t}");
+        assert!(t.contains("unknown Tome version 6"), "{args:?}: {t}");
     }
     assert!(!d.join("o").exists() && !d.join("m.sg1").exists());
 }
@@ -342,7 +347,7 @@ fn a_protected_tome_can_get_sealed_names() {
     );
     assert_eq!(
         &std::fs::read(d.join("n.sg1")).expect("r")[..5],
-        b"SGDR\x02"
+        b"SGDR\x05"
     );
     ok(
         &d,
@@ -377,7 +382,7 @@ fn ward_only_tome_with_visible_names_is_protected_and_keeps_its_ward() {
     );
     assert_eq!(
         &std::fs::read(d.join("w.sg1")).expect("r")[..5],
-        b"SGDR\x03"
+        b"SGDR\x04"
     );
     let o = sigil(&d, &["unseal", "-o", "nokey", "w.sg1"]);
     assert!(
@@ -424,7 +429,7 @@ fn old_layout_env_applies_to_seal_and_vault_and_typos_are_refused() {
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(
         &std::fs::read(d.join("e0.sg1")).expect("r")[..5],
-        b"SGDR\x03"
+        b"SGDR\x04"
     );
     let o = sigil_env(
         &d,

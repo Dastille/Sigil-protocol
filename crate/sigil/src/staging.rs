@@ -174,11 +174,16 @@ pub(crate) struct Staging {
     /// Output folder no write may leave through a symbolic link (see [`Staging::confined`]).
     root: Option<PathBuf>,
     /// Empty folders this restore created, with the details to give them at commit.
-    dir_details: Vec<(PathBuf, crate::details::FileDetail, crate::details::RestoreOpts)>,
+    dir_details: Vec<(
+        PathBuf,
+        crate::details::FileDetail,
+        crate::details::RestoreOpts,
+    )>,
 }
 
 /// Error for a restore that would write through a symbolic link in its output folder.
-pub(crate) const THROUGH_LINK: &str = "refusing to restore through a symbolic link inside the output folder";
+pub(crate) const THROUGH_LINK: &str =
+    "refusing to restore through a symbolic link inside the output folder";
 
 impl Staging {
     pub(crate) fn new() -> Self {
