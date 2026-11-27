@@ -68,7 +68,16 @@ The first release will be **v0.9.0**. This tree is not 1.0.
   lost files. v1, v2 (with its key) and v3 Tomes; per-file Wards with `--ward-file`. In a
   plain v1 Tome a list name is used only when the file's own header confirms all of it;
   other files go under `recovered-names/`. New exit code **7**: partly saved. `--max-secs`
-  bounds the run; Ctrl-C stops it and keeps what was already saved. SALVAGE_NUMBERS
+  bounds the run; Ctrl-C stops it and keeps what was already saved.
+  Measured on three folder shapes, three Tome kinds and 1,881 damage cases, with no wrong
+  file written (a file under a wrong name that is not marked as recovered counts as wrong):
+  plain Tomes with a damaged folder list or head: `unseal` and `mend` restored nothing in
+  all 288 cases, salvage saved 37,176 of 37,536 files (99.0%; 7,245 of them under
+  `recovered-names/` because only the first 16 bytes of a name are kept in a file's own
+  header). Plain Tomes cut to 99%: 1,158 of 1,173 files (98.7%). Tomes with a repair-protected
+  list (v3 and Warded): salvage saves what `mend` can rebuild, plus the files in the front part
+  of a cut-off body (cut to 99%: 784 of 1,173 files against 772 before); where the repair data
+  cannot rebuild the body, nothing is saved from it.
 - An unknown Tome version is refused by `scry` and `mend` with "unknown Tome version N:
   made by a newer sigil, or damaged", as `unseal` and `ls` already did.
 - `sigil ls` and `sigil mount` check a v1 Tome's folder list (bad names, repeated names)
