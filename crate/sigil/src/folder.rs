@@ -686,7 +686,6 @@ fn inscribe_dir_any(
     Ok((files.len() as u32, total))
 }
 
-/// File details of the `files` and `empties` a folder walk of `root` found.
 /// Refuse, before anything is written, a folder holding a name a Tome could not restore
 /// safely (for example a file named `x\..\y` on a system where `\` is an ordinary
 /// character), so Inscribe never makes a Tome that its own unseal refuses.
@@ -716,6 +715,7 @@ fn refuse_unrestorable_names(
     Ok(())
 }
 
+/// File details of the `files` and `empties` a folder walk of `root` found.
 fn tree_details(
     root: &Path,
     files: &[PathBuf],
